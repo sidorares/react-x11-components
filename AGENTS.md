@@ -2682,9 +2682,15 @@ compound names** (`TreeReach.self` and `below`, `MutationRules.tested`):
 the holder for a test of what an element holds (`:empty`), its children
 for one of where an element sits (`:first-child`, `:nth-child()`), each
 where the stable part of the compound it is in matches — a child
-where the compound a combinator leads to it from is around it,
+where the compounds the combinators lead to it from are around it,
 above a rule's subject as in it, `.menu > :first-child` — and below them what its
-rule's subject names. **A new pseudo-class that reads what an element holds
+rule's subject names, an `:nth-child()`'s as a `:first-child`'s. The chain goes
+back to a sibling combinator, through compounds that name nothing, and into a
+function's argument, whose one compound is the element the function is on:
+another webmail page's `.list > :nth-child(2) > :first-child > *` and
+`.menu > :not(:first-child)` were tests of any child, and the probe its script
+put at the end of its `<body>` and took out at every resize restyled, built
+and laid out all 4,800 of its elements, twice. **A new pseudo-class that reads what an element holds
 or where it sits joins `HOLDS_TESTS` or `SITS_TESTS`**, or it is taken to
 reach every one of them, as `:default` is. A webmail
 page hides a split button's separator by where the button sits,

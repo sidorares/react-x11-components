@@ -1873,6 +1873,130 @@ metric(
   },
 );
 
+test("a test of where a child sits reaches the children of what the combinators before it lead from, through compounds that name nothing and a function's argument, and restyles what its rule styles", async () => {
+  // A webmail page puts a probe at the end of its <body> after a resize
+  // and takes it out again, and three of its rules made every child of
+  // the <body> one whose place could change a style, with all it held:
+  // the place of a `.menu`'s child inside a `:not()`, of what is under a
+  // compound that names nothing, and an `:nth-child()` with no subject
+  const strip = Array.from(
+    { length: 40 },
+    (_, i) => `<span class="mark" id="s${i}">${i}</span>`,
+  ).join('');
+  const { node } = await render(
+    '<style>body{margin:0} .list > :nth-child(2) > :first-child > *' +
+      '{color:#ff0000} .menu > :not(:first-child):not(.sep) > .sep' +
+      '{color:#00aa00} .x:nth-child(2) .mark{color:#0000ff}</style>' +
+      '<main id="page"><div class="list" id="list"><div id="c1"><p id="c1p">' +
+      '<b id="c1b">a</b></p></div><div id="c2"><p id="c2p"><b id="c2b">b' +
+      '</b></p></div></div><div class="menu" id="menu"><span id="m1">' +
+      '<i class="sep" id="i1">|</i></span><span id="m2"><i class="sep" ' +
+      'id="i2">|</i></span></div><ul id="ul"><li class="x" id="x1"><span ' +
+      'class="mark" id="k1">1</span></li><li class="x" id="x2"><span ' +
+      'class="mark" id="k2">2</span></li></ul>' +
+      `<div id="strip">${strip}</div></main>`,
+    300,
+  );
+  const el = view(node);
+  await act();
+  const colour = (id: string) => el.computedStyle(byId(el, id))?.color;
+  const putFirst = (
+    holderId: string,
+    tag: string,
+    attribs = {},
+    of: HtmlViewNode = el,
+  ) => {
+    const holder = byId(of, holderId);
+    const kid = createElement(tag, attribs);
+    const first = holder.children[0] as never;
+    holder.children.unshift(kid as never);
+    (kid as unknown as { parent: unknown }).parent = holder;
+    (kid as unknown as { next: unknown }).next = first;
+    (first as unknown as { prev: unknown }).prev = kid;
+    const change: HtmlChange = {
+      type: 'childList',
+      target: holder,
+      addedNodes: [kid],
+      removedNodes: [],
+      previousSibling: null,
+      nextSibling: first,
+    };
+    return change;
+  };
+  assert.strictEqual(colour('c2b'), 'rgb(255, 0, 0)');
+  assert.strictEqual(colour('i2'), 'rgb(0, 170, 0)');
+  assert.strictEqual(colour('k2'), 'rgb(0, 0, 255)');
+  // what came at the end of the page reaches none of what was there
+  const page = byId(el, 'page');
+  const probe = createElement('div', { class: 'probe' });
+  appendChild(page, probe);
+  const end = scopeOf(el, [
+    {
+      type: 'childList',
+      target: page,
+      addedNodes: [probe],
+      removedNodes: [],
+      previousSibling: probe.prev,
+      nextSibling: null,
+    },
+  ]);
+  assert.ok(end, 'a refresh of everything');
+  for (const id of ['c1b', 'c2b', 'i1', 'i2', 'k1', 'k2', 's0', 's39']) {
+    assert.ok(!end.has(byId(el, id)), `${id} restyled`);
+  }
+  // and what comes first where a rule counts reaches what its subject names
+  for (const [holder, tag, now, was, reached] of [
+    ['list', 'div', 'c1b', 'c2b', 'rgb(255, 0, 0)'],
+    ['menu', 'span', 'i1', 'i2', 'rgb(0, 170, 0)'],
+    ['ul', 'li', 'k1', 'k2', 'rgb(0, 0, 255)'],
+  ] as const) {
+    const change = putFirst(holder, tag, tag === 'li' ? { class: 'x' } : {});
+    const own = scopeOf(el, [change]);
+    assert.ok(own, `a refresh of everything from ${holder}`);
+    assert.ok(own.has(byId(el, now)), `${now} was not reached`);
+    assert.ok(!own.has(byId(el, 's0')), `the strip was reached from ${holder}`);
+    el.touchDocument([change]);
+    await act();
+    assert.strictEqual(colour(now), reached, `${now} after a child came`);
+    if (holder !== 'menu') {
+      assert.notStrictEqual(colour(was), reached, `${was} kept its colour`);
+    }
+  }
+  // and a sibling combinator ends what the chain says: what `.a` is
+  // before, not what it is around
+  const { node: other } = await render(
+    '<style>.a + * > :first-child .y{color:#aa00aa}</style><main>' +
+      '<div class="a"></div><div id="after"><p id="p1"><b class="y" ' +
+      'id="y1">y</b></p></div></main>',
+    300,
+  );
+  const el2 = view(other);
+  await act();
+  const purple = 'rgb(170, 0, 170)';
+  assert.strictEqual(el2.computedStyle(byId(el2, 'y1'))?.color, purple);
+  const pushed = putFirst('after', 'p', {}, el2);
+  assert.ok(scopeOf(el2, [pushed])?.has(byId(el2, 'y1')), 'y1 was not reached');
+  el2.touchDocument([pushed]);
+  await act();
+  assert.notStrictEqual(el2.computedStyle(byId(el2, 'y1'))?.color, purple);
+  // and what the chain around a function says is of the element the
+  // function is on, not of the compounds of its argument before that
+  const { node: third } = await render(
+    '<style>.c > :is(:first-child > *) .d{color:#aa00aa}</style>' +
+      '<main id="m"><div class="c" id="cc"><p id="pp"><b class="d" id="dd">' +
+      'd</b></p></div></main>',
+    300,
+  );
+  const el3 = view(third);
+  await act();
+  assert.strictEqual(el3.computedStyle(byId(el3, 'dd'))?.color, purple);
+  const before = putFirst('m', 'p', {}, el3);
+  assert.ok(scopeOf(el3, [before])?.has(byId(el3, 'dd')), 'dd was not reached');
+  el3.touchDocument([before]);
+  await act();
+  assert.notStrictEqual(el3.computedStyle(byId(el3, 'dd'))?.color, purple);
+});
+
 test('a child coming or going reaches what a test of where its siblings sit can answer otherwise for, and not all its holder holds', async () => {
   // A webmail page hides a split button's separator by where the button
   // sits, `.btn:not(:last-child) .label`, and has a `+` in its sheets:
@@ -4486,6 +4610,16 @@ function rulesFor(
     () => `.${c()}:last-child > .${c()}`,
     () => `${pick(TAGS)}:nth-child(2) .${c()}`,
     () => `.${c()}:not(:last-child)`,
+    // and what it is a child of, through compounds that name nothing and
+    // in a function's argument
+    () => `.${c()} > :nth-child(2) > :first-child > *`,
+    () => `.${c()}:not(.${c()} > :not(.${c()}):first-child > *)`,
+    () => `:is(.${c()} > :last-child) .${c()}`,
+    () => `.${c()} > :not(:first-child):not(.${c()}) > .${c()}`,
+    // and what a sibling combinator leads to it from, which no chain is
+    () => `.${c()} + * > :first-child .${c()}`,
+    () => `.${c()} ~ .${c()} > :nth-child(2) .${c()}`,
+    () => `.${c()} > :is(:first-child > *) .${c()}`,
     () => `[data-x] .${c()}`,
     () => `[data-x=y]`,
     () => `[role=tab] .${c()}`,

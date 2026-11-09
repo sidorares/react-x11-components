@@ -3360,8 +3360,16 @@ function scanChanges(
   /** Where this is a function's argument above a rule's subject, that
    *  subject's stable part (`scanFunctionChanges`). */
   above: string | null = null,
+  /** Where this is a function's argument, what the combinators lead to the
+   *  compound it is in from (`NoteChange`'s `parent`): an argument of one
+   *  compound tests that compound's element. */
+  around: string | null = null,
 ): void {
   const parts = compoundsOf(selector);
+  /** What the descendant and child combinators before a compound lead to
+   *  it from, back to the nearest sibling combinator: the stable part of
+   *  each compound, `*` for one with none, each with its combinator. */
+  let chain = '';
   for (let i = 0; i < parts.length; i += 1) {
     const { text, next } = parts[i];
     const last = i === parts.length - 1;
@@ -3378,15 +3386,30 @@ function scanChanges(
       );
       note(next, bits, null, trail || '*', stableCompound(text) || '*');
     }
-    // what a combinator leads to a compound of the rule's own from, with it
-    const lead =
-      subject !== null && i > 0 && /[> ]/.test(parts[i - 1].next)
-        ? stableCompound(parts[i - 1].text)
+    // What the combinators lead to a compound of the rule's own from, with
+    // them: all the compounds back to a sibling combinator, where one has a
+    // stable part. `.list > :nth-child(2) > :first-child > *` asks of the
+    // children of the second child of a `.list`, and read as of any child,
+    // every child put in a `<body>` reached all that the `<body>` held.
+    if (i > 0) {
+      const before = parts[i - 1];
+      chain = /[> ]/.test(before.next)
+        ? `${chain}${stableCompound(before.text) || '*'}${before.next === '>' ? ' > ' : ' '}`
         : '';
+    }
+    // — in a function's argument as much: the element of
+    // `:not(.menu > .item:first-child)` sits in a `.menu` or its answer
+    // stays, and with `.menu >` left out of an argument a webmail page's
+    // every child of its `<body>` was one. A `:has()`'s argument asks at
+    // its anchor instead.
     const parent =
-      lead && lead !== '*'
-        ? `${lead}${parts[i - 1].next === '>' ? ' > ' : ' '}`
-        : null;
+      has !== null
+        ? null
+        : /[^*>\s]/.test(chain)
+          ? chain
+          : parts.length === 1
+            ? around
+            : null;
     scanCompoundChanges(
       text,
       bits,
@@ -3546,7 +3569,10 @@ function scanFunctionChanges(
     for (const entry of selectorsOf(arg)) {
       if (has && readsApart(entry, has.siblings)) {
         scanChanges(entry, CHANGES_ANYWHERE, ANYWHERE_ANCHOR, note);
-      } else scanChanges(entry, bits, has, note, stable, null, subject);
+      } else {
+        // `.menu > :not(:first-child)` asks it of a `.menu`'s children
+        scanChanges(entry, bits, has, note, stable, null, subject, parent);
+      }
     }
   } else if (name === 'lang' || name === 'dir') {
     // what the nearest element up that says one says: a change to one
@@ -3565,9 +3591,12 @@ function scanFunctionChanges(
     // nothing has (`DomHost`'s `customStates`)
     note('a:-rx-state', bits, has, subject, stable, undefined, parent);
   } else if (/^nth-(?:last-)?(?:child|of-type)$/.test(name)) {
-    note('s', bits, has, null, stable, 'sits', parent);
+    // what in the element the rule can style, as for `:first-child` and
+    // its kin (`scanCompoundChanges`): `.list:nth-child(2) .label` reached
+    // all of each child of what a child came into or went from
+    note('s', bits, has, subject, stable, 'sits', parent);
     // counted from the end: every child's place, where one is put in at it
-    if (name.startsWith('nth-last-')) note('n', bits, has, null, stable);
+    if (name.startsWith('nth-last-')) note('n', bits, has, subject, stable);
     // `of S`: what S tests decides where an element's siblings count it
     const of = /\bof\b/i.exec(arg);
     if (of) {
