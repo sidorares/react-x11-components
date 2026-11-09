@@ -109,6 +109,10 @@ parts.
   and libav.js's VP8, VP9 and Opus as optional peers behind a seam that
   connects nothing by default, with the spikes' timings; why native
   libwebrtc is not the plan; and the work split into five loops.
+- [WebGPU in `<Html scripts>`](prd-webgpu.md) — investigation: what each
+  backend has to stand WebGPU on (no core GL has compute), Dawn's `webgpu`
+  and the wgpu packages as engines and what they cost, the WGSL compilers on
+  npm and why none is needed, and a seam whose type is the standard `GPU`.
 - [Plugins for the example browser](prd-browser-plugins.md) —
   investigation: why Chrome extensions do not run unchanged here, layer by
   layer, and the three parts of them that could. Then a plugin system in
