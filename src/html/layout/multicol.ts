@@ -365,7 +365,14 @@ function gather(box: Box, into: Gathered): [Unit, Unit] | null {
       continue;
     }
     span[0].top = Math.min(span[0].top, child.y);
-    span[1].bottom = Math.max(span[1].bottom, child.y + child.height);
+    // what it is taller than its content is room a break may fall in, as
+    // in a box with nothing in it (CSS Fragmentation 3, 4.1): stretched
+    // over it, the last thing in it went to the next column for the room
+    // under it — a scroll container under a spacer, in WPT's
+    // css-anchor-position/anchor-scroll-003
+    const bottom = child.y + child.height;
+    if (bottom > span[1].bottom + EPS)
+      span[1] = space(span[1].bottom, bottom, null, into);
     into.spans.set(child, span);
     first ??= span[0];
     last = span[1];
