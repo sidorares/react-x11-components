@@ -2251,6 +2251,17 @@ cut so tells an intrinsic width it was** (`CUT_LINES`, beside the engine's
 `truncated`), as one the engine cut does: it is wider than it was drawn,
 and what a probe measured of it is of what was drawn.
 
+**An anonymous block's lines are cut by its container's `text-overflow`**
+(`overflowStyleOf`). Neither `text-overflow` nor `overflow` inherits, so
+an anonymous block's own say `clip` and `visible`, and the fix-up makes one
+beside a block and beside a float, which it wraps with the text it is in.
+Chromium, Firefox and WebKit cut those lines with the container's
+ellipsis; Chromium and Firefox cut no grid's or flex container's anonymous
+item. **Anything that reads `text-overflow` for a block's lines reads it
+from `overflowStyleOf`**, `cutOf` and the probe's `seen.cut` as much as
+`ellipsizeLines`, or a webmail list's snippet, behind a floated separator,
+is clipped mid-letter with no ellipsis.
+
 **Nothing is fetched, by construction, and nothing is executed unless the
 application turns it on.** `onResource` is the only way anything loads —
 the same call the desktop calendar makes about credentials: the host
