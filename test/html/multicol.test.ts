@@ -1119,6 +1119,68 @@ test('column-span does nothing on a box that is not block-level', async () => {
   assert.deepStrictEqual([s.x, s.width], [0, 80], 'in the first column');
 });
 
+test('a box that spans the columns from inside a block breaks the block about it, and balances the row before it', async () => {
+  // CSS Multi-column 1, 6: a spanner in a block in the container's flow
+  // spans the container's columns, the block around it in a row before it
+  // and one after it; and the columns before a spanner are balanced
+  // whatever `column-fill` says (7.1). Chrome's numbers, from WPT
+  // css-anchor-position/anchor-position-multicol-colspan-002: the block's
+  // rect takes in its pieces in both rows
+  const { node } = await render(
+    '<style>body{margin:0}.m{column-count:2;column-fill:auto;' +
+      'column-gap:10px;width:210px;height:100px}</style>' +
+      '<div class="m" id="m"><div style="height:50px"></div>' +
+      '<div id="w"><div id="a" style="margin-left:10px;width:40px">' +
+      '<div style="height:10px"></div>' +
+      '<div id="s" style="column-span:all;height:20px"></div>' +
+      '<div id="b" style="height:30px"></div></div></div></div>' +
+      // a spanner the container's child, after content of its own height
+      '<div class="m" id="n"><div id="c" style="height:40px"></div>' +
+      '<div id="t" style="column-span:all;height:20px"></div></div>',
+    300,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(at(el, 's', 'm'), [0, 30, 210, 20], 'across, at 30');
+  assert.deepStrictEqual(
+    at(el, 'a', 'm'),
+    [10, 20, 150, 60],
+    'the block, around its pieces',
+  );
+  assert.deepStrictEqual(at(el, 'b', 'm'), [10, 50, 40, 30], 'under it');
+  assert.strictEqual(
+    COLUMN_PIECES.get(boxOf(el, 'a') as never)?.length,
+    2,
+    'two',
+  );
+  assert.deepStrictEqual(
+    at(el, 't', 'n'),
+    [0, 20, 210, 20],
+    'under 40px balanced, not under a column of it',
+  );
+  assert.deepStrictEqual(at(el, 'c', 'n'), [0, 0, 210, 20], 'in both');
+});
+
+test('what is positioned in a box that spans the columns, and in nothing in it, is positioned in the container', async () => {
+  // CSS Multi-column 1, 6: a spanner's containing block is the multicol
+  // container, past the boxes it is laid out through; and its offset
+  // parent with it, as Blink has it (WPT css-anchor-position/
+  // anchor-position-multicol-colspan-001)
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="m" style="position:relative;column-count:2;column-gap:10px;' +
+      'width:210px"><div style="height:40px"></div>' +
+      '<div style="position:relative"><div style="column-span:all;height:20px">' +
+      '<div id="t" style="position:absolute;top:5px;left:0;width:10px;' +
+      'height:10px"></div></div></div></div>',
+    300,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(at(el, 't', 'm'), [0, 5, 10, 10], "the container's");
+  const offset = el.offsetRect(findById(el.document, 't')!)!;
+  assert.strictEqual(offset.parent, findById(el.document, 'm'));
+  assert.deepStrictEqual([offset.x, offset.y], [0, 5]);
+});
+
 test('a container as wide as its content is no narrower than a box that spans its columns', async () => {
   const { node } = await render(
     '<style>body{margin:0}</style>' +

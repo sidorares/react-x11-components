@@ -632,6 +632,9 @@ export function layoutColumns(
   /** Where the strip starts: the content box's top, or under a box that
    *  spans the columns (`spansColumns`). */
   top = box.contentY,
+  /** Whether a spanner comes after it: columns before one are balanced,
+   *  whatever `column-fill` says (CSS Multi-column 1, 7.1). */
+  beforeSpanner = false,
 ): number {
   const gathered: Gathered = {
     units: [],
@@ -650,7 +653,7 @@ export function layoutColumns(
   // how tall a column is that what is out of the flow is cut into, which
   // a container with less than a column of content is no shorter than
   let columnHeight: number;
-  if (box.style.columnFill === 'auto') {
+  if (box.style.columnFill === 'auto' && !beforeSpanner) {
     height = Number.isFinite(limit) ? limit : strip;
     columnHeight = height;
     filled = fill(groups, top, height, height >= limit);
@@ -1219,8 +1222,7 @@ function rowsOf(lines: LineBox[], gathered: Gathered): void {
 /**
  * Whether a box is set across all the columns of the multicol container it
  * is a child of (`column-span: all`, CSS Multi-column 1, 6): a block-level
- * box in its flow. One further in, in a box of the container's, is set in its column
- * as it would be without: the box around it is not broken about it here.
+ * box in its flow.
  */
 export function spansColumns(box: Box): boolean {
   return (
@@ -1229,6 +1231,116 @@ export function spansColumns(box: Box): boolean {
     // block-level: on an inline-block it does nothing
     !box.style.display.startsWith('inline')
   );
+}
+
+/**
+ * Whether a box spans the columns of a multicol container it is in, at any
+ * depth (CSS Multi-column 1, 6): `spansColumns`, and every box between it
+ * and the container a block in the container's flow and formatting
+ * context. One in a formatting context of its own — a flex item, a box that
+ * scrolls, a float — is set in its column as it would be without, as all
+ * three engines have it.
+ */
+export function isSpanner(box: Box): boolean {
+  if (!spansColumns(box)) return false;
+  for (let at = box.parent; at; at = at.parent) {
+    if (at.kind !== 'block') return false;
+    if (at.style.columns) return true;
+    if (!flows(at) || establishesBFC(at)) return false;
+  }
+  return false;
+}
+
+/**
+ * The next box up a chain of containing blocks: the parent, but for a
+ * spanner, whose containing block is the multicol container it spans (CSS
+ * Multi-column 1, 6), past the boxes it is laid out through. What is
+ * positioned in a spanner and not in it is positioned in the container,
+ * and an anchor in one is in none of those boxes.
+ */
+export function containingParent(box: Box): Box | null {
+  if (box.style.columnSpan && isSpanner(box)) {
+    for (let at = box.parent; at; at = at.parent) {
+      if (at.style.columns) return at;
+    }
+  }
+  return box.parent;
+}
+
+/** Whether a block in a multicol container's flow is one a spanner is laid
+ *  out through: what its content is, in its turn, is the container's. */
+function spannedThrough(box: Box): boolean {
+  return (
+    box.kind === 'block' &&
+    flows(box) &&
+    !box.style.columns &&
+    !establishesBFC(box)
+  );
+}
+
+/**
+ * A multicol container's content cut about the boxes that span its columns
+ * (CSS Multi-column 1, 6): the rows of columns there are, one more than the
+ * spanners, and what each box a spanner is in holds of each row it is in.
+ * Null where no spanner is in it. A box a spanner is in is in each row from
+ * the one before the first spanner in it to the one after the last, its
+ * top edges in the first and its bottom ones in the last.
+ */
+export interface SpannedRows {
+  spanners: Box[];
+  /** The container and each box a spanner is in: what it holds of each
+   *  row, by the row's index, and the first and the last it is in. */
+  slices: Map<Box, { rows: Box[][]; first: number; last: number }>;
+}
+
+export function spannedRows(box: Box): SpannedRows | null {
+  const spanners: Box[] = [];
+  const slices: SpannedRows['slices'] = new Map();
+  const holds = new Map<Box, boolean>();
+  const hasSpanner = (b: Box, depth: number): boolean => {
+    let found = holds.get(b);
+    if (found !== undefined) return found;
+    found = false;
+    if (depth < 64) {
+      for (const child of b.children) {
+        if (spansColumns(child)) found = true;
+        else if (spannedThrough(child) && hasSpanner(child, depth + 1)) {
+          found = true;
+        }
+      }
+    }
+    holds.set(b, found);
+    return found;
+  };
+  if (!hasSpanner(box, 0)) return null;
+  const split = (b: Box, from: number): number => {
+    const rows: Box[][] = [[]];
+    let r = from;
+    const row = (): Box[] => (rows[r - from] ??= []);
+    row();
+    for (const child of b.children) {
+      if (spansColumns(child)) {
+        spanners.push(child);
+        r += 1;
+        row();
+      } else if (spannedThrough(child) && holds.get(child)) {
+        const end = split(child, r);
+        for (let i = r; i <= end; i += 1) {
+          (rows[i - from] ??= []).push(child);
+        }
+        r = end;
+      } else {
+        row().push(child);
+      }
+    }
+    const all: Box[][] = [];
+    for (let i = 0; i < from; i += 1) all.push([]);
+    for (let i = from; i <= r; i += 1) all.push(rows[i - from] ?? []);
+    slices.set(b, { rows: all, first: from, last: r });
+    return r;
+  };
+  split(box, 0);
+  return { spanners, slices };
 }
 
 /** Forget the pieces an earlier layout broke a box's content in, where
