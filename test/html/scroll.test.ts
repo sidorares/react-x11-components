@@ -1617,3 +1617,47 @@ test('a script focusing what is fixed to the viewport scrolls the pane for none 
     }
   }
 });
+
+test('a fixed box in a fixed box anchored across a scroll follows its own anchor, and is not moved with the box it is in as well', async () => {
+  // WPT css-anchor-position/anchor-scroll-fixedpos-nested-001 and -002: a
+  // fixed box is the viewport's, so the scroll that moves the box it is in
+  // leaves it where it is, and it is moved by its own anchor's alone. The
+  // two anchors are 100 apart either way, and a scroll moves both alike
+  const page = (scroller: boolean) =>
+    '<!doctype html><style>body{margin:0;width:1000px;height:1000px} div{width:50px;height:50px}' +
+    (scroller
+      ? '#s{position:absolute;left:150px;top:150px;width:200px;height:200px;overflow:scroll}' +
+        '#c{position:relative;width:400px;height:400px}'
+      : '') +
+    '#a1{position:absolute;left:150px;top:150px;anchor-name:--a1}' +
+    '#a2{position:absolute;left:250px;top:250px;anchor-name:--a2}' +
+    '#f1{position:fixed;position-anchor:--a1;position-area:bottom right}' +
+    '#f2{position:fixed;position-anchor:--a2;position-area:bottom right}</style>' +
+    (scroller
+      ? '<div id="s"><div id="c"><div id="a1"></div><div id="a2"></div></div></div>'
+      : '<div id="a1"></div><div id="a2"></div>') +
+    '<div id="f1"><div><div id="f2"></div></div></div><script>' +
+    (scroller
+      ? 'var s = document.getElementById("s"); s.scrollLeft = 25; s.scrollTop = 50;'
+      : 'document.documentElement.scrollLeft = 100; document.documentElement.scrollTop = 100;') +
+    'requestAnimationFrame(() => requestAnimationFrame(() => console.log("done")));</script>';
+  for (const scroller of [false, true]) {
+    const logs: string[] = [];
+    const { el } = await renderScrolled(page(scroller), 600, 800, {
+      baseUrl: 'https://example.test/page.html',
+      scripts: { log: (_level: string, text: string) => void logs.push(text) },
+    });
+    for (let i = 0; i < 100 && !logs.includes('done'); i++) {
+      await act(() => new Promise((r) => setTimeout(r, 10)));
+    }
+    await act();
+    const at = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    const [f, g] = [at('f1'), at('f2')];
+    assert.deepStrictEqual(
+      [g.x - f.x, g.y - f.y],
+      [100, 100],
+      scroller ? 'a container' : 'the pane',
+    );
+    cleanup();
+  }
+});

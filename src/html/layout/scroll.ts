@@ -373,7 +373,11 @@ export function scrollContent(
         scrollsAlong(box.style, 'y') ? dy : 0,
       );
       if ((x && mx) || (y && my)) {
-        move(anchored, x ? -mx : 0, y ? -my : 0, () => false);
+        // what in it is positioned against something outside it stays,
+        // a fixed box in it among them, which follows its own anchor
+        move(anchored, x ? -mx : 0, y ? -my : 0, (child) =>
+          escapes(child, anchored),
+        );
         // and the scroll containers around it reach as far as it is now,
         // which what was measured of them at the layout says nothing of
         forgetExtentsAround(anchored);
@@ -1625,7 +1629,10 @@ export function followPane(
     if (wantX === hadX && wantY === hadY) continue;
     const dx = wantX - hadX;
     const dy = wantY - hadY;
-    move(box, dx, dy, () => false);
+    // what in it is positioned against something outside it stays, as a
+    // scroll leaves it: a fixed box in a fixed box is the viewport's, and
+    // moved with this one, it was moved again by its own shift
+    move(box, dx, dy, (child) => escapes(child, box));
     forgetExtentsAround(box);
     PANE_SHIFT.set(box, [wantX, wantY]);
     (moved ??= []).push(box);
@@ -1635,7 +1642,9 @@ export function followPane(
     for (const follower of anchoredWith(box)) {
       if (map.get(follower.box)?.pane) continue;
       if (!follower.x && !follower.y) continue;
-      move(follower.box, follower.x ? dx : 0, follower.y ? dy : 0, () => false);
+      move(follower.box, follower.x ? dx : 0, follower.y ? dy : 0, (child) =>
+        escapes(child, follower.box),
+      );
       forgetExtentsAround(follower.box);
       moved.push(follower.box);
     }
