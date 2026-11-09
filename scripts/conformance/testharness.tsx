@@ -1168,24 +1168,29 @@ function sameBytes(a: Uint8ClampedArray, b: Uint8ClampedArray): boolean {
 }
 
 /**
- * A `reftest-wait` document with what wptrunner runs in it once it has
- * loaded (`test-wait.js`): two frames, then `TestRendered` at the root,
- * which a test that waits for its first rendering listens for. Appended as
+ * A `reftest-wait` or `test-wait` document with what wptrunner runs in it
+ * once it has loaded (`test-wait.js`): its fonts, two frames, then a
+ * `TestRendered` that bubbles from the root, which a test that waits for its
+ * first rendering listens for, at the root or at the document. Appended as
  * a script that takes itself out as it runs, since the runner has no
  * other way into the page. In an XML document it has to be in the root, and
  * in XHTML's namespace to be a script at all.
  */
 function withTestRendered(source: string, type: string): string {
-  if (!/\bclass\s*=\s*["']?[^"'>]*\breftest-wait\b/i.test(source))
-    return source;
+  const wait = /\bclass\s*=\s*["']?[^"'>]*\b((?:ref)?test-wait)\b/i.exec(
+    source,
+  )?.[1];
+  if (!wait) return source;
   const script =
     '(function(){var s=document.currentScript;if(s)s.remove();' +
     'function go(){var r=document.documentElement;' +
-    'if(!/\\breftest-wait\\b/.test(r.className))return;' +
+    `if(!/\\b${wait}\\b/.test(r.className))return;` +
     'requestAnimationFrame(function(){requestAnimationFrame(function(){' +
-    "r.dispatchEvent(new Event('TestRendered'));});});}" +
-    "if(document.readyState==='complete')setTimeout(go,0);" +
-    "else addEventListener('load',function(){setTimeout(go,0);},{once:true});" +
+    "r.dispatchEvent(new Event('TestRendered',{bubbles:true}));});});}" +
+    'function fonts(){var f=document.fonts;' +
+    'if(f&&f.ready)f.ready.then(go,go);else go();}' +
+    "if(document.readyState==='complete')setTimeout(fonts,0);" +
+    "else addEventListener('load',function(){setTimeout(fonts,0);},{once:true});" +
     '})();';
   if (!isXmlType(type)) return `${source}<script>${script}</script>`;
   const end = source.lastIndexOf('</');
