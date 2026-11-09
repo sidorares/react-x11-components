@@ -4016,3 +4016,42 @@ test('a box with position options is laid out again around an anchor a scroll mo
   await restyle('');
   assert.deepStrictEqual(at(), [100, 100, 100, 100]);
 });
+
+test('justify-self left and right are the page’s sides in a right-to-left containing block, and flip-start takes them to the block axis by the box’s own direction', async () => {
+  // CSS Box Alignment 3, 4.2; WPT css-anchor-position/try-tactic-alignment
+  const { node } = await render(
+    '<style>body{margin:0}.cb{position:relative;width:400px;height:400px}' +
+      '.t{position:absolute;inset:0;width:40px;height:40px}' +
+      '#f{left:450px;position-try-fallbacks:--pf flip-start}' +
+      '@position-try --pf{inset:0;justify-self:left;align-self:start}</style>' +
+      '<div class="cb" dir="rtl"><div id="l" class="t" style="justify-self:left"></div>' +
+      '<div id="r" class="t" style="justify-self:right"></div>' +
+      '<div id="s" class="t" style="justify-self:start"></div>' +
+      '<div id="f" class="t"></div></div>',
+  );
+  const el = view(node);
+  const x = (id: string) => boxOf(el, id).x;
+  assert.deepStrictEqual([x('l'), x('r'), x('s')], [0, 360, 360]);
+  // `left` is the inline end here, which the diagonal takes to the block
+  // end: `align-self: self-end`
+  assert.strictEqual(boxOf(el, 'f').y, 360);
+});
+
+test('an absolute box in an absolute box is not cut by a box that clips which the outer one is outside of', async () => {
+  // CSS 2.1 11.1.1: the outer box's containing block is outside the box
+  // that clips, so it shows whole, and so does what it holds; the walk up
+  // from the inner one went by parents past the outer, and cut it. WPT
+  // css-anchor-position/position-visibility-anchors-visible-clip's
+  // reference drew no anchored box for it
+  const { node } = await render(
+    '<div style="overflow:hidden;border:2px solid #ff0000"><div style="position:absolute;' +
+      'top:50px;width:100px;height:100px"><div style="height:20px"></div>' +
+      '<div style="position:absolute;width:40px;height:20px;background:#00ff00">' +
+      '</div></div></div>',
+  );
+  const el = view(node);
+  const ops: PaintOp[] = [];
+  await fillsOf(el, ops);
+  const [green] = clipsAround(ops, '#00ff00');
+  assert.deepStrictEqual(green, []);
+});
