@@ -81,6 +81,20 @@ export function parseMathNumber(
   return censor(term.px, largest);
 }
 
+/** A math function's value as a number, where a length in it is read by
+ *  `dimension` — the element's units, so `sign(1em - 1px)` is a number —
+ *  or null where it is none. */
+export function parseMathNumberWith(
+  value: string,
+  dimension: (token: string) => number | null,
+): number | null {
+  const term = parseTerm(value, dimension);
+  if (!term || term.kind !== 'linear' || term.length || term.angle) {
+    return null;
+  }
+  return censor(term.px);
+}
+
 /**
  * A math function standing for a colour's channel (CSS Color 4, 4.1): a
  * number, a percentage or an angle, and one of them throughout —

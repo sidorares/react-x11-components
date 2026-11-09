@@ -2,7 +2,8 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { setFlagsFromString } from 'node:v8';
-import { cleanup, pixelAt, waitFor } from 'react-x11/test';
+import { act, cleanup, pixelAt, waitFor } from 'react-x11/test';
+import { removeNode } from '../../src/html/dom.js';
 import {
   inkColor,
   isTransparent,
@@ -38,7 +39,7 @@ import {
 } from '../../src/html/computed.js';
 import { colorFormText } from '../../src/html/css/color.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
-import { substitute } from '../../src/html/css/vars.js';
+import { resolveIdentFunctions, substitute } from '../../src/html/css/vars.js';
 import {
   CALC_SIZE_BOXES,
   CALC_SIZE_DOCUMENT,
@@ -5219,4 +5220,62 @@ test('a computed style is a fast object, which a page may read tens of thousands
   const el = view(node);
   const read = el.computedStyle(findById(el.document, 'a')!);
   assert.ok(fast(read), `${Object.keys(read!).length} properties`);
+});
+
+test('a tree-counting function is the element’s own place among its siblings, read through a var() where it is used, and moves with a sibling taken out', async () => {
+  const { node } = await render(
+    '<style>body{margin:0} li{width:calc(sibling-index() * 10px);' +
+      'height:calc(sibling-count() * 1px)} .v{--i:sibling-index()}' +
+      ' .v > p{width:calc(var(--i) * 7px);height:5px;margin:0}</style>' +
+      '<ul id="u"><li></li><li></li><li></li></ul>' +
+      '<div class="v" id="v"><p></p><p></p></div>',
+  );
+  const el = view(node);
+  const sizes = (id: string) =>
+    boxOf(el, id).children.map((box) => `${box.width}x${box.height}`);
+  // `<li>`s alike in every way share no style: each counts itself, and a
+  // custom property counts the element that reads it
+  assert.deepStrictEqual(sizes('u'), ['10x3', '20x3', '30x3']);
+  assert.deepStrictEqual(sizes('v'), ['7x5', '14x5']);
+  const ul = findById(el.document, 'u')!;
+  const [first, second] = ul.children;
+  removeNode(first);
+  el.touchDocument([
+    {
+      type: 'childList',
+      target: ul,
+      addedNodes: [],
+      removedNodes: [first],
+      nextSibling: second,
+    },
+  ]);
+  await act();
+  assert.deepStrictEqual(sizes('u'), ['10x2', '20x2']);
+});
+
+test('an ident() joins its strings, integers and names into one name, escaped where it has to be, and its math is worked out in the element’s units', async () => {
+  const integer = (math: string) => (math === 'calc(2 * 3)' ? 6 : null);
+  const made = (value: string) => resolveIdentFunctions(value, integer);
+  assert.strictEqual(made('ident("--a" 1 b)'), '--a1b');
+  assert.strictEqual(made('--x, ident(--y calc(2 * 3))'), '--x, --y6');
+  assert.strictEqual(
+    made('flip-block ident("--" "a b")'),
+    'flip-block --a\\ b',
+  );
+  // a digit where a name cannot start with one is written as its escape
+  assert.strictEqual(made('ident(1 "x")'), '\\31 x');
+  assert.strictEqual(made('ident("-" 2)'), '-\\32 ');
+  // nothing, an argument of another kind, or math that is no number
+  assert.strictEqual(made('ident("")'), null);
+  assert.strictEqual(made('ident(1.5)'), null);
+  assert.strictEqual(made('ident("a" calc(1px))'), null);
+  const { node } = await render(
+    '<style>p{font-size:20px;anchor-name:ident("--n" calc(42 * sign(1em - 19px)))}' +
+      ' q{font-size:10px;anchor-name:ident("--n" calc(42 * sign(1em - 19px)))}</style>' +
+      '<p id="p">a</p><q id="q">b</q>',
+  );
+  const el = view(node);
+  const read = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)!['anchor-name'];
+  assert.deepStrictEqual([read('p'), read('q')], ['--n42', '--n-42']);
 });
