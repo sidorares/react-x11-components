@@ -4574,8 +4574,13 @@ closes a way out a DOM binding opens by accident:
   So a rect cannot say whether a scroll moves its box, and what scrolls
   for an element asks, through `HandleInternals` (which
   `useHtmlHandle`'s handle has and `HtmlHandle` does not declare):
-  `atViewport` of the viewport, and `scrollMoves`, the rule
-  `applyScrollOffsets` moves boxes by, of each scroll container.
+  `viewportMoves` of the viewport — the axes a scroll of the pane moves
+  an element on, none for what is fixed to it but those a fixed box
+  follows its anchor on — and `scrollMoves`, the rule
+  `applyScrollOffsets` moves boxes by, of each scroll container. A focus
+  stop of what is fixed is cut to the viewport (`_stopRectOf`), so core's
+  own scroll of what it focuses into view never scrolls for one: the
+  page's focusing steps do, on those axes.
   `scrollIntoView` scrolled the page 30px on for that header, and a list
   300px for a box absolute in a `position: relative` wrapper around it,
   where Chrome scrolls neither: no scroll moves a box positioned against

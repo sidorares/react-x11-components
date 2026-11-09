@@ -1048,6 +1048,23 @@ const enum Stale {
   Everything = 4,
 }
 
+/** The axes a scroll of the pane moves a box on (`viewportMoves`): both
+ *  for one in the document, none for one drawn where the viewport is, but
+ *  those a fixed box follows an anchor the pane scrolls on, or one it is
+ *  in. */
+function paneMoves(tree: BoxTree, box: Box): string {
+  if (!drawnAtViewport(box)) return 'xy';
+  if (!tree.anchors) return '';
+  const scrolls = anchorScrollsOf(tree.root);
+  for (let at: Box | null = box; at; at = at.parent) {
+    const state = scrolls.get(at);
+    if (state && state.pane === 1) {
+      return `${state.x ? 'x' : ''}${state.y ? 'y' : ''}`;
+    }
+  }
+  return '';
+}
+
 /** The fields an anchored box's placed values are transitioned on
  *  (`_placedTransition`): its insets, sizes and margins, any of which a
  *  position option can set, and an `anchor()` or an `anchor-size()` can
@@ -7972,6 +7989,22 @@ export class HtmlViewNode extends Node {
   }
 
   /**
+   * The axes a scroll of the pane around the document moves an element on,
+   * `'xy'`, `'x'`, `'y'` or `''`: both for one in the document, and none for
+   * one drawn where the viewport is — but for a box fixed to it and anchored
+   * to something the pane scrolls, or in one, which follows its anchor on
+   * the axes it shares the pane with (CSS Anchor Positioning 1, 3.3). What
+   * a script's `scrollIntoView` and the focusing steps scroll the viewport
+   * on for it.
+   */
+  viewportMoves(element: Element): string {
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    const box = tree ? this._boxOf(tree, element) : null;
+    return tree && box ? paneMoves(tree, box) : 'xy';
+  }
+
+  /**
    * Whether a media query holds for the document, as `matchMedia` asks:
    * answered from what its own `@media` rules are — its width, the
    * viewport's height, the scale, the palette's colour scheme, the
@@ -8837,11 +8870,33 @@ export class HtmlViewNode extends Node {
     const at = tree ? this._boxOf(tree, element) : null;
     const drawn = tree && at ? this._drawnRect(tree, at, false) : null;
     if (!tree || !at || !drawn) return null;
-    const rect = this._moveToViewport(at, drawn);
+    const shift = this._fixedShift(this._scrolledOrigin());
+    let rect = this._moveToViewport(at, drawn, shift);
     const box = this._boxOf(tree, element);
     const cut = box && clipFor(box, drawn, this._scale);
-    if (!cut) return rect;
-    return shownBy(this._moveToViewport(at, cut.rect), rect);
+    if (cut) rect = shownBy(this._moveToViewport(at, cut.rect, shift), rect);
+    // what no scroll of the pane moves is cut to the viewport: core scrolls
+    // a focused stop into view, and a link in a fixed box that hangs past
+    // the viewport's edge took the page with it, where a browser scrolls
+    // nothing for it (CSSOM View 1, scroll into view: a fixed box's scroll
+    // container is the viewport, which it is not moved by). One that
+    // follows an anchor the pane scrolls is the page's to scroll to, by the
+    // axes it follows (`viewportMoves`), which core's scroll to where the
+    // stop was before that would undo
+    const viewport = shift && drawnAtViewport(at) ? this._viewport() : null;
+    if (viewport) {
+      const s = this._scale;
+      rect = shownBy(
+        {
+          x: shift!.x / s,
+          y: shift!.y / s,
+          width: viewport.width / s,
+          height: viewport.height / s,
+        },
+        rect,
+      );
+    }
+    return rect;
   }
 
   /** The link an element is — its `href`, resolved as a click on it is

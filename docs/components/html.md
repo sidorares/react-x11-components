@@ -7471,9 +7471,12 @@ document is laid out again in the next frame and the options tried where
 the anchor is now. `position-visibility` hides a box, with all it holds,
 where its default anchor is cut away entirely by a box that clips between
 the two, or by the viewport for a box fixed to it whose anchor the pane
-scrolls (`anchor-visible`, the initial value), and where it overflows its
+scrolls (`anchor-visible`, the initial value) — on the axes it follows the
+anchor on, as Chromium has it — and where it overflows its
 inset-modified containing block (`no-overflow`); a scroll that changes
-either hides or shows it in the frame it scrolls. A box with a default
+either hides or shows it in the frame it scrolls. Focusing what is in a
+fixed box scrolls the pane for none of it, and for a fixed box anchored to
+something the pane scrolls only on the axes it follows that anchor on. A box with a default
 anchor whose containing block is a scroll container's is placed in its
 scrollable containing block (CSS Position 4, 2.1): the padding edge of all
 it scrolls, but for the relative offsets and the transforms of what it

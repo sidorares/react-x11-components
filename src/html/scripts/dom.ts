@@ -8104,7 +8104,10 @@ export function installDom(
           this._id,
         );
       }
-      if (call('atViewport', this._id) === true) return;
+      // the axes a scroll of the viewport moves it on: none for what is
+      // fixed to it, and for a fixed box that follows its anchor, those
+      const moves = String(call('atViewport', this._id) ?? 'xy');
+      if (!moves) return;
       const r = shown(target());
       if (!r) return;
       // the viewport of the document it is in: a frame's of this realm's,
@@ -8112,18 +8115,20 @@ export function installDom(
       const own = this.ownerDocument;
       const v = own === document ? viewport() : frameViewport(own);
       const [mt, mr, mb, ml, pt, pr, pb, pl] = insets(null);
-      const byX = place(
+      let byX = place(
         inline,
         r[0] - ml - (v.scrollX + pl),
         r[2] + ml + mr,
         v.width - pl - pr,
       );
-      const byY = place(
+      let byY = place(
         block,
         r[1] - mt - (v.scrollY + pt),
         r[3] + mt + mb,
         v.height - pt - pb,
       );
+      if (!moves.includes('x')) byX = 0;
+      if (!moves.includes('y')) byY = 0;
       if (quiet && !byX && !byY) return;
       if (own !== document) {
         call(
