@@ -436,6 +436,9 @@ function liftableBox(
   // and what is behind a backdrop filter is filtered as the document draws
   // it, which moves under a layer
   if (box.style.backdropFilter !== null) return false;
+  // and a group blended with what is under it is blended as the document
+  // draws it (`blendOf` in `paint.ts`), where a layer is drawn over it
+  if (box.style.mixBlendMode !== 'normal') return false;
   // one fixed to the viewport in it is drawn where the viewport is, which
   // a layer the document scrolls does not follow
   if (!drawnAtViewport(box)) {
