@@ -431,12 +431,13 @@ function withoutNoStream(sdp: string): string {
 
 /**
  * Whether a candidate attribute, with its `a=` or without, is one werift can
- * use: a UDP one. werift has no ICE-TCP (RFC 6544). It throws for a TCP
- * candidate handed to `addIceCandidate`, and one in a description became a
- * remote candidate it checked over UDP, which took the transport to
- * `checking` for a pair nothing could connect. A browser that cannot use a
- * candidate ignores it, so neither reaches werift: a TCP candidate aimed at
- * a Fetch bad port changes nothing, as WPT's `addTcpIceCandidate` has it.
+ * use: a UDP one. werift runs ICE-TCP (RFC 6544) only with `iceUseTcp`,
+ * which is off by default and off here, so a TCP candidate pairs with none
+ * of its local candidates. werift still took one as a remote candidate,
+ * and the transport went to `checking` for a pair nothing could connect. A
+ * browser that cannot use a candidate ignores it, so none reaches werift:
+ * a TCP candidate aimed at a Fetch bad port changes nothing, as WPT's
+ * `addTcpIceCandidate` has it.
  */
 function overUdp(candidate: string): boolean {
   const fields = candidate.replace(/^a=/, '').split(' ');
@@ -1011,7 +1012,10 @@ class WeriftConnection implements RTCConnectionLike {
       await this._pc.addIceCandidate(
         candidate
           ? {
-              candidate: candidate.candidate,
+              // the SDP framing's `a=`, which the page's realm lets
+              // through as every browser does, is no part of the attribute
+              // werift parses: it threw "Failed to parse ICE candidate"
+              candidate: candidate.candidate.replace(/^a=/, ''),
               sdpMid: candidate.sdpMid ?? undefined,
               sdpMLineIndex: candidate.sdpMLineIndex ?? undefined,
               usernameFragment: candidate.usernameFragment ?? undefined,
