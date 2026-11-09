@@ -353,7 +353,7 @@ test('a peer-reflexive remote candidate is hidden from the page, in the selected
   assert.equal(line('signalled stats'), 'signalled stats|true|true');
 });
 
-test('a TCP candidate werift cannot use is ignored, in a description and in addIceCandidate, and checks nothing', async () => {
+test('a TCP candidate werift cannot use is ignored, in a description and in addIceCandidate, and checks nothing, and a UDP one written with its a= is used', async () => {
   const logs = await run(`
     var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
     pc1.addTransceiver('audio');
@@ -368,11 +368,18 @@ test('a TCP candidate werift cannot use is ignored, in a description and in addI
     log('added');
     await new Promise(function (r) { setTimeout(r, 500); });
     log('tcp', pc2.iceConnectionState, states.join(',') || 'none', pc2.getTransceivers()[0].receiver.transport.iceTransport.state);
+    // a candidate with its SDP framing's a= is taken as the attribute it frames
+    var udp = pc1.localDescription.sdp.match(/a=candidate:[^\\r\\n]* udp [^\\r\\n]*/)[0];
+    await pc2.addIceCandidate({ candidate: udp, sdpMid: pc2.getTransceivers()[0].mid });
+    var end = Date.now() + 3000;
+    while (!states.length && Date.now() < end) await new Promise(function (r) { setTimeout(r, 20); });
+    log('prefixed', udp.slice(0, 12), states[0]);
     pc1.close(); pc2.close();
     log('done');
   `);
   assert.ok(logs.includes('added'), logs.join('\n'));
   assert.ok(logs.includes('tcp|new|none|new'), logs.join('\n'));
+  assert.ok(logs.includes('prefixed|a=candidate:|checking'), logs.join('\n'));
 });
 
 test('a STUN or TURN server that does not resolve, or resolves where nothing reaches, is an icecandidateerror naming a host candidate', async (t) => {
