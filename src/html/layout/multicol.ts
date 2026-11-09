@@ -635,7 +635,14 @@ export function layoutColumns(
   /** Whether a spanner comes after it: columns before one are balanced,
    *  whatever `column-fill` says (CSS Multi-column 1, 7.1). */
   beforeSpanner = false,
+  /** A row of columns among others about spanners (`layoutRows`): where
+   *  its content was laid out down a strip that goes on from the row
+   *  before's, and the geometry of all the rows it adds its columns to. */
+  row?: { from: number; into: ColumnGeometry },
 ): number {
+  // where the strip it is cut from starts, which the columns are set from
+  // `top`
+  const from = row ? row.from : top;
   const gathered: Gathered = {
     units: [],
     lines: new Map(),
@@ -647,7 +654,7 @@ export function layoutColumns(
   const groups = groupsOf(gathered.units);
   // as far down as the content goes, past a box with a height it overflows:
   // what stands out of a box takes room in a column as what is in it does
-  for (const group of groups) strip = Math.max(strip, group.bottom - top);
+  for (const group of groups) strip = Math.max(strip, group.bottom - from);
   let height: number;
   let filled: Filled;
   // how tall a column is that what is out of the flow is cut into, which
@@ -656,7 +663,7 @@ export function layoutColumns(
   if (box.style.columnFill === 'auto' && !beforeSpanner) {
     height = Number.isFinite(limit) ? limit : strip;
     columnHeight = height;
-    filled = fill(groups, top, height, height >= limit);
+    filled = fill(groups, from, height, height >= limit);
     // a container with a `max-height` and less than a column of content
     // is as tall as its content
     if (filled.starts.length === 1) height = Math.min(height, strip);
@@ -668,12 +675,12 @@ export function layoutColumns(
       limit,
       Math.max(strip / columns.count, tallestOf(groups)),
     );
-    filled = fill(groups, top, height, height >= limit);
+    filled = fill(groups, from, height, height >= limit);
     for (let pass = 0; pass < 4096; pass += 1) {
       if (filled.starts.length <= columns.count && !filled.over) break;
       if (height >= limit || !Number.isFinite(filled.shortage)) break;
       height = Math.min(limit, height + filled.shortage);
-      filled = fill(groups, top, height, height >= limit);
+      filled = fill(groups, from, height, height >= limit);
     }
     columnHeight = height;
   }
@@ -694,18 +701,23 @@ export function layoutColumns(
   });
   // where each column is, for what is out of the flow inside it, which is
   // laid out after all of this, in the strip (`stripOf`, `cutIntoColumns`)
-  const geometry: ColumnGeometry = {
+  const own: ColumnGeometry = {
     container: box,
     tops: [...filled.tops],
     height: columnHeight,
     dx: (c) => origin + across(c),
     dy: (c) => top - (filled.tops[c] ?? filled.tops[0] + c * columnHeight),
   };
+  const geometry = row ? joinGeometry(row.into, own) : own;
   GEOMETRY.set(box, geometry);
   columnsSet.any = true;
   // all in one column where it started, and nothing to move — but a float
   // that is cut where the column ends, which may reach past it
-  if (!gathered.loose.size && (!groups.length || filled.starts.length === 1)) {
+  if (
+    from === top &&
+    !gathered.loose.size &&
+    (!groups.length || filled.starts.length === 1)
+  ) {
     return height;
   }
 
@@ -745,6 +757,9 @@ export function layoutColumns(
 export interface ColumnGeometry {
   container: Box;
   tops: number[];
+  /** Where each column ends down the strip, where they are not all
+   *  `height` tall: the rows of columns a spanner parts. */
+  ends?: number[];
   height: number;
   dx(column: number): number;
   dy(column: number): number;
@@ -757,6 +772,8 @@ export function moveColumns(box: Box, dy: number): void {
   const geometry = GEOMETRY.get(box);
   if (!geometry) return;
   for (let i = 0; i < geometry.tops.length; i += 1) geometry.tops[i] += dy;
+  const ends = geometry.ends;
+  if (ends) for (let i = 0; i < ends.length; i += 1) ends[i] += dy;
 }
 
 /** Whether a layout has set any columns, which a positioned box asks
@@ -765,6 +782,66 @@ export const columnsSet = { any: false };
 
 /** Each multicol container's columns, as its last layout set them. */
 const GEOMETRY = new WeakMap<Box, ColumnGeometry>();
+
+/**
+ * The columns of the rows a multicol container's spanners part (CSS
+ * Multi-column 1, 6), as one geometry: each row's content was laid out
+ * down a strip that goes on from the row before's (`layoutRows`), as
+ * Blink's flow thread goes on past a spanner, so a block a spanner breaks
+ * is one block down it, and what is positioned in it is laid out against
+ * all of it and cut into the columns of both rows (`cutIntoColumns`).
+ * Each column where its row's strip had it and as tall as its row's are,
+ * and past the last, more of the last row's.
+ */
+export function joinedGeometry(container: Box): ColumnGeometry {
+  const parts: { from: number; geometry: ColumnGeometry }[] = [];
+  const at = (c: number): [ColumnGeometry, number] | null => {
+    for (let i = parts.length - 1; i >= 0; i -= 1) {
+      if (c >= parts[i].from || i === 0) {
+        return [parts[i].geometry, c - parts[i].from];
+      }
+    }
+    return null;
+  };
+  const geometry: ColumnGeometry = {
+    container,
+    tops: [],
+    ends: [],
+    height: 0,
+    dx: (c) => {
+      const found = at(c);
+      return found ? found[0].dx(found[1]) : 0;
+    },
+    dy: (c) => {
+      const found = at(c);
+      return found ? found[0].dy(found[1]) : 0;
+    },
+  };
+  JOINED.set(geometry, parts);
+  return geometry;
+}
+
+const JOINED = new WeakMap<
+  ColumnGeometry,
+  { from: number; geometry: ColumnGeometry }[]
+>();
+
+/** Add a row's columns to the geometry of all the rows (`joinedGeometry`),
+ *  and answer that. */
+function joinGeometry(
+  into: ColumnGeometry,
+  own: ColumnGeometry,
+): ColumnGeometry {
+  const parts = JOINED.get(into);
+  if (!parts) return own;
+  parts.push({ from: into.tops.length, geometry: own });
+  for (const top of own.tops) {
+    into.tops.push(top);
+    into.ends!.push(top + own.height);
+  }
+  into.height = own.height;
+  return into;
+}
 
 /** How far columns moved a box from where the strip had it, and where it
  *  was — what is out of the flow inside the columns is laid out against
@@ -779,6 +856,20 @@ interface StripPlace {
 }
 const STRIP = new WeakMap<Box, StripPlace>();
 
+/** Note where the strip of `geometry`'s columns had a box the columns took
+ *  apart some other way than `place` does: a block a spanner breaks, its
+ *  rows one after another down the strip (`layoutRows`). */
+export function setStripPlace(
+  box: Box,
+  geometry: ColumnGeometry,
+  dx: number,
+  dy: number,
+  width: number,
+  height: number,
+): void {
+  STRIP.set(box, { geometry, dx, dy, width, height });
+}
+
 /** Where an out-of-flow box's static position was from the corner of the
  *  box it is from, in the strip, before columns moved it (`place`). */
 const STRIP_STATIC = new WeakMap<
@@ -790,7 +881,8 @@ const STRIP_STATIC = new WeakMap<
  * Where a box inside a multicol container's columns is in the strip they
  * were cut from — its border box, unfragmented — and those columns; null
  * for a box in no columns. A multicol container is in the columns around
- * it, and not in its own.
+ * it, and not in its own, and a box that spans them, and what is in it, in
+ * none.
  */
 export function stripOf(box: Box): {
   geometry: ColumnGeometry;
@@ -805,6 +897,8 @@ export function stripOf(box: Box): {
   // between that the columns moved, the box itself among them
   let geometry: ColumnGeometry | null = null;
   for (let at: Box | null = box; at; at = at.parent) {
+    // a spanner, and what is in it, is across the columns and in none
+    if (at.style.columnSpan && isSpanner(at)) return null;
     if (at !== box) {
       const g = GEOMETRY.get(at);
       if (g) {
@@ -871,16 +965,24 @@ export function cutIntoColumns(
   geometry: ColumnGeometry,
   move: (box: Box, dx: number, dy: number) => void,
 ): void {
-  const { tops, height } = geometry;
+  const { tops, height, ends } = geometry;
   if (!(height >= 1)) return;
   const topOf = (c: number) =>
     c < tops.length
       ? tops[c]
       : tops[tops.length - 1] + (c - tops.length + 1) * height;
+  const endOf = (c: number) =>
+    ends && c < ends.length ? ends[c] : topOf(c) + height;
   let c = 0;
   while (c + 1 < MOST_COLUMNS && topOf(c + 1) <= box.y + EPS) c += 1;
+  // a box of no height where a column ends stays in it, as Blink keeps
+  // one at the end of a row of columns a spanner ends rather than in the
+  // row after it
+  if (c > 0 && !(box.height > 0) && Math.abs(endOf(c - 1) - box.y) <= EPS) {
+    c -= 1;
+  }
   const was = { x: box.x, y: box.y, width: box.width, height: box.height };
-  if (was.y + was.height <= topOf(c) + height + EPS) {
+  if (was.y + was.height <= endOf(c) + EPS) {
     const dx = geometry.dx(c);
     const dy = geometry.dy(c);
     STRIP.set(box, { geometry, dx, dy, width: was.width, height: was.height });
@@ -894,7 +996,7 @@ export function cutIntoColumns(
   let y2 = -Infinity;
   for (let k = c; topOf(k) < was.y + was.height - EPS; k += 1) {
     const from = Math.max(was.y, topOf(k));
-    const until = Math.min(was.y + was.height, topOf(k) + height);
+    const until = Math.min(was.y + was.height, endOf(k));
     const piece: ColumnPiece = {
       x: was.x + geometry.dx(k),
       y: from + geometry.dy(k),
