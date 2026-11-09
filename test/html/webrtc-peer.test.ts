@@ -361,6 +361,46 @@ test('two connections connect: the aggregate states follow their transports', as
   }
 });
 
+test('a rollback takes away the SCTP transport the rolled-back description made, and keeps one already negotiated', async () => {
+  const logs = await run(`
+    ${NEGOTIATE}
+    var pc = new RTCPeerConnection();
+    pc.createDataChannel('test');
+    var offer = await pc.createOffer();
+    log('ahead', pc.sctp === null);
+    await pc.setLocalDescription(offer);
+    log('offered', pc.sctp instanceof RTCSctpTransport);
+    await pc.setLocalDescription({ type: 'rollback' });
+    log('local rollback', pc.sctp === null);
+    await pc.setLocalDescription(offer);
+    log('again', pc.sctp instanceof RTCSctpTransport, pc.sctp.maxChannels, typeof pc.sctp.maxMessageSize);
+    var remote = new RTCPeerConnection();
+    await remote.setRemoteDescription(offer);
+    log('remote offer', remote.sctp instanceof RTCSctpTransport);
+    await remote.setRemoteDescription({ type: 'rollback' });
+    log('remote rollback', remote.sctp === null);
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    a.createDataChannel('x');
+    await negotiate(a, b);
+    var kept = a.sctp;
+    await a.setLocalDescription(await a.createOffer());
+    await a.setLocalDescription({ type: 'rollback' });
+    log('negotiated', a.sctp === kept && kept !== null);
+    pc.close(); remote.close(); a.close(); b.close();
+  `);
+  for (const line of [
+    'ahead|true',
+    'offered|true',
+    'local rollback|true',
+    'again|true||number',
+    'remote offer|true',
+    'remote rollback|true',
+    'negotiated|true',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
 test('a remote description’s tracks fire track with their streams, and a stopped transceiver goes once answered', async () => {
   const logs = await run(`
     ${NEGOTIATE}

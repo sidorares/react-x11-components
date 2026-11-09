@@ -1634,7 +1634,12 @@ the header extensions a browser offers — is answered by `getCapabilities`
 before werift is loaded. Where werift differs from a browser it shows:
 docs/prd-webrtc.md lists each difference and which side corrects it. A
 page's host candidates name the machine's addresses, as no mDNS name
-stands in for them yet. `webRTC: false` makes none.
+stands in for them yet. A TCP candidate is ignored, since werift has no
+ICE-TCP. A STUN or TURN server is told as an `icecandidateerror` where its
+name does not resolve or its address can never be reached; one that
+resolves and never answers is not, yet. A peer-reflexive remote candidate
+the page was not told of shows no address, in the selected pair or in the
+stats. `webRTC: false` makes none.
 
 Its media goes through **libav.js's `webm-vp9` build**
 (`@libav.js/variant-webm-vp9`), FFmpeg's libvpx and libopus compiled to
@@ -7500,9 +7505,12 @@ document is laid out again in the next frame and the options tried where
 the anchor is now. `position-visibility` hides a box, with all it holds,
 where its default anchor is cut away entirely by a box that clips between
 the two, or by the viewport for a box fixed to it whose anchor the pane
-scrolls (`anchor-visible`, the initial value), and where it overflows its
+scrolls (`anchor-visible`, the initial value) — on the axes it follows the
+anchor on, as Chromium has it — and where it overflows its
 inset-modified containing block (`no-overflow`); a scroll that changes
-either hides or shows it in the frame it scrolls. A box with a default
+either hides or shows it in the frame it scrolls. Focusing what is in a
+fixed box scrolls the pane for none of it, and for a fixed box anchored to
+something the pane scrolls only on the axes it follows that anchor on. A box with a default
 anchor whose containing block is a scroll container's is placed in its
 scrollable containing block (CSS Position 4, 2.1): the padding edge of all
 it scrolls, but for the relative offsets and the transforms of what it

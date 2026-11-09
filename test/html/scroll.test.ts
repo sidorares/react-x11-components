@@ -1555,3 +1555,42 @@ metric(
     assert.equal(asked, 1, 'where it is drawn');
   },
 );
+
+test('a script focusing what is fixed to the viewport scrolls the pane for none of it, and for a fixed box anchored in the document as far as its anchor shows it', async () => {
+  // WPT css-anchor-position/scroll-to-anchored-fixed-000 and -001: no
+  // scroll moves a fixed box, so a link in one that hangs past the
+  // viewport's edge is no reason to scroll; a fixed box anchored to
+  // something the pane scrolls moves with it, and is scrolled to
+  const page = (fixed: string) =>
+    '<!doctype html><style>body{margin:0;height:100vh;width:100vw}' +
+    '.anchor{position:absolute;top:100%;left:100%;width:100vw;' +
+    'height:100vh;anchor-name:--foo}' +
+    `.fixed{position:fixed;position-anchor:--foo;${fixed};padding:1em 2em;` +
+    'border:10px solid}</style><div class="anchor"></div>' +
+    '<div class="fixed"><p><a href="" id="test">One two three</a></div>' +
+    '<script>requestAnimationFrame(() => {' +
+    ' document.getElementById("test").focus();' +
+    ' setTimeout(() => console.log("done"), 200); });</script>';
+  for (const [fixed, scrolled] of [
+    ['left:calc(100% - 3em);top:calc(100% - 9em)', false],
+    ['left:anchor(left);top:anchor(top)', true],
+  ] as const) {
+    const logs: string[] = [];
+    const { el: node } = await renderScrolled(page(fixed), 300, 400, {
+      baseUrl: 'https://example.test/page.html',
+      scripts: { log: (_level: string, text: string) => void logs.push(text) },
+    });
+    for (let i = 0; i < 100 && !logs.includes('done'); i++) {
+      await act(() => new Promise((r) => setTimeout(r, 10)));
+    }
+    await act();
+    const pane = paneOf(node) as { scrollX?: number; scrollY: number };
+    if (scrolled) {
+      // the box, at its anchor 300 down and 400 across, in view: core's
+      // own scroll to where its stop was went 38 each way
+      assert.ok(pane.scrollY > 100 && (pane.scrollX ?? 0) > 100, fixed);
+    } else {
+      assert.deepEqual([pane.scrollX ?? 0, pane.scrollY], [0, 0], fixed);
+    }
+  }
+});

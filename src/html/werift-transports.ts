@@ -20,6 +20,7 @@ import type {
 
 declare const setTimeout: (fn: () => void, ms: number) => unknown;
 declare const queueMicrotask: (fn: () => void) => void;
+declare const atob: (data: string) => string;
 declare const Buffer: {
   from(bytes: Uint8Array): Uint8Array;
 };
@@ -634,10 +635,30 @@ export class WeriftTransports {
     this.watch();
     const report = await this._pc.getStats();
     const out: RTCStatsLike[] = [];
+    const signalled = this._signalled();
     for (const s of report.values()) {
       const stat = JSON.parse(JSON.stringify(s)) as RTCStatsLike;
       if (stat.type === 'transport') this._transportStats(stat);
+      else if (stat.type === 'remote-candidate') hideLearned(stat, signalled);
+      else if (stat.type === 'certificate') derCertificate(stat);
       out.push(stat);
+    }
+    return out;
+  }
+
+  /** The peer's candidates it signalled, on any transport, as
+   *  `address port`: what a peer-reflexive candidate is known by. */
+  private _signalled(): Set<string> {
+    const out = new Set<string>();
+    for (const dtls of this._transports.keys()) {
+      for (const c of dtls.iceTransport.connection?.remoteCandidates ?? []) {
+        const { type, host, port } = c as {
+          type?: string;
+          host?: string;
+          port?: number;
+        };
+        if (type !== 'prflx') out.add(`${host} ${port}`);
+      }
     }
     return out;
   }
@@ -668,6 +689,41 @@ export class WeriftTransports {
 }
 
 const CONNECTED = new Set(['connected', 'completed']);
+
+/**
+ * A remote candidate's stats as a page may read them. One the agent learned
+ * from a check (peer-reflexive), whose address no signalling told the page,
+ * has its address, its related address and its ufrag left out, as WebRTC
+ * 1.0 and webrtc-stats keep them (RTCIceCandidateStats, "address"); werift
+ * reports every one.
+ */
+function hideLearned(stat: RTCStatsLike, signalled: Set<string>): void {
+  if (stat.candidateType !== 'prflx') return;
+  if (signalled.has(`${stat.address} ${stat.port}`)) return;
+  stat.address = null;
+  stat.relatedAddress = null;
+  delete stat.usernameFragment;
+}
+
+/**
+ * A certificate's stats with `base64Certificate` the DER, as webrtc-stats
+ * has it: werift writes the base64 of the local certificate's PEM text,
+ * which hashes to nothing its fingerprint names. The DER is the PEM's own
+ * base64 between its armour lines.
+ */
+function derCertificate(stat: RTCStatsLike): void {
+  const value = stat.base64Certificate;
+  if (typeof value !== 'string') return;
+  let text: string;
+  try {
+    text = atob(value);
+  } catch {
+    return;
+  }
+  const pem =
+    /-----BEGIN CERTIFICATE-----([\s\S]*?)-----END CERTIFICATE-----/.exec(text);
+  if (pem) stat.base64Certificate = pem[1].replace(/\s+/g, '');
+}
 
 /** Whether a transport has one of the peer's candidates, signalled or found
  *  as peer-reflexive (WebRTC 1.0, RTCIceTransportState `checking`). One

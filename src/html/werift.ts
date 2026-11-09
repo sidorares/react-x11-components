@@ -29,6 +29,7 @@ import {
   OFFERED_EXTENSIONS,
   offeredCapabilities,
 } from './rtc-codecs.js';
+import { unreachableServers } from './ice-servers.js';
 import { rtcError } from './rtc.js';
 import { MediaReceiver, MediaSender, hasMedia } from './werift-media.js';
 import type {
@@ -434,6 +435,46 @@ function withoutNoStream(sdp: string): string {
   return sdp.replace(/\r\na=msid:-(?=\r\n)/g, '');
 }
 
+/**
+ * Whether a candidate attribute, with its `a=` or without, is one werift can
+ * use: a UDP one. werift has no ICE-TCP (RFC 6544). It throws for a TCP
+ * candidate handed to `addIceCandidate`, and one in a description became a
+ * remote candidate it checked over UDP, which took the transport to
+ * `checking` for a pair nothing could connect. A browser that cannot use a
+ * candidate ignores it, so neither reaches werift: a TCP candidate aimed at
+ * a Fetch bad port changes nothing, as WPT's `addTcpIceCandidate` has it.
+ */
+function overUdp(candidate: string): boolean {
+  const fields = candidate.replace(/^a=/, '').split(' ');
+  return (fields[2] ?? '').toLowerCase() === 'udp';
+}
+
+/** A description with the candidates werift cannot use taken out
+ *  (`overUdp`). What werift keeps of it, which the page reads back, has
+ *  none of them. */
+function udpCandidatesOnly(sdp: string): string {
+  return sdp.replace(/\r\na=candidate:[^\r\n]*/g, (line) =>
+    overUdp(line.slice(2)) ? line : '',
+  );
+}
+
+/** A description's first host candidate of an address family (any, for
+ *  null): its address and port. */
+function hostCandidateOf(
+  sdp: string,
+  family: 4 | 6 | null,
+): { address: string; port: number } | null {
+  for (const m of sdp.matchAll(
+    /^a=candidate:\S+ \d+ udp \d+ (\S+) (\d+) typ host/gim,
+  )) {
+    const [, address, port] = m;
+    if (family === null || (family === 6) === address.includes(':')) {
+      return { address, port: Number(port) };
+    }
+  }
+  return null;
+}
+
 /** What werift threw, as the error the page's realm makes its own. */
 function asRtcError(error: unknown): Error {
   const name = String((error as Error)?.name ?? '');
@@ -698,20 +739,56 @@ class WeriftConnection implements RTCConnectionLike {
   private _closed = false;
   /** Whether the page's configuration names a STUN server. */
   private _namesStun: boolean;
+  /** The page's servers, which a gathering is checked against
+   *  (`_checkServers`), and what was checked last. */
+  private _servers: RTCConnectRequest['iceServers'];
+  private _serversChecked = '';
 
   constructor(
     private readonly _w: WeriftModule,
     request: RTCConnectRequest,
-    events: RTCConnectionEvents,
+    private readonly _events: RTCConnectionEvents,
     certificates: Map<number, WCertificate>,
   ) {
     const config = configOf(request, _w, certificates);
     this._pc = new _w.RTCPeerConnection(config);
     const codecs = config.codecs as { audio: WCodec[]; video: WCodec[] };
     this._codecs = [...codecs.audio, ...codecs.video];
-    this._net = new WeriftTransports(this._pc, events, () => this._closed);
+    this._net = new WeriftTransports(this._pc, _events, () => this._closed);
     this._namesStun = namesStun(request);
     this._media = hasMedia(_w) ? _w : null;
+    this._servers = request.iceServers;
+  }
+
+  /**
+   * Tells the page, as an `icecandidateerror`, of each of its servers no
+   * candidate could reach (`unreachableServers`), once for each gathering:
+   * a local description with ufrags not checked before, or servers that
+   * changed. Each is named with the host candidate that would have asked it,
+   * as Firefox names one; with none, the address and port are null.
+   */
+  private _checkServers(): void {
+    const sdp =
+      (this._pc.pendingLocalDescription ?? this._pc.currentLocalDescription)
+        ?.sdp ?? '';
+    const ufrags = (sdp.match(/^a=ice-ufrag:\S+/gm) ?? []).join(' ');
+    if (!ufrags || this._servers.length === 0) return;
+    const key = `${ufrags}\n${JSON.stringify(this._servers)}`;
+    if (key === this._serversChecked) return;
+    this._serversChecked = key;
+    void unreachableServers(this._servers).then((failures) => {
+      if (this._closed) return;
+      for (const f of failures) {
+        const host = hostCandidateOf(sdp, f.family);
+        this._events.candidateError({
+          address: host?.address ?? null,
+          port: host?.port ?? null,
+          url: f.url,
+          errorCode: f.errorCode,
+          errorText: f.errorText,
+        });
+      }
+    });
   }
 
   /**
@@ -911,6 +988,7 @@ class WeriftConnection implements RTCConnectionLike {
       // WPT writes its own so — ran its lines together
       let text = sdp.replace(/\r?\n/g, '\r\n');
       if (side === 'local') text = withoutNoStream(text);
+      else text = udpCandidatesOnly(text);
       if (type !== 'rollback') {
         // a kind werift does not read throws in its parser: it is handed a
         // rejected audio m-section in that one's place, and the answer
@@ -929,6 +1007,7 @@ class WeriftConnection implements RTCConnectionLike {
     }
     this._watchTransports();
     this._tellTransports();
+    if (side === 'local' && type !== 'rollback') this._checkServers();
     if (type === 'answer' || type === 'pranswer')
       this._noteNegotiated(side, sdp);
     this._offered = false;
@@ -1018,6 +1097,8 @@ class WeriftConnection implements RTCConnectionLike {
   }
 
   async addIceCandidate(candidate: RTCCandidateLike | null): Promise<void> {
+    // one werift cannot use is ignored, as a browser ignores it
+    if (candidate?.candidate && !overUdp(candidate.candidate)) return;
     try {
       await this._pc.addIceCandidate(
         candidate
@@ -1042,6 +1123,7 @@ class WeriftConnection implements RTCConnectionLike {
 
   setConfiguration(request: RTCConnectRequest): void {
     this._namesStun = namesStun(request);
+    this._servers = request.iceServers;
     try {
       this._pc.setConfiguration({
         iceServers: request.iceServers,

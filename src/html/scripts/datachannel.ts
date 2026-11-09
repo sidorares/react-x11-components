@@ -50,6 +50,9 @@ export interface DataChannelsInternals {
   sctpNegotiated(connection: unknown, sctp: unknown, dtls?: unknown): void;
   /** The SCTP transport's state moved. */
   sctpState(connection: unknown, state: unknown): void;
+  /** A rollback took the SCTP transport away: `pc.sctp` is null until a
+   *  description makes another. */
+  sctpDropped(connection: unknown): void;
   /** `pc.sctp`. */
   sctpOf(connection: unknown): unknown;
   /** The connection closed: every channel is closed, with no events. */
@@ -607,6 +610,9 @@ export function installDataChannels(
         s.state = state.state;
         simple(st.sctp, 'statechange');
       }
+    },
+    sctpDropped(pc: Any) {
+      stateOf(pc).sctp = null;
     },
     sctpOf(pc: Any) {
       return stateOf(pc).sctp;

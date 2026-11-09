@@ -1746,6 +1746,8 @@ export function makeHtmlHandle(
       nodeRef.current?.checkVisibility(element, asks) ?? false,
     drawnAtViewport: (element: Element) =>
       nodeRef.current?.atViewport(element) ?? false,
+    viewportMoves: (element: Element) =>
+      nodeRef.current?.viewportMoves(element) ?? 'xy',
     snapChanged: (element: Element | null, kind: 'change' | 'changing') =>
       nodeRef.current?.snapChanged(element, kind) ?? null,
     takeCssEvents: () => nodeRef.current?.takeCssEvents() ?? [],

@@ -1128,7 +1128,9 @@ export function updatePositionVisibility(
           clippedAway(anchor, box) ||
           (scrolled?.get(box)?.pane === 1 &&
             !!viewport &&
-            outside(anchor, viewport))));
+            // on the axes it follows its anchor on: where it does not, the
+            // pane's scroll is no clip between them, as Chromium has it
+            outside(anchor, viewport, scrolled.get(box)!))));
     if (hidden === CLAMPED.has(box)) continue;
     if (hidden) clampBox(box);
     else unclampBox(box);
@@ -1155,13 +1157,12 @@ function invisible(anchor: Box): boolean {
 function outside(
   anchor: Box,
   r: { x: number; y: number; width: number; height: number },
+  axes: { x: boolean; y: boolean } = { x: true, y: true },
 ): boolean {
   if (anchor.kind === 'inline') return false;
   return (
-    anchor.x >= r.x + r.width ||
-    anchor.x + anchor.width <= r.x ||
-    anchor.y >= r.y + r.height ||
-    anchor.y + anchor.height <= r.y
+    (axes.x && (anchor.x >= r.x + r.width || anchor.x + anchor.width <= r.x)) ||
+    (axes.y && (anchor.y >= r.y + r.height || anchor.y + anchor.height <= r.y))
   );
 }
 
