@@ -9867,7 +9867,19 @@ export function clipsFor(box: Box, context: Box): Box[] {
     }
   }
   let clips: Box[] | null = null;
-  for (let at = from; at && at !== context; at = at.parent) {
+  // up from there by what holds each box as clips go: its parent, or out of
+  // the flow its containing block, past the boxes between them, which clip
+  // it no more than they clip the box it is (`clipAround`). An absolute box
+  // in an absolute box outside a box that clips was cut by it all the same
+  const up = (at: Box): Box | null => {
+    if (!at.outOfFlow) return at.parent;
+    const holder = containingBlockOf(at);
+    for (let p = at.parent; p && p !== holder; p = p.parent) {
+      if (p === context) return context;
+    }
+    return holder;
+  };
+  for (let at = from; at && at !== context; at = up(at)) {
     if (clipsOverflow(at) || (at.outOfFlow && at.style.clip)) {
       (clips ??= []).push(at);
     }

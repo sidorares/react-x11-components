@@ -9503,10 +9503,31 @@ function flipStart(style: ComputedStyle, axes: AnchorAxes): void {
     alignSelfAs(style.alignSelf),
     justifySelfAs(style.justifySelf),
   ];
+  // `left` and `right` go to the side of the block axis the diagonal takes
+  // them to: the box's own start there, or its end
+  const ownDown = blockDown(axes, axes.own);
+  const ownStart = ownDown
+    ? startsLow(axes, true, axes.own)
+      ? 'top'
+      : 'bottom'
+    : startsLow(axes, false, axes.own)
+      ? 'left'
+      : 'right';
+  const sideAsSelf: Record<string, string> = {
+    left: swap.left === ownStart ? 'self-start' : 'self-end',
+    right: swap.right === ownStart ? 'self-start' : 'self-end',
+  };
+  const physical = /(?:^|\s)(left|right)$/.exec(style.justifySelfText)?.[1];
   [style.justifySelfText, style.alignSelfText] = [
     style.alignSelfText,
-    selfWordIn(style.justifySelfText, SIDE_AS_SELF),
+    selfWordIn(style.justifySelfText, sideAsSelf),
   ];
+  // and the field the layout reads, which held the word as a start or an
+  // end of the inline axis, is the end of the block axis where it goes there
+  if (physical) {
+    style.alignSelf =
+      sideAsSelf[physical] === 'self-end' ? 'flex-end' : 'flex-start';
+  }
   [style.justifyAnchorCenter, style.alignAnchorCenter] = [
     style.alignAnchorCenter,
     style.justifyAnchorCenter,
@@ -9610,13 +9631,6 @@ const OTHER_SIZE: Record<AnchorSizeKind, AnchorSizeKind> = {
   block: 'inline',
   'self-inline': 'self-block',
   'self-block': 'self-inline',
-};
-
-/** A `justify-self`'s side as an `align-self` reads it (`flip-start`),
- *  which has no `left` or `right`. */
-const SIDE_AS_SELF: Readonly<Record<string, string>> = {
-  left: 'self-start',
-  right: 'self-end',
 };
 
 /** An `align-self` as a `justify-self` (`flip-start`): the two take the
@@ -10166,6 +10180,10 @@ interface SelfAligned {
    *  would hold it in: `normal` against the one inset it has in a
    *  `position-area` (CSS Anchor Positioning 1, 4.1). */
   unsafe: boolean;
+  /** Whether the axis starts at its high end: the inline axis of a
+   *  right-to-left containing block, where a box too big for all it can be
+   *  in starts (`alignedStart`). */
+  rtl: boolean;
 }
 
 /**
@@ -10200,16 +10218,25 @@ function selfAligned(
       : anchoring.centre.x
     : null;
   const normal = value === 'auto' || value === 'normal' || value === 'baseline';
+  // `left` and `right` are the page's sides, which no direction turns (CSS
+  // Box Alignment 3, 4.2): the field holds them as a start and an end
+  const word = down
+    ? ''
+    : style.justifySelfText.replace(/^(?:safe|unsafe) /, '');
   let along =
     value === 'center'
       ? 0.5
-      : value === 'flex-end'
-        ? rtl
-          ? 0
-          : 1
-        : rtl
+      : word === 'left'
+        ? 0
+        : word === 'right'
           ? 1
-          : 0;
+          : value === 'flex-end'
+            ? rtl
+              ? 0
+              : 1
+            : rtl
+              ? 1
+              : 0;
   let centre: number | null = null;
   let stretch = false;
   // an overflow position that says so aligns as it says, overflow or not
@@ -10266,6 +10293,7 @@ function selfAligned(
     centre,
     stretch,
     unsafe,
+    rtl,
   };
 }
 
@@ -10301,7 +10329,9 @@ function alignedStart(
     lo = further.lo === Infinity ? lo : Math.min(lo, further.lo);
     hi = further.hi === -Infinity ? hi : Math.max(hi, further.hi);
   }
-  if (outer > hi - lo) return lo;
+  // larger than that rectangle: at its start, which is its right where the
+  // inline axis runs from the right (CSS Box Alignment 3, 4.4.1.2)
+  if (outer > hi - lo) return a.rtl ? hi - outer : lo;
   return within(
     want,
     Math.max(lo, a.start + a.size - outer),

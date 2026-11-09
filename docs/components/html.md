@@ -7486,9 +7486,14 @@ insets and margins nought, as wide as its content in what its insets
 leave. Outside a position area, the two align any absolutely positioned
 box between two insets neither of which is `auto`, where neither margin
 is, sized to its content there (CSS Position 3, 4.3): `start`, `end`,
-`center`, and `anchor-center` with no default anchor. A box too big for
+`center`, and `anchor-center` with no default anchor. `left` and `right`
+are the page's sides in any direction, and `flip-start` takes them to the
+end of the block axis they come to, `self-start` or `self-end` by the box's
+own writing mode. A box too big for
 where it is aligned is held inside its containing block as far as it
-goes, covering what its insets leave (CSS Box Alignment 3, 4.4.1.2). For a
+goes, covering what its insets leave (CSS Box Alignment 3, 4.4.1.2), and at
+its start where it is larger still: its right, where the inline axis runs
+from the right. For a
 box in a `position-area` that is its original containing block (CSS Anchor
 Positioning 1, 4.1), the one before grid placement: a grid item takes its
 cells of its grid area, and is held only within the grid, so one whose
@@ -8177,7 +8182,9 @@ paint it, so what clips the element is handed over with its rectangle: its
 own `clip`, and the boxes around it that clip their overflow or are cut to
 a `clip` of their own, from its containing block up — an absolute control
 is outside a box that clips where its containing block is, as its element
-is (CSS 2.1 11.1.1 and 11.1.2). So the field of a panel folded to
+is (CSS 2.1 11.1.1 and 11.1.2). The document paints a positioned box the
+same way, up its containing blocks: an absolute box in an absolute box
+outside a box that clips is no more cut by it than the outer one is. So the field of a panel folded to
 `height: 0; overflow: hidden` is not drawn over the page, and a control a
 page hides for a screen reader alone — a pixel square under
 `clip: rect(0, 0, 0, 0)`, as Radix lays a native `<select>` beside the
