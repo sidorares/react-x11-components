@@ -6029,15 +6029,15 @@ document did not draw before — on its first style, new to the tree, or
 shown from `display: none` itself or under an element that was — has no
 style before the change, and starts from its starting style (CSS
 Transitions 2, 3.1): its style with the `@starting-style` rules that match
-it cascaded among the rest, in their places, an element's own and its
-`::before`'s and `::after`'s, and none where no such rule matches it or it
+it cascaded among the rest, in their places, an element's own, its
+`::before`'s and `::after`'s, and its `::backdrop`'s, which starts as its
+element goes into the top layer, and none where no such rule matches it or it
 comes to `display: none` there. What else an `@starting-style` holds — an
 `@keyframes`, an `@font-face`, a `@layer` — is the sheet's, as anywhere.
 A child inherits for both its starting style and the end of its own
 transitions from its parent's style after the change, not the parent's
 value as drawn while its transition runs, so the two run as one. A
-`::backdrop` starts no transition, and a `revert-layer` in a starting
-style, as anywhere, is not read. A `<legend>` outside a `<fieldset>` is
+`revert-layer` in a starting style, as anywhere, is not read. A `<legend>` outside a `<fieldset>` is
 not blockified, so its starting style's `display: inline` starts a
 transition of its `display` where Edge starts none. A transition is
 an animation, so what it runs makes the stacking context an animation of
