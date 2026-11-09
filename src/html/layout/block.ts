@@ -4458,9 +4458,17 @@ function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
     base = ctx.viewportHeight;
     ctx.readViewportHeight = true;
   }
+  // an absolute box's room is its inset-modified containing block's (CSS
+  // Position 3, 4.1): what its insets down the page leave of the height
+  let insets = 0;
+  if (box.outOfFlow && Number.isFinite(base)) {
+    insets =
+      (resolveOrNull(box.style.top, base) ?? 0) +
+      (resolveOrNull(box.style.bottom, base) ?? 0);
+  }
   const room = clampHeight(
     box,
-    Math.max(0, base - box.marginTop - box.marginBottom),
+    Math.max(0, base - insets - box.marginTop - box.marginBottom),
   );
   const available = Math.max(0, room - box.verticalExtra);
   // the root element's is no orthogonal flow in a browser, which hands its
