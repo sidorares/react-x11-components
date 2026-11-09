@@ -36,7 +36,13 @@
  */
 import { CONTAIN_SIZE, scrolls } from '../css/style.js';
 import { gapOf } from '../css/values.js';
-import { contained, establishesBFC, moveTo, transformed } from './block.js';
+import {
+  contained,
+  establishesBFC,
+  forgetOwnLayout,
+  moveTo,
+  transformed,
+} from './block.js';
 import {
   CLEARED_FROM,
   COLUMN_BOXES,
@@ -1028,6 +1034,7 @@ export function cutIntoColumns(
   }
   COLUMN_PIECES.set(box, pieces);
   columned.any = true;
+  forgetOwnLayout(box);
   box.x = x1;
   box.y = y1;
   box.width = x2 - x1;
