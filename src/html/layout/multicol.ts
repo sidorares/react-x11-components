@@ -36,13 +36,7 @@
  */
 import { CONTAIN_SIZE, scrolls } from '../css/style.js';
 import { gapOf } from '../css/values.js';
-import {
-  contained,
-  establishesBFC,
-  forgetOwnLayout,
-  moveTo,
-  transformed,
-} from './block.js';
+import { contained, establishesBFC, forgetOwnLayout, moveTo } from './block.js';
 import {
   CLEARED_FROM,
   COLUMN_BOXES,
@@ -180,7 +174,8 @@ function sliceable(box: Box): boolean {
   if (box.kind !== 'block' || box.marker) return false;
   const style = box.style;
   if (style.breakInside === 'avoid' || scrolls(style)) return false;
-  if (transformed(style) || style.columns) return false;
+  // a transform makes no box monolithic (CSS Fragmentation 3, 4.1)
+  if (style.columns) return false;
   // size containment makes a box monolithic (CSS Containment 2, 3.1)
   if (contained(box, CONTAIN_SIZE)) return false;
   if (box.lines?.length) return false;

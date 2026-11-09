@@ -158,6 +158,11 @@ export interface UnitContext {
   /** Whether the user agent's sheet sets a property, a longhand of it or
    *  a shorthand over it: where it does not, `revert` is `unset`. */
   uaSets?: (name: string) => boolean;
+  /** The element's style from the user agent's rules alone, which an
+   *  author's `revert` rolls a property back to (CSS Cascade 5, 7.3.3);
+   *  null where the declaration being applied is the user agent's, whose
+   *  `revert` is `unset`. */
+  reverted?: () => ComputedStyle | null;
   /** The palette's focus ring, which `-webkit-focus-ring-color` is. */
   focusRing?: string;
   /** The scheme the palette is, the reader's preference, which a

@@ -9296,12 +9296,26 @@ export class Cascade {
     // the root's lengths are at its own zoom, and a `rem` here is at this
     // element's
     const rootZoom = zoom / rootStyle.effectiveZoom;
+    // the style the user agent's rules alone make, which an author's
+    // `revert` rolls back to: made the first time one is met
+    let agents: ComputedStyle | null = null;
+    const reverted = (): ComputedStyle | null => {
+      if (!authored) return null;
+      if (!agents) {
+        const ua = candidates.filter((c) => fromUserAgent(c.origin));
+        const styling = this._styling;
+        agents = this._cascadeStyle(el, parentStyle, inFlexContainer, ua, own);
+        this._styling = styling;
+      }
+      return agents;
+    };
     const ctxParent: UnitContext = {
       em: parentStyle.fontSize,
       rem: rootStyle.fontSize * rootZoom,
       remRead: this._remRead,
       initial: this.initial,
       uaSets: this._uaSets,
+      reverted,
       fallbackFamily: () => (authored ? this.initial.fontFamily : null),
       codeFamily: () => (authored ? null : this._codeFamily),
       vw: this.viewportWidth * zoom,

@@ -17,6 +17,7 @@ import {
   linesOf,
   metric,
   render,
+  renderScrolled,
   rulesIn,
   view,
 } from './harness.js';
@@ -1424,4 +1425,29 @@ test('a box positioned in a block the columns of a vertical writing mode break i
     ],
     'a column wide in each, in the frame',
   );
+});
+
+test('an anchor a transform scales is broken across the columns as any block is, and is the rectangle around its pieces each scaled about its own origin', async () => {
+  // WPT css-anchor-position/transform-006: a block with a height and no
+  // content is cut where the columns break it, transform or not (CSS
+  // Fragmentation 3, 4.1), and each piece is transformed as it is drawn
+  const { el } = await renderScrolled(
+    '<style>body{margin:0}.a{position:absolute;position-anchor:--a}</style>' +
+      '<div style="position:relative;display:flow-root;width:100px;height:100px">' +
+      '<div style="columns:5;column-gap:20px;margin-top:25px;column-fill:auto;height:40px">' +
+      '<div style="height:70px"></div>' +
+      '<div style="height:20px;transform:scale(2);anchor-name:--a"></div></div>' +
+      '<div id="c" class="a" style="position-area:center;width:32px;height:50px"></div>' +
+      '<div id="l" class="a" style="position-area:left span-all;width:100%;height:100%"></div></div>',
+    400,
+    400,
+  );
+  const at = (id: string) => {
+    const box = boxOf(el, id);
+    return [box.x, box.y, box.width, box.height];
+  };
+  // pieces 4 by 10 at 24, 55 and 48, 25, each twice its size about its
+  // centre: 22 to 30 and 46 to 54 across, 50 to 70 and 20 to 40 down
+  assert.deepStrictEqual(at('c'), [22, 20, 32, 50]);
+  assert.deepStrictEqual(at('l').slice(0, 3), [0, 0, 22]);
 });
