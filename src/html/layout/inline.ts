@@ -533,6 +533,8 @@ function cutOf(
   style: ComputedStyle,
   clamp: InlineOptions['clamp'],
   width: number,
+  /** Where `text-overflow` is read: `overflowStyleOf` the block. */
+  over: ComputedStyle = style,
 ): Cut | null {
   // the ellipsis a clamp ends in is placed apart (`ellipsized`)
   if (clamp) return { maxLines: clamp.lines, overflow: 'clip' };
@@ -543,14 +545,47 @@ function cutOf(
   // whole. Cut there, ntk left the ellipsis alone, and a button whose
   // label is a `truncate` span was measured as wide as one
   if (
-    style.textOverflow === 'ellipsis' &&
+    over.textOverflow === 'ellipsis' &&
     !wraps(style) &&
-    style.overflowX !== 'visible' &&
+    over.overflowX !== 'visible' &&
     width > 0
   ) {
     return { maxLines: 1, overflow: 'ellipsis', wrap: false };
   }
   return null;
+}
+
+/**
+ * The style a block's lines read `text-overflow` from, with the overflow
+ * that it goes with: the block's own, or, for an anonymous block in a block
+ * container, the container's. Neither property inherits, so an anonymous
+ * block's own say `clip` and `visible`, and the lines the container's
+ * `text-overflow` is for are its anonymous block's wherever the fix-up made
+ * one: beside a block in it, and beside a float, which the fix-up wraps
+ * with the text it is in. Chromium (`ShouldTruncateOverflowingText` reads
+ * an anonymous block's parent), Firefox and WebKit cut those lines alike. A
+ * webmail list sets its snippet behind a floated separator, and the snippet
+ * was clipped mid-letter with no ellipsis. No engine cuts the anonymous item
+ * of a flex or a grid container, and a vertical root's frame is no anonymous
+ * block of the fix-up's.
+ */
+export function overflowStyleOf(block: Box): ComputedStyle {
+  let box = block;
+  for (
+    let parent = box.parent;
+    parent &&
+    box.kind === 'block' &&
+    !box.el &&
+    !box.pseudo &&
+    (parent.kind === 'block' ||
+      parent.kind === 'table-cell' ||
+      parent.kind === 'table-caption') &&
+    !(framed.any && FRAMES.get(parent) === box);
+    parent = box.parent
+  ) {
+    box = parent;
+  }
+  return box.style;
 }
 
 function layoutLines(block: Box, options: InlineOptions): InlineResult {
@@ -669,6 +704,9 @@ function linesOf(
   if (options.prettyAt) separateAt(items, options.prettyAt);
 
   const style = block.style;
+  // and what its `text-overflow` is read from, which an anonymous block's
+  // container says
+  const over = overflowStyleOf(block);
   const wrapWords = overflowWrapOf(style, items);
   // a line may break between any two letters, an edge between them or not
   const breaksAnywhere =
@@ -798,7 +836,7 @@ function linesOf(
     // line at a time, or the lines after the first were lost. A clamp is
     // the paragraph's, and stays one layout.
     const clamp = options.clamp;
-    let cut = cutOf(style, clamp, options.width);
+    let cut = cutOf(style, clamp, options.width, over);
     const perLine = cut !== null && !clamp && hasNewline;
     // an embedding cannot be cut into chunks
     if (perLine && !hasControls(items)) {
@@ -1229,11 +1267,13 @@ function linesOf(
         continue;
       }
       // an inline-block wider than the room a float left goes below it,
-      // as a word does (below)
+      // as a word does (below), and stays beside it where the block's
+      // lines do not wrap, as a word does
       if (
         isEmpty(open) &&
         pendingWidth + outer > roomWidth &&
-        roomWidth < options.width
+        roomWidth < options.width &&
+        wraps(style)
       ) {
         const below = belowFloats(options, y, lineTall);
         if (below !== null) {
@@ -1512,10 +1552,17 @@ function linesOf(
     // fit — so the line moves down to where a float ends, and tries again
     // there (CSS 2.1 9.5). Only where a float took some of the line's width:
     // past the floats the line has the whole of it, and a word wider still
-    // is `overflow-wrap`'s to break or to let run past.
+    // is `overflow-wrap`'s to break or to let run past. And only where the
+    // block's lines wrap: one that does not, `nowrap` or `pre`, stays
+    // beside the floats and runs past its room, where it would fit below
+    // them too, in Chromium, Firefox and WebKit alike — whatever the text's
+    // own `white-space`, which a `nowrap` span in a block that wraps shows.
+    // A webmail list's snippet, `nowrap` in a span of no width behind a
+    // floated separator, went below it, and its row came out a line taller.
     if (
       isEmpty(open) &&
       available < options.width &&
+      wraps(style) &&
       tooNarrow(segment.runs, first.end, word, room)
     ) {
       const below = belowFloats(options, y, guess);
@@ -1668,9 +1715,17 @@ function linesOf(
   // one-layout paths above leave to the engine
   if (
     ellipsizes.any ||
-    (!rtl && !options.clamp && cutOf(style, undefined, options.width))
+    (!rtl && !options.clamp && cutOf(style, undefined, options.width, over))
   ) {
-    widest = ellipsizeLines(lines, style, options, fonts, base, lineHeightMul);
+    widest = ellipsizeLines(
+      lines,
+      style,
+      over,
+      options,
+      fonts,
+      base,
+      lineHeightMul,
+    );
   }
 
   if (!floatsPlaced.length) {
@@ -6015,6 +6070,7 @@ const CUT_SLACK = 0.01;
 function ellipsizeLines(
   lines: LineBox[],
   style: ComputedStyle,
+  over: ComputedStyle,
   options: InlineOptions,
   fonts: FontsLike,
   base: Record<string, unknown>,
@@ -6033,7 +6089,7 @@ function ellipsizeLines(
   const cuts =
     style.direction !== 'rtl' &&
     !options.clamp &&
-    cutOf(style, undefined, edge);
+    cutOf(style, undefined, edge, over);
   let widest = 0;
   for (const line of lines) {
     if (cuts && line.x + line.width > edge + CUT_SLACK) {

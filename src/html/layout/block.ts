@@ -198,6 +198,7 @@ import {
   joinsBefore,
   layoutInline,
   lineHeightMultiplier,
+  overflowStyleOf,
   spaceBreaksOnly,
   strutOf,
   uncutWidth,
@@ -7361,8 +7362,9 @@ export function intrinsicWidth(
       widest = Math.max(widest, width + (line.floats ?? 0));
     }
     widest = Math.max(widest, box.floatRow);
-    // a line `text-overflow` cut short is wider than this finds it
-    if (seen && !seen.cut && box.style.textOverflow === 'ellipsis') {
+    // a line `text-overflow` cut short is wider than this finds it, an
+    // anonymous block's by its container's
+    if (seen && !seen.cut && overflowStyleOf(box).textOverflow === 'ellipsis') {
       seen.cut = lines.some(
         (line) =>
           CUT_LINES.has(line) ||

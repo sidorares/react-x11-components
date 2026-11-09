@@ -2148,6 +2148,47 @@ metric(
 );
 
 metric(
+  "an anonymous block's lines are cut by its container's text-overflow",
+  async () => {
+    // `text-overflow` does not inherit, and the lines it is for are an
+    // anonymous block's wherever the fix-up wraps its container's text in
+    // one: beside a block in it, and beside a float. Chromium, Firefox and
+    // WebKit cut them all with the container's ellipsis; a webmail list's
+    // snippet behind a floated separator was clipped with none. Neither
+    // Chromium nor Firefox cuts a grid's or a flex container's anonymous
+    // item, where WebKit does: one in a track narrower than its text is
+    // clipped with none.
+    const { node } = await render(
+      '<style>body{margin:0} .t{width:100px;overflow:hidden;' +
+        'text-overflow:ellipsis;white-space:nowrap}</style>' +
+        '<div id="float" class="t"><span style="float:left">&nbsp;-&nbsp;' +
+        '</span>Plus go in the draw to win</div>' +
+        '<div id="mixed" class="t"><div>block</div>Plus go in the draw to win' +
+        '</div>' +
+        '<div id="grid" class="t" style="display:grid;' +
+        'grid-template-columns:100px">Plus go in the draw to win</div>',
+    );
+    const el = view(node);
+    const cut = (line: PlacedLine) =>
+      lastRunText(line) === '…' ||
+      line.texts.some((text) => text.layout.truncated);
+    const right = (line: PlacedLine) =>
+      Math.max(...line.texts.map((text) => extentOf(text)[1]));
+    // the text beside the float, before the float's own line
+    const [beside] = linesOf(el, 'float');
+    assert.ok(cut(beside), 'beside a float');
+    assert.ok(right(beside) <= 100 + 0.01, `within the box: ${right(beside)}`);
+    // the block's line, then the anonymous block's
+    const mixed = linesOf(el, 'mixed')[1];
+    assert.ok(cut(mixed), 'after a block');
+    assert.ok(right(mixed) <= 100 + 0.01, `within the box: ${right(mixed)}`);
+    const [item] = linesOf(el, 'grid');
+    assert.ok(right(item) > 100, 'a grid item runs past its track');
+    assert.ok(!cut(item), 'and is not cut');
+  },
+);
+
+metric(
   'a truncated line is as wide as it is whole to what holds its box',
   async () => {
     // `text-overflow` is how a line is drawn where it runs out of its box,
