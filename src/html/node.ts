@@ -20399,9 +20399,12 @@ function isSheetLink(el: Element): boolean {
 /** The attributes nothing reads but the cascade, where a selector tests
  *  them, and an inline style: a change of one builds no box where it
  *  changes no style. Everything else may be read by the boxes, a widget, a
- *  focus stop or a presentational hint. `role` and `aria-*` are written for
- *  assistive technology, and but for `aria-label`, which names a stop and a
- *  player, a selector is all that reads them here: a widget takes
+ *  focus stop or a presentational hint. `js*` is no attribute of HTML's,
+ *  SVG's or MathML's: what Google's script framework wires its handlers
+ *  and its logging with, on everything it renders and on the `<body>`.
+ *  `role` and `aria-*` are written for assistive technology, and but for
+ *  `aria-label`, which names a stop and a player, a selector is all that
+ *  reads them here: a widget takes
  *  `aria-hidden` as it renders. `hidden` is the UA sheet's. `-rx-defined` is
  *  no attribute: it is a custom element's upgrade, which only `:defined`
  *  reads; nor is `-rx-modal`, a dialog going into the top layer or out,
@@ -20411,7 +20414,7 @@ function isSheetLink(el: Element): boolean {
  *  (`mediaSync`), nor a control's state, a custom element's or a direction
  *  a text turned (`controlsReached`). */
 const STYLE_ONLY_ATTRIBUTE =
-  /^(?:class|id|style|role|hidden|aria-(?!label$)[^]*|data-[^]*|on[a-z]+|-rx-(?:defined|modal|picker-open|paused|muted|seeking|buffering|stalled|form|state|dir))$/;
+  /^(?:class|id|style|role|hidden|aria-(?!label$)[^]*|data-[^]*|on[a-z]+|js[a-z]+|-rx-(?:defined|modal|picker-open|paused|muted|seeking|buffering|stalled|form|state|dir))$/;
 
 /** The node a change to an element's text starts from, for what its text
  *  decides: where a text was written or what holds what came or went, and

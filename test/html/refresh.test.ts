@@ -3840,6 +3840,54 @@ metric(
 );
 
 metric(
+  'what a script framework writes for its own event wiring on the <body> builds nothing, and restyles what a rule of it can style',
+  async () => {
+    // A webmail page's framework sets `jsaction` on its <body> as it wires
+    // handlers up, and `jslog` and `jsname` on what it renders: no
+    // attribute of HTML's, and each write on the <body> restyled, built
+    // and laid out all of the document
+    const { result, node } = await render(
+      '<style>body{margin:0}[jsname=on] .x{color:#ff0000}</style>' +
+        '<body id="b"><main id="m"><section id="s">' +
+        '<p class="x" id="p">one</p><p id="q">two</p></section></main></body>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const tree = treeOf(el);
+    const held = boxOf(el, 'q');
+    const body = byId(el, 'm').parent as Element;
+    const set = (target: Element, name: string, value: string): HtmlChange => {
+      const oldValue = target.attribs[name] ?? null;
+      target.attribs[name] = value;
+      return { type: 'attributes', target, attributeName: name, oldValue };
+    };
+    const wired = [
+      set(body, 'jsaction', 'click:a;mouseover:b'),
+      set(byId(el, 's'), 'jslog', '1234; track:click'),
+      set(byId(el, 's'), 'jscontroller', 'Xyz'),
+    ];
+    const reached = scopeOf(el, wired);
+    assert.ok(reached && reached.size === 0, `${reached?.size} restyled`);
+    el.touchDocument(wired);
+    await act();
+    assert.ok(treeOf(el) === tree, 'the boxes were built');
+    // and a rule that tests one restyles what it styles
+    el.touchDocument([set(byId(el, 's'), 'jsname', 'on')]);
+    await act();
+    assert.ok(treeOf(el) === tree, 'a colour built the boxes');
+    assert.ok(boxOf(el, 'q') === held, 'what it holds was built');
+    assert.strictEqual(
+      el.computedStyle(byId(el, 'p'))?.color,
+      'rgb(255, 0, 0)',
+      'the rule was missed',
+    );
+    const drawn = await snapshot(result, el);
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
   'a tabindex that stays a number builds nothing and moves what Tab reaches, and one that comes makes a stop',
   async () => {
     const { node } = await render(
