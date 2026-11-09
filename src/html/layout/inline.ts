@@ -6231,7 +6231,16 @@ function clipText(
   // character that fits: no engine cuts a line it does not wrap but for
   // an ellipsis of its own, which would be in the last run's style
   const from = natural.start;
-  const fits = fitted(fonts, runs as TextRun[], from, natural.end, room, base);
+  // with the spaces it ends in, which stay before the ellipsis
+  const fits = fitted(
+    fonts,
+    runs as TextRun[],
+    from,
+    natural.end,
+    room,
+    base,
+    true,
+  );
   if (!fits) return null;
   const kept = sliceRuns(runs as TextRun[], from, from + fits);
   const laid = fonts.layout(kept, base, {
@@ -6281,7 +6290,8 @@ function shiftedSpans(spans: LineText['spans'], by: number): LineText['spans'] {
 
 /** How much of the runs' text from `from` to `to`, in code units, fits in
  *  `room` set on one line: the longest prefix that does, ending between
- *  two code points. */
+ *  two code points. With `spaces`, the white space a prefix ends in counts,
+ *  as it does where it stays before an ellipsis (`clipText`). */
 function fitted(
   fonts: FontsLike,
   runs: readonly TextRun[],
@@ -6289,6 +6299,7 @@ function fitted(
   to: number,
   room: number,
   base: Record<string, unknown>,
+  spaces = false,
 ): number {
   const text = runs
     .map((run) => run.text)
@@ -6303,11 +6314,12 @@ function fitted(
   let hi = ends.length;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
-    const width = fonts.layout(
+    const laid = fonts.layout(
       sliceRuns(runs, from, from + ends[mid - 1]),
       base,
       {},
-    ).width;
+    );
+    const width = spaces ? (laid.lines[0]?.advance ?? laid.width) : laid.width;
     if (width <= room) lo = mid;
     else hi = mid - 1;
   }
