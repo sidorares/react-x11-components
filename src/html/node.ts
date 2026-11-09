@@ -16420,8 +16420,17 @@ export class HtmlViewNode extends Node {
       this._scheduleFrame();
     }
     // what the layouts since the last rendering placed anchored boxes by
-    // is their last successful position option now
-    commitLastPositions();
+    // is their last successful position option now, and an element of the
+    // document with no box forgets its own
+    const tree = this._tree;
+    commitLastPositions(
+      tree
+        ? (owner) =>
+            topOf(owner as Element) !== this.document
+              ? undefined
+              : this._boxOf(tree, owner as Element) !== null
+        : undefined,
+    );
     this._noteFrame();
     this._notePaneScroll();
     if (this._owed.size) this._followOwed();
@@ -22994,4 +23003,15 @@ function rootOf(node: AnyNode): AnyNode {
   let at = node;
   while (at.parent) at = at.parent;
   return at;
+}
+
+/** The node at the top of what holds `node`, out through each shadow root
+ *  to its host: its document, where it is in one. */
+function topOf(node: AnyNode): AnyNode {
+  let at = node;
+  for (;;) {
+    if (at instanceof ShadowRoot) at = at.host;
+    else if (at.parent) at = at.parent;
+    else return at;
+  }
 }

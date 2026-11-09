@@ -867,3 +867,70 @@ test('a box that clips its overflow, too wide for a column no float narrows, sta
   );
   await result.unmount();
 });
+
+metric(
+  'a line that cannot wrap stays beside the floats it runs past',
+  async () => {
+    // CSS 2.1 9.5 moves a line down past the floats where its content does
+    // not fit beside them, and Chromium, Firefox and WebKit all read that as
+    // a line that may wrap: in a block that does not (`nowrap`, `pre`), the
+    // line stays beside the float and runs past its room, even where it would
+    // fit below. A webmail page's list puts a snippet in a span of no width,
+    // `nowrap`, behind a floated " - ": moved below the float, the span was
+    // two lines tall, and the row it was centred in grew and set its subject
+    // a line down.
+    const float = '<span class="f"></span>';
+    const { node } = await render(
+      '<style>body{margin:0}p{margin:0;width:200px}' +
+        '.f{float:left;width:190px;height:10px}' +
+        '.row{display:flex;align-items:center;width:160px;' +
+        'white-space:nowrap;overflow:hidden}' +
+        '.subject{flex:0 1 auto;overflow:hidden}' +
+        '.snippet{display:block;flex:1 1 0;overflow:hidden}' +
+        '.sep{float:left}</style>' +
+        `<p id="nowrap" style="white-space:nowrap">${float}Plus go</p>` +
+        `<p id="pre" style="white-space:pre">${float}Plus go</p>` +
+        `<p id="atomic" style="white-space:nowrap">${float}` +
+        '<span id="ib" style="display:inline-block;width:30px;height:15px">' +
+        '</span></p>' +
+        // a block that wraps moves the line down, `nowrap` inside it or not
+        `<p id="normal">${float}Plusgo</p>` +
+        `<p id="inner">${float}<span style="white-space:nowrap">Plus go</span></p>` +
+        '<div class="row" id="row"><div class="subject" id="subject">' +
+        'A subject far longer than the row it is in</div>' +
+        '<span class="snippet" id="snippet"><span class="sep">&nbsp;-&nbsp;</span>' +
+        'and a snippet after it</span></div>',
+    );
+    const el = view(node);
+    for (const id of ['nowrap', 'pre']) {
+      const [line] = linesOf(el, id);
+      assert.strictEqual(line.y, boxOf(el, id).y, `${id}: beside the float`);
+      assert.strictEqual(linesOf(el, id).length, 1, id);
+    }
+    assert.strictEqual(
+      boxOf(el, 'ib').y,
+      boxOf(el, 'atomic').y,
+      'an inline-block stays beside the float too',
+    );
+    assert.strictEqual(boxOf(el, 'ib').x - boxOf(el, 'atomic').x, 190);
+    for (const id of ['normal', 'inner']) {
+      const [line] = linesOf(el, id);
+      assert.strictEqual(
+        line.y - boxOf(el, id).y,
+        10,
+        `${id}: below the float`,
+      );
+    }
+    const snippet = boxOf(el, 'snippet');
+    // its own line first, then the separator's, which `linesOf` walks into
+    const [text] = linesOf(el, 'snippet');
+    assert.strictEqual(snippet.width, 0, 'the snippet has no room');
+    assert.strictEqual(text.y, snippet.y, 'its text beside the separator');
+    assert.strictEqual(snippet.height, text.height, 'one line tall');
+    assert.strictEqual(
+      boxOf(el, 'subject').y,
+      boxOf(el, 'row').y,
+      'the subject is on the row, not a line down',
+    );
+  },
+);

@@ -1574,8 +1574,11 @@ export function refitAnchored(
     const d = displacementOf(state, viewport);
     const fits = fitsDisplaced(state, d);
     if (box.style.positionVisibility & 2) noteVisibility(root, box, !fits);
+    // a box with position options determines them again at every update of
+    // the rendering, which is an anchor recalculation point (CSS Anchor
+    // Positioning 1, 3.3 and 6.5): laid out where the scroll has its anchor
+    // now, fitting or not, as its cells and its option come to there
     if (
-      !fits &&
       state.refits &&
       (Math.abs(d[0] - (state.dx ?? NaN)) > 0.5 ||
         Math.abs(d[1] - (state.dy ?? NaN)) > 0.5)

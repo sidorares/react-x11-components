@@ -3970,3 +3970,49 @@ test('a box in a position-area that is a grid item takes its cells of its grid a
   assert.deepStrictEqual(await place('top right'), [521, 161]);
   assert.deepStrictEqual(await place('bottom left'), [191, 271]);
 });
+
+test('a box with position options is laid out again around an anchor a scroll moved, fitting or not, and one shown again starts from its own style', async () => {
+  // WPT css-anchor-position/position-area-scrolling-005: determining the
+  // options at each rendering is an anchor recalculation point (CSS Anchor
+  // Positioning 1, 3.3 and 6.5), and an element that stops being rendered
+  // forgets its last successful option (6.5.1.1)
+  const { el } = await renderScrolled(
+    '<style>body{margin:0}#p{position:absolute;box-sizing:border-box;border:solid;' +
+      'position-anchor:--a;position-area:top left;width:50%;height:50%;' +
+      'position-try-fallbacks:flip-block,flip-inline,flip-block flip-inline}</style>' +
+      '<div style="position:relative;width:500px;height:500px">' +
+      '<div id="s" style="overflow:scroll;scrollbar-width:none;width:500px;height:500px">' +
+      '<div style="width:2000px;height:2000px"><div style="anchor-name:--a;' +
+      'margin:200px;width:50px;height:50px"></div><div id="p"></div></div></div></div>',
+    600,
+    600,
+  );
+  const at = () => {
+    const box = boxOf(el, 'p');
+    return [box.x, box.y, box.width, box.height];
+  };
+  const scroller = findById(el.document, 's')!;
+  const scroll = async (x: number, y: number) => {
+    await act(() => el.scrollElementTo(scroller, { x, y }));
+    await act();
+    return at();
+  };
+  assert.deepStrictEqual(at(), [100, 100, 100, 100]);
+  // it still fits its cells, which the anchor moving made smaller
+  assert.deepStrictEqual(await scroll(40, 60), [80, 70, 80, 70]);
+  // the top row has no room, and it flips down, where it stays
+  assert.deepStrictEqual(await scroll(100, 200), [50, 50, 50, 225]);
+  assert.deepStrictEqual(await scroll(0, 0), [100, 250, 100, 125]);
+  const p = findById(el.document, 'p')!;
+  const restyle = async (style: string) => {
+    p.attribs.style = style;
+    el.touchDocument([
+      { type: 'attributes', target: p, attributeName: 'style' },
+    ]);
+    await act();
+    await act();
+  };
+  await restyle('display:none');
+  await restyle('');
+  assert.deepStrictEqual(at(), [100, 100, 100, 100]);
+});
