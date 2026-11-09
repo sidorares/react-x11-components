@@ -16,7 +16,10 @@ import {
 } from '../../src/html/index.js';
 import type { HtmlScripts } from '../../src/html/index.js';
 import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
+import { timerClock } from '../../src/html/scripts/host.js';
 import { FakeWebRTC } from '../fake-webrtc.js';
+import { FRAME_MS, holdClock } from '../held-clock.js';
+import type { HeldClock } from '../held-clock.js';
 import { FONTS, h } from './harness.js';
 
 afterEach(cleanup);
@@ -25,11 +28,13 @@ await preloadHtmlScripts();
 const test = SCRIPTS_CONTAINED ? nodeTest : nodeTest.skip;
 
 /** A page's scripts, run until one logs a line starting `done`: every
- *  line it logged. */
+ *  line it logged. Where the page's timers are held, a frame of them is
+ *  taken at each look. */
 async function run(
   script: string,
   scripts: HtmlScripts = { webRTC: new FakeWebRTC() },
   url = 'https://page.test/',
+  timers?: HeldClock,
 ): Promise<string[]> {
   const logs: string[] = [];
   await renderX11(
@@ -51,6 +56,7 @@ async function run(
   const end = Date.now() + 10000;
   while (!logs.includes('done') && Date.now() < end) {
     await act(() => new Promise((r) => setTimeout(r, 10)));
+    await timers?.frame();
   }
   assert.ok(
     !logs.some((l) => l.startsWith('failed')),
@@ -670,8 +676,11 @@ test('a certificate clones with its expiry, fingerprints and origin, and a worke
   }
 });
 
-test('an audio sender’s DTMF sender plays its tones in turn once connected, each told as it starts and the seam handed it', async () => {
-  const webRTC = new FakeWebRTC();
+test('an audio sender’s DTMF sender plays its tones in turn once connected, each told as it starts and the seam handed it', async (t) => {
+  // the page's timers are held, and the seam stamps each tone with their
+  // time
+  const timers = holdClock(t, timerClock);
+  const webRTC = new FakeWebRTC({ now: () => timers.time });
   const logs = await run(
     `
     ${NEGOTIATE}
@@ -711,6 +720,8 @@ test('an audio sender’s DTMF sender plays its tones in turn once connected, ea
     pc1.close(); pc2.close();
   `,
     { webRTC, mediaDevices: fakeMediaDevices() },
+    undefined,
+    timers,
   );
   for (const line of [
     'made|true|true||false|true',
@@ -730,10 +741,11 @@ test('an audio sender’s DTMF sender plays its tones in turn once connected, ea
   const sent = webRTC.connections[0]!.transceivers[0]!;
   assert.deepEqual(sent.tones, ['1:40', '2:40', '3:40', '4:40']);
   // and each tone the clamped 40 and 30 after the one before, where 10 and
-  // 10 were asked for. Timed where the seam is handed them: in the page, a
-  // gap took in how late each tone's handler ran, and a busy runner made 70
-  // read 68. Node arms a timer on a whole millisecond, so one may come a
-  // millisecond early, and no load makes it earlier than that.
+  // 10 were asked for. Timed on the page's timers, held: a timer is due at
+  // the first frame at or past its time, so a gap is 70 to a frame more
+  // whatever the runner is doing. On the wall clock it was not: Node arms a
+  // timer from the loop's time, read once an iteration, so one armed late in
+  // a busy iteration came due early, and 70 read 68.997.
   const at = sent.toneTimes;
   for (const [from, to] of [
     [0, 1],
@@ -741,7 +753,7 @@ test('an audio sender’s DTMF sender plays its tones in turn once connected, ea
   ] as const) {
     const gap = at[to]! - at[from]!;
     assert.ok(
-      gap >= 69,
+      gap >= 70 && gap < 70 + FRAME_MS,
       `tone ${to + 1} came ${gap} ms after tone ${from + 1}`,
     );
   }

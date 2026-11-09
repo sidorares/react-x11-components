@@ -317,8 +317,6 @@ import type {
 
 declare const setTimeout: SetTimeout;
 declare const clearTimeout: ClearTimeout;
-declare const setInterval: SetTimeout;
-declare const clearInterval: ClearTimeout;
 declare const URL: UrlClass;
 declare const AbortController: AbortControllerClass;
 declare const Buffer: BufferClass;
@@ -2114,6 +2112,24 @@ export class DomShared {
   }
 }
 
+/**
+ * The clock a page's timers run on: every `setTimeout` and `setInterval` the
+ * page's realm makes comes to the `timer` op, and the op arms it here. One
+ * object, exported from this module though not from the package, so a test
+ * can hold it (`test/held-clock.ts`): what a realm times with its timers,
+ * DTMF's tones among them, is then the test's clock and not the loop's,
+ * whose time Node reads once an iteration, so a timer armed late in a busy
+ * one comes due early by the wall clock.
+ */
+export const timerClock = {
+  arm(step: () => void, ms: number): unknown {
+    return setTimeout(step, ms);
+  },
+  disarm(handle: unknown): void {
+    clearTimeout(handle);
+  },
+};
+
 export class DomHost {
   private _ids = new WeakMap<AnyNode, number>();
   private _nodes = new Map<number, AnyNode>();
@@ -2121,7 +2137,7 @@ export class DomHost {
   /** The sheets this realm's shadow roots adopted, by their numbers
    *  (`adoptedSheet`). */
   private _adoptedSheets = new Map<number, AdoptedSheet>();
-  private _timers = new Map<number, ReturnType<typeof setTimeout>>();
+  private _timers = new Map<number, unknown>();
   private _fetches = new Map<number, InstanceType<AbortControllerClass>>();
   /** What a page's `MediaSource`s were appended (`clips.ts`), and the files
    *  the player is handed them in. */
@@ -3310,7 +3326,7 @@ export class DomHost {
     if (this._s.drawn.get(this.document) === this._seams.handle) {
       this._s.drawn.delete(this.document);
     }
-    for (const timer of this._timers.values()) clearTimeout(timer);
+    for (const timer of this._timers.values()) timerClock.disarm(timer);
     this._timers.clear();
     for (const fetch of this._fetches.values()) fetch.abort();
     this._fetches.clear();
@@ -6816,20 +6832,19 @@ export class DomHost {
         const repeat = !!c;
         const ms = Math.max(repeat ? 4 : 0, Number(b) || 0);
         const fire = () => {
-          if (!repeat) this._timers.delete(id);
+          // an interval is armed again as it fires, from before its
+          // callback runs, as Node arms one
+          if (repeat) this._timers.set(id, timerClock.arm(fire, ms));
+          else this._timers.delete(id);
           this.entries?.call('__timer', [id]);
         };
-        this._timers.set(
-          id,
-          repeat ? setInterval(fire, ms) : setTimeout(fire, ms),
-        );
+        this._timers.set(id, timerClock.arm(fire, ms));
         return null;
       }
       case 'clearTimer': {
         const timer = this._timers.get(Number(a));
         if (timer !== undefined) {
-          clearTimeout(timer);
-          clearInterval(timer);
+          timerClock.disarm(timer);
           this._timers.delete(Number(a));
         }
         return null;
