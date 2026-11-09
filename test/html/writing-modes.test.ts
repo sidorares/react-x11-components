@@ -209,6 +209,26 @@ test('an inline element in another writing mode than its parent is an inline-blo
   assert.strictEqual(computed(el, 'u').display, 'inline', 'as its parent');
 });
 
+test("an absolute box in a vertical writing mode is no taller than what its insets leave of its containing block's height", async () => {
+  // CSS Position 3, 4.1: the room an orthogonal flow fits its content in is
+  // its inset-modified containing block's (WPT css-anchor-position/
+  // anchor-center-htb-vrl)
+  const text = 'a a a a a a a a a a a a a a a a a a a a a a a a';
+  const { node } = await render(
+    '<style>body{margin:0}.cb{position:relative;width:100px;height:100px}' +
+      '.t{position:absolute;writing-mode:vertical-rl;width:20px;left:0;' +
+      'line-height:10px}</style>' +
+      `<div class="cb"><div class="t" id="none">${text}</div></div>` +
+      `<div class="cb"><div class="t" id="top" style="top:20px">${text}</div></div>` +
+      `<div class="cb"><div class="t" id="both" style="top:10px;bottom:-20px">${text}</div></div>`,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(
+    ['none', 'top', 'both'].map((id) => boxOf(el, id).height),
+    [100, 80, 110],
+  );
+});
+
 test('a document in no vertical writing mode makes no frame', async () => {
   const flat = await render(
     '<div style="writing-mode:horizontal-tb">a</div><p>b</p>',
