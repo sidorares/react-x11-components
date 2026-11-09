@@ -7535,10 +7535,13 @@ own scroll that the pane cannot take yet, since it has not measured how
 far the document reaches, is the scroll such a box is placed at, as a
 browser has it at once. A scroll in a container a transform scales or
 turns, and a sticky box's move in one, moves the box as far as the
-transform carries it on the box's page. Where such a scroll leaves the box overflowing an edge of
-what it is placed in that is not the anchor's, and it has options, the
-document is laid out again in the next frame and the options tried where
-the anchor is now. `position-visibility` hides a box, with all it holds,
+transform carries it on the box's page. A box with options is laid out
+again in the next frame wherever such a scroll moved its anchor, fitting
+or not: its options are determined at each rendering, which is an anchor
+recalculation point (3.3, 6.5), so its cells come to what the anchor
+leaves where it is now and the options are tried there. An element that
+stops being rendered forgets the option it was last placed by, and one shown
+again is placed by its own style first (6.5.1.1). `position-visibility` hides a box, with all it holds,
 where its default anchor is cut away entirely by a box that clips between
 the two, or by the viewport for a box fixed to it whose anchor the pane
 scrolls (`anchor-visible`, the initial value) — on the axes it follows the
