@@ -16729,71 +16729,16 @@ export function installDom(
   };
   /**
    * A `@position-try` rule's declarations (CSS Anchor Positioning 1, 8.1):
-   * a declaration block of what the rule takes, read from the rule's text,
-   * and written back to it as it changes, which edits the rule in its sheet
-   * (`replaceRule`). Each property it takes is an attribute, by its name
-   * and in camel case; any other is none.
+   * a `CSSStyleDeclaration` of what the rule takes, read from the rule's
+   * text, and written back to it as it changes, which edits the rule in its
+   * sheet (`replaceRule`). Each property it takes is an attribute, by its
+   * name and in camel case; any other is none. A sheet makes it, never a
+   * page (Web IDL: no constructor), so it is made from its prototype with
+   * its block beside it (`positionTryStyle`), as every style is.
    */
-  class CSSPositionTryDescriptors {
-    _rule: Any;
-    constructor(rule: Any) {
-      this._rule = rule;
-    }
-    _decls(): { name: string; value: string; important: boolean }[] {
-      return tryDeclarations(blockOf(this._rule._text));
-    }
-    _write(decls: { name: string; value: string; important: boolean }[]) {
-      replaceRule(this._rule, positionTryText(this._rule.name, decls));
-    }
-    get parentRule(): Any {
-      return this._rule;
-    }
-    get length(): number {
-      return this._decls().length;
-    }
-    item(i: Any): string {
-      return this._decls()[Number(i) >>> 0]?.name ?? '';
-    }
-    getPropertyValue(name: Any): string {
-      const n = str(name).toLowerCase();
-      return this._decls().find((d) => d.name === n)?.value ?? '';
-    }
-    getPropertyPriority(name: Any): string {
-      const n = str(name).toLowerCase();
-      return this._decls().find((d) => d.name === n)?.important
-        ? 'important'
-        : '';
-    }
-    setProperty(name: Any, value: Any, priority: Any = ''): void {
-      const n = str(name).toLowerCase();
-      if (!POSITION_TRY_TAKES.has(n)) return;
-      const v = value === null || value === undefined ? '' : str(value).trim();
-      const decls = this._decls();
-      const at = decls.findIndex((d) => d.name === n);
-      if (!v) {
-        if (at < 0) return;
-        decls.splice(at, 1);
-      } else {
-        const decl = {
-          name: n,
-          value: v,
-          important: str(priority).toLowerCase() === 'important',
-        };
-        if (at >= 0) decls[at] = decl;
-        else decls.push(decl);
-      }
-      this._write(decls);
-    }
-    removeProperty(name: Any): string {
-      const was = this.getPropertyValue(name);
-      if (was) this.setProperty(name, '');
-      return was;
-    }
-    get cssText(): string {
-      return declarationsText(this._decls());
-    }
-    set cssText(v: Any) {
-      this._write(tryDeclarations(str(v)));
+  class CSSPositionTryDescriptors extends CSSStyleDeclaration {
+    constructor() {
+      super();
     }
   }
   for (const name of POSITION_TRY_PROPERTIES) {
@@ -16818,6 +16763,41 @@ export function installDom(
       });
     }
   }
+  idlAttributes(CSSPositionTryDescriptors);
+  /** A `@position-try` rule's style: its declarations as the block of a
+   *  `CSSPositionTryDescriptors`, read from the rule's text each time. */
+  const positionTryStyle = (rule: Any): Any => {
+    const decls = () => tryDeclarations(blockOf(rule._text));
+    const write = (
+      list: { name: string; value: string; important: boolean }[],
+    ): void => replaceRule(rule, positionTryText(rule.name, list));
+    const style = Object.create(CSSPositionTryDescriptors.prototype);
+    declarationBlocks.set(style, {
+      value: (name) => decls().find((d) => d.name === name)?.value ?? '',
+      // an `!important` one is invalid in it, so none is important
+      priority: () => '',
+      set: (name, value, priority) => {
+        if (!POSITION_TRY_TAKES.has(name)) return;
+        const v = value.trim();
+        const list = decls();
+        const at = list.findIndex((d) => d.name === name);
+        if (!v || priority.toLowerCase() === 'important') {
+          if (at < 0 || v) return;
+          list.splice(at, 1);
+        } else {
+          const decl = { name, value: v, important: false };
+          if (at >= 0) list[at] = decl;
+          else list.push(decl);
+        }
+        write(list);
+      },
+      names: () => decls().map((d) => d.name),
+      text: () => declarationsText(decls()),
+      setText: (text) => write(tryDeclarations(text)),
+      rule,
+    });
+    return style;
+  };
   /** Declarations as CSSOM serializes a block: each ended. */
   const declarationsText = (
     decls: readonly { name: string; value: string; important: boolean }[],
@@ -16855,11 +16835,18 @@ export function installDom(
    *  its declarations, which a page may set. */
   class CSSPositionTryRule extends CSSRule {
     _style: Any = null;
+    // made by a sheet alone (Web IDL: no constructor)
+    constructor(...args: Any[]) {
+      if (typeof args[0] !== 'string') {
+        throw new TypeError('Illegal constructor');
+      }
+      super(args[0], args[1]);
+    }
     get name(): string {
       return conditionOf(this._text).trim();
     }
     get style(): Any {
-      return (this._style ??= new CSSPositionTryDescriptors(this));
+      return (this._style ??= positionTryStyle(this));
     }
     set style(v: Any) {
       this.style.cssText = v;
@@ -16869,6 +16856,7 @@ export function installDom(
     }
     override set cssText(_v: Any) {}
   }
+  idlAttributes(CSSPositionTryRule);
   /** A container condition's parts at its top level: a group in
    *  parentheses, a function, or a word, each as written. */
   const conditionParts = (
