@@ -229,6 +229,36 @@ test("an absolute box in a vertical writing mode is no taller than what its inse
   );
 });
 
+test('a horizontal block in a vertical flow is a frame of its own, which turns back what the flow turned', async () => {
+  // CSS Writing Modes 4, 7.3: an orthogonal flow inside an orthogonal flow
+  // (WPT css-anchor-position/anchor-center-vrl-htb). Its width is the room
+  // the page has across it, fit to its content, its text runs across the
+  // page, and a page reads it as it is drawn
+  const text = 'a a a a a a a a a a a a a a a a a a a a a a a a';
+  const { node } = await render(
+    '<style>body{margin:0}.cb{position:relative;writing-mode:vertical-rl;' +
+      'width:100px;height:100px}.t{writing-mode:horizontal-tb;line-height:10px}' +
+      '.abs{position:absolute;top:0}</style>' +
+      `<div class="cb"><div class="t" id="flow">${text}</div></div>` +
+      `<div class="cb"><div class="t abs" id="abs" style="left:20px">${text}</div></div>` +
+      `<div class="cb"><div class="t abs" id="short" style="right:0">a a</div></div>`,
+  );
+  const el = view(node);
+  const flow = rectOf(el, 'flow');
+  // as wide as the vertical box across, and its lines stacked down the page
+  assert.strictEqual(flow.width, 100);
+  assert.ok(flow.height > 10, `its lines run across: ${flow.height}`);
+  assert.strictEqual(flow.y, 0);
+  // what its insets leave across the page
+  const abs = rectOf(el, 'abs');
+  assert.deepStrictEqual([abs.x - 0, abs.width], [20, 80]);
+  // and no wider than what it holds, against its right
+  const short = rectOf(el, 'short');
+  assert.ok(short.width < 50, `fit to its content: ${short.width}`);
+  assert.strictEqual(short.x + short.width, 100);
+  assert.strictEqual(short.height, 10, 'one line, across the page');
+});
+
 test('a document in no vertical writing mode makes no frame', async () => {
   const flat = await render(
     '<div style="writing-mode:horizontal-tb">a</div><p>b</p>',

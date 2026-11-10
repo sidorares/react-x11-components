@@ -45,6 +45,26 @@ export const FRAMES = new WeakMap<Box, Box>();
 /** Each frame's root, by the frame. */
 export const FRAME_ROOTS = new WeakMap<Box, Box>();
 
+/** The turn a frame is drawn through, as the writing mode that turns so,
+ *  where it is no writing mode of its root's: the frame of a horizontal box
+ *  in a vertical flow's frame, which turns back what that frame turned
+ *  (`makeFrame`'s `back`). */
+const FRAME_TURNS = new WeakMap<Box, WritingMode>();
+
+/** The writing mode a frame is turned as, relative to the axes its root is
+ *  laid out in: its root's own, or the turn back of a frame in a frame. */
+export function frameTurn(frame: Box): WritingMode {
+  return FRAME_TURNS.get(frame) ?? FRAME_ROOTS.get(frame)!.style.writingMode;
+}
+
+/** Whether a frame of this writing mode may hold the frame of a horizontal
+ *  box, which turns back what it turned: a frame that is put back across
+ *  (`reflectFrame`) moves what it holds after it is laid out, and is not
+ *  one. */
+export function holdsTurnBack(mode: WritingMode): boolean {
+  return mode !== 'horizontal-tb' && !reflects(mode);
+}
+
 /** Whether the tree being laid out or painted holds a frame
  *  (`BoxTree.vertical`), set as a layout or a paint of a tree begins: what
  *  the layout's and the paint's questions of each box ask first, so a
@@ -77,8 +97,22 @@ export function reflects(mode: WritingMode): boolean {
  * frame takes its style turned into the frame's axes. `frameStyle` is the
  * frame's own, an anonymous block's style under the root's.
  */
-export function makeFrame(box: Box, frameStyle: ComputedStyle): Box {
-  const mode = box.style.writingMode;
+export function makeFrame(
+  box: Box,
+  frameStyle: ComputedStyle,
+  /** For a horizontal box in a vertical flow's frame, the writing mode of
+   *  the frame it is in: its own frame turns back what that one turned, and
+   *  what it holds keeps the page's styles, which are its axes again. */
+  back: WritingMode | null = null,
+  /** Roots of frames to come that the walk turns and does not go into:
+   *  what they hold is in the axes of their own frames. */
+  later: ReadonlySet<Box> | null = null,
+): Box {
+  const mode: WritingMode = back
+    ? turnsUp(back)
+      ? 'vertical-rl'
+      : 'sideways-lr'
+    : box.style.writingMode;
   const style = copyStyle(frameStyle);
   style.display = 'block';
   style.transform = turnsUp(mode) ? ANTICLOCKWISE : CLOCKWISE;
@@ -128,6 +162,12 @@ export function makeFrame(box: Box, frameStyle: ComputedStyle): Box {
     }
   }
   frame.children = intoFrame;
+  if (back) {
+    FRAME_TURNS.set(frame, mode);
+    FRAMES.set(box, frame);
+    FRAME_ROOTS.set(frame, box);
+    return frame;
+  }
   const turned = new Map<ComputedStyle, ComputedStyle>();
   const stack: Box[] = [...intoFrame];
   while (stack.length) {
@@ -138,6 +178,7 @@ export function makeFrame(box: Box, frameStyle: ComputedStyle): Box {
       turned.set(at.style, own);
     }
     at.style = own;
+    if (later?.has(at)) continue;
     for (const child of at.children) stack.push(child);
   }
   FRAMES.set(box, frame);
@@ -519,7 +560,7 @@ export function reflectFrame(
  *  null for a box in none. */
 export function frameModeOf(box: Box): WritingMode | null {
   const frame = frameOf(box);
-  return frame ? FRAME_ROOTS.get(frame)!.style.writingMode : null;
+  return frame ? frameTurn(frame) : null;
 }
 
 /** The frame a box is laid out in, the nearest, or null for a box in
@@ -603,9 +644,34 @@ export function pageRectOf(
 export function onPage(box: Box, rect: FrameRect): FrameRect {
   let out = rect;
   for (let frame = frameOf(box); frame; frame = frameOf(frame)) {
-    out = pageRectOf(frame, out, FRAME_ROOTS.get(frame)!.style.writingMode);
+    out = pageRectOf(frame, out, frameTurn(frame));
   }
   return out;
+}
+
+/** A rectangle of the page as the frames around `box` lay it out: what
+ *  `onPage` does, undone, the outermost frame first. */
+export function offPage(box: Box, rect: FrameRect): FrameRect {
+  const frames: Box[] = [];
+  for (let frame = frameOf(box); frame; frame = frameOf(frame)) {
+    frames.push(frame);
+  }
+  let out = rect;
+  for (let i = frames.length - 1; i >= 0; i -= 1) {
+    out = frameRectOf(frames[i], out, frameTurn(frames[i]));
+  }
+  return out;
+}
+
+/** How many quarter turns clockwise the frames around a box turn it on the
+ *  page, 0 to 3: 0 for a box in none, or in a frame that turns back what
+ *  the frame around it turned. */
+export function quarterTurnsOf(box: Box): number {
+  let turns = 0;
+  for (let frame = frameOf(box); frame; frame = frameOf(frame)) {
+    turns += turnsUp(frameTurn(frame)) ? 3 : 1;
+  }
+  return turns % 4;
 }
 
 /** A rectangle of the page as a frame of `mode` lays it out: the turn

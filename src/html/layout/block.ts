@@ -220,11 +220,14 @@ import { collapseEdges } from './collapse.js';
 import {
   FRAMES,
   FRAME_ROOTS,
+  frameTurn,
   framed,
   frameOf,
+  offPage,
+  onPage,
+  quarterTurnsOf,
   frameRectOf,
   frameSideOf,
-  pageRectOf,
   pageSideOf,
   reflectFrame,
   reflects,
@@ -4339,7 +4342,7 @@ function layoutBoxAt(
  * height down the page, and the frame's heights are across it.
  */
 function layoutFramed(box: Box, frame: Box, ctx: LayoutContext): void {
-  const mode = box.style.writingMode;
+  const mode = frameTurn(frame);
   const inline = frameInlineSize(box, frame, ctx);
   const across = box.contentWidth;
   // laid out already, at this inline size, for its root's width to be
@@ -8487,9 +8490,8 @@ function scrollMapOf(scroller: Box, box: Box): ScrollMap | null {
 function paneMapOf(box: Box): ScrollMap | null {
   const frame = framed.any ? frameOf(box) : null;
   if (!frame) return null;
-  const mode = FRAME_ROOTS.get(frame)!.style.writingMode;
   const at = (x: number, y: number) =>
-    frameRectOf(frame, { x, y, width: 0, height: 0 }, mode);
+    offPage(box, { x, y, width: 0, height: 0 });
   const o = at(0, 0);
   const ax = at(1, 0);
   const dn = at(0, 1);
@@ -8808,15 +8810,9 @@ function anchorRect(anchor: Box, box: Box, ctx: LayoutContext): CbRect {
  * boxes in one frame are in its axes both.
  */
 function inFrameOf(rect: CbRect, from: Box, box: Box): CbRect {
-  const theirs = frameOf(from);
-  const ours = frameOf(box);
-  if (theirs === ours) return rect;
-  const page = theirs
-    ? pageRectOf(theirs, rect, FRAME_ROOTS.get(theirs)!.style.writingMode)
-    : rect;
-  return ours
-    ? frameRectOf(ours, page, FRAME_ROOTS.get(ours)!.style.writingMode)
-    : page;
+  if (frameOf(from) === frameOf(box)) return rect;
+  // through every frame around each, a frame in a frame among them
+  return offPage(box, onPage(from, rect));
 }
 
 /**
@@ -8835,10 +8831,20 @@ interface AnchorAxes {
 }
 
 function anchorAxesOf(box: Box, containing: Box): AnchorAxes {
-  const frame = framed.any ? frameOf(box) : null;
+  const nearest = framed.any ? frameOf(box) : null;
+  // as the frames around it turn it on the page, which a frame that turns
+  // back what the one around it turned does not
+  const turns = nearest ? quarterTurnsOf(box) : 0;
+  const frame = turns ? nearest : null;
   return {
     frame,
-    mode: frame ? FRAME_ROOTS.get(frame)!.style.writingMode : 'horizontal-tb',
+    mode: !frame
+      ? 'horizontal-tb'
+      : !frameOf(frame)
+        ? frameTurn(frame)
+        : turns === 1
+          ? 'vertical-rl'
+          : 'sideways-lr',
     cb: {
       mode: containing.style.writingMode,
       rtl: containing.style.direction === 'rtl',
@@ -10626,7 +10632,7 @@ function viewportInRootFrame(
       width: ctx.viewportWidth,
       height: ctx.viewportHeight,
     },
-    FRAME_ROOTS.get(containing)!.style.writingMode,
+    frameTurn(containing),
   );
 }
 
@@ -10662,7 +10668,7 @@ function paddingRectOf(
         viewportHeight,
         false,
       ),
-      root.style.writingMode,
+      frameTurn(containing),
     );
   }
   return {

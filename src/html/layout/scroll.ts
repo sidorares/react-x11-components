@@ -22,8 +22,12 @@ import { scrolls, scrollsAlong } from '../css/style.js';
 import { CLAMPED, clampBox, unclampBox } from './boxes.js';
 import {
   FRAME_ROOTS,
+  frameTurn,
   frameOf,
+  framed,
+  onPage,
   pageRectOf,
+  quarterTurnsOf,
   reflects,
   turnsUp,
 } from './writing.js';
@@ -144,7 +148,7 @@ export function endOrigins(box: Box): [boolean, boolean] {
   // bottom in `sideways-lr`, which runs it up the page
   let x = vertical ? style.writingMode.endsWith('-rl') : rtl;
   let y = frame
-    ? reflects(FRAME_ROOTS.get(frame)!.style.writingMode)
+    ? reflects(frameTurn(frame))
     : vertical
       ? rtl !== (style.writingMode === 'sideways-lr')
       : false;
@@ -172,7 +176,7 @@ export function endOrigins(box: Box): [boolean, boolean] {
 export function scrollOnPage(box: Box, at: ScrollOffset): ScrollOffset {
   let { x, y } = at;
   for (let frame = frameOf(box); frame; frame = frameOf(frame)) {
-    const up = turnsUp(FRAME_ROOTS.get(frame)!.style.writingMode);
+    const up = turnsUp(frameTurn(frame));
     [x, y] = up ? [y, -x] : [-y, x];
   }
   // and no -0 a page reads as one
@@ -188,7 +192,7 @@ export function scrollInFrame(box: Box, at: ScrollOffset): ScrollOffset {
   }
   let { x, y } = at;
   for (let i = frames.length - 1; i >= 0; i -= 1) {
-    const up = turnsUp(FRAME_ROOTS.get(frames[i])!.style.writingMode);
+    const up = turnsUp(frameTurn(frames[i]));
     [x, y] = up ? [-y, x] : [y, -x];
   }
   return { x, y };
@@ -584,6 +588,16 @@ function frameBounds(frame: Box): {
   while (stack.length) {
     const box = stack.pop()!;
     if (box.kind === 'text' || box.kind === 'break') continue;
+    // a frame in the frame, which what it holds is turned back in: in this
+    // frame's axes as its turn draws it
+    if (FRAME_ROOTS.has(box)) {
+      const at = pageRectOf(box, frameBounds(box), frameTurn(box));
+      x1 = Math.min(x1, at.x);
+      y1 = Math.min(y1, at.y);
+      x2 = Math.max(x2, at.x + at.width);
+      y2 = Math.max(y2, at.y + at.height);
+      continue;
+    }
     if (hasRect(box)) {
       x1 = Math.min(x1, box.x);
       y1 = Math.min(y1, box.y);
@@ -700,11 +714,7 @@ function reachOf(
     // a vertical writing mode's frame is laid out turned, and drawn where
     // its turn has it, with all it holds
     if (FRAME_ROOTS.has(child)) {
-      const at = pageRectOf(
-        child,
-        frameBounds(child),
-        FRAME_ROOTS.get(child)!.style.writingMode,
-      );
+      const at = pageRectOf(child, frameBounds(child), frameTurn(child));
       take(
         at.x + dx,
         at.y + dy,
@@ -1008,6 +1018,27 @@ export function scrollBarsOf(
     const b = bar('x');
     if (b) bars.push(b);
   }
+  // in a frame of a writing mode, whose turn draws them on the page: each
+  // on the side of the box the page has at its right or its bottom, and its
+  // thumb from the end of the track the page has at its start
+  const turns = framed.any ? quarterTurnsOf(box) : 0;
+  if (turns) {
+    for (const b of bars) {
+      // across the frame is down the page under a turn clockwise, and the
+      // other way under one anticlockwise; down it is across the page
+      const flips = b.axis === 'x' ? turns !== 3 : turns !== 1;
+      const runsBack = b.axis === 'x' ? turns !== 1 : turns !== 3;
+      if (flips) {
+        const from = b.axis === 'x' ? top : left;
+        const size = b.axis === 'x' ? state.clientHeight : state.clientWidth;
+        b.crossStart = 2 * from + size - b.crossStart - b.thickness;
+      }
+      if (runsBack) {
+        b.thumbStart =
+          2 * b.trackStart + b.trackLength - b.thumbStart - b.thumbLength;
+      }
+    }
+  }
   return bars;
 }
 
@@ -1182,18 +1213,26 @@ function clippedAway(anchor: Box, box: Box): boolean {
     b.style.position === 'absolute' || b.style.position === 'fixed'
       ? containingBlockOf(b)
       : b.parent;
+  // each on the page where a frame of a writing mode is between them, whose
+  // axes are its own
+  const nested = framed.any && frameOf(anchor) !== null;
+  const seen = nested
+    ? onPage(anchor, {
+        x: anchor.x,
+        y: anchor.y,
+        width: anchor.width,
+        height: anchor.height,
+      })
+    : anchor;
   for (let at = up(anchor); at && at !== cb; at = up(at)) {
     if (!clipsOverflow(at)) continue;
-    if (
-      outside(anchor, {
-        x: at.x + at.borderLeft,
-        y: at.y + at.borderTop,
-        width: at.width - at.borderLeft - at.borderRight,
-        height: at.height - at.borderTop - at.borderBottom,
-      })
-    ) {
-      return true;
-    }
+    const clip = {
+      x: at.x + at.borderLeft,
+      y: at.y + at.borderTop,
+      width: at.width - at.borderLeft - at.borderRight,
+      height: at.height - at.borderTop - at.borderBottom,
+    };
+    if (outside(seen as Box, nested ? onPage(at, clip) : clip)) return true;
   }
   return false;
 }
