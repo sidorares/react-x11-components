@@ -33,12 +33,15 @@ import type {
 } from '../../src/html/index.js';
 import { PageSources } from '../../src/html/scripts/media-sources.js';
 import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
-import { FONTS, h } from './harness.js';
+import { FONTS, h, pixelsIn } from './harness.js';
 
 afterEach(cleanup);
 await preloadHtmlScripts();
 
 const test = SCRIPTS_CONTAINED ? nodeTest : nodeTest.skip;
+
+/** What `run` rendered last, for a test that reads its pixels. */
+let lastRender: Awaited<ReturnType<typeof renderX11>> | null = null;
 
 /** A page's script, run until it logs a line starting `done`: every line
  *  it logged. A `<button id=b>` is there for a press to land on. */
@@ -74,7 +77,7 @@ async function run(
       },
     });
   }
-  await renderX11(
+  lastRender = await renderX11(
     h(
       'box',
       { style: { width: 400, height: 300, flexDirection: 'column' } },
@@ -460,4 +463,139 @@ test('an analyser hears a microphone a stream source brings it: the tone’s wav
   `);
   has(logs, 'heard|true|true|true');
   has(logs, 'disabled|0');
+});
+
+test('a <video> of a stream draws onto a canvas, its newest frame, and createImageBitmap reads the same', async () => {
+  // the shape of webrtc.github.io's getusermedia/filter sample: the camera
+  // in a <video>, and a snapshot drawn from it into a canvas as a press asks
+  const logs = await run(`
+    var canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 480;
+    var stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    var v = document.getElementById('v');
+    v.srcObject = stream;
+    await v.play();
+    while (v.readyState < 2) await wait(10);
+    await wait(100);
+    var ctx = canvas.getContext('2d');
+    ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+    function at(x, y) { return [].slice.call(ctx.getImageData(x, y, 1, 1).data).join(','); }
+    log('white', at(20, 300));
+    log('yellow', at(100, 300));
+    log('black', at(620, 300));
+    var bitmap = await createImageBitmap(v);
+    var other = document.createElement('canvas');
+    other.width = bitmap.width;
+    other.height = bitmap.height;
+    var octx = other.getContext('2d');
+    octx.drawImage(bitmap, 0, 0);
+    log('bitmap', bitmap.width, bitmap.height, octx.getImageData(620, 300, 1, 1).data[3], octx.getImageData(20, 300, 1, 1).data[0]);
+    stream.getVideoTracks()[0].enabled = false;
+    await wait(50);
+    ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+    log('disabled', at(20, 300));
+    stream.getTracks().forEach(function (t) { t.stop(); });
+  `);
+  has(logs, 'white|255,255,255,255');
+  has(logs, 'black|0,0,0,255');
+  const yellow = logs.find((l) => l.startsWith('yellow|'))!;
+  const [r, g, b] = yellow.slice(7).split(',').map(Number);
+  assert.ok(r > 230 && g > 230 && b < 40, `a yellow bar: ${yellow}`);
+  has(logs, 'bitmap|640|480|255|255');
+  has(logs, 'disabled|0,0,0,255');
+});
+
+test('a source’s newest frame is held for a canvas only while a media element that can draw it asks', () => {
+  const listens: boolean[] = [];
+  let deliver: ((frame: MediaVideoFrame) => void) | undefined;
+  const source: MediaSourceLike = {
+    kind: 'video',
+    label: 'held',
+    listen(events) {
+      listens.push(!!events.video);
+      deliver = events.video;
+    },
+    settings: () => ({}),
+    capabilities: () => ({}),
+    reconfigure: () => Promise.resolve(false),
+    stop() {},
+  };
+  const sources = new PageSources({
+    devices: () => undefined,
+    origin: () => 'https://page.test',
+    originless: () => false,
+    tell: () => {},
+  });
+  const id = sources.register(source);
+  assert.equal(sources.op('mdPixels', id, ''), '', 'nothing held');
+  sources.op('mdKeep', id, true);
+  assert.deepEqual(listens, [false, true], 'read for the canvas');
+  // video range white and black, and the plane reused for the next frame
+  const y = new Uint8Array([235, 16, 235, 16]);
+  deliver!({
+    width: 2,
+    height: 2,
+    planes: [y, new Uint8Array([128]), new Uint8Array([128])],
+    strides: [2, 1, 1],
+    timestamp: 0,
+  });
+  y.fill(0);
+  const answer = String(sources.op('mdPixels', id, ''));
+  const [head, body] = answer.split('|');
+  assert.equal(head, '1,2,2');
+  assert.deepEqual(
+    [...Buffer.from(body, 'base64')],
+    [255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255],
+    'the frame as it came, not the plane after it',
+  );
+  assert.equal(sources.op('mdPixels', id, '1'), '1', 'the same frame again');
+  sources.op('mdKeep', id, false);
+  assert.deepEqual(listens, [false, true, false], 'and let go');
+  assert.equal(sources.op('mdPixels', id, ''), '');
+});
+
+test('a <video> of a stream the document draws through a filter is painted by the document, from its frames', async () => {
+  if (!FONTS) return;
+  const logs = await run(`
+    var stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    var v = document.getElementById('v');
+    v.style.filter = 'invert(1)';
+    v.srcObject = stream;
+    await v.play();
+    while (v.readyState < 2) await wait(10);
+    await wait(300);
+    var r = v.getBoundingClientRect();
+    log('rect', Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height));
+  `);
+  const rect = logs.find((l) => l.startsWith('rect|'))!;
+  const [x, y, w, hgt] = rect.slice(5).split('|').map(Number);
+  assert.equal(
+    screen.all((n) => n.kind === 'video').length,
+    0,
+    'no player over a filtered video',
+  );
+  await act(() => new Promise((r) => setTimeout(r, 100)));
+  const row = Math.round(y + hgt * 0.6);
+  const left = await pixelsIn(lastRender!.ctx, {
+    x: x + 3,
+    y: row,
+    width: 1,
+    height: 1,
+  });
+  const right = await pixelsIn(lastRender!.ctx, {
+    x: x + w - 4,
+    y: row,
+    width: 1,
+    height: 1,
+  });
+  // the white bar inverted, and the black one
+  assert.ok(
+    left[0] < 30 && left[1] < 30 && left[2] < 30,
+    `the white bar, inverted: ${[...left]}`,
+  );
+  assert.ok(
+    right[0] > 225 && right[1] > 225 && right[2] > 225,
+    `the black bar, inverted: ${[...right]}`,
+  );
 });

@@ -254,6 +254,100 @@ export function toI420(frame: MediaVideoFrame): MediaVideoFrame {
   };
 }
 
+/** A frame's numbers as R, G and B (ITU-R BT.601, BT.709 and BT.2020's
+ *  matrices): Kr and Kb. */
+const LUMA: Record<'bt601' | 'bt709' | 'bt2020', [number, number]> = {
+  bt601: [0.299, 0.114],
+  bt709: [0.2126, 0.0722],
+  bt2020: [0.2627, 0.0593],
+};
+
+/**
+ * A frame as RGBA, four bytes a pixel and opaque, as a canvas's pixels are:
+ * what a page draws a `<video>` of a stream onto a canvas from, and what
+ * the document paints a stream's picture from where no player can stand
+ * in for it. Into `out` where it is the right size.
+ */
+export function frameToRgba(
+  frame: MediaVideoFrame,
+  out?: Uint8ClampedArray,
+): Uint8ClampedArray {
+  const { width, height } = frame;
+  const rgba =
+    out && out.length === width * height * 4
+      ? out
+      : new Uint8ClampedArray(width * height * 4);
+  const format = frame.format ?? 'I420';
+  if (format === 'BGRA') {
+    const [bgra] = frame.planes;
+    const [stride] = frame.strides;
+    for (let row = 0; row < height; row++) {
+      let i = row * stride;
+      let o = row * width * 4;
+      for (let x = 0; x < width; x++, i += 4, o += 4) {
+        rgba[o] = bgra[i + 2];
+        rgba[o + 1] = bgra[i + 1];
+        rgba[o + 2] = bgra[i];
+        rgba[o + 3] = 255;
+      }
+    }
+    return rgba;
+  }
+  const [kr, kb] = LUMA[frame.colorSpace ?? 'bt601'] ?? LUMA.bt601;
+  const kg = 1 - kr - kb;
+  const full = frame.range === 'full';
+  // Y' and Cb, Cr to the unit range and about 0
+  const ys = full ? 1 / 255 : 1 / 219;
+  const yo = full ? 0 : 16;
+  const cs = full ? 1 / 255 : 1 / 224;
+  const rv = 2 * (1 - kr) * 255;
+  const bu = 2 * (1 - kb) * 255;
+  const gu = (-2 * (1 - kb) * kb * 255) / kg;
+  const gv = (-2 * (1 - kr) * kr * 255) / kg;
+  const [py, p1, p2] = frame.planes;
+  const [sy, s1, s2] = frame.strides;
+  const nv12 = format === 'NV12';
+  for (let row = 0; row < height; row++) {
+    const cr = row >> 1;
+    let o = row * width * 4;
+    for (let x = 0; x < width; x++, o += 4) {
+      const l = (py[row * sy + x] - yo) * ys * 255;
+      const cx = x >> 1;
+      const u = nv12
+        ? (p1[cr * s1 + cx * 2] - 128) * cs
+        : (p1[cr * s1 + cx] - 128) * cs;
+      const v = nv12
+        ? (p1[cr * s1 + cx * 2 + 1] - 128) * cs
+        : (p2[cr * s2 + cx] - 128) * cs;
+      rgba[o] = l + rv * v;
+      rgba[o + 1] = l + gu * u + gv * v;
+      rgba[o + 2] = l + bu * u;
+      rgba[o + 3] = 255;
+    }
+  }
+  return rgba;
+}
+
+/**
+ * A copy of a frame that outlives it: a source's frame is read until the
+ * next and not after (`MediaVideoFrame.planes`). Into `into`'s planes
+ * where they are the right sizes.
+ */
+export function copyFrame(
+  frame: MediaVideoFrame,
+  into?: MediaVideoFrame | null,
+): MediaVideoFrame {
+  const planes = frame.planes.map((plane, i) => {
+    const kept = into?.planes[i];
+    if (kept && kept.length === plane.length) {
+      kept.set(plane);
+      return kept;
+    }
+    return plane.slice();
+  });
+  return { ...frame, planes, strides: [...frame.strides] };
+}
+
 /**
  * A chunk of audio, planar floats from -1 to 1 — Web Audio's and WebCodecs'
  * `f32-planar` — 10 ms of it, which is what a peer connection sends audio

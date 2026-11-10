@@ -428,8 +428,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.57.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.57.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.58.1` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.58.1` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -892,6 +892,14 @@ it up. **The floor is a running one and moves often** — every move since
   Mac. Its camera was not: macOS refuses a camera, without a prompt, to node
   started from an app that declares no camera use, which a session's own
   shell was, in a window as much as in a pane.
+- `^2.58.1` — an image drawn under `ctx.filter` on a Mac filtered by vImage
+  (react-x11#1049, over windowkit/appkit#139's `ctxDrawSurfaceFiltered` in
+  @windowkit/appkit 0.34.0, which core's range admits only from 2.58.1), where
+  its pixels were read back and run through the filter in JavaScript. `<Html>`
+  draws a CSS `filter` through it, and a stream's `<video>` under a filter is
+  painted by the document from its frames: webrtc.github.io's getUserMedia
+  filter sample spent 18 ms of a 33 ms frame in the filter, and spends 3–4.
+  The same release takes ntk 8.28.0 (react-x11#1047).
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -7702,7 +7710,15 @@ paint over the player was twice the cost of the rest of the frame. **A box
 that hides what is under it as a canvas does joins `hides`**, and
 `canvasOpaque` says what of a canvas lets nothing through.
 A video under anything else keeps its poster,
-by design. **The walk asks what a later layer draws over the picture, not
+by design — but for a stream's, whose frames are the page process's: one no
+player is mounted over is painted by the document from its newest frame
+(`_streamPictures`), under its filter as a canvas is, and reports its own
+size, which no player is there to say. **Anything new that refuses a
+stream's player leaves it to `_paintStreams`**, which asks only
+`_mounted`. And a page's canvases draw a stream's `<video>` from a frame the
+host holds for them (`mdKeep`, `mdPixels`), held only once the realm has a
+canvas (`noteCanvas`), since a camera's frames cost a copy into JavaScript.
+**The walk asks what a later layer draws over the picture, not
 how far it reaches** (`inkMeets`, the rule the next paragraph states):
 taking a layer at its ink bounds, GitHub's empty box over its hero's video
 and its header's hidden mega menu each kept the video its poster. **A

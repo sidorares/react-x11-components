@@ -1550,6 +1550,24 @@ them, and to another peer the host can reach.
   Its first live audio track is heard while it plays, through core's
   `<audio srcObject>` or an `AudioFrames` sink, on the output `setSinkId`
   chose.
+- **A stream's `<video>` the document draws through a filter is painted by
+  the document.** A player is a sibling over the document, so a video under
+  a `filter`, a mask, a clip path or a turn has none, and a file's shows its
+  poster. A stream's frames are the page process's to read, so its picture
+  is painted where the poster would be, from its source's newest frame,
+  under all the document does to the box: webrtc.github.io's getUserMedia
+  filter sample is a camera under `filter: blur(3px)`. It costs a copy of
+  each frame into JavaScript and a repaint of the box, which only such a
+  video pays.
+- **A stream's `<video>` draws onto a canvas** (`drawImage`,
+  `createImageBitmap`, a pattern): its newest frame, as RGBA, black where
+  the page disabled the track. No source hands a frame over on demand, so
+  the host holds a copy of the newest frame of each video source a
+  `<video>` shows, from the first canvas the page has, an element's or an
+  `OffscreenCanvas`, and only then: a page that previews its camera and
+  draws nothing pays nothing for it. A `<video>` that plays a file is the
+  platform player's, whose frames never reach JavaScript, and draws
+  nothing; neither does an `<img>` yet.
 - **A canvas is a source on any page** (`captureStream(frameRequestRate)`,
   Media Capture from DOM Elements): a stream of one
   `CanvasCaptureMediaStreamTrack`, its frames the host's copy of the
@@ -1557,8 +1575,9 @@ them, and to another peer the host can reach.
   canvas changes, at most `frameRequestRate` a second where it is given,
   and only at `requestFrame()` where it is 0. It is what WPT's WebRTC
   tests make their video from on a page with no `getUserMedia`. A canvas
-  here draws only other canvases, never an image of another origin, so
-  none is tainted and none is refused with a `SecurityError`.
+  here draws other canvases and a stream's video, never an image of
+  another origin, so none is tainted and none is refused with a
+  `SecurityError`.
 - **Web Audio is the whole API, and silent** (`src/html/scripts/webaudio.ts`):
   an `AudioContext` and every node Web Audio 1 has a factory for, their
   `AudioParam`s with their automation, connections and their errors, a

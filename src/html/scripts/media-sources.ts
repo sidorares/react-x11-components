@@ -12,7 +12,12 @@
 // site's ids apart from another's. And a device's label, its id and what it
 // can do are kept from a page that has not been allowed its kind.
 
-import { NO_MEDIA_DEVICES, mediaError } from '../media-devices.js';
+import {
+  NO_MEDIA_DEVICES,
+  copyFrame,
+  frameToRgba,
+  mediaError,
+} from '../media-devices.js';
 import type {
   HtmlMediaDevices,
   MediaAudioData,
@@ -95,6 +100,16 @@ interface Held {
    *  `<video>`'s `getVideoPlaybackQuality()` counts. */
   frames: number;
   since: number;
+  /** The page's media elements whose canvases may draw it (`mdKeep`), and
+   *  while there are any, the reader that holds a copy of its newest frame
+   *  for them (`kept`, by `frames`), which `mdPixels` answers from. */
+  keeps: number;
+  unkeep: (() => void) | null;
+  kept: MediaVideoFrame | null;
+  keptAt: number;
+  /** `kept` as RGBA, and the frame it was made from. */
+  rgba: Uint8ClampedArray | null;
+  rgbaAt: number;
 }
 
 /** A device's id as one origin sees it: 64 hex digits, as Chrome's are. It
@@ -166,6 +181,12 @@ export class PageSources {
       last: null,
       frames: 0,
       since: Date.now(),
+      keeps: 0,
+      unkeep: null,
+      kept: null,
+      keptAt: 0,
+      rgba: null,
+      rgbaAt: -1,
     };
     this._held.set(id, held);
     this._listen(id, held);
@@ -417,6 +438,55 @@ export class PageSources {
     this._tell('__mdSource', [id, 'size', width, height]);
   }
 
+  /**
+   * A media element of the page's that shows a video source, and could
+   * draw it on a canvas, comes (`on`) or goes: while any is there, a copy
+   * of the source's newest frame is held, since `drawImage` has to have it
+   * in hand as it is asked and no source hands one over on demand. A
+   * camera's frames cross into JavaScript for it, which is why only a
+   * realm with a canvas asks.
+   */
+  private _keep(id: number, on: boolean): void {
+    const held = this._held.get(id);
+    if (!held || held.source.kind !== 'video') return;
+    held.keeps = Math.max(0, held.keeps + (on ? 1 : -1));
+    if (held.keeps && !held.unkeep) {
+      held.unkeep = this.read(id, (frame) => {
+        held.kept = copyFrame(frame as MediaVideoFrame, held.kept);
+        held.keptAt = held.frames;
+      });
+    } else if (!held.keeps && held.unkeep) {
+      held.unkeep();
+      held.unkeep = null;
+      held.kept = held.rgba = null;
+      held.rgbaAt = -1;
+    }
+  }
+
+  /**
+   * The newest frame of a video source held for the page's canvases, as
+   * `frames,width,height|` and its RGBA in base64; the count alone where it
+   * is the frame `known` says the page has; '' where none is held.
+   */
+  private _pixels(id: number, known: string): string {
+    const held = this._held.get(id);
+    const frame = held?.kept;
+    if (!held || !frame) return '';
+    const at = String(held.keptAt);
+    if (at === known) return at;
+    if (held.rgbaAt !== held.keptAt) {
+      held.rgba = frameToRgba(frame, held.rgba ?? undefined);
+      held.rgbaAt = held.keptAt;
+    }
+    const rgba = held.rgba!;
+    const base64 = Buffer.from(
+      rgba.buffer,
+      rgba.byteOffset,
+      rgba.byteLength,
+    ).toString('base64');
+    return `${at},${frame.width},${frame.height}|${base64}`;
+  }
+
   /** An op of the facade's whose name starts with `md`. */
   op(op: string, a: Primitive, b: Primitive): Primitive {
     const text = (v: Primitive): string => (typeof v === 'string' ? v : '');
@@ -439,7 +509,10 @@ export class PageSources {
           held.readers.clear();
           held.unsize?.();
           held.unsize = null;
-          held.last = null;
+          held.unkeep?.();
+          held.unkeep = null;
+          held.last = held.kept = null;
+          held.rgba = null;
           held.source.stop();
         }
         return null;
@@ -447,6 +520,11 @@ export class PageSources {
       case 'mdSize':
         this._watchSize(Number(a), b === true);
         return null;
+      case 'mdKeep':
+        this._keep(Number(a), b === true);
+        return null;
+      case 'mdPixels':
+        return this._pixels(Number(a), text(b));
       case 'mdSamples':
         return this._samples(Number(a), Number(b));
       case 'mdFrames': {
