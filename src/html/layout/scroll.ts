@@ -1418,6 +1418,10 @@ export interface AnchorScroll {
   height: number;
   /** Whether its insets left it no room at all, which nothing fits. */
   corrected: boolean;
+  /** Whether it was over an edge that moves with the anchor as it was laid
+   *  out: a box an area's cell is too small for, held inside its
+   *  containing block. It still is, wherever a scroll takes them both. */
+  overMoving?: boolean;
   /** Whether a placement that no longer fits is laid out again, to try its
    *  position options (6.5). */
   refits: boolean;
@@ -1534,7 +1538,7 @@ export function fitsDisplaced(
   state: AnchorScroll,
   [dx, dy]: readonly [number, number],
 ): boolean {
-  if (state.corrected) return false;
+  if (state.corrected || state.overMoving) return false;
   const sx = state.x ? state.rx - dx : 0;
   const sy = state.y ? state.ry - dy : 0;
   const { room, fixedEdges: f } = state;

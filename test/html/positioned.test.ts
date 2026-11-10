@@ -3261,6 +3261,37 @@ metric(
   },
 );
 
+metric(
+  'no-overflow keeps a box an area is too small for hidden through the refit after the layout that placed it',
+  async () => {
+    // WPT position-visibility-no-overflow-scroll-002: shown after its
+    // anchor's container scrolled, a box over the edge of its area's cell
+    // that moves with the anchor is held inside its containing block, and
+    // stays over that edge wherever a scroll takes the two. The refit at
+    // the next paint asked only of the edges that stay where they are, and
+    // showed it again
+    const { el, styled } = await paned(
+      '<style>body{margin:0}#c{position:relative;width:400px;height:150px;overflow:hidden}' +
+        '#s{overflow:hidden scroll;width:100%;height:100%}' +
+        '.a{width:100px;height:100px;display:inline-block}' +
+        '.t{position:absolute;position-visibility:no-overflow;width:100px;height:100px}</style>' +
+        '<div id="c"><div id="s"><div class="a" style="anchor-name:--a1"></div>' +
+        '<div class="a" style="anchor-name:--a2;position:relative;top:100px"></div>' +
+        '<div id="t1" class="t" style="display:none"></div>' +
+        '<div id="t2" class="t" style="display:none"></div>' +
+        '<div style="height:300px"></div></div></div>',
+    );
+    await act(() => el.scrollElementTo(findById(el.document, 's')!, { y: 50 }));
+    await act();
+    await styled('t1', 'position-anchor:--a1;position-area:bottom');
+    await styled('t2', 'position-anchor:--a2;position-area:top');
+    await act();
+    const hidden = (id: string) => CLAMPED.has(boxOf(el, id) as never);
+    assert.strictEqual(hidden('t1'), false, 'fits under its anchor');
+    assert.strictEqual(hidden('t2'), true, 'over its cell, above its anchor');
+  },
+);
+
 test("an anchor is its element's own box, not the label inside it", async () => {
   const { node } = await render(
     '<style>body{margin:0}#wrap{position:relative;width:300px;height:200px}' +

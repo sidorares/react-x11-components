@@ -7566,7 +7566,11 @@ transform carries it on the box's page. A box with options is laid out
 again in the next frame wherever such a scroll moved its anchor, fitting
 or not: its options are determined at each rendering, which is an anchor
 recalculation point (3.3, 6.5), so its cells come to what the anchor
-leaves where it is now and the options are tried there. An element that
+leaves where it is now and the options are tried there. A box held inside
+its containing block over an edge of its cell that moves with the anchor —
+an area too small for it — still overflows wherever a scroll takes the two,
+so `no-overflow` keeps it hidden through the refit at the paint after the
+layout that placed it. An element that
 stops being rendered forgets the option it was last placed by, and one shown
 again is placed by its own style first (6.5.1.1). What a box is placed by
 becomes its last successful option at a paint, and not at one made while the
