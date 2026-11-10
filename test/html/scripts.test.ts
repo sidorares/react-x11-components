@@ -18246,6 +18246,60 @@ test('a frame’s entries are disabled where its origin is opaque or it is gone,
  *  runs them (`drawsFrames`, `frames.ts`): each frame's document drawn by an
  *  `<Html>` of its own over the frame's box, or held where the page lays
  *  out none, its scripts its own runner's, linked to the page's. */
+test('a property a page fixes on another window is one that window keeps, as Chrome has it, and the proxy over it keeps its invariants', async () => {
+  // meet.google.com's polyfills define `Promise` with `configurable: false`
+  // through a window proxy, whose trap said true of a property its target
+  // did not hold: ECMAScript 10.5.6 throws for that
+  const probe =
+    'function fix(w, tag) {' +
+    '  var P = function P() {}, r = [tag];' +
+    '  try { Object.defineProperty(w, "Promise", { value: P, writable: true, enumerable: false, configurable: false }); r.push("defined"); } catch (e) { r.push(e.name + ": " + e.message); }' +
+    '  var d = Object.getOwnPropertyDescriptor(w, "Promise");' +
+    '  r.push(w.Promise === P, d && d.value === P, d && d.writable, d && d.enumerable, d && d.configurable, "Promise" in w, Reflect.ownKeys(w).indexOf("Promise") >= 0);' +
+    '  r.push(delete w.Promise, w.Promise === P);' +
+    '  var Q = function Q() {}; w.Promise = Q; r.push(w.Promise === Q);' +
+    '  try { Object.defineProperty(w, "Promise", { writable: false }); r.push(Object.getOwnPropertyDescriptor(w, "Promise").writable, w.Promise === Q); } catch (e) { r.push(e.name + ": " + e.message); }' +
+    '  return r.join(" ");' +
+    '}' +
+    // a global's own fixed property, which a proxy says is fixed too
+    'function builtin(w) { var u = Object.getOwnPropertyDescriptor(w, "undefined"); return [u.configurable, u.writable, typeof w.undefined, "undefined" in w].join(" "); }';
+  const { text, logs } = await hostedFrames(
+    '<p id="blank"></p><p id="frame"></p><iframe id="b"></iframe><iframe id="f" src="frame.html"></iframe><script>' +
+      probe +
+      'document.getElementById("blank").textContent = fix(document.getElementById("b").contentWindow, "blank");' +
+      'var f = document.getElementById("f");' +
+      'f.onload = function () { document.getElementById("frame").textContent = fix(f.contentWindow, "frame") + " " + builtin(f.contentWindow); };' +
+      '</script>',
+    {
+      'frame.html':
+        '<!doctype html><p id="out"></p><script>' +
+        probe +
+        'document.getElementById("out").textContent = fix(parent, "parent") + " " + builtin(parent);' +
+        '</script>',
+    },
+  );
+  const fixed = (tag: string): string =>
+    [tag, 'defined', 'true', 'true', 'true', 'false', 'false', 'true', 'true']
+      .concat(['false', 'true', 'true', 'false', 'true'])
+      .join(' ');
+  const done = (where: string, id: string): Promise<string> =>
+    until(
+      () => text(where, id),
+      (t) => t !== '',
+    );
+  assert.equal(await done('page', 'blank'), fixed('blank'), logs.join('\n'));
+  assert.equal(
+    await done('page', 'frame'),
+    fixed('frame') + ' false false undefined true',
+    logs.join('\n'),
+  );
+  assert.equal(
+    await done('f', 'out'),
+    fixed('parent') + ' false false undefined true',
+    logs.join('\n'),
+  );
+});
+
 test("a frame's window has its page's storage, as a frame of its origin has", async () => {
   const { text } = await hostedFrames(
     '<iframe id="f" src="frame.html"></iframe><p id="out"></p><script>' +

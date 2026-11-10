@@ -11999,6 +11999,72 @@ export function installDom(
     return proxy;
   };
   /**
+   * A window proxy's handler, made to keep ECMAScript's invariants for a
+   * proxy (10.5) over a target that holds nothing of its own. A property
+   * the window has that cannot be configured is said to be so, as Chrome
+   * says (HTML 7.2.3.3 forwards both to the window), and is copied onto the
+   * target as it is first seen, since a proxy may say so only of what its
+   * target holds: a page's `Object.defineProperty(frame.contentWindow,
+   * 'Promise', { configurable: false })` threw, as the trap said true of a
+   * property its target did not have. What is copied outlives the window a
+   * navigation takes away, so it is still answered where an invariant
+   * holds the proxy to it, and only there.
+   */
+  const keptWindowTraps = (traps: ProxyHandler<Any>): ProxyHandler<Any> => {
+    let fixed = false;
+    const held = (t: Any, key: PropertyKey): Any => {
+      if (!fixed) return undefined;
+      const d = Reflect.getOwnPropertyDescriptor(t, key);
+      return d && !d.configurable ? d : undefined;
+    };
+    const describe = (t: Any, key: string | symbol): Any => {
+      const found = traps.getOwnPropertyDescriptor!(t, key);
+      if (found && !found.configurable) {
+        if (Reflect.defineProperty(t, key, found)) {
+          fixed = true;
+          return found;
+        }
+        return held(t, key);
+      }
+      return held(t, key) ?? found;
+    };
+    return {
+      ...traps,
+      get(t, key, receiver) {
+        const d = held(t, key);
+        if (d) {
+          if (!('value' in d)) {
+            if (!d.get) return undefined;
+          } else if (!d.writable) {
+            return d.value;
+          }
+        }
+        return traps.get!(t, key, receiver);
+      },
+      has: (t, key) => !!held(t, key) || traps.has!(t, key),
+      ownKeys(t) {
+        const listed = traps.ownKeys!(t);
+        if (!fixed) return listed;
+        const keys = Array.from(listed);
+        const seen = new Set(keys);
+        for (const key of Reflect.ownKeys(t)) {
+          if (!seen.has(key) && held(t, key)) keys.push(key);
+        }
+        return keys;
+      },
+      getOwnPropertyDescriptor: describe,
+      defineProperty(t, key, descriptor) {
+        if (!traps.defineProperty!(t, key, descriptor)) return false;
+        const d = describe(t, key);
+        return descriptor.configurable === false
+          ? !!d && !d.configurable
+          : true;
+      },
+      deleteProperty: (t, key) =>
+        held(t, key) ? false : traps.deleteProperty!(t, key),
+    };
+  };
+  /**
    * A WindowProxy (HTML 7.2.3): the window `current` answers, where one of
    * this origin's is there, and else what `across` says may be reached across
    * origins, the rest of it a `SecurityError`. A frame's, and a window's of
@@ -12023,7 +12089,7 @@ export function installDom(
       key === Symbol.isConcatSpreadable;
     const proxy: Any = new Proxy(
       {},
-      {
+      keptWindowTraps({
         get(_t, key) {
           if (key === 'postMessage') {
             const post = spec.post();
@@ -12054,22 +12120,20 @@ export function installDom(
           const win = current();
           return Reflect.ownKeys(win ?? across());
         },
-        // every property a configurable one, since the target holds none
-        // of them and a proxy may not say otherwise of one it does not hold
+        // what crosses origins a configurable property (HTML 7.2.3.3),
+        // and the window's own as it is (`keptWindowTraps`)
         getOwnPropertyDescriptor(_t, key) {
           const win = current();
           const found = Reflect.getOwnPropertyDescriptor(win ?? across(), key);
+          if (win) return found;
           if (found) found.configurable = true;
-          else if (!win && !silent(key)) throw crossOrigin();
+          else if (!silent(key)) throw crossOrigin();
           return found;
         },
         defineProperty(_t, key, descriptor) {
           const win = current();
           if (!win) throw crossOrigin();
-          return Reflect.defineProperty(win, key, {
-            ...descriptor,
-            configurable: true,
-          });
+          return Reflect.defineProperty(win, key, descriptor);
         },
         deleteProperty(_t, key) {
           const win = current();
@@ -12087,7 +12151,7 @@ export function installDom(
         preventExtensions() {
           return false;
         },
-      },
+      }),
     );
     // `EventTarget`'s methods called on it are its window's, this realm's
     // (`windowMethods`) or another's, which knows its own global
@@ -41717,7 +41781,7 @@ export function installDom(
     const global = handed();
     const window: Any = new Proxy(
       {},
-      {
+      keptWindowTraps({
         get(_t, key) {
           if (key === 'postMessage') return deliverInto(global, frame, 0);
           return Reflect.get(global, key, global);
@@ -41725,21 +41789,15 @@ export function installDom(
         set: (_t, key, value) => Reflect.set(global, key, value, global),
         has: (_t, key) => key in global,
         ownKeys: () => Reflect.ownKeys(global),
-        // every property a configurable one, as `frameProxyOf`'s are
-        getOwnPropertyDescriptor(_t, key) {
-          const found = Reflect.getOwnPropertyDescriptor(global, key);
-          if (found) found.configurable = true;
-          return found;
-        },
+        // each property as the window has it, as `windowProxy`'s are
+        getOwnPropertyDescriptor: (_t, key) =>
+          Reflect.getOwnPropertyDescriptor(global, key),
         defineProperty: (_t, key, descriptor) =>
-          Reflect.defineProperty(global, key, {
-            ...descriptor,
-            configurable: true,
-          }),
+          Reflect.defineProperty(global, key, descriptor),
         deleteProperty: (_t, key) => Reflect.deleteProperty(global, key),
         getPrototypeOf: () => Object.getPrototypeOf(global),
         preventExtensions: () => false,
-      },
+      }),
     );
     proxiedFrames.set(window, null);
     parentLink = { global, window, frame };
