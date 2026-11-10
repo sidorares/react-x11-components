@@ -16449,16 +16449,20 @@ export class HtmlViewNode extends Node {
     }
     // what the layouts since the last rendering placed anchored boxes by
     // is their last successful position option now, and an element of the
-    // document with no box forgets its own
+    // document with no box forgets its own. Not while the parse waits at a
+    // script it met: a browser has rendered nothing of the document by
+    // then, and what the script changes is placed as from no option
     const tree = this._tree;
-    commitLastPositions(
-      tree
-        ? (owner) =>
-            topOf(owner as Element) !== this.document
-              ? undefined
-              : this._boxOf(tree, owner as Element) !== null
-        : undefined,
-    );
+    if (!this._source.held) {
+      commitLastPositions(
+        tree
+          ? (owner) =>
+              topOf(owner as Element) !== this.document
+                ? undefined
+                : this._boxOf(tree, owner as Element) !== null
+          : undefined,
+      );
+    }
     this._noteFrame();
     this._notePaneScroll();
     if (this._owed.size) this._followOwed();

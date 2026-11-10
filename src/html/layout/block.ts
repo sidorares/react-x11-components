@@ -8733,8 +8733,11 @@ const EDGE_OF: Record<InsetSide, number> = {
  * coordinates — an inline box by the rectangle around its fragments.
  */
 function anchorRect(anchor: Box, box: Box, ctx: LayoutContext): CbRect {
-  const rect =
-    anchor.kind === 'inline'
+  const pieces =
+    anchor.kind === 'inline' && anchor.cut ? CUT_PIECES.get(anchor) : undefined;
+  const rect = pieces
+    ? brokenInlineRect(anchor, pieces, box, ctx)
+    : anchor.kind === 'inline'
       ? inlineContainingBlock(anchor, box, ctx)
       : {
           x: anchor.x,
@@ -10663,6 +10666,56 @@ function paddingRectOf(
  * it would have been in flow: as high as a fragment there, with no width,
  * and of no size at all where that is on no line.
  */
+/**
+ * An inline anchor broken around blocks: the rectangle around all of it,
+ * each piece's fragments and the blocks it was broken around, as Chrome and
+ * Firefox take it (CSS Anchor Positioning 1, 2: the bounding rectangle of
+ * its fragments). Its first piece alone was a line's worth of it.
+ */
+function brokenInlineRect(
+  anchor: Box,
+  pieces: Box[],
+  box: Box,
+  ctx: LayoutContext,
+): CbRect {
+  let x1 = Infinity;
+  let y1 = Infinity;
+  let x2 = -Infinity;
+  let y2 = -Infinity;
+  const take = (x: number, y: number, right: number, bottom: number): void => {
+    x1 = Math.min(x1, x);
+    y1 = Math.min(y1, y);
+    x2 = Math.max(x2, right);
+    y2 = Math.max(y2, bottom);
+  };
+  for (const piece of [anchor, ...pieces]) {
+    let block = piece.parent;
+    while (block && block.kind === 'inline') block = block.parent;
+    const face = ctx.fonts ? faceExtentOf(ctx.fonts, piece.style) : null;
+    for (const line of block?.lines ?? []) {
+      const span = spanOn(line, piece);
+      if (!span) continue;
+      const [top, bottom] = fragmentRow(line, piece, face, false);
+      take(span[0], top, span[1], bottom);
+    }
+  }
+  // each block as the anonymous block around it has it, across the line
+  // of the block it is in (CSS 2.1 9.2.1.1)
+  for (const block of CUT_BLOCKS.get(anchor) ?? []) {
+    const p = block.parent;
+    const left = p ? p.x + p.borderLeft + p.padLeft : block.x;
+    const right = p ? p.x + p.width - p.borderRight - p.padRight : block.x;
+    take(
+      Math.min(left, block.x),
+      block.y,
+      Math.max(right, block.x + block.width),
+      block.y + block.height,
+    );
+  }
+  if (x2 < x1) return inlineContainingBlock(anchor, box, ctx);
+  return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+}
+
 function inlineContainingBlock(
   inline: Box,
   box: Box,

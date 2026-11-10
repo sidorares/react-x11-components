@@ -1348,6 +1348,28 @@ test("what a page reads back of an anchored box: position-visibility by its name
   ]);
 });
 
+test('a box a script reads before the page is rendered is placed afresh after: what it read it by is no last successful option', async () => {
+  // WPT anchor-position-non-anchored-fallback: a browser renders nothing
+  // before the parse is past the script, so the fallback the script's read
+  // placed the box by is nobody's last successful option, and once the
+  // anchor is shorter the base style fits again (CSS Anchor Positioning 1,
+  // 6.5.1.1)
+  const doc = await hosted(
+    '<style>body{margin:0}#a{anchor-name:--a;width:100px;height:100vh}' +
+      '#t{position:absolute;top:anchor(--a bottom);width:100px;height:50px;position-try:--bottom}' +
+      '@position-try --bottom { top: auto; bottom: 0px; }</style>' +
+      '<p id="out"></p><div id="a"></div><div id="t"></div><script>' +
+      'var a = document.getElementById("a"), t = document.getElementById("t");' +
+      'a.offsetTop; var before = t.offsetTop; a.style.height = "50px";' +
+      'requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+      'document.getElementById("out").textContent = before + "|" + t.offsetTop + "|" + a.offsetTop; }); });</script>',
+  );
+  await waitFor(() => assert.notEqual(doc.text('out'), '', 'the frames ran'));
+  const [before, after, top] = doc.text('out').split('|').map(Number);
+  assert.ok(before > after, `the fallback first: ${doc.text('out')}`);
+  assert.equal(after, top + 50, 'then the base style, under the anchor');
+});
+
 test('a @position-try rule is a CSSPositionTryRule, whose descriptors are the properties it takes, which a page sets and the box is placed by', async () => {
   // WPT at-position-try-cssom: the name as written, the declarations in
   // order with what the rule takes no part of them, an attribute for each

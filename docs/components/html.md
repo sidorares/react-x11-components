@@ -7568,7 +7568,15 @@ or not: its options are determined at each rendering, which is an anchor
 recalculation point (3.3, 6.5), so its cells come to what the anchor
 leaves where it is now and the options are tried there. An element that
 stops being rendered forgets the option it was last placed by, and one shown
-again is placed by its own style first (6.5.1.1). `position-visibility` hides a box, with all it holds,
+again is placed by its own style first (6.5.1.1). What a box is placed by
+becomes its last successful option at a paint, and not at one made while the
+parse waits at a script it met: a browser has rendered nothing of the
+document by then, so the option a script's read placed the box by is
+nobody's, and once the script has changed the page the box is placed from
+its own style again. An inline anchor broken around a block is all of it:
+the rectangle around each of its pieces' fragments and the line the block
+is on, as wide as the anonymous block around it is, as Chrome and Firefox
+take it (2). `position-visibility` hides a box, with all it holds,
 where its default anchor is cut away entirely by a box that clips between
 the two, or by the viewport for a box fixed to it whose anchor the pane
 scrolls (`anchor-visible`, the initial value) — on the axes it follows the
