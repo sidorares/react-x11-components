@@ -151,7 +151,14 @@ test('a description moves the signalling state, told before the operation settle
     await p;
     log('local', pc.signalingState, told.join(','), pc.localDescription.type, pc.pendingLocalDescription === pc.localDescription, pc.currentLocalDescription);
     try { await pc.setLocalDescription({ type: 'answer', sdp: offer.sdp }); } catch (e) { log('answer in have-local-offer', e.name); }
-    try { await pc.setLocalDescription({ type: 'offer', sdp: offer.sdp + 'a=x\\r\\n' }); } catch (e) { log('modified', e.name); }
+    var other = new RTCPeerConnection();
+    other.addTransceiver('audio');
+    var theirs = await other.createOffer();
+    try { await pc.setLocalDescription(theirs); } catch (e) { log('another connection’s', e.name); }
+    other.close();
+    // a page that changes its own offer before it sets it, as Meet does, is
+    // let, as Chrome lets it
+    try { await pc.setLocalDescription({ type: 'offer', sdp: offer.sdp + 'a=x\\r\\n' }); log('modified', 'set'); } catch (e) { log('modified', e.name); }
     await pc.setLocalDescription({ type: 'rollback' });
     log('rolled back', pc.signalingState, told.join(','), pc.localDescription);
     try { await pc.setRemoteDescription({ type: 'rollback' }); } catch (e) { log('rollback in stable', e.name); }
@@ -163,7 +170,8 @@ test('a description moves the signalling state, told before the operation settle
     'pending|stable',
     'local|have-local-offer|have-local-offer|offer|true|',
     'answer in have-local-offer|InvalidStateError',
-    'modified|InvalidModificationError',
+    'another connection’s|InvalidModificationError',
+    'modified|set',
     'rolled back|stable|have-local-offer,stable|',
     'rollback in stable|InvalidStateError',
     'no type|TypeError',

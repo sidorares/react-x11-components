@@ -5296,7 +5296,19 @@ list.
   its descriptions is applied waits for that operation's answer**
   (`PagePeers._event`): a stack gathers while `setLocalDescription` is
   under way, and the page hears its candidates after the promise, so
-  anything new a connection tells goes through `_event`. **Where werift
+  anything new a connection tells goes through `_event`. **A description a
+  page changed before it set it is Chrome's to take, not WebRTC 1.0's to
+  refuse** (`credentialsOf` in `webrtc.ts`): one with this connection's ICE
+  credentials and fingerprint that is no earlier created one, since Meet
+  adds simulcast layers and header extensions to every offer, and what
+  Chrome refuses, another connection's or an older one, is refused.
+  werift refuses any change itself, so the adapter hands it the offer it
+  made, and what the page added is not sent. **An offer is shaped as
+  Chrome's where a page reads its shape**: an RTX codec for each video one,
+  paired in an `a=ssrc-group:FID`, which Meet's client splits without a
+  check, and one id for an extension's URI in every section of a bundle
+  (`keepExtensionIds`, where werift numbers them again), since Meet adds
+  its own at ids the sections leave free. **Where werift
   says what a browser would not, one side corrects it and the PRD's table
   says which** ("Where werift differs, case by case"): the protocol in the
   adapter (`werift.ts`), the API in the facade. A werift release that
@@ -5345,9 +5357,11 @@ list.
   back is the settings or the name of the one nothing met. Which required
   constraint failed is the first, in `ORDER`, to leave no candidate, so a
   device is narrowed to a mode before a mode to a size. **What
-  `enumerateDevices` shows a document is what it captured**
-  (`PageSources._exposes`), never what it may do, and a group id is the
-  document's own. **A track handed to another realm keeps its source where
+  `enumerateDevices` shows a document is what it captured, or a kind the
+  user granted it** (`PageSources._exposes`, `SourceSeams.granted`), as
+  Chrome shows a grant it remembers, never what a policy merely allows, and
+  a group id is the document's own. Meet takes devices with no id for none
+  at all and never asks for a capture, so a call joined with neither. **A track handed to another realm keeps its source where
   it was**: the track made of it reaches it over a port back (`serve`,
   `homeOf` in `mediastream.ts`), whatever thread it is on. So anything new a
   track asks of its source goes through `retain`, `release` or its home's

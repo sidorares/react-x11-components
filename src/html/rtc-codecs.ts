@@ -68,6 +68,21 @@ export const OFFERED_CODECS: Record<'audio' | 'video', OfferedCodec[]> = {
       payloadType: 98,
       rtcpFeedback: VIDEO_FEEDBACK,
     },
+    // a resend stream for each, at Chrome's payload types: Meet reads the
+    // `a=ssrc-group:FID` an offer pairs a video sender's SSRCs in, and an
+    // offer with none throws in its client before it ever asks for a call
+    {
+      mimeType: 'video/rtx',
+      clockRate: 90000,
+      sdpFmtpLine: 'apt=96',
+      payloadType: 97,
+    },
+    {
+      mimeType: 'video/rtx',
+      clockRate: 90000,
+      sdpFmtpLine: 'apt=98',
+      payloadType: 99,
+    },
   ],
 };
 

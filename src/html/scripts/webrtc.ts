@@ -66,6 +66,17 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
   'use strict';
   type Any = any;
   const D: Any = deps;
+  /** A description's ICE credentials and DTLS fingerprints, which say
+   *  whose transport it is. */
+  const credentialsOf = (sdp: string): string =>
+    (sdp.match(/^a=(?:ice-ufrag|ice-pwd|fingerprint):.*$/gm) ?? [])
+      .map((l: string) => l.trim())
+      .sort()
+      .join('\n');
+  const noteCreated = (s: Any, sdp: string): void => {
+    s.created.push(sdp);
+    if (s.created.length > 16) s.created.shift();
+  };
   const call: Any = D.call;
   const entry: Any = D.entry;
   const input: Any = D.input;
@@ -2226,6 +2237,9 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         negotiationNeeded: false,
         lastOffer: '',
         lastAnswer: '',
+        // every description createOffer and createAnswer made, the latest
+        // last: one of them that is no longer the last is refused
+        created: [] as string[],
         transceivers: [] as Any[],
         config,
         iceRestart: false,
@@ -2411,6 +2425,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           ),
           (sdp: string) => {
             s.lastOffer = sdp;
+            noteCreated(s, sdp);
             return { type: 'offer', sdp };
           },
         );
@@ -2438,6 +2453,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           ask((req) => call('rtcAnswer', s.id, req)),
           (sdp: string) => {
             s.lastAnswer = sdp;
+            noteCreated(s, sdp);
             return { type: 'answer', sdp };
           },
         );
@@ -2477,7 +2493,17 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         }
         if (sdpGiven !== '') {
           const last = type === 'offer' ? s.lastOffer : s.lastAnswer;
-          if (sdpGiven !== last) {
+          // what WebRTC 1.0 refuses is any change at all; Chrome takes a
+          // description a page changed, and Meet adds its simulcast streams
+          // and header extensions to every offer before it sets it. What
+          // Chrome still refuses is one that is not this connection's last:
+          // an earlier one, or one whose ICE credentials and fingerprint
+          // are another's
+          if (
+            sdpGiven !== last &&
+            (s.created.includes(sdpGiven) ||
+              credentialsOf(sdpGiven) !== credentialsOf(last))
+          ) {
             return rejected(
               domError(
                 'The description is not the last one created: it was modified.',
@@ -2498,6 +2524,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
             ask((req) => call('rtcOffer', s.id, req, s.iceRestart)),
             (sdp: string) => {
               s.lastOffer = sdp;
+              noteCreated(s, sdp);
               return setDescription(s, false, 'offer', sdp);
             },
           );
@@ -2514,6 +2541,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           ask((req) => call('rtcAnswer', s.id, req)),
           (sdp: string) => {
             s.lastAnswer = sdp;
+            noteCreated(s, sdp);
             return setDescription(s, false, type, sdp);
           },
         );

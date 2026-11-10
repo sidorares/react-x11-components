@@ -1500,9 +1500,11 @@ them, and to another peer the host can reach.
   naming the constraint, and `applyConstraints` sets a track's source the
   same way. The page sees a device's id digested with its origin and a
   group id that is the document's own, and `enumerateDevices` shows a kind
-  of device in full only once the document has captured one of it: before
+  of device in full once the document has captured one of it, or the user
+  has granted it that kind, as Chrome shows a grant it remembers: before
   that, one entry a kind with no id, no group and no label, and no
-  speaker, as Firefox and Safari have it whatever the page is allowed.
+  speaker. Firefox and Safari wait for a capture whatever was granted, and
+  Meet, given no ids, joins a call with no camera and no microphone.
   **With none**, a page lists no device, as on a machine with none. A
   secure context's only, as `[SecureContext]` has it.
   `coreMediaDevices(app)` is the machine's own, over react-x11's media
