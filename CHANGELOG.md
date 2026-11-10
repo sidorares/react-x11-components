@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.43.0](https://github.com/sidorares/react-x11-components/compare/v0.42.0...v0.43.0) (2026-11-10)
+
+
+### Features
+
+* **html:** a horizontal block in a vertical flow is a frame of its own, and a scroller in a vertical flow draws its bars ([#1468](https://github.com/sidorares/react-x11-components/issues/1468)) ([c245c49](https://github.com/sidorares/react-x11-components/commit/c245c497ce52bbe2ff76e1518d632519101b51dd))
+* **html:** a page's sender and receiver take an RTCRtpScriptTransform, whose worker reads each encoded frame and writes back what is sent or decoded ([#1470](https://github.com/sidorares/react-x11-components/issues/1470)) ([7479ca2](https://github.com/sidorares/react-x11-components/commit/7479ca20f62e610ccd47e6ab0a0d3ec1edc74613))
+
+
+### Bug Fixes
+
+* **html:** a property a page fixes on another window is one that window keeps, and the proxy over it keeps its invariants ([#1471](https://github.com/sidorares/react-x11-components/issues/1471)) ([8e4d9f7](https://github.com/sidorares/react-x11-components/commit/8e4d9f79e209eaccb6070e3226fffe008a7ee470))
+* **html:** a stream's &lt;video&gt; draws onto a canvas, and one under a filter is painted by the document from its frames ([#1469](https://github.com/sidorares/react-x11-components/issues/1469)) ([d80e6e5](https://github.com/sidorares/react-x11-components/commit/d80e6e58c40a86ec88c88ac05893a7876e21bb9e))
+* **html:** Google Meet joins a call over werift, with camera and microphone ([#1472](https://github.com/sidorares/react-x11-components/issues/1472)) ([8f81e75](https://github.com/sidorares/react-x11-components/commit/8f81e7543fc1b2af80d9f7cfbc0e5ce5b1b4b38c))
+* **html:** no paint while the parse waits at a script makes a position option the last successful one, and an inline anchor broken around a block is all of it ([#1465](https://github.com/sidorares/react-x11-components/issues/1465)) ([35ad579](https://github.com/sidorares/react-x11-components/commit/35ad579c00bfc2901a55d67294c47c7f0f1a6c9e))
+* **html:** no-overflow keeps a box over the moving edge of its area hidden through the refit after its layout ([#1466](https://github.com/sidorares/react-x11-components/issues/1466)) ([0f292f7](https://github.com/sidorares/react-x11-components/commit/0f292f77b95526ce3f4cda4756bf1a10ed6fa6fb))
+
 ## [0.42.0](https://github.com/sidorares/react-x11-components/compare/v0.41.0...v0.42.0) (2026-11-09)
 
 
