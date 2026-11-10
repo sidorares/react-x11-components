@@ -6955,8 +6955,18 @@ backend. The pointer finds what is under it where it is drawn, `elementRect`
 measures it there, and `getComputedStyle` reads its boxes by the page's
 sides.
 
-Not yet: a horizontal flow inside a vertical one (`text-combine-upright`
-and its kin), the root element in a vertical writing mode scrolled from its
+A horizontal block inside such a flow is the root of a flow of its own, an
+orthogonal flow inside an orthogonal flow (7.3), whose frame turns back what
+the vertical one turned. Its width is the room the page has across it, its
+containing block's height in the vertical flow, less what an absolute box's
+insets take, fit to what it holds; its lines run across the page; and a
+scroll container among such boxes scrolls as the page has it and draws its
+bars at the page's right and bottom. An anchor in it is followed and seen as
+any is.
+
+Not yet: `text-combine-upright` and its kin, a horizontal block inside a
+`vertical-lr` flow (laid out turned with the flow, which is put back across
+after its layout), the root element in a vertical writing mode scrolled from its
 block start, the principal writing mode handed from the `<body>` or the root
 element to the viewport (8) — so a vertical body is as wide as the line
 where a browser makes it as wide as its lines and puts it at the right, and

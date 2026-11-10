@@ -317,6 +317,7 @@ import { containingParent } from './layout/multicol.js';
 import type { PlacedTransition } from './layout/block.js';
 import {
   FRAME_ROOTS,
+  frameTurn,
   FRAMES,
   frameModeOf,
   frameOf as frameOfBox,
@@ -17284,7 +17285,7 @@ export class HtmlViewNode extends Node {
     let turn: ComputedStyle['writingMode'] | null = null;
     if (tree.vertical) {
       const frame = frameOfBox(box);
-      const mode = frame ? FRAME_ROOTS.get(frame)?.style.writingMode : null;
+      const mode = frame ? frameTurn(frame) : null;
       if (frame && mode) {
         const laid = frameRectOf(
           frame,

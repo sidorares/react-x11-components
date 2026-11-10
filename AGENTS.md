@@ -8416,8 +8416,30 @@ containing block of what it holds at its root's padding box**
 (`paddingRectOf`): the frame is only as tall as its content, which the
 page has as wide, and `left: 30px` in a `vertical-rl` box came out at its
 right. An offset read off a box in a frame is turned onto the page as well
-(`onPage`, in `_laidOutAt`). A horizontal box inside a vertical flow is no
-frame of its own yet, and is laid out turned with the flow.
+(`onPage`, in `_laidOutAt`).
+
+**A horizontal block in a vertical flow's frame is a frame of its own,
+which turns back what that one turned** (`makeFrame`'s `back`). The builder
+lists it with the vertical roots (`_turnBack`), the walk that turns the
+vertical frame's styles stops at it (`later`), and what it holds keeps the
+page's styles, which are its axes again. A frame's turn is `frameTurn`,
+never its root's writing mode: the turn-back root's is `horizontal-tb`, and
+its frame turns as `sideways-lr` or `vertical-rl` does. Four things are
+load-bearing. **Anything that converts between a box and the page goes
+through every frame around it** — `onPage` and `offPage`, `inFrameOf`, the
+reach of a frame in a frame (`frameBounds`) — and never one frame's
+`pageRectOf` alone: the shift a reach past the page's left asks for moved a
+whole document 30px where it measured a nested frame in the wrong axes.
+**A box's axes on the page are its frames' turns added up**
+(`quarterTurnsOf`, in `anchorAxesOf`), so a box in a turn-back frame is in
+the page's axes. **Anything that compares two boxes in different frames
+compares them on the page**, as `clippedAway` does: an anchor in the
+turn-back frame and the scroller around it are in two. And **a scroll
+container's bars are drawn through its frames' turn** (`frameMatrixOf`),
+on the sides the page has at its right and bottom (`scrollBarsOf`): until
+this, a scroller in any vertical flow drew none. A `vertical-lr` flow,
+which `reflectFrame` puts back across after its layout, makes no turn-back
+frame (`holdsTurnBack`).
 
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,

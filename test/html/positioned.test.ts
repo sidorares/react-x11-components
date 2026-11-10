@@ -11,6 +11,8 @@ import {
 import { setModal } from '../../src/html/dom.js';
 import { parseColor } from '../../src/html/css/values.js';
 import { CLAMPED } from '../../src/html/layout/boxes.js';
+import { scrollBarsOf, thumbRect } from '../../src/html/layout/scroll.js';
+import { onPage } from '../../src/html/layout/writing.js';
 import type { Box, BoxTree } from '../../src/html/layout/boxes.js';
 import { layered, layersWalked, stackingOf } from '../../src/html/paint.js';
 import {
@@ -2250,6 +2252,38 @@ test('an inline anchor broken around a block is all of it: its pieces, and the l
     t.y + t.height > d.y + d.height,
     `to the last: ${t.y + t.height}, ${d.y + d.height}`,
   );
+});
+
+test('an anchor in a horizontal scroller in a vertical flow is followed and seen, and the scroller has its bar at the right', async () => {
+  // WPT anchor-center-scroll-vertical-wm-001: the scroller is a frame in
+  // the vertical flow's frame, which turns back what that one turned. What
+  // clips the anchor is asked on the page, and its bar is drawn on the side
+  // the page has at its right
+  const { node } = await render(
+    '<style>body{margin:0}#cb{position:relative;writing-mode:vertical-rl;width:400px;height:400px}' +
+      '#s{writing-mode:horizontal-tb;width:400px;height:400px;overflow:auto}' +
+      '#a{width:100px;height:100px;anchor-name:--a}' +
+      '#t{position:absolute;position-anchor:--a;justify-self:anchor-center;left:0;width:50px;height:50px}' +
+      '</style><div id="cb"><div id="s"><div style="height:100px"></div><div id="a"></div>' +
+      '<div style="height:1000px"></div></div><div id="t"></div></div>',
+  );
+  const el = view(node);
+  await act(() => el.scrollElementTo(findById(el.document, 's')!, { y: 100 }));
+  await act();
+  const rect = (id: string) => {
+    const r = el.elementRect(findById(el.document, id)!)!;
+    return [r.x, r.y, r.width, r.height];
+  };
+  assert.deepStrictEqual(rect('a'), [0, 0, 100, 100]);
+  assert.deepStrictEqual(rect('t'), [0, 25, 50, 50]);
+  assert.strictEqual(CLAMPED.has(boxOf(el, 't') as never), false, 'seen');
+  const scroller = boxOf(el, 's') as unknown as Box;
+  const bars = scrollBarsOf(scroller, 1);
+  assert.strictEqual(bars.length, 1);
+  const thumb = onPage(scroller, thumbRect(bars[0]));
+  assert.ok(thumb.x > 380, `at the right: ${thumb.x}`);
+  assert.ok(thumb.height > thumb.width, 'running down the page');
+  assert.ok(thumb.y > 0 && thumb.y < 100, `a little way down: ${thumb.y}`);
 });
 
 test('anchor() and anchor-size() place a box against its anchor', async () => {

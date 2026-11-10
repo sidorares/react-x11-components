@@ -47,7 +47,7 @@ import {
   overflowGivenToViewport,
 } from '../css/cascade.js';
 import { outOfPlane } from '../css/transform.js';
-import { frameOf, makeFrame } from './writing.js';
+import { frameOf, holdsTurnBack, makeFrame } from './writing.js';
 import type {
   Cascade,
   FirstLetterRules,
@@ -3631,6 +3631,9 @@ class Builder {
    *  horizontal one, which a frame is made in once the fix-up has run
    *  (`makeFrame`). */
   private _orthogonal: Box[] = [];
+  /** Those of `_orthogonal` that are horizontal in a vertical flow's frame,
+   *  with that flow's writing mode. */
+  private _turnBack = new Map<Box, ComputedStyle['writingMode']>();
   private _readingFlow = false;
   private _anchors = false;
   private _negative = false;
@@ -4027,8 +4030,14 @@ class Builder {
     const cascade = this._options.cascade;
     const anonymous = anonymousStyles(cascade.initial);
     fixUp(rootBox, anonymous);
+    const later = this._turnBack.size ? new Set(this._turnBack.keys()) : null;
     for (const box of this._orthogonal) {
-      makeFrame(box, anonymous(box.style, 'block'));
+      makeFrame(
+        box,
+        anonymous(box.style, 'block'),
+        this._turnBack.get(box) ?? null,
+        later,
+      );
     }
     assignSubtreeRanges(rootBox);
     const copies = this._copies!;
@@ -4471,6 +4480,17 @@ class Builder {
         (kind === 'block' && !style.grid)) &&
       flowModeAround(into) === 'horizontal-tb'
     ) {
+      this._orthogonal.push(box);
+    } else if (
+      style.writingMode === 'horizontal-tb' &&
+      kind === 'block' &&
+      !style.grid &&
+      holdsTurnBack(flowModeAround(into)) &&
+      this._inOrthogonal(into)
+    ) {
+      // and a horizontal one in such a flow's frame, whose own frame turns
+      // back what that one turned (`makeFrame`'s `back`)
+      this._turnBack.set(box, flowModeAround(into));
       this._orthogonal.push(box);
     }
     if (

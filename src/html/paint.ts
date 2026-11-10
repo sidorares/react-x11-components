@@ -112,7 +112,10 @@ import { isScroller, scrollBarsOf, thumbRect } from './layout/scroll.js';
 import {
   FRAME_ROOTS,
   allUpright,
+  frameOf,
+  frameTurn,
   framed,
+  turnsUp,
   uprightCells,
 } from './layout/writing.js';
 import {
@@ -4916,13 +4919,16 @@ function paintScrollBars(
       damage.x < x + width &&
       y < damage.y + damage.height &&
       damage.y < y + height);
-  const stack: [Box, number, number, boolean][] = [
-    [top ?? tree.root, options.originX, options.originY, false],
+  // the fourth, whether the box is in a frame of a writing mode, whose
+  // coordinates are its own and no damage's
+  const stack: [Box, number, number, boolean, boolean][] = [
+    [top ?? tree.root, options.originX, options.originY, false, false],
   ];
   while (stack.length) {
     const entry = stack.pop()!;
     const box = entry[0];
     let [, ox, oy, fixed] = entry;
+    const turned = entry[4];
     if (!fixed && options.viewport && fixedToViewport(box)) {
       ox = options.viewport.x;
       oy = options.viewport.y;
@@ -4930,6 +4936,7 @@ function paintScrollBars(
     }
     if (box.boundsY === Infinity) continue;
     if (
+      !turned &&
       !inDamage(
         box.boundsX + ox,
         box.boundsY + oy,
@@ -4943,10 +4950,11 @@ function paintScrollBars(
     if (
       isScroller(box) &&
       box.style.visibility === 'visible' &&
-      inDamage(box.x + ox, box.y + oy, box.width, box.height)
+      (turned || inDamage(box.x + ox, box.y + oy, box.width, box.height))
     ) {
       paintBarsOf(ctx, box, ox, oy, scale, options);
     }
+    const inFrame = turned || (framed.any && FRAME_ROOTS.has(box));
     for (let i = box.children.length - 1; i >= 0; i -= 1) {
       const child = box.children[i];
       if (child.kind === 'text' || child.kind === 'break') continue;
@@ -4954,9 +4962,28 @@ function paintScrollBars(
       if (child.topLayer) continue;
       // and one a view transition captured, in its image
       if (options.captured?.has(child)) continue;
-      stack.push([child, ox, oy, fixed]);
+      stack.push([child, ox, oy, fixed, inFrame]);
     }
   }
+}
+
+/**
+ * The matrix the frames of writing modes around a box draw what it holds
+ * through onto the page, the nearest first: each a quarter turn about its
+ * corner (`pageRectOf`). Null for a box in none, and where the context is
+ * already turned (`turned`).
+ */
+function frameMatrixOf(box: Box): Matrix | null {
+  let m: Matrix | null = null;
+  for (let frame = frameOf(box); frame; frame = frameOf(frame)) {
+    const fx = frame.x;
+    const fy = frame.y;
+    const turn: Matrix = turnsUp(frameTurn(frame))
+      ? [0, -1, 1, 0, fx - fy, fy + fx]
+      : [0, 1, -1, 0, fx + fy, fy - fx];
+    m = m ? multiply(turn, m) : turn;
+  }
+  return m;
 }
 
 function paintBarsOf(
@@ -4966,11 +4993,34 @@ function paintBarsOf(
   oy: number,
   scale: number,
   options: PaintOptions,
+  /** Whether the context is turned through the frames around it already. */
+  turned = false,
 ): void {
   const bars = scrollBarsOf(box, scale, options.scrollbarHidden);
   if (!bars.length) return;
+  // a frame of a writing mode turns them with what they scroll, and any
+  // other transform keeps them off
   for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
+    if (framed.any && FRAME_ROOTS.has(at)) continue;
     if (placedMatrix(at)) return;
+  }
+  const turn = framed.any && !turned ? frameMatrixOf(box) : null;
+  if (turn && ctx.transform) {
+    ctx.save!();
+    ctx.transform(
+      turn[0],
+      turn[1],
+      turn[2],
+      turn[3],
+      turn[4] + ox,
+      turn[5] + oy,
+    );
+    try {
+      paintBarsOf(ctx, box, 0, 0, scale, options, true);
+    } finally {
+      ctx.restore!();
+    }
+    return;
   }
   const cut = clipFor(
     box,
