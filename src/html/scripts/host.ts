@@ -9833,6 +9833,7 @@ export class DomHost {
         origin: () => this._origin(),
         originless: () => this.originless,
         allowed: (name) => this._featureAllowed(name),
+        granted: (name) => this._permissionState(name) === 'granted',
         tell: (name, input) => {
           if (!this._disposed) this.entries?.call(name, input);
         },

@@ -65,9 +65,9 @@ const expect = (logs: string[], lines: string[]) => {
 };
 
 test('enumerateDevices tells a document what it captured, and no more: one empty entry a kind before, microphones, cameras and then speakers after', async () => {
-  // allowed both kinds, which is not what decides it: Firefox and Safari
-  // show a document that has not captured empty entries whatever it may do
-  const logs = await run(`
+  // asked, not granted: a grant is the other way a kind is told
+  const logs = await run(
+    `
     log('before', kinds(await navigator.mediaDevices.enumerateDevices()));
     var video = await navigator.mediaDevices.getUserMedia({ video: true });
     video.getTracks()[0].stop();
@@ -82,7 +82,9 @@ test('enumerateDevices tells a document what it captured, and no more: one empty
     log('ids', camera.deviceId === after[1].deviceId, camera.deviceId.length);
     var caps = camera.getCapabilities();
     log('caps', caps.deviceId === camera.deviceId, caps.groupId === camera.groupId, caps.resizeMode.join());
-  `);
+  `,
+    { mediaDevices: fakeMediaDevices({ permission: 'prompt' }) },
+  );
   expect(logs, [
     'before|audioinput:,videoinput:',
     'video|audioinput:,videoinput:id+group+label',
@@ -90,6 +92,23 @@ test('enumerateDevices tells a document what it captured, and no more: one empty
     'groups|true|false',
     'ids|true|64',
     'caps|true|true|none,crop-and-scale',
+  ]);
+});
+
+test('enumerateDevices tells a document granted a kind of device about it before it captures', async () => {
+  // as Chrome does with a grant it remembers, and as Media Capture's
+  // "device information can be exposed" has it: Meet takes devices with no
+  // id for no devices at all, and never asks for a capture
+  const asked = await run(
+    `log('asked', kinds(await navigator.mediaDevices.enumerateDevices()));`,
+    { mediaDevices: fakeMediaDevices({ permission: 'prompt' }) },
+  );
+  expect(asked, ['asked|audioinput:,videoinput:']);
+  const granted = await run(
+    `log('granted', kinds(await navigator.mediaDevices.enumerateDevices()));`,
+  );
+  expect(granted, [
+    'granted|audioinput:id+group+label,videoinput:id+group+label,audiooutput:id+group+label',
   ]);
 });
 

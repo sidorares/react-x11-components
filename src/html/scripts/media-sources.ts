@@ -50,6 +50,10 @@ export interface SourceSeams {
   originless(): boolean;
   /** An entry of the page's, with its input. */
   tell(entry: string, input: unknown): void;
+  /** Whether the user has granted the document a camera or a microphone,
+   *  which lets it be told of that kind's devices before it captures
+   *  (Media Capture, "device information can be exposed"). Absent, none is. */
+  granted?(name: 'camera' | 'microphone'): boolean;
   /** Whether the document may use a camera or a microphone (Permissions
    *  Policy). Absent, it may. */
   allowed?(name: 'camera' | 'microphone'): boolean;
@@ -640,6 +644,11 @@ export class PageSources {
    *  permission, as WPT holds them to. */
   private _exposes(kind: 'audio' | 'video'): boolean {
     if (this._exposed[kind]) return true;
+    // a grant the user made, as Chrome reads one it remembers: Meet takes
+    // devices with no id for none at all, and asks for no capture
+    if (this._seams.granted?.(kind === 'audio' ? 'microphone' : 'camera')) {
+      return true;
+    }
     for (const id of this._held.keys()) {
       const view = this._views.get(id);
       // a device's: a screen's view has no device id, and says nothing of

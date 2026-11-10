@@ -1155,6 +1155,70 @@ test('Opus flows both ways: a remote track unmutes on its first packet, and its 
   }
 });
 
+test('an offer the page changed before it set it, as Meet does with simulcast and header extensions, is set, and the call connects and plays what werift sends', async () => {
+  // Meet adds to each video sender's section a SIM group of three SSRCs,
+  // each with its RTX in a FID group, and extensions at ids the bundle
+  // leaves free, then sets the offer: Chrome takes it, and WebRTC 1.0's
+  // InvalidModificationError ended the call before it started
+  const logs = await run(`
+    ${CALL}
+    var canvas = document.createElement('canvas');
+    canvas.width = 160; canvas.height = 120;
+    document.documentElement.appendChild(canvas);
+    var g = canvas.getContext('2d');
+    var n = 0;
+    var timer = setInterval(function () { n++; g.fillStyle = 'rgb(' + (n * 20 % 255) + ',80,120)'; g.fillRect(0, 0, 160, 120); }, 100);
+    var stream = canvas.captureStream();
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.addTrack(stream.getVideoTracks()[0], stream);
+    var video = document.createElement('video');
+    video.autoplay = true;
+    document.documentElement.appendChild(video);
+    var metadata = new Promise(function (r) { video.onloadedmetadata = r; });
+    pc2.ontrack = function (e) { video.srcObject = e.streams[0]; };
+    pc1.onicecandidate = function (e) { pc2.addIceCandidate(e.candidate); };
+    pc2.onicecandidate = function (e) { pc1.addIceCandidate(e.candidate); };
+    var BREAK = String.fromCharCode(13, 10);
+    var offer = await pc1.createOffer();
+    var sections = offer.sdp.split(BREAK + 'm=').map(function (x, i) { return i ? 'm=' + x : x; });
+    var munged = sections.map(function (section) {
+      if (section.indexOf('m=video') !== 0) return section;
+      var fid = /a=ssrc-group:FID ([0-9]+) ([0-9]+)/.exec(section);
+      var cname = section.split('a=ssrc:' + fid[1] + ' cname:')[1].split(BREAK)[0];
+      var lines = section.split(BREAK).filter(function (l) { return l; });
+      lines.push('a=extmap:12 http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time');
+      lines.push('a=ssrc-group:SIM ' + fid[1] + ' 1111 2222');
+      [[1111, 3333], [2222, 4444]].forEach(function (pair) {
+        lines.push('a=ssrc-group:FID ' + pair[0] + ' ' + pair[1]);
+        lines.push('a=ssrc:' + pair[0] + ' cname:' + cname);
+        lines.push('a=ssrc:' + pair[1] + ' cname:' + cname);
+      });
+      return lines.join(BREAK);
+    }).join(BREAK);
+    if (munged.slice(-2) !== BREAK) munged += BREAK;
+    await pc1.setLocalDescription({ type: 'offer', sdp: munged });
+    log('set', pc1.signalingState);
+    await pc2.setRemoteDescription(pc1.localDescription);
+    await pc2.setLocalDescription();
+    await pc1.setRemoteDescription(pc2.localDescription);
+    await wait('connected', function () { return pc1.connectionState === 'connected' && pc2.connectionState === 'connected'; });
+    log('connected');
+    await Promise.race([metadata, wait('metadata', function () { return false; })]);
+    log('metadata', video.videoWidth, video.videoHeight);
+    clearInterval(timer);
+    pc1.close(); pc2.close();
+    log('done');
+  `);
+  for (const line of [
+    'set|have-local-offer',
+    'connected',
+    'metadata|160|120',
+    'done',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
 test('VP8 flows from a canvas into a remote <video>, which loads its metadata at the canvas’s size and plays', async () => {
   const logs = await run(`
     ${CALL}

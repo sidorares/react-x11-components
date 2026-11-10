@@ -721,6 +721,30 @@ function configOf(
   };
 }
 
+/**
+ * Puts back the ids `OFFERED_EXTENSIONS` gives each header extension, which
+ * werift numbers again from 1, audio's then video's, as it makes a
+ * connection's configuration. Chrome gives one URI one id in every section of
+ * a bundle, and Meet's client adds extensions to an offer at ids its sections
+ * leave free, so with video's at 5 to 9 it put abs-capture-time at 2, which
+ * audio's abs-send-time has, and Google's servers refused the session.
+ */
+function keepExtensionIds(pc: WPeer): void {
+  const { config } = pc as unknown as {
+    config?: {
+      headerExtensions?: Record<string, { uri: string; id: number }[]>;
+    };
+  };
+  for (const kind of ['audio', 'video'] as const) {
+    for (const extension of config?.headerExtensions?.[kind] ?? []) {
+      const offered = OFFERED_EXTENSIONS[kind].find(
+        (e) => e.uri === extension.uri,
+      );
+      if (offered) extension.id = offered.id;
+    }
+  }
+}
+
 function codecFor(
   w: WeriftModule,
   c: (typeof OFFERED_CODECS)['audio'][number],
@@ -772,6 +796,7 @@ class WeriftConnection implements RTCConnectionLike {
   ) {
     const config = configOf(request, _w, certificates);
     this._pc = new _w.RTCPeerConnection(config);
+    keepExtensionIds(this._pc);
     const codecs = config.codecs as { audio: WCodec[]; video: WCodec[] };
     this._codecs = [...codecs.audio, ...codecs.video];
     this._net = new WeriftTransports(this._pc, _events, () => this._closed);
@@ -1017,6 +1042,15 @@ class WeriftConnection implements RTCConnectionLike {
         text = stood.sdp;
         if (side === 'remote' && type === 'offer') this._unknown = stood.lines;
       }
+      // werift sets no offer but the last it made, where Chrome takes one a
+      // page changed: Meet adds simulcast layers and header extensions to
+      // each before it sets it. werift is handed its own, so what the page
+      // added is neither sent nor in the local description it reads back
+      const created = (
+        this._pc as unknown as { createdOffer?: { sdp: string } }
+      ).createdOffer?.sdp;
+      if (side === 'local' && type === 'offer' && created && text !== created)
+        text = created;
       const description = type === 'rollback' ? { type } : { type, sdp: text };
       if (side === 'local') {
         this._gatherFromNamed();
