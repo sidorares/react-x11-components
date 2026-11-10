@@ -7702,7 +7702,15 @@ paint over the player was twice the cost of the rest of the frame. **A box
 that hides what is under it as a canvas does joins `hides`**, and
 `canvasOpaque` says what of a canvas lets nothing through.
 A video under anything else keeps its poster,
-by design. **The walk asks what a later layer draws over the picture, not
+by design — but for a stream's, whose frames are the page process's: one no
+player is mounted over is painted by the document from its newest frame
+(`_streamPictures`), under its filter as a canvas is, and reports its own
+size, which no player is there to say. **Anything new that refuses a
+stream's player leaves it to `_paintStreams`**, which asks only
+`_mounted`. And a page's canvases draw a stream's `<video>` from a frame the
+host holds for them (`mdKeep`, `mdPixels`), held only once the realm has a
+canvas (`noteCanvas`), since a camera's frames cost a copy into JavaScript.
+**The walk asks what a later layer draws over the picture, not
 how far it reaches** (`inkMeets`, the rule the next paragraph states):
 taking a layer at its ink bounds, GitHub's empty box over its hero's video
 and its header's hidden mega menu each kept the video its poster. **A

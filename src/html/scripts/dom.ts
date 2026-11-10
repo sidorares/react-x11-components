@@ -5969,6 +5969,33 @@ export function installDom(
 
   const wrappers = new Map<number, Any>();
 
+  /**
+   * Whether this realm has had a canvas, an element's or an
+   * `OffscreenCanvas`, and the media elements whose video source is a
+   * stream's (`mediaStreamPlay`). A camera's frames cost a copy into
+   * JavaScript, and `drawImage` has to have the newest one in hand when it
+   * is asked, since no source hands one over on demand: so the host holds
+   * the newest frame of each video source a `<video>` shows (`mdKeep`) in a
+   * realm that can draw it somewhere, and only there. A page that only
+   * previews its camera pays nothing.
+   */
+  let canvasSeen = false;
+  const streamVideos = new Set<{ sized: number; kept: number }>();
+  /** The video source of a stream an element shows is held for a canvas
+   *  where the realm has one, and let go where it shows another. */
+  function keepStreamFrames(ask: { sized: number; kept: number }): void {
+    const want = canvasSeen ? ask.sized : 0;
+    if (want === ask.kept) return;
+    if (ask.kept) call('mdKeep', ask.kept, false);
+    ask.kept = want;
+    if (want) call('mdKeep', want, true);
+  }
+  function noteCanvas(): void {
+    if (canvasSeen) return;
+    canvasSeen = true;
+    for (const ask of streamVideos) keepStreamFrames(ask);
+  }
+
   /** The wrapper of a node id, made the first time it is asked for. */
   const wrap = (id: number): Any => {
     if (!id) return null;
@@ -6016,6 +6043,8 @@ export function installDom(
                       : name === '#shadow-root'
                         ? ShadowRoot
                         : DocumentFragment;
+    if (type === 1 && name === 'canvas' && (ns === undefined || ns === HTML_NS))
+      noteCanvas();
     node = Object.create(Kind.prototype);
     Object.assign(node, new EventTarget());
     node._id = id;
@@ -13826,6 +13855,64 @@ export function installDom(
     );
   };
 
+  /** The pixels of the frame each `<video>` was last drawn from, by the
+   *  count of frames its source had handed out then: a page that draws a
+   *  video at every animation frame asks for a frame's pixels once. */
+  const streamFrames = new WeakMap<
+    Any,
+    {
+      source: number;
+      frames: string;
+      pixels: { data: Uint8ClampedArray; width: number; height: number };
+    }
+  >();
+  /**
+   * The current frame of a `<video>` whose `srcObject` is a stream, as
+   * RGBA: what the host holds of its video source (`mdPixels`), black
+   * where the page disabled the track, and null where it has no frame
+   * yet, or plays no stream. A video that plays a file is the platform
+   * player's, whose frames never reach JavaScript, and draws nothing.
+   */
+  const streamFramePixels = (
+    el: Any,
+  ): { data: Uint8ClampedArray; width: number; height: number } | null => {
+    const ask = mediaAsks.get(el);
+    if (!ask || !ask.sized || ask.ready < 2) return null;
+    // a draw is a canvas: what it draws is held from here on, if it was
+    // not already
+    noteCanvas();
+    const track = streamsOf?.firstLive(ask.stream, 'video');
+    if (track && !track.enabled) {
+      const width = ask.width;
+      const height = ask.height;
+      if (!(width > 0 && height > 0)) return null;
+      const data = new Uint8ClampedArray(width * height * 4);
+      for (let i = 3; i < data.length; i += 4) data[i] = 255;
+      return { data, width, height };
+    }
+    const kept = streamFrames.get(el);
+    const known = kept?.source === ask.sized ? kept.frames : '';
+    const answer = call('mdPixels', ask.sized, known);
+    if (typeof answer !== 'string' || !answer) return null;
+    if (answer === known) return kept!.pixels;
+    const bar = answer.indexOf('|');
+    if (bar < 0) return null;
+    const [frames, w, h] = answer.slice(0, bar).split(',');
+    const width = Number(w);
+    const height = Number(h);
+    const bytes = bytesOfBase64(answer.slice(bar + 1));
+    if (!(width > 0 && height > 0) || bytes.length !== width * height * 4) {
+      return null;
+    }
+    const pixels = {
+      data: new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, bytes.length),
+      width,
+      height,
+    };
+    streamFrames.set(el, { source: ask.sized, frames, pixels });
+    return pixels;
+  };
+
   const drawnPixels = (
     source: Any,
     context: Any,
@@ -13860,6 +13947,12 @@ export function installDom(
         );
       }
       from = canvasBitmap(source);
+    } else if (source instanceof HTMLVideoElement) {
+      // a stream's frame, where the host holds one; a video it has no
+      // current frame of yet draws nothing (HTML 4.12.5.1.14)
+      const frame = streamFramePixels(source);
+      if (!frame) return null;
+      from = frame;
     } else {
       return null;
     }
@@ -14026,6 +14119,7 @@ export function installDom(
       }
       this._width = offscreenSide(width, where);
       this._height = offscreenSide(height, where);
+      noteCanvas();
     }
     get width(): number {
       return this._width;
@@ -14475,6 +14569,15 @@ export function installDom(
               : 'The image element contains no image data.',
           );
         }
+        // a stream's frame, as `drawImage` reads it
+        const frame = video ? streamFramePixels(image) : null;
+        if (frame) {
+          return made({
+            data: new Uint8ClampedArray(frame.data),
+            width: frame.width,
+            height: frame.height,
+          });
+        }
         return made({
           data: new Uint8ClampedArray(width * height * 4),
           width,
@@ -14711,6 +14814,9 @@ export function installDom(
     shown: string;
     /** The video source whose size it watches. */
     sized: number;
+    /** The video source the host holds the newest frame of for a canvas
+     *  (`keepStreamFrames`), or 0. */
+    kept: number;
     /** Whether the stream it plays had what it plays — a live track, or a
      *  live audio track for an `<audio>` — which is what it ends without. */
     live: boolean;
@@ -14763,6 +14869,7 @@ export function installDom(
         unsize: null,
         shown: '',
         sized: 0,
+        kept: 0,
         live: false,
         played: false,
         tasks: new Set(),
@@ -15277,6 +15384,9 @@ export function installDom(
         ask.unsize?.();
         ask.unsize = null;
         ask.sized = source;
+        if (source) streamVideos.add(ask);
+        else streamVideos.delete(ask);
+        keepStreamFrames(ask);
         if (source) {
           ask.framesBefore = Number(call('mdFrames', source)) || 0;
           ask.unsize = streamsOf.watchSize(source, (w: number, h: number) => {
@@ -15339,6 +15449,8 @@ export function installDom(
     ask.unsize?.();
     ask.unsize = null;
     ask.sized = 0;
+    streamVideos.delete(ask);
+    keepStreamFrames(ask);
     ask.live = false;
     ask.played = false;
     if (ask.shown && ask.shown !== '0|0') call('mediaStream', el._id, 0, 0);

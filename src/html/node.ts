@@ -577,7 +577,13 @@ import type {
   StreamVideo,
   VideoCandidate,
 } from './media.js';
-import type { StreamShown } from './media-devices.js';
+import * as ntk from 'react-x11/ntk';
+import { copyFrame, frameToRgba } from './media-devices.js';
+import type {
+  MediaVideoFrame,
+  ShownSource,
+  StreamShown,
+} from './media-devices.js';
 import type { IntrinsicSize } from './svg.js';
 import { CanvasText } from './canvas-text.js';
 import { WebFonts } from './fonts.js';
@@ -5968,7 +5974,123 @@ export class HtmlViewNode extends Node {
       this._mounted = mounted;
       this.invalidate(false, this, 'content');
     }
+    this._paintStreams(tree);
     this._publishMedia();
+  }
+
+  /**
+   * The `<video>`s of a stream no player is mounted over, by their
+   * elements: their source's newest frame, copied as it comes, and that
+   * frame as an image the document paints in the video's box, made once a
+   * frame (`version`).
+   *
+   * A player is a sibling over the document, so a video the document draws
+   * through a filter, a mask, a clip path or a turn cannot have one
+   * (`mountable` in `media.ts`), and a file's keeps its poster. A stream's
+   * frames are this process's to read, so its picture is painted where
+   * the poster would be, under everything the document does to the box:
+   * webrtc.github.io's getUserMedia filter sample is a camera under
+   * `filter: blur(3px)`. It costs a frame's copy into JavaScript and a
+   * repaint of the box at each frame, which only such a video pays.
+   */
+  private readonly _streamPictures = new Map<
+    Element,
+    {
+      shown: ShownSource;
+      off: () => void;
+      frame: MediaVideoFrame | null;
+      version: number;
+      image: unknown;
+      imageAt: number;
+      rgba: Uint8ClampedArray | null;
+    }
+  >();
+
+  private _paintStreams(tree: BoxTree): void {
+    const wanted = new Map<Element, ShownSource>();
+    if (this._streams.size) {
+      const media = new Set(
+        tree.media.map((box) => box.el).filter((el) => !!el),
+      );
+      for (const [el, shown] of this._streams) {
+        if (shown.video && media.has(el) && !this._mounted.has(el)) {
+          wanted.set(el, shown.video);
+        }
+      }
+    }
+    for (const [el, kept] of this._streamPictures) {
+      if (wanted.get(el) === kept.shown) continue;
+      kept.off();
+      this._streamPictures.delete(el);
+      this._streamFrameArrived(el);
+    }
+    for (const [el, shown] of wanted) {
+      if (this._streamPictures.has(el)) continue;
+      const kept = {
+        shown,
+        off: () => {},
+        frame: null as MediaVideoFrame | null,
+        version: 0,
+        image: null as unknown,
+        imageAt: -1,
+        rgba: null as Uint8ClampedArray | null,
+      };
+      this._streamPictures.set(el, kept);
+      kept.off = shown.read((data) => {
+        // a paused video holds the frame it had
+        if (this._streamPictures.get(el) !== kept) return;
+        if (kept.frame && this._mediaAsked.get(el)?.paused) return;
+        const frame = data as MediaVideoFrame;
+        kept.frame = copyFrame(frame, kept.frame);
+        kept.version += 1;
+        // its size, which no player is there to say
+        this.mediaLoaded(el, frame.width, frame.height);
+        this._streamFrameArrived(el);
+      });
+    }
+  }
+
+  /** A stream's picture the document paints changed: its box repainted,
+   *  and the surfaces kept for the boxes around it given up, as for a
+   *  canvas (`canvasChanged`). */
+  private _streamFrameArrived(element: Element): void {
+    const tree = this._tree;
+    if (!tree) return;
+    const box = this._firstBoxesOf(tree).get(element);
+    if (!box) return;
+    this._dropSprites(box, true);
+    const ink = this._inkOf(box);
+    if (ink) this._repaintInk([ink]);
+  }
+
+  /** The picture of a stream's `<video>` the document paints
+   *  (`_streamPictures`): black where the page disabled the track. */
+  private _streamPicture(element: Element): unknown | null {
+    const kept = this._streamPictures.get(element);
+    const frame = kept?.frame;
+    if (!kept || !frame) return null;
+    if (kept.imageAt === kept.version) return kept.image;
+    let rgba: Uint8ClampedArray;
+    if (kept.shown.enabled) {
+      rgba = frameToRgba(frame, kept.rgba ?? undefined);
+    } else {
+      rgba =
+        kept.rgba?.length === frame.width * frame.height * 4
+          ? kept.rgba
+          : new Uint8ClampedArray(frame.width * frame.height * 4);
+      rgba.fill(0);
+      for (let i = 3; i < rgba.length; i += 4) rgba[i] = 255;
+    }
+    // ntk's image takes the pixels it is handed, so a new buffer a frame:
+    // the one before may still be on a surface waiting to be drawn
+    kept.rgba = null;
+    kept.image = new (ntk.Image as unknown as new (rgba: unknown) => unknown)({
+      width: frame.width,
+      height: frame.height,
+      data: new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength),
+    });
+    kept.imageAt = kept.version;
+    return kept.image;
   }
 
   /**
@@ -7045,6 +7167,8 @@ export class HtmlViewNode extends Node {
     this._dropHeldHover();
     this._disarmGif();
     this._gifs.clear();
+    for (const kept of this._streamPictures.values()) kept.off();
+    this._streamPictures.clear();
     this._disarmShapes();
     if (this._settleTimer !== null) resizeClock.disarm(this._settleTimer);
     this._settleTimer = null;
@@ -17791,6 +17915,11 @@ export class HtmlViewNode extends Node {
             ? (this._props().canvasImage?.(box.el) ?? null)
             : null;
         }
+        const streamed =
+          box.el && this._streamPictures.size
+            ? this._streamPicture(box.el)
+            : null;
+        if (streamed) return streamed;
         const url = box.el ? this._imageUrl(box.el) : CONTENT_IMAGES.get(box);
         if (url === undefined) return null;
         const animation = this._resources.animation(url);
