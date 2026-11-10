@@ -487,6 +487,29 @@ test('window.open answers at once with a document a page may write', async () =>
   assert.equal(s.popups.length, 1, 'a name finds the window it named');
 });
 
+test('a property a page fixes on a window it opened is one that window keeps, through every document', async () => {
+  // the proxy over a popup keeps ECMAScript's invariants (10.5.6): a trap
+  // that said true of a fixed property its target did not hold threw
+  const s = await scene(
+    pressed(`
+      const w = window.open('', 'fixed');
+      const P = function P() {};
+      try {
+        Object.defineProperty(w, 'Promise', { value: P, writable: true, enumerable: false, configurable: false });
+        console.log('defined', 'yes');
+      } catch (e) {
+        console.log('defined', e.message);
+      }
+      const d = Object.getOwnPropertyDescriptor(w, 'Promise');
+      console.log('read', [w.Promise === P, d.value === P, d.configurable, 'Promise' in w, delete w.Promise].join(' '));
+    `),
+    {},
+  );
+  await s.press();
+  assert.equal(await s.until('defined'), 'yes');
+  assert.equal(await s.until('read'), 'true true false true false');
+});
+
 test('what a page puts on a window before its document comes stays on it', async () => {
   const s = await scene(
     pressed(`
