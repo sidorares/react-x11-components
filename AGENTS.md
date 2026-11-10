@@ -428,8 +428,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.57.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.57.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.58.1` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.58.1` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -892,6 +892,14 @@ it up. **The floor is a running one and moves often** — every move since
   Mac. Its camera was not: macOS refuses a camera, without a prompt, to node
   started from an app that declares no camera use, which a session's own
   shell was, in a window as much as in a pane.
+- `^2.58.1` — an image drawn under `ctx.filter` on a Mac filtered by vImage
+  (react-x11#1049, over windowkit/appkit#139's `ctxDrawSurfaceFiltered` in
+  @windowkit/appkit 0.34.0, which core's range admits only from 2.58.1), where
+  its pixels were read back and run through the filter in JavaScript. `<Html>`
+  draws a CSS `filter` through it, and a stream's `<video>` under a filter is
+  painted by the document from its frames: webrtc.github.io's getUserMedia
+  filter sample spent 18 ms of a 33 ms frame in the filter, and spends 3–4.
+  The same release takes ntk 8.28.0 (react-x11#1047).
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
