@@ -8415,6 +8415,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     width: box.width + box.marginLeft + box.marginRight,
     height: box.height + box.marginTop + box.marginBottom,
     corrected: placed.corrected,
+    overMoving: overMovingEdge(placed, mx, my, box),
     refits: options.length > 0,
     dx: null,
     dy: null,
@@ -8422,6 +8423,33 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const dx = on.x ? sx : 0;
   const dy = on.y ? sy : 0;
   if (dx || dy) translate(box, dx, dy, () => false);
+}
+
+/** Whether a box's margin box, laid out at `mx, my`, is over an edge of
+ *  its inset-modified containing block that moves with its anchor
+ *  (`placed.moving`): left 1, right 2, top 4, bottom 8. */
+function overMovingEdge(
+  placed: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    moving: number;
+  },
+  mx: number,
+  my: number,
+  box: Box,
+): boolean {
+  const m = placed.moving & 15;
+  if (!m) return false;
+  const w = box.width + box.marginLeft + box.marginRight;
+  const h = box.height + box.marginTop + box.marginBottom;
+  return (
+    (!!(m & 1) && mx < placed.x - 0.5) ||
+    (!!(m & 2) && mx + w > placed.x + placed.width + 0.5) ||
+    (!!(m & 4) && my < placed.y - 0.5) ||
+    (!!(m & 8) && my + h > placed.y + placed.height + 0.5)
+  );
 }
 
 /**
