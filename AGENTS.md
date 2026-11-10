@@ -5324,6 +5324,21 @@ list.
   realm refuses another origin's certificate first, as the specification
   has it, and `PagePeers` leaves it out of what a connection is made with
   (`CERTIFICATE_ORIGINS`), since a page can talk its realm round.
+- **An encoded transform's frames go to its worker and back**
+  (`encoded-transform.ts`, `peers.ts`'s `tf` and `tfAsk`, WebRTC Encoded
+  Transform). A side with a transform packetizes and decodes nothing of its
+  own: `MediaSender` and `MediaReceiver` hand each frame to the transform's
+  sink and go on only with what `writeFrame` is handed, which may be other
+  bytes than they made. So **anything new between the encoder and the
+  packetizer, or the depacketizer and the decoder, says which side of the
+  transform it is on**: what reads a frame's bytes before it, as the key
+  frame check does, reads what a page may change after it. writeEncodedData's
+  rules are the worker realm's, which alone knows which transformer gave a
+  frame and in what order (`writeEncoded`), so the host passes on what the
+  realm writes and checks nothing. A frame is `[Serializable]`, and joins
+  both clone walkers with its data walked as any buffer is, so two frames
+  over one buffer share it again; it refuses storage, which is what
+  `serializeClone` with no transfer is.
 - **A track's constraints are fitted on the host, in one place**
   (`constraints.ts`, Media Capture's SelectSettings): `getUserMedia` and
   `applyConstraints` hand over the page's constraints as JSON, and what comes

@@ -18,6 +18,14 @@
 // back the same way, held until the worker has made its own of it
 // (`adopt`), as WebTransport's sessions do (`transport-relay.ts`).
 //
+// **A transform's frames go to its worker and back.** `sender.transform`
+// and `receiver.transform` take an `RTCRtpScriptTransform`, which is a
+// worker's, and the frames of that side are the seam's: each is handed
+// across the worker's thread to its realm's transformer (`tf`, `frame`), and
+// goes on only once the worker writes it back (`tfAsk`, `write`), which this
+// side hands to the seam. What the worker's realm asks of a transform it has
+// not been told of goes nowhere.
+//
 // **What a connection tells waits for the description being applied.**
 // A stack may gather a candidate or move a transport while
 // `setLocalDescription` is still under way, and WebRTC 1.0 tells the page
@@ -31,8 +39,10 @@ import type {
   RTCConnectRequest,
   RTCConnectionLike,
   RTCDataChannelLike,
+  RTCEncodedFrameLike,
   RTCSessionState,
   RTCTransceiverLike,
+  RTCTransformSide,
   RTCTransportStateLike,
 } from '../rtc.js';
 import type { PageSources } from './media-sources.js';
@@ -64,7 +74,48 @@ export type ChannelRelay =
   | { kind: 'rtc'; op: 'adopt'; ch: number }
   | { kind: 'rtc'; op: 'send'; ch: number; binary: boolean; data: string }
   | { kind: 'rtc'; op: 'close'; ch: number }
-  | { kind: 'rtc'; op: 'event'; ch: number; k: string; v: unknown };
+  | { kind: 'rtc'; op: 'event'; ch: number; k: string; v: unknown }
+  /** To a worker, of a transform of its: put on a side or taken off
+   *  (`attach`, `detach`), a frame of that side's, a key frame request
+   *  answered (`settled`). */
+  | { kind: 'rtc'; op: 'tf'; tf: number; e: string; v: unknown }
+  /** From a worker, of a transform of its: a frame written back, a key
+   *  frame generated or asked of the peer. */
+  | { kind: 'rtc'; op: 'tfAsk'; tf: number; e: string; v: unknown };
+
+/** An encoded frame as it crosses a thread: its bytes as base64. */
+interface FrameWire {
+  k: 'audio' | 'video';
+  y: 'key' | 'delta' | 'empty';
+  d: string;
+  m: Record<string, unknown>;
+}
+const frameWire = (f: RTCEncodedFrameLike): FrameWire => ({
+  k: f.kind,
+  y: f.type,
+  d: base64Of(f.data),
+  m: f.metadata,
+});
+function frameOfWire(v: unknown): RTCEncodedFrameLike | null {
+  const w = v as Partial<FrameWire> | null;
+  if (!w || (w.k !== 'audio' && w.k !== 'video') || typeof w.d !== 'string') {
+    return null;
+  }
+  return {
+    kind: w.k,
+    type: w.y === 'delta' || w.y === 'empty' ? w.y : 'key',
+    data: bytesOf(w.d),
+    metadata: w.m && typeof w.m === 'object' ? w.m : {},
+  };
+}
+
+/** A transform put on a side of a transceiver: its worker's. */
+interface Transform {
+  tf: number;
+  tx: number;
+  side: RTCTransformSide;
+  worker: number;
+}
 
 /** What the page's connections are carried over, and how it is told. */
 export interface PeerSeams {
@@ -147,6 +198,8 @@ export class PagePeers {
   private readonly _channels = new Map<number, Channel>();
   /** The page's channels handed to a worker, by number. */
   private readonly _moved = new Map<number, Moved>();
+  /** The transforms put on a side, by the page's number for each. */
+  private readonly _transforms = new Map<number, Transform>();
   private _seq = 0;
   private _disposed = false;
 
@@ -395,6 +448,25 @@ export class PagePeers {
       case 'rtcAdopt':
         this._adopt(Number(a));
         return null;
+      case 'rtcTransform':
+        // a transform put on a side, or taken off it (`d` 0)
+        this._transform(
+          Number(a),
+          b === 'receiver' ? 'receiver' : 'sender',
+          Number(c),
+          Number(d),
+        );
+        return null;
+      case 'rtcTfAsk':
+        // a worker's: of a transform of its, to the page process
+        this._seams.toPage?.({
+          kind: 'rtc',
+          op: 'tfAsk',
+          tf: Number(a),
+          e: text(b),
+          v: json(c),
+        });
+        return null;
       default:
         return null;
     }
@@ -437,8 +509,81 @@ export class PagePeers {
     toPage({ kind: 'rtc', op: 'adopt', ch: id });
   }
 
+  /**
+   * A transform `tf`, its worker's, is on a side of a transceiver from now
+   * on, or on none (`worker` 0). A side has one transform, and a transform
+   * one side: what was there before is told it is taken off.
+   */
+  private _transform(
+    tx: number,
+    side: RTCTransformSide,
+    tf: number,
+    worker: number,
+  ): void {
+    const t = this._transceivers.get(tx);
+    const tell = (to: Transform, e: string, v: unknown = null) =>
+      this._seams.toWorker?.(to.worker, {
+        kind: 'rtc',
+        op: 'tf',
+        tf: to.tf,
+        e,
+        v,
+      });
+    for (const [n, on] of this._transforms) {
+      if (n === tf || (on.tx === tx && on.side === side)) {
+        this._transforms.delete(n);
+        tell(on, 'detach');
+        if (on.tx !== tx || on.side !== side) {
+          this._transceivers.get(on.tx)?.transceiver.transform?.(on.side, null);
+        }
+      }
+    }
+    if (!t) return;
+    if (!worker || !tf) {
+      t.transceiver.transform?.(side, null);
+      return;
+    }
+    const on: Transform = { tf, tx, side, worker };
+    this._transforms.set(tf, on);
+    tell(on, 'attach', { side, kind: t.transceiver.kind });
+    t.transceiver.transform?.(side, (frame) => {
+      if (this._transforms.get(tf) === on) tell(on, 'frame', frameWire(frame));
+    });
+  }
+
+  /** What a worker asked of a transform of its. */
+  private _transformAsked(worker: number, tf: number, e: string, v: unknown) {
+    const on = this._transforms.get(tf);
+    if (!on || on.worker !== worker) return;
+    const t = this._transceivers.get(on.tx)?.transceiver;
+    if (!t) return;
+    if (e === 'write') {
+      const frame = frameOfWire(v);
+      if (frame) t.writeFrame?.(on.side, frame);
+    } else if (e === 'key') {
+      t.keyFrame?.();
+    } else if (e === 'pli') {
+      void (t.requestKeyFrame?.() ?? Promise.resolve())
+        .catch(() => {})
+        .then(() =>
+          this._seams.toWorker?.(worker, {
+            kind: 'rtc',
+            op: 'tf',
+            tf,
+            e: 'settled',
+            v,
+          }),
+        );
+    }
+  }
+
   /** What a worker asked of a channel the page handed it. */
   fromWorker(worker: number, m: ChannelRelay): void {
+    if (m.op === 'tfAsk') {
+      this._transformAsked(worker, m.tf, m.e, m.v);
+      return;
+    }
+    if (m.op === 'tf') return;
     const moved = this._moved.get(m.ch);
     if (!moved || moved.worker !== worker) return;
     if (m.op === 'adopt') {
@@ -461,6 +606,7 @@ export class PagePeers {
   /** What became of a channel this worker was handed: told to its realm. */
   heard(m: ChannelRelay): void {
     if (m.op === 'event') this._tell('__rtcChannel', [m.ch, m.k, m.v]);
+    else if (m.op === 'tf') this._tell('__rtcTf', [m.tf, m.e, m.v]);
   }
 
   /** The realm goes: every connection it had is closed. */
