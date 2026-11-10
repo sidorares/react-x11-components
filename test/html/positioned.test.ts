@@ -2228,6 +2228,30 @@ function anchored(css: string, more: string, top = 20): string {
   );
 }
 
+test('an inline anchor broken around a block is all of it: its pieces, and the line the block is on', async () => {
+  // WPT anchor-position-inline-008: the bounding rectangle of the anchor's
+  // fragments (CSS Anchor Positioning 1, 2), the anonymous block around
+  // the block it holds as wide as the line it stands in, as Chrome and
+  // Firefox take it. Its first piece alone was one line of it.
+  const { node } = await render(
+    '<div style="font:20px/20px monospace;width:220px">' +
+      '<div style="position:relative;margin-left:10px">' +
+      '<span id="a" style="anchor-name:--a">dolor<div id="d" style="width:120px">sit</div>amet</span>' +
+      '<span id="t" style="position:absolute;position-anchor:--a;top:anchor(top);' +
+      'left:anchor(left);width:anchor-size(width);height:anchor-size(height)"></span></div></div>',
+  );
+  const el = view(node);
+  const t = boxOf(el, 't');
+  const d = boxOf(el, 'd');
+  assert.equal(t.x, d.x, 'from the line the block is on');
+  assert.equal(t.width, 210, 'across all of it');
+  assert.ok(t.y < d.y, `from the first piece: ${t.y}, ${d.y}`);
+  assert.ok(
+    t.y + t.height > d.y + d.height,
+    `to the last: ${t.y + t.height}, ${d.y + d.height}`,
+  );
+});
+
 test('anchor() and anchor-size() place a box against its anchor', async () => {
   const { node } = await render(
     anchored(
