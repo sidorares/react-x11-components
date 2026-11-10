@@ -1213,3 +1213,108 @@ test('VP8 flows from a canvas into a remote <video>, which loads its metadata at
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
 });
+
+test('an RTCRtpScriptTransform on each side sees every VP8 frame in its worker, and what it writes back is what is sent and decoded', async () => {
+  const logs = await run(`
+    ${CALL}
+    // a worker that inverts every byte past a frame's first ten on the way
+    // out and back on the way in, and says what it saw
+    var source = [
+      'onrtctransform = function (e) {',
+      '  var t = e.transformer, name = t.options.name, seen = 0;',
+      '  var r = t.readable.getReader(), w = t.writable.getWriter();',
+      '  t.options.port.postMessage("started:" + name + ":" + (e instanceof RTCTransformEvent) + ":" + (t instanceof RTCRtpScriptTransformer));',
+      '  t.options.port.onmessage = async function (m) {',
+      '    if (m.data === "key") {',
+      '      try { t.options.port.postMessage("key:" + typeof (await t.generateKeyFrame())); }',
+      '      catch (x) { t.options.port.postMessage("key:" + x.name); }',
+      '    }',
+      '    if (m.data === "pli") {',
+      '      try { await t.sendKeyFrameRequest(); t.options.port.postMessage("pli:ok"); }',
+      '      catch (x) { t.options.port.postMessage("pli:" + x.name); }',
+      '    }',
+      '  };',
+      '  (async function () {',
+      '    for (;;) {',
+      '      var got = await r.read();',
+      '      if (got.done) return;',
+      '      var f = got.value, m = f.getMetadata();',
+      '      if (seen++ === 0) t.options.port.postMessage("first:" + name + ":" + (f instanceof RTCEncodedVideoFrame) + ":" + f.type + ":" + m.mimeType + ":" + m.width + "x" + m.height + ":" + (f.timestamp === m.rtpTimestamp) + ":" + (name === "sender" ? typeof m.captureTime : typeof m.receiveTime));',
+      '      var bytes = new Uint8Array(f.data);',
+      '      for (var i = 10; i < bytes.length; i++) bytes[i] ^= 0xff;',
+      '      var data = f.data;',
+      '      w.write(f);',
+      '      if (seen === 1) t.options.port.postMessage("detached:" + name + ":" + data.byteLength + ":" + f.data.byteLength);',
+      '      w.write(f);',
+      '    }',
+      '  })();',
+      '};',
+    ].join('\\n');
+    var worker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })));
+    function transform(name) {
+      var channel = new MessageChannel();
+      var heard = [];
+      channel.port1.onmessage = function (e) { heard.push(e.data); };
+      var made = new RTCRtpScriptTransform(worker, { name: name, port: channel.port2 }, [channel.port2]);
+      return { made: made, heard: heard, port: channel.port1 };
+    }
+    var sending = transform('sender'), receiving = transform('receiver');
+    var canvas = document.createElement('canvas');
+    canvas.width = 160; canvas.height = 120;
+    document.documentElement.appendChild(canvas);
+    var g = canvas.getContext('2d');
+    var n = 0;
+    var timer = setInterval(function () {
+      n++;
+      g.fillStyle = 'rgb(' + (n * 20 % 255) + ',80,120)';
+      g.fillRect(0, 0, 160, 120);
+    }, 100);
+    var stream = canvas.captureStream();
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    var sender = pc1.addTrack(stream.getVideoTracks()[0], stream);
+    sender.transform = sending.made;
+    log('same', sender.transform === sending.made);
+    try { pc1.addTransceiver('video').sender.transform = sending.made; log('reused'); }
+    catch (x) { log('reuse', x.name); }
+    try { sender.transform = {}; } catch (x) { log('not a transform', x.name); }
+    var receiver = null;
+    pc2.ontrack = function (e) { if (!receiver) { receiver = e.receiver; receiver.transform = receiving.made; } };
+    await call(pc1, pc2);
+    await wait('frames', function () {
+      return sending.heard.some(function (h) { return /^detached/.test(h); }) &&
+        receiving.heard.some(function (h) { return /^detached/.test(h); });
+    });
+    log('heard', sending.heard.concat(receiving.heard).sort().join(','));
+    // what the receiver's transform wrote back decodes: the bytes it
+    // inverted were inverted back
+    var decoded = 0;
+    for (var end = Date.now() + 15000; decoded <= 2 && Date.now() < end; ) {
+      (await pc2.getStats()).forEach(function (x) { if (x.type === 'inbound-rtp') decoded = x.framesDecoded; });
+      await new Promise(function (r) { setTimeout(r, 100); });
+    }
+    log('decoded', decoded > 2);
+    sending.port.postMessage('key');
+    await wait('key', function () { return sending.heard.some(function (h) { return /^key:/.test(h); }); });
+    receiving.port.postMessage('key');
+    receiving.port.postMessage('pli');
+    sending.port.postMessage('pli');
+    await wait('answers', function () { return receiving.heard.filter(function (h) { return /^(key|pli):/.test(h); }).length === 2 && sending.heard.some(function (h) { return /^pli:/.test(h); }); });
+    log('asked', sending.heard.concat(receiving.heard).filter(function (h) { return /^(key|pli):/.test(h); }).sort().join(','));
+    clearInterval(timer);
+    worker.terminate();
+    pc1.close(); pc2.close();
+    log('done');
+  `);
+  if (process.env.WERIFT_LOGS) console.log(logs.join('\n'));
+  for (const line of [
+    'same|true',
+    'reuse|InvalidStateError',
+    'not a transform|TypeError',
+    'heard|detached:receiver:0:0,detached:sender:0:0,first:receiver:true:key:video/VP8:160x120:true:number,first:sender:true:key:video/VP8:160x120:true:number,started:receiver:true:true,started:sender:true:true',
+    'decoded|true',
+    'asked|key:InvalidStateError,key:number,pli:InvalidStateError,pli:ok',
+    'done',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});

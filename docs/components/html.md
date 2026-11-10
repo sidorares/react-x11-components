@@ -1507,6 +1507,36 @@ them, and to another peer the host can reach.
   secure context's only, as `[SecureContext]` has it.
   `coreMediaDevices(app)` is the machine's own, over react-x11's media
   capture (below); `fakeMediaDevices()` is a test pattern and a tone.
+- **An encoded transform runs in a worker** (WebRTC Encoded Transform):
+  `sender.transform` and `receiver.transform` take an
+  `RTCRtpScriptTransform`, whose worker hears `rtctransform` with an
+  `RTCRtpScriptTransformer`. Each frame the sender encodes, and each the
+  receiver puts together from its packets, is an `RTCEncodedVideoFrame` or
+  an `RTCEncodedAudioFrame` on the transformer's `readable`, and is sent or
+  decoded only once it is written to its `writable`: a transform that
+  writes nothing sends nothing, and one that changes a frame's bytes on the
+  way out and back on the way in is still decoded. What is written goes on
+  only where the specification's writeEncodedData lets it: a frame this
+  transformer's own `readable` gave, newer than the last written, each
+  once, its data detached as it goes. A clone, a copy constructed from it,
+  a frame of another transformer's and one written out of order are
+  dropped, and anything that is no frame errors the stream. A transform
+  once put on a sender or a receiver is that one's for good, taken off it
+  or not. `generateKeyFrame()` makes the sender's next frame a key frame and
+  settles with its RTP timestamp, and `sendKeyFrameRequest()` sends the
+  peer a PLI; each is a video transform's, of its side. A frame's metadata
+  is the stack's: its SSRC, payload type, RTP timestamp, MIME type,
+  contributing sources, a video frame's size, spatial and temporal index,
+  and a sender's capture time or a receiver's receive time and an audio
+  packet's sequence number and level. A video frame's `frameId` is its RTP
+  timestamp counted past each wrap, and a delta frame depends on the frame
+  before it, so both sides agree with no dependency descriptor extension.
+  Frames clone, with `structuredClone` and across a thread, but not for
+  storage. Not here: `senderCaptureTimeOffset`, which needs the
+  abs-capture-time extension; a key frame for one simulcast `rid`, since a
+  sender sends one encoding; SFrame; and Chrome's `createEncodedStreams()`,
+  whose frames are not detached as they are written and which nothing
+  standardizes.
 - **A track is transferable** (Media Capture Extensions): to a frame of
   the page's agent cluster, to a dedicated worker, or to itself with
   `structuredClone`, where the track made of it reaches its source back

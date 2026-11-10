@@ -55,7 +55,7 @@ import type {
   MediaSourceLike,
   MediaVideoFrame,
 } from './media-devices.js';
-import type { RTCRtpSourceLike } from './rtc.js';
+import type { RTCEncodedFrameLike, RTCRtpSourceLike } from './rtc.js';
 
 declare const setInterval: (fn: () => void, ms: number) => unknown;
 declare const setTimeout: (fn: () => void, ms: number) => unknown;
@@ -229,6 +229,63 @@ function recent(times: number[]): number[] {
 const randomStart = (): number => (Math.random() * 0x100000000) >>> 0;
 
 /** `a` comes after `b` in a 16-bit sequence that wraps. */
+/** A frame a transform is handed: its own bytes, which nothing else
+ *  holds. */
+type FrameSink = (frame: RTCEncodedFrameLike) => void;
+
+/** An audio level as a source reports it, linear, from the -dBov a packet's
+ *  extension carries (WebRTC 1.0, 5.3.1). */
+const linearLevel = (dbov: number): number => Math.pow(10, -dbov / 20);
+
+/** The -dBov a linear level comes to, as the extension carries it. */
+const dbovOf = (level: number): number =>
+  level > 0
+    ? Math.min(127, Math.max(0, Math.round(-20 * Math.log10(level))))
+    : 127;
+
+/** A VP8 key frame's size, from its uncompressed header (RFC 6386, 9.1). */
+function vp8Size(data: Uint8Array): { width: number; height: number } | null {
+  if (data.length < 10 || data[0] & 1) return null;
+  if (data[3] !== 0x9d || data[4] !== 0x01 || data[5] !== 0x2a) return null;
+  return {
+    width: (data[6] | (data[7] << 8)) & 0x3fff,
+    height: (data[8] | (data[9] << 8)) & 0x3fff,
+  };
+}
+
+/**
+ * The identifier of a video frame a transform sees, its `frameId`, and
+ * that of the one before it, which a delta frame depends on: the frame's
+ * RTP timestamp, which no two frames of a stream share, counted on past each
+ * wrap (RFC 3550, 5.1). Both sides of a connection come to the same, with no
+ * dependency descriptor extension to carry them.
+ */
+class FrameIds {
+  private _last: number | null = null;
+  private _base = 0;
+  /** The id of the frame before the last one asked of, or null. */
+  previous: number | null = null;
+  of(rtpTimestamp: number): number {
+    if (this._last !== null) {
+      if (rtpTimestamp < this._last && this._last - rtpTimestamp > 0x80000000)
+        this._base += 0x100000000;
+      else if (
+        rtpTimestamp > this._last &&
+        rtpTimestamp - this._last > 0x80000000
+      )
+        this._base -= 0x100000000;
+    }
+    const id = this._base + rtpTimestamp;
+    if (this._last !== rtpTimestamp) {
+      this.previous = this._last === null ? null : this._lastId;
+      this._lastId = id;
+    }
+    this._last = rtpTimestamp;
+    return id;
+  }
+  private _lastId = 0;
+}
+
 const seqAfter = (a: number, b: number): boolean =>
   ((a - b) & 0xffff) !== 0 && ((a - b) & 0xffff) < 0x8000;
 
@@ -343,6 +400,81 @@ export class MediaSender {
   private _stopRepeat(): void {
     if (this._repeat !== null) clearInterval(this._repeat);
     this._repeat = null;
+  }
+
+  // --- a transform --------------------------------------------------------
+
+  private _transform: FrameSink | null = null;
+  private readonly _ids = new FrameIds();
+
+  /** `sender.transform`: what it encodes goes to `frames`, and is sent
+   *  once it is written back; null sends it as it is encoded. */
+  transform(frames: FrameSink | null): void {
+    this._transform = frames;
+  }
+
+  /** `generateKeyFrame()`: the next frame encoded is a key frame. */
+  keyFrame(): void {
+    if (this._t.kind !== 'video') return;
+    this._wantKey = true;
+    this._encodedLatest = false;
+    this._pump();
+  }
+
+  /** A frame a transform wrote back: sent, at its RTP timestamp. */
+  write(frame: RTCEncodedFrameLike): void {
+    if (frame.kind !== this._t.kind || !frame.data.length) return;
+    if (!this._sendable()) return;
+    const codec = this._t.sender.codec;
+    if (!codec || !this._track) return;
+    const packetizer = this._packetizerFor(codec);
+    if (!packetizer) return;
+    const time = Number(frame.metadata.rtpTimestamp) >>> 0;
+    const level =
+      this._t.kind === 'audio'
+        ? this._t.headerExtensions.find((e) => e.uri === AUDIO_LEVEL)
+        : undefined;
+    const loudness =
+      typeof frame.metadata.audioLevel === 'number'
+        ? dbovOf(frame.metadata.audioLevel)
+        : 127;
+    for (const packet of packetizer.packetize(bytes(frame.data), time)) {
+      if (level) {
+        packet.header.extensions.push({
+          id: level.id,
+          payload: this._w.serializeAudioLevelIndication(loudness),
+        });
+      }
+      this._track.writeRtp(packet);
+    }
+    if (this._t.kind === 'video') {
+      this._count.framesSent += 1;
+      recent(this._count.sent).push(performance.now());
+    }
+  }
+
+  /** What a transform is handed for a frame this encoded. */
+  private _frameOf(
+    data: Uint8Array,
+    key: boolean,
+    rtpTimestamp: number,
+    extra: Record<string, unknown>,
+  ): RTCEncodedFrameLike {
+    const codec = this._t.sender.codec!;
+    return {
+      kind: this._t.kind,
+      type: key ? 'key' : 'delta',
+      data: data.slice(),
+      metadata: {
+        synchronizationSource: this._t.sender.ssrc >>> 0,
+        payloadType: codec.payloadType ?? 96,
+        contributingSources: [],
+        rtpTimestamp,
+        mimeType: codec.mimeType,
+        captureTime: pageTime(),
+        ...extra,
+      },
+    };
   }
 
   /** Whether werift would send a packet written now, and the codec it
@@ -485,6 +617,25 @@ export class MediaSender {
         this._lastSentAt = performance.now();
         const codec = this._t.sender.codec;
         if (!codec || !this._track) return;
+        const transform = this._transform;
+        if (transform) {
+          // a frame goes out once the transform writes it back
+          for (const chunk of chunks) {
+            const id = this._ids.of(time);
+            const before = this._ids.previous;
+            transform(
+              this._frameOf(chunk.data, chunk.key, time, {
+                frameId: id,
+                dependencies: chunk.key || before === null ? [] : [before],
+                width: frame.width,
+                height: frame.height,
+                spatialIndex: 0,
+                temporalIndex: 0,
+              }),
+            );
+          }
+          return;
+        }
         const packetizer = this._packetizerFor(codec);
         if (!packetizer) return;
         for (const chunk of chunks) {
@@ -581,6 +732,17 @@ export class MediaSender {
       void encoder.encode(frame).then((packets) => {
         const codec = this._t.sender.codec;
         if (!codec || !this._track || this._audio !== encoder) return;
+        const transform = this._transform;
+        if (transform) {
+          for (const data of packets) {
+            transform(
+              this._frameOf(data, true, time, {
+                audioLevel: linearLevel(loudness),
+              }),
+            );
+          }
+          return;
+        }
         const packetizer = this._packetizerFor(codec);
         if (!packetizer) return;
         for (const data of packets) {
@@ -837,6 +999,78 @@ export class MediaReceiver implements MediaSourceLike {
     this._events = null;
   }
 
+  // --- a transform --------------------------------------------------------
+
+  private _transform: FrameSink | null = null;
+  private readonly _ids = new FrameIds();
+  /** The size of the last key frame, which a delta frame is of too. */
+  private _keySize: { width: number; height: number } | null = null;
+
+  /** `receiver.transform`: what it puts together goes to `frames`, and is
+   *  decoded once it is written back; null decodes it as it arrives. */
+  transform(frames: FrameSink | null): void {
+    this._transform = frames;
+  }
+
+  /** `sendKeyFrameRequest()`: a picture loss indication to each source,
+   *  sent whatever was asked lately. */
+  requestKeyFrame(): Promise<void> {
+    this._lastAsked = 0;
+    const asked = [...this.ssrcs()].map((ssrc) =>
+      this._t.receiver.sendRtcpPLI(ssrc).catch(() => {}),
+    );
+    this._lastAsked = performance.now();
+    return Promise.all(asked).then(() => {});
+  }
+
+  /** A frame a transform wrote back: decoded. */
+  write(frame: RTCEncodedFrameLike): void {
+    if (this._ended || this._stopped || frame.kind !== this.kind) return;
+    const pt = Number(frame.metadata.payloadType);
+    const mime =
+      this._codecOf(pt)?.mimeType ?? String(frame.metadata.mimeType ?? '');
+    if (frame.kind === 'video') {
+      const codec = videoCodecOf(mime);
+      if (codec) {
+        this._decodable(
+          codec,
+          frame.data,
+          Number(frame.metadata.rtpTimestamp) >>> 0,
+          performance.now(),
+          frame.type === 'key',
+        );
+      }
+    } else {
+      const codec = audioCodecOf(mime);
+      if (codec)
+        this._decodeAudio(codec, frame.data.slice(), performance.now());
+    }
+  }
+
+  /** What a transform is handed for what arrived. */
+  private _frameOf(
+    rtp: WRtpPacket,
+    data: Uint8Array,
+    key: boolean,
+    extra: Record<string, unknown>,
+  ): RTCEncodedFrameLike {
+    const { header } = rtp;
+    return {
+      kind: this.kind,
+      type: key ? 'key' : 'delta',
+      data: data.slice(),
+      metadata: {
+        synchronizationSource: header.ssrc >>> 0,
+        payloadType: header.payloadType,
+        contributingSources: [...(header.csrc ?? [])],
+        rtpTimestamp: header.timestamp >>> 0,
+        mimeType: this._codecOf(header.payloadType)?.mimeType ?? '',
+        receiveTime: pageTime(),
+        ...extra,
+      },
+    };
+  }
+
   /** The transceiver is done with it, or its connection: no more packets
    *  are heard, and nothing is told. */
   end(): void {
@@ -890,7 +1124,7 @@ export class MediaReceiver implements MediaSourceLike {
     } else {
       // audio is decoded whether or not anything plays it, as a browser
       // plays it out: its level and energy are its stats
-      this._audio(rtp);
+      this._audio(rtp, level);
     }
   }
 
@@ -923,7 +1157,7 @@ export class MediaReceiver implements MediaSourceLike {
           : undefined;
       if (raw && raw.payload.length) dbov = raw.payload[0] & 0x7f;
     }
-    return dbov === undefined ? undefined : Math.pow(10, -dbov / 20);
+    return dbov === undefined ? undefined : linearLevel(dbov);
   }
 
   private _codecOf(payloadType: number): WMediaCodec | undefined {
@@ -987,19 +1221,53 @@ export class MediaReceiver implements MediaSourceLike {
       this._lost();
       return;
     }
-    if (this._needKey && !whole.isKeyframe) {
-      c.framesDropped += 1;
-      this._askKey();
+    const transform = this._transform;
+    if (transform) {
+      // decoded once the transform writes it back
+      if (whole.isKeyframe)
+        this._keySize = vp8Size(whole.data) ?? this._keySize;
+      const id = this._ids.of(frame.timestamp >>> 0);
+      const before = this._ids.previous;
+      transform(
+        this._frameOf(
+          packets[packets.length - 1],
+          whole.data,
+          whole.isKeyframe,
+          {
+            frameId: id,
+            dependencies: whole.isKeyframe || before === null ? [] : [before],
+            ...(this._keySize ?? {}),
+            spatialIndex: 0,
+            temporalIndex: 0,
+          },
+        ),
+      );
       return;
     }
-    this._needKey = false;
-    this._decode(
+    this._decodable(
       codec,
       whole.data,
       frame.timestamp,
       frame.first,
       whole.isKeyframe,
     );
+  }
+
+  /** A frame put together, decoded where a decoder can start at it. */
+  private _decodable(
+    codec: VideoCodecName,
+    data: Uint8Array,
+    timestamp: number,
+    arrived: number,
+    key: boolean,
+  ): void {
+    if (this._needKey && !key) {
+      this._count.framesDropped += 1;
+      this._askKey();
+      return;
+    }
+    this._needKey = false;
+    this._decode(codec, data, timestamp, arrived, key);
   }
 
   private _decode(
@@ -1071,19 +1339,36 @@ export class MediaReceiver implements MediaSourceLike {
 
   // --- audio --------------------------------------------------------------
 
-  private _audio(rtp: WRtpPacket): void {
+  private _audio(rtp: WRtpPacket, level?: number): void {
     const codec = audioCodecOf(
       this._codecOf(rtp.header.payloadType)?.mimeType ?? '',
     );
     if (!codec) return;
+    const transform = this._transform;
+    if (transform) {
+      // decoded once the transform writes it back
+      transform(
+        this._frameOf(rtp, rtp.payload, true, {
+          sequenceNumber: rtp.header.sequenceNumber,
+          ...(level !== undefined ? { audioLevel: level } : {}),
+        }),
+      );
+      return;
+    }
+    this._decodeAudio(codec, rtp.payload.slice(), performance.now());
+  }
+
+  private _decodeAudio(
+    codec: AudioCodecName,
+    payload: Uint8Array,
+    arrived: number,
+  ): void {
     if (codec !== this._audioCodec || !this._audioDecoder) {
       void this._audioDecoder?.then((d) => d?.close());
       this._audioCodec = codec;
       this._audioDecoder = audioDecoder(codec);
     }
     const making = this._audioDecoder;
-    const payload = rtp.payload.slice();
-    const arrived = performance.now();
     this._audioChain = this._audioChain
       .then(async () => {
         const decoder = await making;

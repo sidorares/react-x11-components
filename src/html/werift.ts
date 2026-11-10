@@ -57,6 +57,7 @@ import type {
   RTCDataChannelLike,
   RTCDescriptionsLike,
   RTCDirectionLike,
+  RTCEncodedFrameLike,
   RTCHeaderExtensionLike,
   RTCRtpParametersLike,
   RTCSessionState,
@@ -64,6 +65,7 @@ import type {
   RTCTransceiverInit,
   RTCTransceiverLike,
   RTCTransceiverState,
+  RTCTransformSide,
 } from './rtc.js';
 
 // --- werift's shape, the slice read here ------------------------------------
@@ -658,6 +660,23 @@ class WeriftTransceiver implements RTCTransceiverLike {
   }
   stats(side: 'sender' | 'receiver'): Promise<RTCStatsLike[]> {
     return this._statsOf(this, side);
+  }
+  transform(
+    side: RTCTransformSide,
+    frames: ((frame: RTCEncodedFrameLike) => void) | null,
+  ): void {
+    if (side === 'sender') this._send?.transform(frames);
+    else this._receive?.transform(frames);
+  }
+  writeFrame(side: RTCTransformSide, frame: RTCEncodedFrameLike): void {
+    if (side === 'sender') this._send?.write(frame);
+    else this._receive?.write(frame);
+  }
+  keyFrame(): void {
+    this._send?.keyFrame();
+  }
+  requestKeyFrame(): Promise<void> {
+    return this._receive?.requestKeyFrame() ?? Promise.resolve();
   }
 }
 

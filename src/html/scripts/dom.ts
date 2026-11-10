@@ -48,6 +48,7 @@ import type { installDataTransfer } from './datatransfer.js';
 import type { installUIEvents } from './ui-events.js';
 import type { installPointers } from './pointers.js';
 import type { installEditing } from './editing.js';
+import type { installEncodedTransform } from './encoded-transform.js';
 import type { installClipboard } from './clipboard.js';
 import type { installNotifications } from './notifications.js';
 import type { installWindows, WindowInternals } from './windows.js';
@@ -99,6 +100,7 @@ export function installDom(
   uiEventsApi: typeof installUIEvents,
   pointersApi: typeof installPointers,
   editingApi: typeof installEditing,
+  encodedTransform: typeof installEncodedTransform,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -26006,6 +26008,18 @@ export function installDom(
       seen.set(value, out);
       return out;
     }
+    // an encoded frame (WebRTC Encoded Transform, 6.4)
+    if (encodedOf?.isFrame(value)) {
+      const parts = encodedOf.partsOf(value);
+      out = encodedOf.make(
+        parts.kind,
+        parts.type,
+        structuredCopy(parts.metadata, seen),
+        structuredCopy(parts.data, seen),
+      );
+      seen.set(value, out);
+      return out;
+    }
     // a certificate, which is `[Serializable]` (WebRTC 1.0, 4.9)
     if (certificatesOf?.is(value)) {
       out = certificatesOf.from(certificatesOf.data(value));
@@ -26334,6 +26348,9 @@ export function installDom(
   /** `webrtc.ts`'s, once the block below has made it: what a message
    *  carries an `RTCCertificate` by, which only a window's realm has. */
   let certificatesOf: Any = null;
+  /** `encoded-transform.ts`'s, once the block below has made them: what a
+   *  message carries an encoded frame by. */
+  let encodedOf: Any = null;
   /**
    * The agent cluster a track handed over is of, by what this realm can
    * tell of it: a window's is its site, scheme and the last two labels of
@@ -26508,6 +26525,26 @@ export function installDom(
       }
       if (certificatesOf?.is(v)) {
         return { i: index, t: 'X', d: certificatesOf.data(v) };
+      }
+      // an encoded frame, which is `[Serializable]` but not for storage
+      // (WebRTC Encoded Transform, 6.4), its data walked as any buffer is,
+      // so two frames over one buffer share it again
+      if (encodedOf?.isFrame(v)) {
+        if (!transfer) {
+          throw new DOMException(
+            'An encoded frame cannot be serialized for storage.',
+            'DataCloneError',
+          );
+        }
+        const parts = encodedOf.partsOf(v);
+        return {
+          i: index,
+          t: 'W',
+          k: parts.kind,
+          y: parts.type,
+          m: walk(parts.metadata),
+          b: walk(parts.data),
+        };
       }
       if (v instanceof EventTarget || v instanceof Event) {
         throw new DOMException(
@@ -26753,6 +26790,20 @@ export function installDom(
           }
           out = certificatesOf.from(v.d);
           break;
+        case 'W': {
+          // an encoded frame, made again here, its owner no transformer's
+          made[v.i] = null;
+          const metadata = make(v.m);
+          const data = make(v.b);
+          if (!encodedOf) {
+            throw new DOMException(
+              'An encoded frame cannot be received here.',
+              'DataCloneError',
+            );
+          }
+          out = encodedOf.make(str(v.k), str(v.y), metadata, data);
+          break;
+        }
         case 'D':
           out = new Date(v.v);
           break;
@@ -27109,6 +27160,7 @@ export function installDom(
     // WebRTC's and Media Capture's interfaces but the data channel's
     // (`webrtc.ts`, `mediastream.ts`), which a worker can be handed
     'RTCPeerConnection',
+    'RTCRtpScriptTransform',
     'RTCSessionDescription',
     'RTCIceCandidate',
     'RTCPeerConnectionIceEvent',
@@ -27261,6 +27313,32 @@ export function installDom(
       );
     }
     return { resolved, source: null };
+  };
+  /**
+   * A transform's options posted to its worker (WebRTC Encoded Transform,
+   * 4.1, step 9): as `postMessage` posts a message, its list's ports and
+   * channels moved, under a wrapper the worker's realm hears as a
+   * transform's, `{ rtx, d }`.
+   */
+  const postTransform = (
+    worker: Any,
+    n: number,
+    options: Any,
+    transfer: Any,
+  ): void => {
+    const moved = channelsTransferred(transfer);
+    const later: Array<() => void> = [];
+    const data = serializeClone(options, moved, {
+      across: threadAcross(worker._id),
+      moving: transfersOf(transferListOf(transfer)),
+      later,
+    });
+    giveUp(transfer);
+    for (const channel of moved) {
+      dataChannelsOf.transferOut(channel, worker._id);
+    }
+    call('workerPost', worker._id, JSON.stringify({ rtx: n, d: data }));
+    for (const go of later) go();
   };
   class Worker extends EventTarget {
     _id = 0;
@@ -39731,6 +39809,36 @@ export function installDom(
       later: (fn: () => void) => setTimer(fn, 0, [], false),
     });
     dataChannelsOf = channels;
+    const encoded = encodedTransform({
+      call: call as Any,
+      entry: later,
+      input: () => input(),
+      DOMException,
+      EventTarget,
+      Event,
+      setHandler,
+      fire: trusted,
+      bytesOfBase64,
+      base64OfBytes,
+      streams: () => ({
+        ReadableStream: G.ReadableStream,
+        WritableStream: G.WritableStream,
+      }),
+      timeOrigin: () => Number(G.performance?.timeOrigin ?? 0),
+      workerOf: (w: Any) => (w instanceof Worker && w._id ? w._id : null),
+      post: postTransform,
+      global: () => windowTarget,
+    });
+    encodedOf = encoded;
+    // a window has the transform and the frames; a dedicated worker the
+    // frames, the transformer and its event (`__becomeWorker`)
+    for (const name of [
+      'RTCRtpScriptTransform',
+      'RTCEncodedVideoFrame',
+      'RTCEncodedAudioFrame',
+    ]) {
+      define(name, encoded.interfaces[name]);
+    }
     rtc = webrtc({
       call: call as Any,
       entry: later,
@@ -39745,6 +39853,7 @@ export function installDom(
       bytesOfBase64,
       media: media.internals,
       channels,
+      encoded,
       transports: rtcTransports,
       certificates: (internals: Any) => {
         certificatesOf = internals;
@@ -40421,6 +40530,17 @@ export function installDom(
     // the side of the thread it came from, and a message along a wire on
     // it, to the port across it here
     const across = id === 0 ? UP : threadAcross(Number(id));
+    // a transform its window made, to this realm, a worker's
+    if (id === 0 && str(text).startsWith('{"rtx":')) {
+      try {
+        const wrapper = JSON.parse(str(text));
+        const made = deserializeWith(str(wrapper.d), across);
+        encodedOf?.arrived(Number(wrapper.rtx), made.data);
+      } catch (error) {
+        report(error);
+      }
+      return true;
+    }
     if (canvasFrame(across, str(text))) return true;
     if (wireMessage(across, str(text))) return true;
     // a shared worker's, to the port of its connection
@@ -40580,6 +40700,27 @@ export function installDom(
       SW.become(service);
     } else {
       define('DedicatedWorkerGlobalScope', scope('DedicatedWorkerGlobalScope'));
+      // a transform its window made is heard here (WebRTC Encoded
+      // Transform, 4.1)
+      if (encodedOf) {
+        define(
+          'RTCRtpScriptTransformer',
+          encodedOf.interfaces.RTCRtpScriptTransformer,
+        );
+        define('RTCTransformEvent', encodedOf.interfaces.RTCTransformEvent);
+      }
+      Object.defineProperty(G, 'onrtctransform', {
+        get: () => windowTarget._handlers?.rtctransform ?? null,
+        set: (fn: Any) => {
+          setHandler(
+            windowTarget,
+            'rtctransform',
+            typeof fn === 'function' ? fn : null,
+          );
+        },
+        enumerable: true,
+        configurable: true,
+      });
       // a dedicated worker's animation frames (HTML 8.10), which a worker
       // drawing on an `OffscreenCanvas` paces itself by: one every
       // sixtieth of a second while a callback waits, on the worker's own

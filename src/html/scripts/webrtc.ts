@@ -21,6 +21,7 @@
 // are `rtc-transports.ts`'s; tracks and streams are `mediastream.ts`'s.
 
 import type { DataChannelsInternals } from './datachannel.js';
+import type { EncodedTransformInternals } from './encoded-transform.js';
 import type { MediaStreamsInternals } from './mediastream.js';
 import type { installRtcTransports } from './rtc-transports.js';
 
@@ -45,6 +46,9 @@ export interface WebRTCDeps {
   /** Makes `datachannel.ts`'s classes, with what they need of a
    *  connection. */
   channels: DataChannelsInternals;
+  /** `encoded-transform.ts`'s, which `sender.transform` and
+   *  `receiver.transform` take. */
+  encoded: EncodedTransformInternals;
   /** Installs `rtc-transports.ts`, which this calls with its own helpers,
    *  so that the two share their slots. */
   transports: typeof installRtcTransports;
@@ -651,6 +655,31 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
 
   let transactionSeq = 0;
 
+  /**
+   * `sender.transform` and `receiver.transform` set (WebRTC Encoded
+   * Transform, 4.4 and 4.5): an `RTCRtpScriptTransform` or null, one in use
+   * by another sender or receiver an `InvalidStateError`, and the one it
+   * replaces let go. The host puts its frames on the new one's worker.
+   */
+  const setTransform = (
+    owner: Any,
+    s: Any,
+    side: 'sender' | 'receiver',
+    value: Any,
+  ): void => {
+    const encoded: Any = D.encoded;
+    if (value !== null && !encoded.isTransform(value)) {
+      throw typeError(
+        `Failed to set the 'transform' property on 'RTCRtp${side === 'sender' ? 'Sender' : 'Receiver'}': The provided value is not of type 'RTCRtpScriptTransform'.`,
+      );
+    }
+    const old = s.transform ?? null;
+    if (value === old) return;
+    if (value !== null) encoded.attach(value, owner, s.tx.id, side);
+    s.transform = value;
+    if (value === null) call('rtcTransform', s.tx.id, side, 0, 0);
+  };
+
   class RTCRtpSender {
     constructor(token: Any = undefined) {
       if (token !== TOKEN) throw illegalConstructor();
@@ -668,9 +697,11 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       return slotOf(this, 'sender').dtmf;
     }
     get transform(): Any {
-      return null;
+      return slotOf(this, 'sender').transform ?? null;
     }
-    set transform(_: Any) {}
+    set transform(value: Any) {
+      setTransform(this, slotOf(this, 'sender'), 'sender', value);
+    }
     static getCapabilities(kind: Any): Any {
       return capabilitiesOf(String(kind), 'sender');
     }
@@ -1017,6 +1048,12 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         ? null
         : transportOf(s.tx.pc, s.tx.transport).dtls;
     }
+    get transform(): Any {
+      return slotOf(this, 'receiver').transform ?? null;
+    }
+    set transform(value: Any) {
+      setTransform(this, slotOf(this, 'receiver'), 'receiver', value);
+    }
     get jitterBufferTarget(): Any {
       return slotOf(this, 'receiver').jitterBufferTarget;
     }
@@ -1034,10 +1071,6 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       }
       call('rtcJitter', s.tx.id, s.jitterBufferTarget);
     }
-    get transform(): Any {
-      return null;
-    }
-    set transform(_: Any) {}
     static getCapabilities(kind: Any): Any {
       return capabilitiesOf(String(kind), 'receiver');
     }

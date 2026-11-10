@@ -161,6 +161,23 @@ export interface RTCStatsLike {
   [field: string]: unknown;
 }
 
+/**
+ * One encoded frame, as an `RTCRtpScriptTransform` sees it (WebRTC Encoded
+ * Transform): what a sender's encoder made, before it is packetized, or what
+ * a receiver put together from its packets, before it is decoded. Its
+ * `metadata` is the `RTCEncoded…FrameMetadata` dictionary's fields.
+ */
+export interface RTCEncodedFrameLike {
+  kind: 'audio' | 'video';
+  /** A video frame's: `key` or `delta`; an audio frame is `key`. */
+  type: 'key' | 'delta' | 'empty';
+  data: Uint8Array;
+  metadata: Record<string, unknown>;
+}
+
+/** Which half of a transceiver a transform is on. */
+export type RTCTransformSide = 'sender' | 'receiver';
+
 /** What a page asked a new transceiver to be: `addTransceiver`'s init, or
  *  what `addTrack` came to. */
 export interface RTCTransceiverInit {
@@ -214,6 +231,24 @@ export interface RTCTransceiverLike {
   /** `sender.getStats()` and `receiver.getStats()`: the stats that side's
    *  selector reaches. */
   stats(side: 'sender' | 'receiver'): Promise<RTCStatsLike[]>;
+  /**
+   * A transform on one side (`sender.transform`, `receiver.transform`):
+   * from now on each encoded frame of that side is handed to `frames`
+   * instead of being packetized or decoded, and goes on only once it is
+   * handed back to `writeFrame`; null takes the transform off. A stack with
+   * no encoded frames leaves this out, and a transform sees none.
+   */
+  transform?(
+    side: RTCTransformSide,
+    frames: ((frame: RTCEncodedFrameLike) => void) | null,
+  ): void;
+  /** A frame a transform handed back: packetized, or decoded. */
+  writeFrame?(side: RTCTransformSide, frame: RTCEncodedFrameLike): void;
+  /** `generateKeyFrame()`: the sender's next frame is a key frame. */
+  keyFrame?(): void;
+  /** `sendKeyFrameRequest()`: the receiver asks its peer for a key frame,
+   *  and settles once it has. */
+  requestKeyFrame?(): Promise<void>;
 }
 
 /** A transceiver as a description left it. */
@@ -648,6 +683,25 @@ class DeferredTransceiver implements RTCTransceiverLike {
   stats(side: 'sender' | 'receiver'): Promise<RTCStatsLike[]> {
     return new Promise((resolve, reject) =>
       this._do((t) => t.stats(side).then(resolve, reject)),
+    );
+  }
+  transform(
+    side: RTCTransformSide,
+    frames: ((frame: RTCEncodedFrameLike) => void) | null,
+  ): void {
+    this._do((t) => t.transform?.(side, frames));
+  }
+  writeFrame(side: RTCTransformSide, frame: RTCEncodedFrameLike): void {
+    this.real?.writeFrame?.(side, frame);
+  }
+  keyFrame(): void {
+    this._do((t) => t.keyFrame?.());
+  }
+  requestKeyFrame(): Promise<void> {
+    return new Promise((resolve, reject) =>
+      this._do((t) =>
+        (t.requestKeyFrame?.() ?? Promise.resolve()).then(resolve, reject),
+      ),
     );
   }
 }

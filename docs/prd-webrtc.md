@@ -327,7 +327,8 @@ These classes go in the page's realm, as source text beside
 - `RTCDTMFSender` and `RTCDTMFToneChangeEvent`;
 - `RTCCertificate`, `RTCStatsReport`, `RTCError` and `RTCErrorEvent`,
   `RTCTrackEvent`;
-- later, `RTCRtpScriptTransform`;
+- `RTCRtpScriptTransform`, and in a worker `RTCRtpScriptTransformer`,
+  `RTCTransformEvent` and the encoded frames (`encoded-transform.ts`);
 - `MediaStream`, `MediaStreamTrack` and `MediaStreamTrackEvent`;
 - `navigator.mediaDevices`, with `getUserMedia`, `enumerateDevices` and
   later `getDisplayMedia`.
@@ -515,6 +516,18 @@ where it is werift's to fix, as quico's three behaviours were
 transform in a worker. Both cross the thread as a worker's WebTransport
 sessions do, over the thread's channel, tagged `{ kind: 'rtc' }`, to a
 relay in the page process that drives the page's own seam.
+
+A transform is a number of its window's realm. Made, its options are posted
+to its worker as a message of their own (`{ rtx, d }`), which the worker's
+realm hears as `rtctransform`. Put on a side, the host tells the worker so
+(`tf`, `attach`) and hands the seam a sink for that side
+(`RTCTransceiverLike.transform`): from then on `MediaSender` hands each
+encoded frame to it rather than packetizing it, and `MediaReceiver` each
+frame it put together rather than decoding it. A frame crosses to the
+worker as base64 (`tf`, `frame`), and what the worker writes back crosses
+again (`tfAsk`, `write`) to `writeFrame`, which packetizes or decodes it.
+writeEncodedData's rules are the worker realm's, which knows which
+transformer gave a frame and in what order.
 
 A `MediaStreamTrack` is transferable too (Media Capture Extensions), and
 crosses differently. Its source stays with the realm that opened it, and the
