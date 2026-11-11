@@ -535,23 +535,16 @@ export class MermaidNode extends Node {
 
     ctx.save();
 
-    // 1. the band the document selection has claimed of this diagram
+    // The band the document selection has claimed of a label is drawn with
+    // the label, just before it: every label sits on something filled — a
+    // node's box, a diamond, an edge label's pill — which ondine writes
+    // first, so a band drawn ahead of the whole scene is covered by it.
     const range = this.selectionRange;
     const selectionColor = this.selectionColor;
-    if (selectionColor && range && range.end > range.start) {
-      ctx.fillStyle = selectionColor;
-      for (const r of this.textRangeRects(range.start, range.end)) {
-        ctx.fillRect(
-          Math.round(r.x),
-          Math.round(r.y),
-          Math.ceil(r.width),
-          Math.ceil(r.height),
-        );
-      }
-    }
+    const lit = selectionColor && range && range.end > range.start;
 
-    // 2. everything, in the order ondine wrote it — a label's backing
-    //    pill is drawn before the label, and a node over the edges into it
+    // everything, in the order ondine wrote it — a label's backing pill is
+    // drawn before the label, and a node over the edges into it
     const paths = canPath(ctx);
     const placed = new Map<SceneText, PlacedRun>();
     for (const r of placement.runs) placed.set(r.run, r);
@@ -561,7 +554,23 @@ export class MermaidNode extends Node {
         continue;
       }
       const r = placed.get(item);
-      if (!r || !r.mini || !r.mini.lines.length) continue;
+      if (!r) continue;
+      if (lit) {
+        const a = Math.max(range.start, r.index);
+        const b = Math.min(range.end, r.index + r.length);
+        if (b > a) {
+          ctx.fillStyle = selectionColor;
+          for (const band of this.textRangeRects(a, b)) {
+            ctx.fillRect(
+              Math.round(band.x),
+              Math.round(band.y),
+              Math.ceil(band.width),
+              Math.ceil(band.height),
+            );
+          }
+        }
+      }
+      if (!r.mini || !r.mini.lines.length) continue;
       const alpha = Math.min(1, item.opacity);
       if (alpha <= 0) continue;
       if (alpha < 1) ctx.globalAlpha = alpha;
