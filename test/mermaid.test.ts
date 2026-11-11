@@ -383,6 +383,88 @@ test(
 );
 
 test(
+  'a label dragged across shows its band over the shape it sits on',
+  { skip: !engine || !FONTS },
+  async () => {
+    // Every flowchart label sits on a filled node box, which ondine writes
+    // before the label: a band painted ahead of the scene was covered by
+    // it, so the selection was made and copied and never seen.
+    const { ctx } = await renderX11(
+      h(
+        'box',
+        { style: { flexGrow: 1, padding: 10, backgroundColor: '#ffffff' } },
+        h(Mermaid, {
+          source: FLOW,
+          selectable: true,
+          selectionColor: '#00ff00',
+          'data-testname': 'diagram',
+        }),
+      ),
+      { fonts: FONTS!, width: 640, height: 240 },
+    );
+    await flushEngine();
+    const [node] = mermaidNodes();
+    const drawn = node as unknown as DrawnNode;
+    const start = node.textContent().indexOf('Start');
+    const [band] = node.textRangeRects(start, start + 5);
+    assert.ok(band, 'the label has a box');
+
+    const greenUnder = async (): Promise<number> => {
+      const { data } = await (
+        ctx as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ): Promise<{ data: Uint8ClampedArray }>;
+        }
+      ).getImageData(
+        Math.round(band.x),
+        Math.round(band.y),
+        Math.floor(band.width),
+        Math.floor(band.height),
+      );
+      let green = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] < 60 && data[i + 1] > 200 && data[i + 2] < 60) green += 1;
+      }
+      return green;
+    };
+    assert.equal(await greenUnder(), 0, 'nothing is lit before the drag');
+
+    // the event offsets are from the element's centre
+    const cx = drawn.abs.x + drawn.abs.width / 2;
+    const cy = drawn.abs.y + drawn.abs.height / 2;
+    const y = band.y + band.height / 2 - cy;
+    fireEvent.mouseDown(drawn, { dx: band.x + 1 - cx, dy: y });
+    fireEvent.mouseMove(drawn, { dx: band.x + band.width - 1 - cx, dy: y });
+    // ntk coalesces motion onto its own frame clock, which act() does not run
+    await new Promise((r) => setTimeout(r, 30));
+    await act();
+    fireEvent.mouseUp(drawn, { dx: band.x + band.width - 1 - cx, dy: y });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    assert.equal(
+      (
+        screen.getByTestName('diagram') as unknown as {
+          selectedText(): string;
+        }
+      ).selectedText(),
+      'Start',
+    );
+    const green = await greenUnder();
+    const area = Math.floor(band.width) * Math.floor(band.height);
+    assert.ok(
+      green > area / 2,
+      `the band shows under the label: ${green} of ${area} pixels`,
+    );
+  },
+);
+
+test(
   'a diagram wider than its column shrinks to it',
   { skip: !engine || !FONTS },
   async () => {
