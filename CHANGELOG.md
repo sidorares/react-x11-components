@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.43.1](https://github.com/sidorares/react-x11-components/compare/v0.43.0...v0.43.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **mermaid:** a selected label shows its band over the shape it sits on ([#1473](https://github.com/sidorares/react-x11-components/issues/1473)) ([6c0ca6f](https://github.com/sidorares/react-x11-components/commit/6c0ca6f6e2bc6b398160bd19ea0d2b7e8cb9135b))
+
 ## [0.43.0](https://github.com/sidorares/react-x11-components/compare/v0.42.0...v0.43.0) (2026-11-10)
 
 
