@@ -3,8 +3,9 @@
 //
 // A lab for the type in a chat transcript: prose (<Markdown>), code blocks
 // (<Code>, as a chat draws every fence), the code editor and the composer
-// (<RichTextEditor>). Each knob is a real prop or style, so a value read off
-// a slider is a value an app can pass:
+// (<RichTextEditor>), and a mermaid fence drawn by <Mermaid>. Each knob is
+// a real prop or style, so a value read off a slider is a value an app can
+// pass:
 //
 //   prose      <Markdown fontSize lineHeight>
 //   code       <Code fontSize lineHeight style={{ padding, borderRadius }}>
@@ -32,6 +33,7 @@ import {
 import { CodeEditor } from '../src/code-editor/index.js';
 import { javascript } from '../src/code-language/index.js';
 import { Markdown } from '../src/markdown/index.js';
+import { Mermaid } from '../src/mermaid/index.js';
 import {
   RichTextEditor,
   composerSchema,
@@ -160,7 +162,24 @@ function Lab(): ReactElement {
   const ems = (v: number) => `${v}em · ${em(v)}px`;
 
   const part = (s: Part, i: number): ReactNode =>
-    s.code ? (
+    s.code && s.lang === 'mermaid' ? (
+      // a diagram is drawn in the prose's size, as a chat's fence renderer
+      // would hand it over, framed as a code block is
+      <box
+        key={i}
+        style={{
+          borderWidth: 1,
+          borderColor: '$border',
+          borderRadius: em(radius),
+          padding: em(pad),
+          marginTop: em(space),
+          marginBottom: em(space),
+          alignItems: 'center',
+        }}
+      >
+        <Mermaid source={s.text} fontSize={prose} selectable />
+      </box>
+    ) : s.code ? (
       <box
         key={i}
         style={{
