@@ -74,6 +74,46 @@ export interface CanvasFeed {
   watch(changed: () => void): () => void;
 }
 
+/** What a track gives a peer connection's sender (Media Capture 4.3.1):
+ *  its source's media, black frames and silence, or nothing. */
+export type TrackOutput = 'enabled' | 'disabled' | 'ended';
+
+/** A source as a sender reads it (`PageSources.tap`), whose output its
+ *  track's changes set. */
+export interface SourceTap extends MediaSourceLike {
+  output(output: TrackOutput): void;
+}
+
+/** How often a sender of a disabled video track sends a black frame
+ *  (WebRTC 1.0, 5.2). */
+const BLACK_EVERY_MS = 1000;
+
+/** A black I420 frame of a size: `reuse` where it is that size already. */
+function blackFrame(
+  reuse: MediaVideoFrame | null,
+  { width, height }: { width: number; height: number },
+): MediaVideoFrame {
+  if (reuse && reuse.width === width && reuse.height === height) {
+    return { ...reuse, timestamp: Date.now() * 1000 };
+  }
+  const cw = (width + 1) >> 1;
+  const ch = (height + 1) >> 1;
+  return {
+    format: 'I420',
+    width,
+    height,
+    planes: [
+      new Uint8Array(width * height).fill(16),
+      new Uint8Array(cw * ch).fill(128),
+      new Uint8Array(cw * ch).fill(128),
+    ],
+    strides: [width, cw, cw],
+    colorSpace: 'bt601',
+    range: 'video',
+    timestamp: Date.now() * 1000,
+  };
+}
+
 /** A canvas's source, which a `requestFrame()` asks a frame of. */
 export interface CanvasSource extends MediaSourceLike {
   requestFrame(): void;
@@ -231,32 +271,114 @@ export class PageSources {
    * among the others, and whose `stop` stops only that, where the source's
    * own `listen` would take it from the host and its `stop` would end it for
    * every track. Null where no track is over the number.
+   *
+   * What it gives is its track's output, which the page's realm tells as it
+   * changes (`output`): the source's frames while the track is enabled; while
+   * it is disabled, a black frame a second at the size it last gave, as
+   * WebRTC 1.0 has a sender send (5.2), and silence for as long as the
+   * source gives sound, as every browser sends it; once the track ended,
+   * nothing, and `ended` told, as Chrome sends. It is the track's and not
+   * the source's: a clone of the track, or a `<video>` of it, reads the
+   * source as it was. docs/components/html.md has where the browsers
+   * differ.
    */
-  tap(id: number): MediaSourceLike | null {
+  tap(id: number, output: TrackOutput = 'enabled'): SourceTap | null {
     const held = this._held.get(id);
     if (!held) return null;
     const { source } = held;
+    let events: MediaSourceEvents | null = null;
     let off: (() => void) | null = null;
+    let timer: unknown = null;
+    let stopped = false;
+    let size = { width: 0, height: 0 };
+    let black: MediaVideoFrame | null = null;
+    let zeros = new Float32Array(0);
+    const quiet = () => {
+      off?.();
+      off = null;
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+    };
+    /** The size a black frame is: the last frame read, else the source's. */
+    const sizeOf = (): { width: number; height: number } => {
+      if (size.width && size.height) return size;
+      const last = held.last;
+      if (last) return { width: last.width, height: last.height };
+      const { width, height } = source.settings();
+      return width && height
+        ? { width: Math.round(width), height: Math.round(height) }
+        : { width: 640, height: 480 };
+    };
+    const silenceOf = (data: MediaAudioData): MediaAudioData => {
+      if (zeros.length !== data.frames) zeros = new Float32Array(data.frames);
+      return { ...data, channels: data.channels.map(() => zeros) };
+    };
+    const run = () => {
+      quiet();
+      const to = events;
+      if (stopped || !to || output === 'ended') return;
+      const video = source.kind === 'video' ? to.video : undefined;
+      const audio = source.kind === 'audio' ? to.audio : undefined;
+      if (video && output === 'enabled') {
+        off = this.read(id, (f) => {
+          const frame = f as MediaVideoFrame;
+          size = { width: frame.width, height: frame.height };
+          video(frame);
+        });
+      } else if (video) {
+        // the source is not read: its frames would be thrown away. The
+        // first black frame is a task away, out of the page's op it was
+        // told in
+        const next = (ms: number) => {
+          timer = setTimeout(() => {
+            timer = null;
+            if (stopped || events !== to || output !== 'disabled') return;
+            black = blackFrame(black, sizeOf());
+            video(black);
+            next(BLACK_EVERY_MS);
+          }, ms);
+          (timer as { unref?(): void }).unref?.();
+        };
+        next(0);
+      } else if (audio) {
+        off = this.read(id, (d) => {
+          const data = d as MediaAudioData;
+          audio(output === 'enabled' ? data : silenceOf(data));
+        });
+      }
+    };
     return {
       kind: source.kind,
       label: source.label,
-      listen: (events) => {
-        off?.();
-        off = null;
-        const video = source.kind === 'video' ? events.video : undefined;
-        const audio = source.kind === 'audio' ? events.audio : undefined;
-        if (video) {
-          off = this.read(id, (frame) => video(frame as MediaVideoFrame));
-        } else if (audio) {
-          off = this.read(id, (data) => audio(data as MediaAudioData));
-        }
+      listen: (e) => {
+        events = e;
+        if (output === 'ended' && !stopped) e.ended();
+        run();
       },
       settings: () => source.settings(),
       capabilities: () => source.capabilities(),
       reconfigure: () => Promise.resolve(false),
       stop: () => {
-        off?.();
-        off = null;
+        stopped = true;
+        events = null;
+        quiet();
+      },
+      output: (next) => {
+        if (stopped || output === 'ended' || next === output) return;
+        output = next;
+        // nothing more of what it gave, from now; what it gives instead is
+        // a task away, out of the page's op it was told in, since a frame
+        // handed over may tell the page of itself
+        quiet();
+        if (next === 'ended') {
+          events?.ended();
+          return;
+        }
+        timer = setTimeout(() => {
+          timer = null;
+          run();
+        }, 0);
+        (timer as { unref?(): void }).unref?.();
       },
     };
   }

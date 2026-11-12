@@ -60,6 +60,13 @@ export interface MediaStreamsInternals {
   ): unknown;
   /** The host source a track is over, or -1 for what is not a track. */
   sourceOf(track: unknown): number;
+  /** What a track gives a sink such as a peer connection's sender (Media
+   *  Capture 4.3.1): its source's media while it is live and enabled,
+   *  black frames or silence while it is disabled, nothing once it ended. */
+  output(track: unknown): 'enabled' | 'disabled' | 'ended';
+  /** `fn` whenever a track is disabled, enabled again or ended, until the
+   *  function it answers is called. */
+  watchOutput(track: unknown, fn: () => void): () => void;
   isTrack(value: unknown): boolean;
   isStream(value: unknown): boolean;
   /** A stream with an id the page did not choose: a remote one's. */
@@ -656,13 +663,25 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
   // slot, and each source's size (`internals.watchSize`)
   const streamWatchers = new Map<Any, Set<() => void>>();
   const sizeWatchers = new Map<number, Set<(w: number, h: number) => void>>();
+  // what watches a track's output (`internals.watchOutput`): a sender
+  const outputWatchers = new Map<Any, Set<() => void>>();
+  /** A track's output changed, as its senders are told. An ended track
+   *  changes no more, so what watches it goes. */
+  const outputChanged = (track: Any): void => {
+    const fns = outputWatchers.get(track);
+    if (!fns) return;
+    const s: TrackSlot = apply(wmGet, slots, [track]);
+    if (s?.state === 'ended') outputWatchers.delete(track);
+    for (const fn of [...fns]) fn();
+  };
   /** A track changed — ended or enabled — and the streams it is in are
-   *  told. */
+   *  told, and its senders. */
   const trackChanged = (track: Any): void => {
     for (const [slot, fns] of [...streamWatchers]) {
       if (!slot.tracks.includes(track)) continue;
       for (const fn of [...fns]) fn();
     }
+    outputChanged(track);
   };
   const streamChanged = (slot: Any): void => {
     for (const fn of [...(streamWatchers.get(slot) ?? [])]) fn();
@@ -1215,6 +1234,30 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
             : null;
         return s?.track ? s.source : -1;
       },
+      output: (track: Any) => {
+        const s: TrackSlot | undefined =
+          track && typeof track === 'object'
+            ? apply(wmGet, slots, [track])
+            : undefined;
+        if (!s?.track || s.state === 'ended') return 'ended';
+        return s.enabled ? 'enabled' : 'disabled';
+      },
+      watchOutput: (track: Any, fn: () => void) => {
+        const s: TrackSlot | undefined =
+          track && typeof track === 'object'
+            ? apply(wmGet, slots, [track])
+            : undefined;
+        if (!s?.track || s.state === 'ended') return () => {};
+        const set: Set<() => void> = outputWatchers.get(track) ?? new Set();
+        outputWatchers.set(track, set);
+        set.add(fn);
+        return () => {
+          set.delete(fn);
+          if (!set.size && outputWatchers.get(track) === set) {
+            outputWatchers.delete(track);
+          }
+        };
+      },
       isTrack,
       isStream,
       stream: (id: string) => {
@@ -1276,6 +1319,8 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
             s.state = 'ended';
             s.home?.tracks.delete(track);
             bySource.get(s.source)?.delete(track);
+            // a sender of it sends nothing from now on
+            outputChanged(track);
             if (live) {
               serve(
                 channel.port1,

@@ -375,7 +375,7 @@ export class MediaSender {
     }
     source.listen({
       muted() {},
-      ended() {},
+      ended: () => this._ended(),
       ...(this._t.kind === 'video'
         ? { video: (frame: MediaVideoFrame) => this._frame(frame) }
         : { audio: (data: MediaAudioData) => this._chunk(data) }),
@@ -384,6 +384,15 @@ export class MediaSender {
       this._repeat = setInterval(() => this._tick(), REPEAT_AFTER_MS / 2);
       (this._repeat as { unref?(): void }).unref?.();
     }
+  }
+
+  /** Its track ended (`PageSources.tap`): nothing more is sent, the last
+   *  frame not again. A disabled track's black frames and silence are what
+   *  the source it is handed gives, and need nothing here. */
+  private _ended(): void {
+    this._latest = null;
+    this._encodedLatest = false;
+    this._pending = new Float32Array(0);
   }
 
   /** Sends nothing more, for good. */
