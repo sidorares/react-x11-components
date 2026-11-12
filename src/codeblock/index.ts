@@ -25,10 +25,19 @@ import type { TextRun } from '../richtext/index.js';
 import { tint } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
 
-/** Code is set tighter than prose: the lines are short and the shapes are
- *  what is being read. One value, so a fenced block and a `<Code>` in the
- *  same window sit on the same rhythm. */
-export const CODE_LINE_HEIGHT = 1.25;
+/** A block of code's line, as a multiple of the mono font's own: the
+ *  prose's 1.4, so code and the text around it share a rhythm. One value,
+ *  so a fenced block and a `<Code>` in the same window agree. */
+export const CODE_LINE_HEIGHT = 1.4;
+
+/** A block of code's inset, in ems of its own size — so a block at a larger
+ *  size keeps its proportions. `<CodeEditor>` is inset the same. */
+export const CODE_PADDING_EM = 1;
+/** Its corner radius, in ems of its own size. */
+export const CODE_RADIUS_EM = 0.7;
+/** The space above and below a block of code among prose, in ems of the
+ *  code's size: what `<Markdown>` keeps around a fence. */
+export const CODE_SPACING_EM = 1.5;
 
 /** Everything both components derive from the theme before drawing. */
 export interface CodeBlockLook {
@@ -43,6 +52,8 @@ export interface CodeBlockLook {
   fill: string;
   padding: number;
   radius: number;
+  /** Space above and below the block among prose. */
+  spacing: number;
   lineHeight: number;
   /** Token palette, picked against the theme background unless overridden. */
   styles: TokenStyles;
@@ -60,6 +71,9 @@ export interface CodeBlockLookOptions {
   monoFamily?: string;
   /** Token palette override. */
   tokenStyles?: TokenStyles;
+  /** Line height, a multiple of the font's own line. Default
+   *  `CODE_LINE_HEIGHT`. */
+  lineHeight?: number;
 }
 
 /** Resolve a `'$token'` colour against a theme. Both components need the
@@ -95,9 +109,10 @@ export function codeBlockLook(
     color,
     dim: String(theme.textMuted ?? '#7f8c8d'),
     fill: tint(color, 0.06),
-    padding: Math.round(size * 0.65),
-    radius: 6,
-    lineHeight: CODE_LINE_HEIGHT,
+    padding: Math.round(size * CODE_PADDING_EM),
+    radius: Math.round(size * CODE_RADIUS_EM),
+    spacing: Math.round(size * CODE_SPACING_EM),
+    lineHeight: options.lineHeight ?? CODE_LINE_HEIGHT,
     // the same palettes the editor uses, picked by background luminance — a
     // fenced block, a `<Code>` and a `<CodeEditor>` in one window agree
     styles: options.tokenStyles ?? autoTokenStyles(background),

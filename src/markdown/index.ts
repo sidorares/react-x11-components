@@ -116,6 +116,23 @@ export interface FenceInfo {
   partial: boolean;
 }
 
+/** Body text's line height by default, as a multiple of the font's own
+ *  line: the font's own is dense for reading paragraphs. */
+const BODY_LINE_HEIGHT = 1.4;
+
+/** `<Markdown styles>`: a style per part, over the part's own. Text styles
+ *  (`paragraph`, `heading`) style the text block: its `lineHeight`, its
+ *  margins and alignment — not its runs' size or colour, which the font
+ *  props and the theme set. */
+export interface MarkdownStyles {
+  paragraph?: Style;
+  heading?: Style;
+  /** The quote's box: its rule, its indent. */
+  quote?: Style;
+  /** A fence's box: its fill, padding, radius, border. */
+  code?: Style;
+}
+
 export interface MarkdownProps {
   /** The markdown text. Append to it as chunks stream in. */
   source: string;
@@ -138,6 +155,20 @@ export interface MarkdownProps {
    *  `fontFamily`. */
   fontSize?: number;
   fontFamily?: string;
+  /** Body text's line height — paragraphs, list items, quotes, table cells
+   *  — as a multiple of the font's own line, as a `<text>`'s `lineHeight`
+   *  is. Default 1.4; 1 is the font's own. Headings
+   *  keep the font's own unless `styles.heading` says otherwise. */
+  lineHeight?: number;
+  /** Fenced code's size. Default: 0.9 × `fontSize`, as `<Code>`'s. */
+  codeFontSize?: number;
+  /** Fenced code's line height, a multiple of the mono font's own line.
+   *  Default 1.4, as `<Code>`'s. */
+  codeLineHeight?: number;
+  /** Style over the parts of the document, merged over each part's own:
+   *  margins, colours, a `lineHeight`. Give it a stable identity — a new
+   *  object per render defeats the block cache, as a new `fences` map does. */
+  styles?: MarkdownStyles;
   /** Code font, inline and fenced. Default: the theme's `monoFamily`. */
   monoFamily?: string;
   /** Selection band fill. Default: theme accent at 35% opacity. */
@@ -245,6 +276,9 @@ interface Look {
   blockGap: number;
   /** Fenced code: shared with `<Code>`, so the two agree in one window. */
   code: CodeBlockLook;
+  /** Body text's line height, merged into its `<richtext>` styles. */
+  body: Style;
+  styles: MarkdownStyles;
   highlight: boolean;
   /** Cache epoch: two equal keys derive identical elements. */
   key: string;
@@ -281,7 +315,14 @@ function deriveLook(
     headerBg: tint(text, 0.05),
     headingScales: [1.75, 1.4, 1.2, 1.05, 0.95, 0.85],
     blockGap: Math.round(size * 0.7),
-    code: codeBlockLook(theme, { baseSize: size, monoFamily }),
+    code: codeBlockLook(theme, {
+      baseSize: size,
+      monoFamily,
+      fontSize: props.codeFontSize,
+      lineHeight: props.codeLineHeight,
+    }),
+    body: { lineHeight: props.lineHeight ?? BODY_LINE_HEIGHT },
+    styles: props.styles ?? {},
     highlight,
     key: [
       text,
@@ -293,6 +334,10 @@ function deriveLook(
       family,
       monoFamily,
       highlight,
+      props.lineHeight,
+      props.codeFontSize,
+      props.codeLineHeight,
+      props.styles ? JSON.stringify(props.styles) : '',
     ].join('|'),
   };
 }
@@ -344,7 +389,10 @@ interface FontsMeasureLike {
     content: TextRun[] | string,
     style: Record<string, unknown>,
     options?: Record<string, unknown>,
-  ): { width: number };
+  ): {
+    width: number;
+    lines?: readonly { height: number; ascent: number }[];
+  };
 }
 
 function richtext(
@@ -367,7 +415,9 @@ function inlineStyles(
 }
 
 function renderBlocks(blocks: BlockNode[], ctx: RenderCtx): ReactNode[] {
-  return blocks.map((b, i) => renderBlock(b, ctx, i));
+  return blocks.map((b, i) =>
+    renderBlock(b, ctx, i, i === 0, i === blocks.length - 1),
+  );
 }
 
 function renderBlock(
@@ -375,11 +425,15 @@ function renderBlock(
   ctx: RenderCtx,
   key: number,
   first = key === 0,
+  last = false,
 ): ReactNode {
   const look = ctx.look;
   switch (block.type) {
     case 'paragraph':
-      return richtext(key, runsOf(block.children, look.inline));
+      return richtext(key, runsOf(block.children, look.inline), {
+        ...look.body,
+        ...look.styles.paragraph,
+      });
 
     case 'heading': {
       const scale = look.headingScales[block.depth - 1] ?? 1;
@@ -389,11 +443,12 @@ function renderBlock(
       });
       return richtext(key, runsOf(block.children, s), {
         marginTop: first ? 0 : Math.round(look.blockGap * 0.6),
+        ...look.styles.heading,
       });
     }
 
     case 'code':
-      return renderCode(block.text, block.lang, ctx, key);
+      return renderCode(block.text, block.lang, ctx, key, first, last);
 
     case 'quote': {
       const quoted: RenderCtx = {
@@ -413,6 +468,7 @@ function renderBlock(
             borderLeftWidth: 3,
             borderLeftColor: look.border,
             paddingLeft: 10,
+            ...look.styles.quote,
           },
         },
         ...renderBlocks(block.children, quoted),
@@ -492,6 +548,8 @@ function renderCode(
   lang: string,
   ctx: RenderCtx,
   key: number,
+  first: boolean,
+  last: boolean,
 ): ReactNode {
   const custom = ctx.fences?.[lang];
   if (custom) {
@@ -508,15 +566,31 @@ function renderCode(
     text,
     lang,
     look: ctx.look.code,
+    style: fenceStyle(ctx.look, first, last),
     highlight: ctx.look.highlight,
     resolveLanguage: ctx.resolveLanguage,
   });
+}
+
+/**
+ * A fence's margins: the code's own spacing above and below it, less the gap
+ * the document's column already puts between blocks — and none at either end
+ * of the document, where there is nothing to space it from.
+ */
+function fenceStyle(look: Look, first: boolean, last: boolean): Style {
+  const extra = Math.max(0, look.code.spacing - look.blockGap);
+  return {
+    marginTop: first ? 0 : extra,
+    marginBottom: last ? 0 : extra,
+    ...look.styles.code,
+  };
 }
 
 interface CodeFenceProps {
   text: string;
   lang: string;
   look: CodeBlockLook;
+  style?: Style;
   highlight: boolean;
   resolveLanguage?: MarkdownProps['resolveLanguage'];
 }
@@ -528,7 +602,7 @@ interface CodeFenceProps {
  * was tokenized whole for every token a model wrote.
  */
 function CodeFence(props: CodeFenceProps): ReactElement {
-  const { text, lang, look, highlight, resolveLanguage } = props;
+  const { text, lang, look, style, highlight, resolveLanguage } = props;
   const cache = React.useRef<CodeBlockRunCache | null>(null);
   cache.current ??= new CodeBlockRunCache();
   React.useEffect(() => () => cache.current?.dispose(), []);
@@ -545,6 +619,7 @@ function CodeFence(props: CodeFenceProps): ReactElement {
         ...codeBlockStyle(look),
         overflow: 'scroll',
         flexDirection: 'column',
+        ...style,
       },
     },
     // in blocks of lines, so a fence that streams lays out the block its
@@ -555,6 +630,21 @@ function CodeFence(props: CodeFenceProps): ReactElement {
       wrap: false,
     }),
   );
+}
+
+/** The font's own line at the body text's face and size: its height and
+ *  ascent, as the text engine sets them. A guess where there is no engine. */
+function fontLine(
+  ctx: RenderCtx,
+  inline: InlineStyles,
+): { height: number; ascent: number } {
+  const line = ctx.fonts?.layout('Hx', {
+    family: inline.family,
+    size: inline.size,
+  }).lines?.[0];
+  return line && line.height > 0
+    ? { height: line.height, ascent: line.ascent }
+    : { height: inline.size * 1.2, ascent: inline.size * 0.95 };
 }
 
 function renderList(list: ListBlock, ctx: RenderCtx, key: number): ReactNode {
@@ -572,6 +662,16 @@ function renderList(list: ListBlock, ctx: RenderCtx, key: number): ReactNode {
   const items = list.items.map((item, i) => {
     let marker: ReactNode;
     if (item.checked !== null) {
+      // As big as the text's lower case and a little more — 12px at the
+      // default 14 — and centred on the letters of the first line: on its
+      // baseline, less about a third of an em. A numeric `lineHeight`
+      // multiplies the font's own line, ascent and descent, and the leading
+      // it adds is shared above and below the letters.
+      const size = look.inline.size;
+      const box = Math.max(10, Math.round(size * 0.86));
+      const font = fontLine(ctx, look.inline);
+      const line = font.height * Number(look.body.lineHeight);
+      const baseline = (line - font.height) / 2 + font.ascent;
       marker = hx(
         'box',
         { selectable: false, style: markerStyle },
@@ -579,19 +679,22 @@ function renderList(list: ListBlock, ctx: RenderCtx, key: number): ReactNode {
           'box',
           {
             style: {
-              width: 12,
-              height: 12,
+              width: box,
+              height: box,
               borderWidth: 1,
               borderColor: item.checked ? look.inline.linkColor : look.border,
-              borderRadius: 3,
+              borderRadius: Math.round(box / 4),
               backgroundColor: item.checked ? look.inline.linkColor : undefined,
               alignItems: 'center',
               justifyContent: 'center',
-              marginTop: Math.round(look.inline.size * 0.25),
+              marginTop: Math.max(
+                0,
+                Math.round(baseline - size * 0.3 - box / 2),
+              ),
             },
           },
           item.checked
-            ? h(Icon, { name: 'check', size: 10, color: 'white' })
+            ? h(Icon, { name: 'check', size: box - 2, color: 'white' })
             : null,
         ),
       );
@@ -609,6 +712,8 @@ function renderList(list: ListBlock, ctx: RenderCtx, key: number): ReactNode {
             color: look.dim,
             fontSize: look.inline.size,
             fontFamily: look.inline.family,
+            // on the item's first line, which `lineHeight` makes taller
+            ...look.body,
           },
         },
         list.ordered ? `${list.start + i}.` : '•',
@@ -623,7 +728,10 @@ function renderList(list: ListBlock, ctx: RenderCtx, key: number): ReactNode {
       // paragraph, taking the rest of the row; the column is for an item of
       // several blocks, which needs the gap between them.
       only?.type === 'paragraph'
-        ? richtext(0, runsOf(only.children, look.inline), STYLES.itemText)
+        ? richtext(0, runsOf(only.children, look.inline), {
+            ...STYLES.itemText,
+            ...look.body,
+          })
         : hx(
             'box',
             {
@@ -774,6 +882,7 @@ function MarkdownTable(props: MarkdownTableProps): ReactElement {
           marginRight: padX,
           marginTop: padY,
           marginBottom: padY,
+          ...look.body,
         }),
       ),
     );
@@ -839,6 +948,8 @@ interface RenderedBlock {
   raw: string;
   live: boolean;
   first: boolean;
+  /** Last in the document: a fence there takes no space below it. */
+  last: boolean;
   key: number;
   element: ReactNode;
 }
@@ -878,6 +989,10 @@ export function Markdown(props: MarkdownProps): ReactElement {
       props.fontFamily,
       props.monoFamily,
       props.highlight,
+      props.lineHeight,
+      props.codeFontSize,
+      props.codeLineHeight,
+      props.styles,
     ],
   );
   // a document with code in it sets that code in the mono family, and its
@@ -1020,6 +1135,7 @@ export function Markdown(props: MarkdownProps): ReactElement {
       const raw = doc.raws[i];
       const live = partial && i === n - 1;
       const first = i === 0;
+      const last = i === n - 1;
       // the block this one stands for in the last render, if any
       const before =
         i < head
@@ -1035,16 +1151,18 @@ export function Markdown(props: MarkdownProps): ReactElement {
         before.element !== undefined &&
         before.raw === raw &&
         before.live === live &&
-        before.first === first
+        before.first === first &&
+        before.last === last
           ? before.element
           : renderBlock(
               doc.blocks[i],
               live ? { ...ctx, live } : ctx,
               key,
               first,
+              last,
             );
       children.push(element);
-      kept.push({ raw, live, first, key, element });
+      kept.push({ raw, live, first, last, key, element });
     }
     // what the next render lines up against; the rest falls away with the
     // text that made it

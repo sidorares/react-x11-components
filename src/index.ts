@@ -348,6 +348,7 @@ export { Markdown, parse as parseMarkdown } from './markdown/index.js';
 export type {
   AttributeValue,
   MarkdownProps,
+  MarkdownStyles,
   MarkdownDocument,
   BlockNode,
   ComponentBlock,

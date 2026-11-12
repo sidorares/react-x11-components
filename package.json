@@ -215,6 +215,7 @@
     "examples:timeline": "node --import tsx examples/timeline.tsx",
     "examples:tray-host": "node --import tsx examples/tray-host.tsx",
     "examples:tree": "node --import tsx examples/tree.tsx",
+    "examples:type-lab": "node --import tsx examples/type-lab.tsx",
     "prepack": "npm run build"
   },
   "dependencies": {

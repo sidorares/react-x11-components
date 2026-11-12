@@ -58,6 +58,30 @@ test('a new runs array that says the same thing is not a new layout', async () =
   }
 });
 
+test('a new lineHeight is laid out again, and the box follows', async () => {
+  // The layouts were kept by width alone, so a `lineHeight` changed on a
+  // mounted element — a reader's setting in an app — drew the lines where
+  // the first one put them: the list numbers beside them, core's <text>,
+  // moved and the paragraph did not.
+  const runs: TextRun[] = [
+    { text: 'one line of text, and then a second line of text after it' },
+  ];
+  const at = (lineHeight: number) =>
+    h(RICHTEXT_ELEMENT, { runs, style: { width: 120, lineHeight } });
+  const view = await renderX11(at(1), { width: 300, height: 400 });
+  const node = () =>
+    screen.all((n) => n.kind === RICHTEXT_ELEMENT)[0] as DrawnNode;
+  const before = node().abs.height;
+  assert.ok(before > 0, 'the text has a height');
+  await view.rerender(at(2));
+  await act();
+  const after = node().abs.height;
+  assert.ok(
+    after > before * 1.5,
+    `twice the line height is a taller box: ${before} -> ${after}`,
+  );
+});
+
 test('a line through is as thick as its run says, on the device grid', async () => {
   // `strikeThickness` is a length in the unit `size` is in, a logical one
   // nothing in core multiplies: at 2x three pixels are six device ones, as

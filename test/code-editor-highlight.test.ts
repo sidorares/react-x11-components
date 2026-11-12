@@ -1082,7 +1082,8 @@ test('a controlled editor repaints the rows a keystroke changed, not the editor'
       diagnostics: [range(at(2, 6), at(2, 8))],
       language,
       lineNumbers: true,
-      style: { flexGrow: 1 },
+      // the font's own line, which the budgets below were measured at
+      style: { flexGrow: 1, lineHeight: 1 },
     });
   }
   const { ctx, windowNode } = await renderX11(h(Controlled), {
