@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.44.0](https://github.com/sidorares/react-x11-components/compare/v0.43.1...v0.44.0) (2026-11-12)
+
+
+### Features
+
+* line height and em-based spacing for Markdown, Code and CodeEditor, and a type lab ([#1475](https://github.com/sidorares/react-x11-components/issues/1475)) ([629277a](https://github.com/sidorares/react-x11-components/commit/629277a18ce83081673281e8241268a21bea0ee8))
+
+
+### Bug Fixes
+
+* **html:** a sender sends black frames and silence for a disabled track, and nothing for an ended one ([#1476](https://github.com/sidorares/react-x11-components/issues/1476)) ([5e29477](https://github.com/sidorares/react-x11-components/commit/5e2947733e26f81c1617f9f8187336367a39a783))
+
 ## [0.43.1](https://github.com/sidorares/react-x11-components/compare/v0.43.0...v0.43.1) (2026-11-11)
 
 
