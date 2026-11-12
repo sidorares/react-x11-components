@@ -29,21 +29,59 @@ no `<html>` successor.
 
 ## Props
 
-| Prop              | Type                                          | Notes                                                                                                                                                                   |
-| ----------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `source`          | `string`                                      | The markdown text. Append to it as chunks stream in. Required.                                                                                                          |
-| `partial`         | `boolean`                                     | Whether more source may still arrive. Default **true** — set it false when the stream ends.                                                                             |
-| `selectable`      | `boolean`                                     | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                |
-| `onLink`          | `(href: string, ev: X11MouseEvent) => void`   | A link was activated. Absent means clicks do nothing — this component never navigates by itself.                                                                        |
-| `fontSize`        | `number`                                      | Base text size. Default: the theme's (14).                                                                                                                              |
-| `fontFamily`      | `string`                                      | Default: the theme's `fontFamily`.                                                                                                                                      |
-| `monoFamily`      | `string`                                      | Code font, inline and fenced. Default: the theme's `monoFamily`.                                                                                                        |
-| `selectionColor`  | `string`                                      | Selection band fill. Default: the theme accent at 35% opacity.                                                                                                          |
-| `highlight`       | `boolean`                                     | Syntax colouring in fenced code. Default true.                                                                                                                          |
-| `resolveLanguage` | `(tag) => Language \| null`                   | A `Language` for a fence tag the built-ins do not cover — [`hljsLanguage`](code-language.md#highlightjs-for-breadth) goes here. Needs a stable identity, like `fences`. |
-| `fences`          | `Record<string, (f: FenceInfo) => ReactNode>` | Custom renderers for fenced blocks, by language — see "Custom fences" below.                                                                                            |
-| `style`           | `Style \| Style[]`                            | The root box — width, padding, margins, `overflow`.                                                                                                                     |
-| `data-testname`   | `string`                                      | For `react-x11/test` queries.                                                                                                                                           |
+| Prop              | Type                                          | Notes                                                                                                                                                                       |
+| ----------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `source`          | `string`                                      | The markdown text. Append to it as chunks stream in. Required.                                                                                                              |
+| `partial`         | `boolean`                                     | Whether more source may still arrive. Default **true** — set it false when the stream ends.                                                                                 |
+| `selectable`      | `boolean`                                     | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                    |
+| `onLink`          | `(href: string, ev: X11MouseEvent) => void`   | A link was activated. Absent means clicks do nothing — this component never navigates by itself.                                                                            |
+| `fontSize`        | `number`                                      | Base text size. Default: the theme's (14).                                                                                                                                  |
+| `fontFamily`      | `string`                                      | Default: the theme's `fontFamily`.                                                                                                                                          |
+| `lineHeight`      | `number`                                      | Body text's line height — paragraphs, list items, quotes, table cells — as a multiple of the font's own line. Default **1.4**; 1 is the font's own. See "Type and spacing". |
+| `codeFontSize`    | `number`                                      | Fenced code's size. Default: 0.9 × `fontSize`.                                                                                                                              |
+| `codeLineHeight`  | `number`                                      | Fenced code's line height, a multiple of the mono font's own line. Default 1.4, as `<Code>`'s.                                                                              |
+| `monoFamily`      | `string`                                      | Code font, inline and fenced. Default: the theme's `monoFamily`.                                                                                                            |
+| `selectionColor`  | `string`                                      | Selection band fill. Default: the theme accent at 35% opacity.                                                                                                              |
+| `highlight`       | `boolean`                                     | Syntax colouring in fenced code. Default true.                                                                                                                              |
+| `resolveLanguage` | `(tag) => Language \| null`                   | A `Language` for a fence tag the built-ins do not cover — [`hljsLanguage`](code-language.md#highlightjs-for-breadth) goes here. Needs a stable identity, like `fences`.     |
+| `fences`          | `Record<string, (f: FenceInfo) => ReactNode>` | Custom renderers for fenced blocks, by language — see "Custom fences" below.                                                                                                |
+| `styles`          | `MarkdownStyles`                              | Style over the parts of the document — `paragraph`, `heading`, `quote`, `code` — merged over each part's own. Needs a stable identity, like `fences`.                       |
+| `style`           | `Style \| Style[]`                            | The root box — width, padding, margins, `overflow`.                                                                                                                         |
+| `data-testname`   | `string`                                      | For `react-x11/test` queries.                                                                                                                                               |
+
+## Type and spacing
+
+A numeric line height here is what a `<text>`'s is: a **multiple of the
+font's own line**, its ascent and descent, not of the font size as in CSS.
+At 14px in SF the font's own line is 16.5px, so the default 1.4 is about
+23px — CSS's 1.65. The leading it adds is shared above and below the letters,
+which is where list numbers, bullets and task checkboxes are placed from: on
+the first line's letters, at any size and line height. Headings keep the
+font's own line unless `styles.heading` gives them one.
+
+A fence is a [code block](codeblock.md), with the block's defaults in ems of
+the code's own size, so a block at a larger size keeps its proportions:
+padding 1em, corner radius 0.7em, and 1.5em of space above and below it
+among prose — none at the start or end of the document.
+
+`styles` reaches the parts by name, over their own style:
+
+```jsx
+const styles = {
+  paragraph: { marginBottom: 4 },
+  heading: { lineHeight: 1.2 },
+  quote: { borderLeftColor: '$accent' },
+  code: { borderWidth: 1, borderColor: '$border', marginTop: 0 },
+};
+
+<Markdown source={text} lineHeight={1.5} styles={styles} />;
+```
+
+`paragraph` and `heading` style the text block — its line height, margins
+and alignment — not its runs' size or colour, which the font props and the
+theme set. `quote` is the quote's box and `code` a fence's.
+
+`npm run examples:type-lab` puts sliders on all of it over a sample chat.
 
 ## What it renders
 

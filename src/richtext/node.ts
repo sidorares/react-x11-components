@@ -39,6 +39,7 @@ import {
 } from './runs.js';
 import type { FillContext } from './runs.js';
 import { codeUnitOffsets } from '../internal/text.js';
+import { lineHeightOf } from '../internal/line-height.js';
 
 /** The element name — registration key, `node.kind` and JSX tag alike. */
 export const ELEMENT = 'richtext';
@@ -389,6 +390,8 @@ function sameRuns(a: unknown, b: unknown): boolean {
 
 export class RichTextNode extends Node {
   private _layouts = new Map<string, TextLayoutLike | null>();
+  /** The style's `lineHeight` and `textAlign` the layouts were made with. */
+  private _shaped: string | undefined;
   private _text: string | null = null;
   /** The runs as laid out where a tab is among them, and what from. */
   private _tabbed: { from: TextRun[]; scale: number; to: TextRun[] } | null =
@@ -437,7 +440,9 @@ export class RichTextNode extends Node {
    * same convention core's rich nodes use.
    */
   private _layoutFor(maxWidth: number): TextLayoutLike | null {
-    const key = String(maxWidth);
+    const shaped = this._shapeKey();
+    this._shaped = shaped;
+    const key = `${maxWidth}|${shaped}`;
     const hit = this._layouts.get(key);
     if (hit !== undefined) return hit;
     const fonts = (this.app as { fonts?: FontsLike } | null)?.fonts;
@@ -531,12 +536,22 @@ export class RichTextNode extends Node {
     return this._layoutFor(wrap ? this.abs.width : Infinity);
   }
 
+  /** What a layout reads of the style, besides the runs and the width. */
+  private _shapeKey(): string {
+    return `${String(this.style.lineHeight)}|${String(this.style.textAlign)}`;
+  }
+
   override applyProps(
     nextProps: Record<string, unknown>,
     prevProps: Record<string, unknown>,
   ): void {
     super.applyProps(nextProps, prevProps);
+    // what a layout reads of the style: a new `lineHeight` or `textAlign`
+    // is new geometry, so the measure has to be asked again
+    const reshaped =
+      this._shaped !== undefined && this._shapeKey() !== this._shaped;
     if (
+      reshaped ||
       nextProps.wrap !== prevProps.wrap ||
       !sameRuns(nextProps.runs, prevProps.runs)
     ) {
@@ -715,22 +730,3 @@ export class RichTextNode extends Node {
    *  editor's subclass. Inside the same save/restore as the rest. */
   protected paintOverlay(_ctx: FillContext): void {}
 }
-
-/**
- * A `lineHeight` a layout can multiply by, or undefined for the font's own:
- * core's `lineHeightOf`, which its exports map does not carry. The style's
- * type takes `'150%'`, `'24px'` and `'normal'` as well, and a layout handed
- * one of those sets a paragraph NaN pixels tall, so anything but a number or
- * a numeric string is the font's own here, as it is at core's call.
- */
-function lineHeightOf(value: unknown): number | undefined {
-  const n =
-    typeof value === 'number'
-      ? value
-      : typeof value === 'string' && NUMERIC.test(value)
-        ? Number(value)
-        : NaN;
-  return n >= 0 && n < Infinity ? n : undefined;
-}
-
-const NUMERIC = /^\s*[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?\s*$/i;

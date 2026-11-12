@@ -922,7 +922,7 @@ test('a selection across lines is one band, and a scroll copies it as drawn', as
       node.select({ line: 100, ch: 0 }, { line: 0, ch: 0 });
     });
     const x = Math.round((node.caretRect().x + 2) * scale);
-    const inset = Math.ceil(9 * scale); // the default padding and border
+    const inset = Math.ceil(14 * scale); // the default padding (1em) and border
     const column = async (): Promise<string[]> => {
       const data = await editorPixels(ctx, node);
       const rows: string[] = [];
@@ -1085,7 +1085,8 @@ test('an edit repaints the rows it changed, and paints what a full repaint would
         language: javascript(),
         lineNumbers: true,
         activeLine: true,
-        style: { flexGrow: 1 },
+        // the font's own line, which the budgets below were measured at
+        style: { flexGrow: 1, lineHeight: 1 },
       }),
       { scale, width: 400, height: 480, screen: { width: 1000, height: 1200 } },
     );
@@ -1281,8 +1282,9 @@ test('at a display scale of 2 the completion popup opens at the caret', async ()
   const first = await waitFor(completionPopup);
 
   // The editor's device position on the panel is the root window's plus its
-  // `abs`; the caret is three columns past the default 9-logical inset
-  // (padding 8, border 1), and the ruler says what a column is on the panel.
+  // `abs`; the caret is three columns past the default 14-logical inset
+  // (padding 1em of 13, border 1), and the ruler says what a column is on
+  // the panel.
   // A `caretRect()` handed over in device pixels put the list a caret's
   // distance to the right of the caret.
   const win = rootWindow();
@@ -1291,12 +1293,12 @@ test('at a display scale of 2 the completion popup opens at the caret', async ()
     (screen.getByText(RULER) as unknown as DrawnNode).abs.width / RULER.length;
   near(
     first.x,
-    win.x + abs.x + 18 + 3 * column,
+    win.x + abs.x + 28 + 3 * column,
     'the list opens at the caret, on the panel',
     2,
   );
-  const lineHeight = (abs.height - 36) / 8; // device: eight rows inside the inset
-  const lineBottom = win.y + abs.y + 18 + lineHeight;
+  const lineHeight = (abs.height - 56) / 8; // device: eight rows inside the inset
+  const lineBottom = win.y + abs.y + 28 + lineHeight;
   assert.ok(
     first.y >= lineBottom - 1 && first.y <= lineBottom + 6,
     `the list opens just under the first line, which ends at ${lineBottom}: ${first.y}`,
@@ -1882,6 +1884,67 @@ test('a jump far into a fresh file paints a guess, then the tokens the walk foun
   assert.ok(
     Buffer.from(walked).equals(Buffer.from(await editorPixels(ctx, node))),
     'the corrected frame is what a full repaint paints',
+  );
+  await cleanup();
+});
+
+test('a new font size repaints the editor, though its box does not move', async () => {
+  // A fixed height keeps the box where it was, so core claims nothing for a
+  // new `fontSize`: the rows stayed at the old size until something else
+  // damaged them. Held to a full repaint, byte for byte.
+  const at = (fontSize: number) =>
+    h(CodeEditor, {
+      defaultValue: 'select col1, col2\nfrom t\nwhere x > 1;',
+      language: sql(),
+      style: { width: 320, height: 120, fontSize },
+    });
+  const { ctx, windowNode, rerender } = await renderX11(at(13), {
+    width: 400,
+    height: 200,
+  });
+  const node = editorNode();
+  const before = await editorPixels(ctx, node);
+  await rerender(at(20));
+  await act();
+  const after = await editorPixels(ctx, node);
+  assert.ok(
+    !Buffer.from(before).equals(Buffer.from(after)),
+    'the new size is painted',
+  );
+  await act(() => {
+    (windowNode as unknown as { invalidate(all: boolean): void }).invalidate(
+      true,
+    );
+  });
+  assert.ok(
+    Buffer.from(after).equals(Buffer.from(await editorPixels(ctx, node))),
+    'what was painted is what a full repaint paints',
+  );
+  await cleanup();
+});
+
+test('lineHeight sets the rows apart, and the caret and clicks follow', async () => {
+  // A multiple of the face's own line, as a <text>'s is: the rows grow and
+  // every row-based answer grows with them.
+  const at = (lineHeight: number) =>
+    h(CodeEditor, {
+      defaultValue: 'one\ntwo\nthree',
+      style: { width: 300, height: 200, lineHeight },
+    });
+  const { rerender } = await renderX11(at(1), { width: 400, height: 300 });
+  const own = editorNode().metrics().lineHeight;
+  await rerender(at(1.5));
+  await act();
+  const node = editorNode();
+  near(node.metrics().lineHeight, own * 1.5, 'a row is 1.5 lines', 0.01);
+  await act(() => node.select({ line: 2, ch: 0 }, { line: 2, ch: 0 }));
+  const third = node.caretRect();
+  await act(() => node.select({ line: 0, ch: 0 }, { line: 0, ch: 0 }));
+  near(
+    third.y - node.caretRect().y,
+    own * 3,
+    'the third line is two taller rows down',
+    0.5,
   );
   await cleanup();
 });

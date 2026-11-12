@@ -29,10 +29,11 @@ line's start, and is copied as the tab it is.
 | `wrap`            | `boolean`                   | Wrap long lines instead of scrolling horizontally. Default false.                                                                 |
 | `selectable`      | `boolean`                   | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                          |
 | `fontSize`        | `number`                    | Default: 0.9 × the theme `fontSize`, matching `<Markdown>`'s blocks.                                                              |
+| `lineHeight`      | `number`                    | A multiple of the font's own line, as a `<text>`'s is; the gutter follows it. Default 1.4 (`CODE_LINE_HEIGHT`).                   |
 | `monoFamily`      | `string`                    | Default: the theme's `monoFamily`.                                                                                                |
 | `tokenStyles`     | `TokenStyles`               | Palette override. The default follows the theme background, and `'$token'` colours in a custom palette resolve against the theme. |
 | `selectionColor`  | `string`                    | Selection band fill. Default: the theme accent at 35% opacity.                                                                    |
-| `style`           | `Style \| Style[]`          | The root box — width, margins, `flexGrow`.                                                                                        |
+| `style`           | `Style \| Style[]`          | The root box — width, margins, `flexGrow`, and `padding` or `borderRadius` over the defaults: 1em and 0.7em of `fontSize`.        |
 | `data-testname`   | `string`                    | For `react-x11/test` queries.                                                                                                     |
 
 ## Copied code pastes clean

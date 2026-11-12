@@ -58,6 +58,10 @@ export interface CodeProps {
   selectable?: boolean;
   /** Default: 0.9 × the theme `fontSize`, matching `<Markdown>`'s blocks. */
   fontSize?: number;
+  /** Line height, a multiple of the font's own line, as a `<text>`'s is;
+   *  the gutter follows it.
+   *  Default 1.4, as `<Markdown>`'s fences. */
+  lineHeight?: number;
   /** Default: the theme's `monoFamily`. */
   monoFamily?: string;
   /** Token palette override; the default follows the theme background,
@@ -99,8 +103,15 @@ export function Code(props: CodeProps): ReactElement {
         fontSize: props.fontSize,
         monoFamily: props.monoFamily,
         tokenStyles: props.tokenStyles,
+        lineHeight: props.lineHeight,
       }),
-    [theme, props.fontSize, props.monoFamily, props.tokenStyles],
+    [
+      theme,
+      props.fontSize,
+      props.monoFamily,
+      props.tokenStyles,
+      props.lineHeight,
+    ],
   );
   useFontPrewarm(look.family);
 

@@ -26,6 +26,7 @@ import type {
   MouseEvent,
   WheelEvent,
 } from 'react-x11';
+import { flattenStyle } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
 import {
   XK_BACKSPACE,
@@ -61,6 +62,11 @@ import type {
 } from '../code-language/types.js';
 import { wordRangeAt } from './doc.js';
 import { styleFamily, useFontPrewarm } from '../internal/prewarm.js';
+import {
+  CODE_LINE_HEIGHT,
+  CODE_PADDING_EM,
+  CODE_RADIUS_EM,
+} from '../codeblock/index.js';
 
 export { ELEMENT as CODE_EDITOR_ELEMENT };
 export { CodeEditorNode };
@@ -143,10 +149,24 @@ export interface CodeEditorComponentProps extends CodeEditorProps {
   onBlur?: (ev: FocusEvent) => void;
 }
 
+/** The default inset and corners, in ems of the editor's own font size —
+ *  a block of code's, so an editor beside a `<Code>` agrees with it. */
+function insetFor(style: unknown): Style {
+  const size = Number(
+    flattenStyle(style as Style | Style[] | null | undefined).fontSize,
+  );
+  const em = Number.isFinite(size) && size > 0 ? size : 13;
+  return {
+    padding: Math.round(em * CODE_PADDING_EM),
+    borderRadius: Math.round(em * CODE_RADIUS_EM),
+  };
+}
+
 const editorDefaults: Style = {
   fontFamily: 'monospace',
   fontSize: 13,
-  padding: 8,
+  // a block of code's, so the editor and a `<Code>` beside it share a rhythm
+  lineHeight: CODE_LINE_HEIGHT,
   borderWidth: 1,
   cursor: 'text',
   // theme tokens, so an unstyled editor is legible on a light *and* a dark
@@ -190,6 +210,7 @@ export function CodeEditor(props: CodeEditorComponentProps): ReactElement {
   const { caretBlink, caretBlinkMs } = useDesktopSettings();
   // the editor's text is all in this family, from its first frame
   useFontPrewarm(styleFamily(style, 'monospace'));
+  const inset = insetFor(style);
   const nodeRef = useRef<CodeEditorNode | null>(null);
   const [completion, setCompletion] = useState<CompletionState | null>(null);
   // bumped per query; a stale async result compares and drops itself
@@ -491,7 +512,7 @@ export function CodeEditor(props: CodeEditorComponentProps): ReactElement {
       close();
       userBlur?.(ev);
     },
-    style: [editorDefaults, style as Style],
+    style: [editorDefaults, inset, style as Style],
   });
 
   const popup =

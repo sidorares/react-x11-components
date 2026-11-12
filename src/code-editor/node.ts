@@ -59,6 +59,7 @@ import {
 
 import { startTimeout, stopTimeout } from '../code-language/timers.js';
 import { spliceAll } from '../internal/splice.js';
+import { lineHeightOf } from '../internal/line-height.js';
 import type { TimerId } from '../code-language/timers.js';
 import {
   clampPos,
@@ -969,21 +970,40 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     );
   }
 
+  /** What a row is measured from: the face, its size and weight, and the
+   *  style's `lineHeight`, a multiple of the face's own line. */
+  private _metricsKeyNow(): string {
+    const s = this._textStyle();
+    return `${s.family}|${s.size}|${s.weight}|${this._lineMultiple()}`;
+  }
+
+  /** The style's `lineHeight`, or 1 — the face's own line. */
+  private _lineMultiple(): number {
+    const m = lineHeightOf(this.style.lineHeight);
+    return m != null && m > 0 ? m : 1;
+  }
+
   private _metrics(): void {
     const s = this._textStyle();
-    const key = `${s.family}|${s.size}|${s.weight}`;
+    const key = this._metricsKeyNow();
     if (key === this._metricsKey && this._lineH > 0) return;
     const fonts = this._fonts();
     this._metricsKey = key;
+    const multiple = this._lineMultiple();
     if (!fonts) {
-      this._lineH = Number(s.size) * 1.4;
+      this._lineH = Number(s.size) * 1.4 * multiple;
       this._charW = Number(s.size) * 0.6;
       return;
     }
     const probe = fonts.layout('Mg', s);
-    this._lineH = probe.height || Number(s.size) * 1.4;
+    const own = probe.height || Number(s.size) * 1.4;
+    this._lineH = own * multiple;
     this._charW = fonts.layout('0', s).width || Number(s.size) * 0.6;
-    this._baseline = baselineOf(probe);
+    // the leading a taller row adds is shared above and below the glyphs,
+    // as a <text>'s is, so the text stays in the middle of its row
+    const lead = (this._lineH - own) / 2;
+    const baseline = baselineOf(probe);
+    this._baseline = baseline == null ? null : baseline + lead;
     const line = (probe as { lines?: ReadonlyArray<{ descent?: unknown }> })
       .lines?.[0];
     this._textBottom =
@@ -2935,6 +2955,19 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       this._repaint();
     }
     if (nextProps.rows !== before.rows) this.invalidateMeasure('props');
+    // A new face, size, weight or line height in the style is every row
+    // set again, and
+    // the box may not move for it — a fixed height — so nothing in core
+    // claims it: the editor does, as it does for new token colours.
+    if (this._metricsKey !== '') {
+      if (this._metricsKeyNow() !== this._metricsKey) {
+        this._metrics();
+        this._lineCache.clear();
+        this._chunkedStash = null;
+        this.invalidateMeasure('props');
+        this._repaint();
+      }
+    }
     if (
       nextProps.caretBlink !== before.caretBlink ||
       nextProps.caretBlinkMs !== before.caretBlinkMs
