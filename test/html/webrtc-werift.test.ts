@@ -1278,6 +1278,83 @@ test('VP8 flows from a canvas into a remote <video>, which loads its metadata at
   }
 });
 
+test('a disabled track sends black VP8 frames and silent Opus, and an ended one sends nothing, while a clone of each keeps its source alive', async () => {
+  const logs = await run(`
+    ${CALL}
+    var canvas = document.createElement('canvas');
+    canvas.width = 160; canvas.height = 120;
+    var g = canvas.getContext('2d');
+    var n = 0;
+    var timer = setInterval(function () { g.fillStyle = n++ % 2 ? '#fff' : '#fafafa'; g.fillRect(0, 0, 160, 120); }, 50);
+    var video = canvas.captureStream().getVideoTracks()[0];
+    var ctx = new AudioContext();
+    var osc = ctx.createOscillator();
+    var dst = ctx.createMediaStreamDestination();
+    osc.connect(dst); osc.start();
+    var audio = dst.stream.getAudioTracks()[0];
+    var clones = [video.clone(), audio.clone()];
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.addTrack(video);
+    pc1.addTrack(audio);
+    var remote = {};
+    pc2.ontrack = function (e) { remote[e.track.kind] = e.track; };
+    await call(pc1, pc2);
+    await wait('unmute', function () { return remote.video && !remote.video.muted && remote.audio && !remote.audio.muted; });
+    var shown = document.createElement('video');
+    shown.srcObject = new MediaStream([remote.video]);
+    var out = document.createElement('canvas');
+    out.width = 160; out.height = 120;
+    var pen = out.getContext('2d');
+    function red() { pen.drawImage(shown, 0, 0, 160, 120); return pen.getImageData(80, 60, 1, 1).data[0]; }
+    var receiver = pc2.getReceivers().find(function (r) { return r.track.kind === 'audio'; });
+    function level() {
+      var s = receiver.getSynchronizationSources()[0];
+      return s && s.audioLevel !== undefined ? s.audioLevel : -1;
+    }
+    async function packets() {
+      var got = {};
+      for (var s of (await pc2.getStats()).values()) if (s.type === 'inbound-rtp') got[s.kind] = s.packetsReceived;
+      return got;
+    }
+    await wait('picture', function () { return red() > 200 && level() > 0.5; });
+    log('enabled', red() > 200, level() > 0.5);
+    video.enabled = false;
+    audio.enabled = false;
+    await wait('black', function () { return red() < 20 && level() >= 0 && level() < 0.001; });
+    log('disabled', red() < 20, level() < 0.001);
+    video.enabled = true;
+    audio.enabled = true;
+    await wait('picture again', function () { return red() > 200 && level() > 0.5; });
+    log('enabled again');
+    video.stop();
+    audio.stop();
+    await new Promise(function (r) { setTimeout(r, 300); });
+    var before = await packets();
+    await new Promise(function (r) { setTimeout(r, 1000); });
+    var after = await packets();
+    log('ended', after.video - before.video, after.audio - before.audio);
+    // and nothing more arrives, so the far side mutes
+    await wait('muted', function () { return remote.video.muted && remote.audio.muted; }, 8000);
+    log('muted', clones[0].readyState, clones[1].readyState);
+    clearInterval(timer);
+    clones.forEach(function (t) { t.stop(); });
+    pc1.close(); pc2.close();
+    ctx.close();
+    log('done');
+  `);
+  if (process.env.WERIFT_LOGS) console.log(logs.join('\n'));
+  for (const line of [
+    'enabled|true|true',
+    'disabled|true|true',
+    'enabled again',
+    'ended|0|0',
+    'muted|live|live',
+    'done',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
 test('an RTCRtpScriptTransform on each side sees every VP8 frame in its worker, and what it writes back is what is sent and decoded', async () => {
   const logs = await run(`
     ${CALL}

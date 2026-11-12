@@ -185,7 +185,10 @@ export interface RTCTransceiverInit {
   direction: Exclude<RTCDirectionLike, 'stopped'>;
   /** What its sender sends, or null: a source of its own to listen to for
    *  frames and to stop, which takes nothing from the page's tracks of it
-   *  (the host hands a tap, `PageSources.tap`). */
+   *  (the host hands a tap, `PageSources.tap`). It gives what the page's
+   *  track gives: black frames and silence while the track is disabled,
+   *  and nothing once it ended, which it tells as `ended`. A stack sends
+   *  what it is handed, and sends nothing again after `ended`. */
   source: MediaSourceLike | null;
   /** The id of the track it sends, which a description's `msid` names. */
   trackId: string | null;

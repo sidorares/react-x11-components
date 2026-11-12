@@ -1707,8 +1707,16 @@ it a connection still connects and negotiates, and carries no Opus, VP8 or
 VP9: a remote track stays muted. werift sends no RTCP BYE as a sender
 stops, which is what Chrome mutes a remote track on, so silence is the
 signal here, and a sender whose source gives no new frame — a canvas
-nobody draws on — sends its last again each second. RTCP's reports are
-werift's, so the remote-inbound-rtp and remote-outbound-rtp stats come
+nobody draws on — sends its last again each second. A sender sends what
+its track gives, whatever else reads the track's source, a clone of the
+track among them. While the page has the track disabled, that is a black
+frame a second, as WebRTC 1.0 has it (5.2) and Firefox and WebKit send,
+where Chrome sends one at the source's rate; and silence, which all three
+send, where WebRTC 1.0 has no audio sent. Google Meet turns a camera and a
+microphone off so. Once the track ended it is nothing, as Chrome has it:
+WebRTC 1.0 has black frames sent, Firefox sends the last frame a second and
+silence, and WebKit goes on sending the source while a clone keeps it
+alive. RTCP's reports are werift's, so the remote-inbound-rtp and remote-outbound-rtp stats come
 with them. The codecs run on the page's thread: VP8 at 640×480 is some
 4 ms a frame to encode and 1 ms to decode. Nothing here encodes H.264.
 A stream whose description names no SSRC and whose packets carry no rid

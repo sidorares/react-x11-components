@@ -45,7 +45,7 @@ import type {
   RTCTransformSide,
   RTCTransportStateLike,
 } from '../rtc.js';
-import type { PageSources } from './media-sources.js';
+import type { PageSources, SourceTap, TrackOutput } from './media-sources.js';
 import type { BufferClass } from './platform.js';
 
 declare const Buffer: BufferClass;
@@ -157,7 +157,15 @@ interface Transceiver {
   transceiver: RTCTransceiverLike;
   /** Its receiver's source, as the page's tracks number it. */
   source: number;
+  /** What its sender reads its track through, which the track's output is
+   *  set on (`rtcTrackOutput`), or null. */
+  sending: SourceTap | null;
 }
+
+/** A track's output as the page's realm says it: what a sender of it
+ *  sends. */
+const outputOf = (v: Primitive): TrackOutput =>
+  v === 'disabled' || v === 'ended' ? v : 'enabled';
 
 interface Channel {
   id: number;
@@ -310,12 +318,18 @@ export class PagePeers {
         const t = this._transceivers.get(Number(a));
         if (!t) return null;
         // a tap of the page's source, which the sender reads its frames
-        // through beside whatever else reads them
+        // through beside whatever else reads them, as the track gives them
         const source =
-          Number(b) >= 0 ? this._seams.sources().tap(Number(b)) : null;
+          Number(b) >= 0
+            ? this._seams.sources().tap(Number(b), outputOf(d))
+            : null;
+        t.sending = source;
         t.transceiver.setTrack(source, source ? text(c) || null : null);
         return null;
       }
+      case 'rtcTrackOutput':
+        this._transceivers.get(Number(a))?.sending?.output(outputOf(b));
+        return null;
       case 'rtcTone':
         this._transceivers
           .get(Number(a))
@@ -729,6 +743,7 @@ export class PagePeers {
       peer,
       transceiver,
       source: this._seams.sources().register(transceiver.received),
+      sending: null,
     };
     this._ids.set(transceiver, t.id);
     this._transceivers.set(t.id, t);
@@ -743,13 +758,14 @@ export class PagePeers {
       direction?: string;
       source?: number;
       trackId?: string | null;
+      output?: string;
       streams?: string[];
       sendEncodings?: unknown[];
     };
     const kind = i.kind === 'video' ? 'video' : 'audio';
     const source =
       typeof i.source === 'number' && i.source >= 0
-        ? this._seams.sources().tap(i.source)
+        ? this._seams.sources().tap(i.source, outputOf(i.output))
         : null;
     const transceiver = peer.connection.addTransceiver({
       kind,
@@ -760,6 +776,7 @@ export class PagePeers {
       sendEncodings: (i.sendEncodings ?? []) as never,
     });
     const t = this._transceiver(peer, transceiver);
+    t.sending = source;
     return JSON.stringify({ id: t.id, source: t.source });
   }
 

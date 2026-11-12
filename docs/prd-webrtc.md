@@ -486,7 +486,14 @@ where it is werift's to fix, as quico's three behaviours were
   and written into the werift track its RTP sender sends from
   (`src/html/werift-media.ts`). The sender reads its frames through a tap
   of the page's source (`PageSources.tap`), one reader among the others,
-  since a source has one listener and the page's tracks hold it. It encodes
+  since a source has one listener and the page's tracks hold it. The tap
+  is the track as a sink sees it, not the source: the page's realm tells
+  the host each change of a sender's track (`rtcTrackOutput`), and while
+  the track is disabled the tap reads nothing of a video source and hands
+  over a black frame a second, and silence in place of an audio source's
+  sound; once the track ended it hands over nothing and says `ended`,
+  whatever clone of the track still reads the source. So every stack
+  sends what its track gives with nothing of its own for it. It encodes
   only while werift can send — a codec negotiated, DTLS connected, the
   direction sending — starts each run with a key frame and makes one where
   the peer asks (PLI or FIR), drops a frame that comes while the last is

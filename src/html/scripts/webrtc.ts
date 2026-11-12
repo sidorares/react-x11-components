@@ -888,12 +888,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       return chain(s.tx.pc, () => {
         if (s.tx.stopping)
           return rejected(invalidState('The transceiver is stopped.'));
-        call(
-          'rtcTrack',
-          s.tx.id,
-          withTrack ? media.sourceOf(withTrack) : -1,
-          withTrack?.id ?? '',
-        );
+        sendTrack(s.tx, withTrack);
         // the track is replaced in parallel, and `track` set in a task
         // queued after, which nothing sees before (WebRTC 1.0, 5.2): the
         // chain holds the operation until then
@@ -1324,6 +1319,8 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       fromRemoteOffer: false,
       /** Given a track by `addTrack`, which a rollback leaves it for. */
       addTracked: false,
+      /** Stops telling the host its sender's track's output (`watchSent`). */
+      unwatchSent: null,
     };
     apply(wmSet, slots, [t, s]);
     apply(wmSet, slots, [
@@ -1353,12 +1350,46 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     return t;
   };
 
+  /**
+   * Tells the host what a transceiver's sender sends from now on — a track's
+   * source, its id and its output, then each change of its output — or
+   * nothing. A sender of a disabled track sends black frames and silence,
+   * and one of an ended track nothing, whatever else reads its source: a
+   * clone, a `<video>` (Media Capture 4.3.1, WebRTC 1.0 5.2).
+   */
+  const sendTrack = (tx: Any, track: Any): void => {
+    call(
+      'rtcTrack',
+      tx.id,
+      track ? media.sourceOf(track) : -1,
+      track?.id ?? '',
+      track ? media.output(track) : 'ended',
+    );
+    watchSent(tx, track);
+  };
+  /** A sender's track's output, told to the host as it changes, until the
+   *  sender is handed another or its transceiver stops. */
+  const watchSent = (tx: Any, track: Any): void => {
+    tx.unwatchSent?.();
+    tx.unwatchSent = null;
+    if (!track) return;
+    let told = media.output(track);
+    tx.unwatchSent = media.watchOutput(track, () => {
+      const now = media.output(track);
+      if (now === told) return;
+      told = now;
+      call('rtcTrackOutput', tx.id, now);
+    });
+  };
+
   /** Stops a transceiver's sending and receiving: `stop()`, a rejected
    *  m-section, `close()`. */
   const stopTransceiver = (s: Any, final: boolean, closing = false): void => {
     if (!s.stopping) {
       s.stopping = true;
       s.direction = 'stopped';
+      s.unwatchSent?.();
+      s.unwatchSent = null;
       const r = apply(wmGet, slots, [s.receiver]);
       // the receiver's track ends, and says so in a task of its own, but
       // where the connection closed, which ends it at once and tells
@@ -2888,7 +2919,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         const sender = apply(wmGet, slots, [reused.sender]);
         sender.track = track;
         sender.streams = ids;
-        call('rtcTrack', reused.id, media.sourceOf(track), track.id);
+        sendTrack(reused, track);
         call('rtcStreams', reused.id, stringify(ids));
         const direction =
           reused.direction === 'recvonly'
@@ -2930,7 +2961,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       }
       if (sl.tx.stopping || sl.track === null) return;
       sl.track = null;
-      call('rtcTrack', sl.tx.id, -1, '');
+      sendTrack(sl.tx, null);
       const t = sl.tx;
       const direction =
         t.direction === 'sendrecv'
@@ -3028,6 +3059,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         direction,
         source: track ? media.sourceOf(track) : -1,
         trackId: track ? track.id : null,
+        output: track ? media.output(track) : 'ended',
         streams,
         sendEncodings: encodings,
       }),
@@ -3043,6 +3075,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       streams,
       encodings,
     );
+    watchSent(apply(wmGet, slots, [t]), track);
     updateNegotiationNeeded(s);
     return t;
   };

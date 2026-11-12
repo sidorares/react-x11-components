@@ -1137,3 +1137,102 @@ test('media a stack carries: a sender reads its track beside the page, and a rem
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
 });
+
+test('a sender sends what its track gives: black frames and silence while it is disabled, and nothing once it ended, while a clone of it reads the source as it was', async () => {
+  const logs = await run(
+    `
+    ${NEGOTIATE}
+    function waitFor(test) {
+      return new Promise(function (resolve, reject) {
+        var end = Date.now() + 5000;
+        (async function look() {
+          var got = await test();
+          if (got) return resolve(got);
+          if (Date.now() > end) return reject(new Error('timed out: ' + test));
+          setTimeout(look, 10);
+        })();
+      });
+    }
+    var canvas = document.createElement('canvas');
+    canvas.width = 64; canvas.height = 48;
+    var g = canvas.getContext('2d');
+    var n = 0;
+    // near white, and a change at every draw, so the canvas gives frames
+    var timer = setInterval(function () { g.fillStyle = n++ % 2 ? '#fff' : '#fafafa'; g.fillRect(0, 0, 64, 48); }, 20);
+    var video = canvas.captureStream().getVideoTracks()[0];
+    var ctx = new AudioContext();
+    await ctx.resume();
+    var osc = ctx.createOscillator();
+    var dst = ctx.createMediaStreamDestination();
+    osc.connect(dst); osc.start();
+    var audio = dst.stream.getAudioTracks()[0];
+    // what keeps each source alive once the sent track ends
+    var clones = [video.clone(), audio.clone()];
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    a.onicecandidate = function (e) { b.addIceCandidate(e.candidate); };
+    b.onicecandidate = function (e) { a.addIceCandidate(e.candidate); };
+    a.addTrack(video);
+    a.addTrack(audio);
+    var remote = {};
+    b.ontrack = function (e) { remote[e.track.kind] = e.track; };
+    await negotiate(a, b);
+    await waitFor(function () { return remote.video && !remote.video.muted && remote.audio && !remote.audio.muted; });
+    var shown = document.createElement('video');
+    shown.srcObject = new MediaStream([remote.video]);
+    var out = document.createElement('canvas');
+    out.width = 64; out.height = 48;
+    var pen = out.getContext('2d');
+    function red(element) { pen.drawImage(element, 0, 0, 64, 48); return pen.getImageData(32, 24, 1, 1).data[0]; }
+    var analyser = ctx.createAnalyser();
+    ctx.createMediaStreamSource(new MediaStream([remote.audio])).connect(analyser);
+    var wave = new Float32Array(analyser.fftSize);
+    function peak() { analyser.getFloatTimeDomainData(wave); return Math.max.apply(null, Array.from(wave, Math.abs)); }
+    async function packets() {
+      var got = {};
+      for (var s of (await b.getStats()).values()) if (s.type === 'inbound-rtp') got[s.kind] = s.packetsReceived;
+      return got;
+    }
+    await waitFor(function () { return red(shown) > 200 && peak() > 0.5; });
+    log('enabled', red(shown) > 200, peak() > 0.5);
+    video.enabled = false;
+    audio.enabled = false;
+    await waitFor(function () { return red(shown) === 0 && peak() === 0; });
+    log('disabled', red(shown), peak());
+    // a black frame a second, where the canvas gives fifty
+    var before = await packets();
+    await wait(400);
+    var after = await packets();
+    log('a black frame a second', after.video - before.video <= 2, after.audio > before.audio);
+    video.enabled = true;
+    audio.enabled = true;
+    await waitFor(function () { return red(shown) > 200 && peak() > 0.5; });
+    log('enabled again', red(shown) > 200, peak() > 0.5);
+    video.stop();
+    audio.stop();
+    await wait(50);
+    before = await packets();
+    await wait(300);
+    after = await packets();
+    log('ended', after.video - before.video, after.audio - before.audio);
+    var local = document.createElement('video');
+    local.srcObject = new MediaStream([clones[0]]);
+    await waitFor(function () { return red(local) > 200; });
+    log('the clone', clones[0].readyState, clones[1].readyState, red(local) > 200);
+    clearInterval(timer);
+    clones.forEach(function (t) { t.stop(); });
+    a.close(); b.close();
+    ctx.close();
+  `,
+    { webRTC: new FakeWebRTC({ media: true }) },
+  );
+  for (const line of [
+    'enabled|true|true',
+    'disabled|0|0',
+    'a black frame a second|true|true',
+    'enabled again|true|true',
+    'ended|0|0',
+    'the clone|live|live|true',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
