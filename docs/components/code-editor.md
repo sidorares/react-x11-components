@@ -84,6 +84,15 @@ again.
 | `activeLine`    | `boolean` | Tint the caret's line.                             |
 | `matchBrackets` | `boolean` | Highlight the pair around the caret. Default true. |
 
+The text's look is the `style`'s: `fontFamily`, `fontSize` (default 13) and
+`lineHeight`, a multiple of the font's own line as a `<text>`'s is — default
+1.4, a [code block](codeblock.md)'s, so an editor beside a `<Code>` has the
+same rhythm. The rows, the caret, a click and a scroll all follow it, and the
+leading is shared above and below the glyphs. The default `padding` and
+`borderRadius` are a code block's too, 1em and 0.7em of `fontSize`; a style
+that names either wins. A new font in the style repaints the editor at once,
+whether or not its box moves for it.
+
 Colours: `selectionColor`, `caretColor`, `gutterColor`, `gutterBackground`,
 `activeLineColor`, `matchingBracketColor`, `placeholderColor`. Each defaults
 from the react-x11 theme.

@@ -3,6 +3,9 @@
 ```ts
 import {
   CODE_LINE_HEIGHT,
+  CODE_PADDING_EM,
+  CODE_RADIUS_EM,
+  CODE_SPACING_EM,
   codeBlockLook,
   codeBlockRuns,
   CodeBlockRunCache,
@@ -29,6 +32,7 @@ interface CodeBlockLookOptions {
   baseSize?: number; // the document's base text size; mono is 0.9 of it
   monoFamily?: string; // default: the theme's `monoFamily`
   tokenStyles?: TokenStyles; // palette override
+  lineHeight?: number; // default CODE_LINE_HEIGHT
 }
 ```
 
@@ -43,8 +47,9 @@ interface CodeBlockLook {
   color: string; // the ink: unstyled tokens, and the gaps between styled ones
   dim: string; // secondary ink — the line-number gutter
   fill: string; // the block's own background
-  padding: number;
-  radius: number;
+  padding: number; // CODE_PADDING_EM of the size
+  radius: number; // CODE_RADIUS_EM of the size
+  spacing: number; // CODE_SPACING_EM of the size: space among prose
   lineHeight: number;
   styles: TokenStyles; // picked against the theme background unless overridden
   resolveToken: (name: string) => string | undefined;
@@ -97,5 +102,15 @@ rather than hex, and have it follow a theme switch.
 
 ## `CODE_LINE_HEIGHT`
 
-`1.25`. Exported because a component laying out a code block needs the same
-number to compute its height before it paints.
+`1.4`, a multiple of the mono font's own line, as a `<text>`'s `lineHeight`
+is: the prose's default too, so code and the text around it share a rhythm.
+Exported because a component laying out a code block needs the same number
+to compute its height before it paints. `<CodeEditor>` defaults to it.
+
+## `CODE_PADDING_EM`, `CODE_RADIUS_EM`, `CODE_SPACING_EM`
+
+`1`, `0.7` and `1.5`: a block's inset, its corner radius, and the space
+above and below it among prose, each in ems of the code's own size, so a
+block at a larger size keeps its proportions. `<CodeEditor>` takes the
+first two from its own `fontSize`; `<Markdown>` keeps the third around a
+fence.
