@@ -828,7 +828,7 @@ export class MediaSender {
     if (this._t.kind === 'audio') {
       return {
         outbound: {
-          active: !this._stopped,
+          active: !this._stopped && this._layers[0].encoding.active,
           // what the encoder is set to: Opus at 32 kb/s (`OpusEncoder`),
           // G.711 at its one rate
           ...(this._audioCodec
@@ -1171,7 +1171,8 @@ export class MediaSender {
     this._count.level = rms;
     this._count.energy += rms * rms * seconds;
     this._count.duration += seconds;
-    if (!this._sendable()) {
+    // an encoding that is not active sends nothing (WebRTC 1.0, 5.2)
+    if (!this._sendable() || !this._layers[0].encoding.active) {
       this._pending = new Float32Array(0);
       return;
     }
