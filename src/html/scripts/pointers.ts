@@ -49,8 +49,8 @@ export interface PointerDeps {
 
 /** What `installDom` has of this. */
 export interface PointerInternals {
-  /** The id of the one pointer there is. */
-  id: number;
+  /** The id of the pointer last pressed: the mouse's, or a finger's. */
+  readonly id: number;
   /** A press or a release of a button; whether its default goes on. */
   press(e: unknown, target: unknown, mods: unknown): boolean;
   /** A move; whether its default goes on. */
@@ -71,6 +71,9 @@ export interface PointerInternals {
   held(): number;
   /** The drag has the pointer from here (Pointer Events 3, 5.1.2). */
   dragged(target: unknown): void;
+  /** A finger's press became a pan, which the page hears no more of
+   *  (Pointer Events 3, 5.1.4, "suppressing a pointer event stream"). */
+  cancel(e: unknown, target: unknown, mods: unknown): void;
   setCapture(el: unknown): void;
   releaseCapture(el: unknown): void;
   hasCapture(el: unknown): boolean;
@@ -87,6 +90,8 @@ export function installPointers(deps: PointerDeps): PointerInternals {
   const { dispatch, call, scrolled, view, lightDismiss } = deps;
   const wrap = deps.wrap as (id: number) => Any;
   const MOUSE_ID = 1;
+  /** A finger's, as Chromium numbers its first touch pointer. */
+  const TOUCH_ID = 2;
   const POINTER = 0;
   const MOUSE = 1;
 
@@ -109,6 +114,9 @@ export function installPointers(deps: PointerDeps): PointerInternals {
     seen: number;
     /** The modifiers held as of the last key. */
     mods: Any;
+    /** Whether the pointer last pressed or moved is a finger: one pointer
+     *  is told at a time, and a finger has no mouse's events but a tap's. */
+    touch: boolean;
   } = {
     held: 0,
     pending: null,
@@ -119,6 +127,7 @@ export function installPointers(deps: PointerDeps): PointerInternals {
     screenY: null,
     seen: -1,
     mods: {},
+    touch: false,
   };
 
   /** What the pointer is over, once a kind: the element, and it and every
@@ -190,8 +199,8 @@ export function installPointers(deps: PointerDeps): PointerInternals {
   };
   /** What a pointer's event of the user's says of the pointer. */
   const fields = (buttons: number): Record<string, unknown> => ({
-    pointerId: MOUSE_ID,
-    pointerType: 'mouse',
+    pointerId: state.touch ? TOUCH_ID : MOUSE_ID,
+    pointerType: state.touch ? 'touch' : 'mouse',
     isPrimary: true,
     width: 1,
     height: 1,
@@ -345,6 +354,8 @@ export function installPointers(deps: PointerDeps): PointerInternals {
 
   const press = (e: Any, target: Any, mods: Any): boolean => {
     inDocumentOf(target);
+    state.touch = e.pointerType === 'touch';
+    if (state.touch) return touched(e, target, mods);
     const button = e.button ?? 0;
     const bit = bitOf(button);
     const down = e.type === 'mousedown';
@@ -417,6 +428,69 @@ export function installPointers(deps: PointerDeps): PointerInternals {
     return pointerGo && mouseGo;
   };
 
+  /**
+   * A finger's press or release (Pointer Events 3, 11.2, and Chromium's
+   * order for a tap): a press is the pointer's alone, and a release its
+   * `pointerup`, the pointer gone from what it was over, then the mouse's
+   * events a tap is compatible with — over it, a move, a press and a
+   * release — before the click. A finger that panned was cancelled
+   * (`cancel`) and is released with nothing told.
+   */
+  const touched = (e: Any, target: Any, mods: Any): boolean => {
+    const down = e.type === 'mousedown';
+    if (down) {
+      state.held = 1;
+      const at = pointAt({ ...e, buttons: 0 }, mods, e.detail ?? 1);
+      state.quiet = false;
+      state.screenX = at.init.screenX;
+      state.screenY = at.init.screenY;
+      takeCapture(at);
+      const hit = state.target ?? target;
+      setOver(POINTER, hit, at);
+      const to = stillHere(hit);
+      // a finger is captured by what it pressed, as though its pointerdown
+      // listeners were called just after `setPointerCapture` (Pointer
+      // Events 3, 10.6, "implicit pointer capture")
+      if (!state.target) state.pending = to;
+      const go = dispatch(to, atPointer('pointerdown', at, undefined));
+      state.quiet = !go;
+      lightDismiss('pointerdown', to, at.init.clientX, at.init.clientY);
+      return go;
+    }
+    if (!state.held) return true;
+    state.held = 0;
+    const at = pointAt({ ...e, buttons: 0 }, mods, e.detail ?? 1);
+    takeCapture(at);
+    const hit = stillHere(state.target ?? target);
+    const go = dispatch(hit, atPointer('pointerup', at, undefined));
+    state.clickAt = state.target;
+    state.pending = null;
+    takeCapture(at);
+    setOver(POINTER, null, at);
+    lightDismiss('pointerup', hit, at.init.clientX, at.init.clientY);
+    // a cancelled pointerdown keeps the tap's mouse events back
+    if (state.quiet || deps.disabled(target)) {
+      state.quiet = false;
+      return go;
+    }
+    setOver(MOUSE, target, at);
+    dispatch(target, atMouse(MouseEvent, 'mousemove', at, { button: 0 }));
+    const pressAt = pointAt(
+      { ...e, type: 'mousedown', buttons: 1 },
+      mods,
+      e.detail ?? 1,
+    );
+    const pressGo = dispatch(
+      stillHere(target),
+      atMouse(MouseEvent, 'mousedown', pressAt),
+    );
+    const releaseGo = dispatch(
+      stillHere(target),
+      atMouse(MouseEvent, 'mouseup', at),
+    );
+    return go && pressGo && releaseGo;
+  };
+
   /** How far a move took the pointer, on the screen, since the last. */
   const movement = (x: number, y: number) => {
     const by = {
@@ -482,6 +556,11 @@ export function installPointers(deps: PointerDeps): PointerInternals {
 
   const move = (e: Any, target: Any, mods: Any): boolean => {
     inDocumentOf(target);
+    // a finger lifted is over nothing, and a finger cancelled is told no
+    // more of
+    const touch = e.pointerType === 'touch';
+    if (touch && !state.held) return true;
+    state.touch = touch;
     const at = pointAt({ ...e, button: 0 }, mods);
     const by = movement(at.init.screenX, at.init.screenY);
     takeCapture(at);
@@ -503,11 +582,11 @@ export function installPointers(deps: PointerDeps): PointerInternals {
       hit = stillHere(state.target ?? hit);
       setOver(POINTER, hit, at);
     }
-    setOver(MOUSE, hit, at);
+    if (!touch) setOver(MOUSE, hit, at);
     const event = atPointer('pointermove', at, more);
     event._samples = samplesOf(e, at, event, 'pointermove', by);
     const go = dispatch(hit, event);
-    if (state.quiet || deps.disabled(hit)) return go;
+    if (touch || state.quiet || deps.disabled(hit)) return go;
     return dispatch(
       stillHere(hit),
       atMouse(MouseEvent, 'mousemove', at, { ...by, button: 0 }),
@@ -529,7 +608,9 @@ export function installPointers(deps: PointerDeps): PointerInternals {
   };
 
   return {
-    id: MOUSE_ID,
+    get id() {
+      return state.touch ? TOUCH_ID : MOUSE_ID;
+    },
     press,
     move,
     under,
@@ -550,6 +631,22 @@ export function installPointers(deps: PointerDeps): PointerInternals {
     dragged: (target) => {
       const at = pointAt({ button: 0 }, {});
       const to = state.target ?? target;
+      dispatch(
+        to,
+        atPointer('pointercancel', at, { button: -1, cancelable: false }),
+      );
+      state.held = 0;
+      state.pending = null;
+      state.quiet = false;
+      takeCapture(at);
+      setOver(POINTER, null, at);
+    },
+    cancel: (e, target, mods) => {
+      if (!state.held) return;
+      inDocumentOf(target);
+      const at = pointAt({ ...(e as Any), button: 0, buttons: 0 }, mods);
+      takeCapture(at);
+      const to = stillHere(state.target ?? target);
       dispatch(
         to,
         atPointer('pointercancel', at, { button: -1, cancelable: false }),

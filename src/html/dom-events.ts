@@ -38,6 +38,9 @@ export type HtmlDomEventType =
   // over it, and the menu a secondary press asks for — what a page drawing
   // on a `<canvas>` listens for
   | 'mousemove'
+  // a finger's press that the user's pan took over: the page hears no
+  // more of it (Pointer Events 3, 5.1.4)
+  | 'pointercancel'
   // what is under a pointer that did not move changed, and the pointer left
   // the document
   | 'mouseover'
@@ -105,6 +108,9 @@ export interface HtmlDomEvent {
    *  Motion is told once a frame, and a drawing tool reads what is between
    *  (`PointerEvent.getCoalescedEvents`). */
   samples?: [number, number, number][];
+  /** `'touch'` where a finger pressed, moved or let go, which the backend
+   *  says of it (core's `nativeEvent.pointerType`); a mouse's says nothing. */
+  pointerType?: 'touch';
   /** The locks and shifts on, as `LOCK_` bits. */
   locks?: number;
   /** The DOM's numbering: 0 the main button, 1 the middle, 2 the other. */

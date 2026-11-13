@@ -61,7 +61,12 @@ import { focusableElement } from './focus.js';
 import { documentReferrerPolicy, referrerPolicyOf } from './referrer.js';
 import type { Document, Element, HtmlChange } from './dom.js';
 import type { AnyNode } from 'domhandler';
-import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
+import {
+  ELEMENT,
+  HtmlViewNode,
+  TOUCH_SLOP_PX,
+  registerHtmlView,
+} from './node.js';
 import type {
   DocumentInteraction,
   HtmlViewProps,
@@ -1669,7 +1674,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
       },
       onMouseUp: (ev: X11MouseEvent<DrawnNode>) => {
         if (embedded.contains(ev.target as DrawnNode)) return;
-        if (events.onBar()) return;
+        if (events.onBar() || events.panned()) return;
         // the click the press and the release made, which the page may
         // cancel: then no link is followed and no button pressed
         if (!events.clicked(ev)) return;
@@ -1751,6 +1756,8 @@ export function makeHtmlHandle(
       nodeRef.current?.viewportMoves(element) ?? 'xy',
     snapChanged: (element: Element | null, kind: 'change' | 'changing') =>
       nodeRef.current?.snapChanged(element, kind) ?? null,
+    scrollGestureOwed: (element: Element | null) =>
+      nodeRef.current?.scrollGestureOwed(element) ?? false,
     takeCssEvents: () => nodeRef.current?.takeCssEvents() ?? [],
     scrollInsets: (element: Element, scroller: Element | null) =>
       nodeRef.current?.scrollInsets(element, scroller) ?? [
@@ -2195,6 +2202,18 @@ function useDocumentEvents(
   /** Whether the press was on a scroll container's bar: no click, no
    *  link, no event of the page's comes of it. */
   const barPress = React.useRef(false);
+  /** The finger down, where the backend says a press is one: where it
+   *  was, the last few points it went through, `[ms, x, y]`, for its speed
+   *  as it lets go, and whether it has become a pan — which no click, no
+   *  link and no more of the page's events come of. */
+  const finger = React.useRef<{
+    x: number;
+    y: number;
+    samples: [number, number, number][];
+    panning: boolean;
+  } | null>(null);
+  /** Whether the last press was a finger's that panned. */
+  const panned = React.useRef(false);
   const fire = (
     type: HtmlDomEventType,
     target: Element,
@@ -2214,6 +2233,7 @@ function useDocumentEvents(
     );
   };
   const mouse = (ev: X11MouseEvent<DrawnNode>): DomEventInit => ({
+    ...(isTouch(ev) && { pointerType: 'touch' as const }),
     ...documentPoint(ev, view.current?.getClientRects()[0]),
     screenX: ev.screenX,
     screenY: ev.screenY,
@@ -2328,10 +2348,54 @@ function useDocumentEvents(
     }
     if (!fire(type, target, modifiersOf(ev))) ev.preventDefault();
   };
+  /** A finger's move, in logical pixels: a pan once it has gone
+   *  `TOUCH_SLOP_PX` from where it was pressed and `touch-action` lets it,
+   *  and the page's pointer then cancelled. Answers whether it panned. */
+  const fingerMoved = (ev: X11MouseEvent<DrawnNode>): boolean => {
+    const f = finger.current;
+    const node = view.current;
+    if (!f || !node) return false;
+    const last = f.samples[f.samples.length - 1];
+    f.samples.push([nowMs(), ev.x, ev.y]);
+    if (f.samples.length > 8) f.samples.shift();
+    if (!f.panning) {
+      if (Math.hypot(ev.x - f.x, ev.y - f.y) < TOUCH_SLOP_PX) return false;
+      // the whole way from the press, as the content follows the finger
+      if (!node.touchPan(ev.x - f.x, ev.y - f.y)) return false;
+      f.panning = true;
+      const target = pressed.current;
+      if (onDomEvent && target) fire('pointercancel', target, mouse(ev));
+      return true;
+    }
+    node.touchPan(ev.x - last[1], ev.y - last[2]);
+    return true;
+  };
+  /** How fast the finger was going as it let go, in logical pixels a
+   *  millisecond: across the points of the last `FLING_WINDOW_MS`, as a
+   *  browser's velocity tracker reads it, so a finger that stopped before
+   *  it lifted flings nothing. */
+  const fingerSpeed = (x: number, y: number): { x: number; y: number } => {
+    const f = finger.current;
+    if (!f) return { x: 0, y: 0 };
+    const now = nowMs();
+    f.samples.push([now, x, y]);
+    const recent = f.samples.filter(([t]) => now - t <= FLING_WINDOW_MS);
+    const first = recent[0];
+    const dt = now - (first?.[0] ?? now);
+    if (!first || recent.length < 2 || dt < 1) return { x: 0, y: 0 };
+    return { x: (x - first[1]) / dt, y: (y - first[2]) / dt };
+  };
+
   return {
     onMouseDownCapture: (ev: X11MouseEvent<DrawnNode>) => {
       forms.userInput('pointer');
       pressed.current = null;
+      panned.current = false;
+      // a finger pans what it presses once it moves (`fingerMoved`)
+      finger.current = isTouch(ev)
+        ? { x: ev.x, y: ev.y, samples: [[nowMs(), ev.x, ev.y]], panning: false }
+        : null;
+      if (finger.current) view.current?.touchStart(ev.x, ev.y);
       // a press on a scroll container's bar is the bar's (`defaultMouseDown`)
       const node = view.current;
       if (
@@ -2365,6 +2429,7 @@ function useDocumentEvents(
       // as a press and its text stay as it was
       if (
         ev.button === 1 &&
+        !finger.current &&
         ev.target === (node as unknown) &&
         node?.startsSelectionAt(ev.x, ev.y) &&
         !fire('selectstart', target, modifiersOf(ev))
@@ -2384,6 +2449,20 @@ function useDocumentEvents(
     },
     onMouseUpCapture: (ev: X11MouseEvent<DrawnNode>) => {
       released.current = null;
+      const f = finger.current;
+      if (f) {
+        const speed = fingerSpeed(ev.x, ev.y);
+        finger.current = null;
+        view.current?.touchEnd(
+          f.panning ? speed.x : 0,
+          f.panning ? speed.y : 0,
+        );
+        // a pan is no press of the page's any more: no release, no click
+        if (f.panning) {
+          panned.current = true;
+          return;
+        }
+      }
       if (barPress.current) return;
       if (!onDomEvent) return;
       const target = pointedAt(ev) ?? (pressed.current && offDocument());
@@ -2409,6 +2488,7 @@ function useDocumentEvents(
     onCompositionEndCapture: composition('compositionend'),
     onMouseMoveCapture: (ev: X11MouseEvent<DrawnNode>) => {
       const node = view.current;
+      if (finger.current && fingerMoved(ev)) return;
       node?.notePointer(ev.x, ev.y);
       // over a control's widget, or a frame's mount, the pointer is over its
       // element, which the document hovers with all around it: the node
@@ -2463,9 +2543,14 @@ function useDocumentEvents(
     },
     /** Whether the press now under way is a scroll bar's. */
     onBar: () => barPress.current,
-    /** The element the press now under way was on. */
-    pressedElement: () => pressed.current,
-    pressPoint: () => (pressed.current ? pressPoint.current : null),
+    /** The element the press now under way was on: none of a finger's,
+     *  which pans and drags nothing. */
+    pressedElement: () => (finger.current ? null : pressed.current),
+    pressPoint: () =>
+      pressed.current && !finger.current ? pressPoint.current : null,
+    /** Whether the last press was a finger's that panned, of which nothing
+     *  is the page's to follow. */
+    panned: () => panned.current,
     clicked: (ev: X11MouseEvent<DrawnNode>): boolean => {
       const down = pressedBy.current.get(ev.button);
       const up = released.current;
@@ -2497,6 +2582,27 @@ function useDocumentEvents(
       return go;
     },
   };
+}
+
+/** Whether core says a pointer event is a finger's: the backend tags what
+ *  it emulates of a touch point (react-x11's Wayland seat does), and X11
+ *  and macOS tag nothing. */
+function isTouch(ev: { nativeEvent?: unknown }): boolean {
+  return (
+    (ev.nativeEvent as { pointerType?: string } | undefined)?.pointerType ===
+    'touch'
+  );
+}
+
+/** What a finger's speed as it lets go is read across. */
+const FLING_WINDOW_MS = 100;
+
+/** A clock for a finger's speed. */
+function nowMs(): number {
+  return (
+    (globalThis as { performance?: { now(): number } }).performance?.now() ??
+    Date.now()
+  );
 }
 
 /** The link an element is in, or null. */

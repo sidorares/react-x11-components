@@ -42017,6 +42017,7 @@ export function installDom(
       Event,
       fire: trusted,
       setTimer: (fn: () => void, ms: number) => setTimer(fn, ms, [], false),
+      task: () => taskEpoch,
       URL,
       bytesOfBase64,
       media: media.internals,
@@ -42391,6 +42392,10 @@ export function installDom(
         return POINTERS.press(e, target, mods);
       case 'mousemove':
         return POINTERS.move(e, target, mods);
+      // a finger's press that became a pan
+      case 'pointercancel':
+        POINTERS.cancel(e, target, mods);
+        return true;
       // what is under a pointer that stayed where it was changed, and the
       // pointer left the document
       case 'mouseover':

@@ -40,6 +40,9 @@ export interface WebRTCDeps {
   fire(target: unknown, event: unknown): void;
   /** Runs `fn` in a task of its own, after `ms`. */
   setTimer(fn: () => void, ms: number): unknown;
+  /** Which task the realm is in: a number that moves as the host enters
+   *  it, and stays through the microtasks the entry runs. */
+  task(): number;
   URL: unknown;
   bytesOfBase64(text: string): Uint8Array;
   media: MediaStreamsInternals;
@@ -86,6 +89,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
   const Event: Any = D.Event;
   const fire: Any = D.fire;
   const setTimer: Any = D.setTimer;
+  const taskNow: Any = D.task;
   const URLClass: Any = D.URL;
   const bytesOfBase64: Any = D.bytesOfBase64;
   const media: Any = D.media;
@@ -769,8 +773,16 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     getParameters(): Any {
       const s = slotOf(this, 'sender');
       const p = s.parameters ?? NO_PARAMETERS();
+      // what a later `setParameters` is checked against lasts this task
+      // (WebRTC 1.0, 5.2: a task queued clears it), and a second call in
+      // the same task, microtasks and a `setParameters` between them, is
+      // the same transaction, as every browser has it
+      const task = taskNow();
+      const held = s.lastReturned && s.lastTask === task;
       const out = {
-        transactionId: String(++transactionSeq),
+        transactionId: held
+          ? s.lastReturned.transactionId
+          : String(++transactionSeq),
         encodings: s.encodings.map((e: Any) =>
           e.scaleResolutionDownTo
             ? { ...e, scaleResolutionDownTo: { ...e.scaleResolutionDownTo } }
@@ -781,13 +793,10 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         codecs: p.codecs.map((c: Any) => ({ ...c })),
       };
       s.lastReturned = parse(stringify(out));
-      // what a later `setParameters` is checked against lasts this task
-      setTimer(() => {
-        s.lastReturned = null;
-      }, 0);
+      s.lastTask = task;
       return out;
     }
-    setParameters(parameters: Any, options?: Any): Promise<void> {
+    setParameters(parameters: Any, _options?: Any): Promise<void> {
       let s: Any;
       try {
         s = slotOf(this, 'sender');
@@ -796,7 +805,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       }
       const pc = s.tx.pc;
       if (pc.closed || s.tx.stopping) return rejected(invalidState());
-      const last = s.lastReturned;
+      const last = s.lastTask === taskNow() ? s.lastReturned : null;
       if (!last) {
         return rejected(
           invalidState(
@@ -906,31 +915,23 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           );
         }
       }
-      // `encodingOptions`, one an encoding or none, asks a key frame of
-      // each encoding it says so of (WebRTC Extensions, setParameters);
-      // audio's are not read
+      // webrtc-extensions' `encodingOptions`: one for each encoding, or
+      // none, and a key frame asked of each encoding it says so of; a
+      // video sender's alone
+      const options = _options?.encodingOptions;
       let keyFrames: boolean[] = [];
-      if (video) {
-        let given: Any[] = [];
-        try {
-          given = [
-            ...(dictionary(options, 'RTCSetParameterOptions').encodingOptions ??
-              []),
-          ];
-        } catch (error) {
-          return rejected(error);
-        }
-        if (given.length && given.length !== encodings.length) {
+      if (video && options !== undefined && options !== null) {
+        const list = [...options];
+        if (list.length && list.length !== encodings.length) {
           return rejected(
             domError(
-              'encodingOptions has one entry an encoding, or none.',
+              'encodingOptions must have one for each encoding.',
               'InvalidModificationError',
             ),
           );
         }
-        keyFrames = given.map((o: Any) => !!o?.keyFrame);
+        keyFrames = list.map((o: Any) => !!o?.keyFrame);
       }
-      s.lastReturned = null;
       const next = encodings.map((e: Any) => {
         const enc: Any = {
           active: e.active === undefined ? true : !!e.active,
@@ -964,7 +965,11 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
             'rtcParameters',
             s.tx.id,
             req,
-            stringify({ encodings: next, keyFrames }),
+            stringify(
+              keyFrames.some((k) => k)
+                ? { encodings: next, keyFrames }
+                : { encodings: next },
+            ),
           ),
         ),
         () => {

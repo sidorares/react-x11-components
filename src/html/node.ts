@@ -1046,9 +1046,38 @@ function containerSizer(
   };
 }
 
+/** The user's scroll of a scroll container, the wheel's or a finger's,
+ *  until it rests (`HtmlViewNode._userScrolls`). */
+interface UserScroll {
+  /** Where the container was when the gesture began, in device pixels:
+   *  what it snaps ahead of. */
+  from: { x: number; y: number };
+  /** Its snap's timer, or the next frame of its fling. */
+  timer: unknown;
+  /** Whether a finger is on it. */
+  held: boolean;
+  /** Whether it is on its way to where it comes to rest. */
+  flinging?: boolean;
+}
+
 /** How long the wheel rests on a snap container before it snaps: past the
  *  gap between one notch and the next of a turn. */
 const WHEEL_SNAP_MS = 60;
+
+/** How far a finger goes before its press is a pan, in logical pixels:
+ *  Chromium's touch slop on a desktop (`max_touch_move_in_pixels_for_click`). */
+export const TOUCH_SLOP_PX = 15;
+
+/** A finger let go faster than this, in logical pixels a millisecond, flings
+ *  what it panned: Chromium's least fling velocity, 50 a second. */
+const FLING_MIN_SPEED = 0.05;
+
+/** How long a fling's speed takes to fall by e, which is how far it goes for
+ *  its speed: what a scroll goes on by once the finger lets go. */
+const FLING_TAU_MS = 200;
+
+/** A fling, or the snap at the end of a pan, moves a frame at a time. */
+const FLING_FRAME_MS = 16;
 
 /** What changed, and therefore how far back up the pipeline to go. */
 const enum Stale {
@@ -15717,12 +15746,14 @@ export class HtmlViewNode extends Node {
   /** A container's snap targets as an event tells them, the block axis's
    *  element and the inline axis's — the area's element for a
    *  pseudo-element's — and their key, which `_snapTold` compares. */
-  private _snapTargets(of: Element | Document): {
+  private _snapTargets(
+    of: Element | Document,
+    keys = this._snapped.get(of),
+  ): {
     block: Element | null;
     inline: Element | null;
     key: string;
   } {
-    const keys = this._snapped.get(of);
     const style =
       of === this._source.document
         ? this._viewportStyle()
@@ -15762,11 +15793,41 @@ export class HtmlViewNode extends Node {
   ): { block: Element | null; inline: Element | null } | null {
     const of = element ?? this._source.document;
     if (!this._snapped.has(of)) return null;
-    const now = this._snapTargets(of);
+    // as the user scrolls, what it would come to rest at now (CSS Scroll
+    // Snap 2, 6.2)
+    const now = this._snapTargets(
+      of,
+      (kind === 'changing' && this._restingKeys(of)) || this._snapped.get(of),
+    );
     const told = this._snapTold.get(of) ?? { change: '0,0', changing: '0,0' };
     if (told[kind] === now.key) return null;
     this._snapTold.set(of, { ...told, [kind]: now.key });
     return { block: now.block, inline: now.inline };
+  }
+
+  /** The areas the user's scroll of a snap container under way would come
+   *  to rest at, were it let go of now: ahead of where it began, as a wheel
+   *  that rests and a finger that lifts with no speed snap. A fling's
+   *  destination was chosen as it began, and is `_snapped`'s already. */
+  private _restingKeys(of: Element | Document): SnapKeys | undefined {
+    const gesture = this._userScrolls.get(of);
+    if (!gesture || gesture.flinging) return undefined;
+    const scroll = { from: gesture.from };
+    const focus = this._focus.element ?? null;
+    if (of === this._source.document) {
+      const pane = this._pane();
+      const snap = this._viewportSnap();
+      if (!pane || !snap) return undefined;
+      return snapKeysOf(
+        snapTo(snap, pane.scrollX, pane.scrollY, scroll),
+        focus,
+      );
+    }
+    const box = this._scrollerOf(of as Element);
+    const snap = box?.style.scrollSnapType && this._snapContainerOf(box);
+    if (!box || !snap) return undefined;
+    const state = scrollStateOf(box);
+    return snapKeysOf(snapTo(snap, state.x, state.y, scroll), focus);
   }
 
   /** What the viewport was snapped to, as `_snapped` keeps it. */
@@ -16029,7 +16090,7 @@ export class HtmlViewNode extends Node {
     // a snap container snaps once the wheel has rested on it, in the
     // direction it went from where it was when the wheel began
     if (box.style.scrollSnapType && box.el) {
-      this._armWheelSnap(box, state.x, state.y);
+      this._armWheelSnap(box.el, state.x, state.y);
     }
     this._scrollBox(
       box,
@@ -16038,25 +16099,54 @@ export class HtmlViewNode extends Node {
     );
   }
 
-  /** The wheel turned on a snap container — null for the viewport — that
-   *  was at `x`, `y`: it snaps once the wheel has rested on it for
-   *  `WHEEL_SNAP_MS`, from where it was when the wheel began. */
-  private _armWheelSnap(box: Box | null, x: number, y: number): void {
-    const gesture = this._wheelGesture;
-    if (gesture && gesture.box === box) {
-      snapClock.disarm(gesture.timer);
+  /** The wheel turned on a snap container — the document for the viewport
+   *  — that was at `x`, `y`: it snaps once the wheel has rested on it for
+   *  `WHEEL_SNAP_MS`, from where it was when its gesture began. Each
+   *  container has a gesture of its own, so a wheel on another while the
+   *  first rests leaves the first to snap. */
+  private _armWheelSnap(key: Element | Document, x: number, y: number): void {
+    const gesture = this._userScrolls.get(key);
+    if (gesture) {
+      // a fling the wheel turns on stops where it is, and rests as the wheel
+      this._stopGesture(gesture);
+      gesture.flinging = false;
       gesture.timer = snapClock.arm(
-        () => this._snapUserScroll(),
+        () => this._snapUserScroll(key),
         WHEEL_SNAP_MS,
       );
       return;
     }
-    if (gesture) snapClock.disarm(gesture.timer);
-    this._wheelGesture = {
-      box,
+    this._userScrolls.set(key, {
       from: { x, y },
-      timer: snapClock.arm(() => this._snapUserScroll(), WHEEL_SNAP_MS),
-    };
+      timer: snapClock.arm(() => this._snapUserScroll(key), WHEEL_SNAP_MS),
+      held: false,
+    });
+  }
+
+  /** The user has hold of a container, from where it is, in device
+   *  pixels: a fling or a wheel's snap on it under way stops there. */
+  private _holdGesture(
+    key: Element | Document,
+    from: { x: number; y: number },
+  ): void {
+    const gesture = this._userScrolls.get(key);
+    if (gesture) {
+      this._stopGesture(gesture);
+      gesture.flinging = false;
+      gesture.held = true;
+    } else {
+      this._userScrolls.set(key, {
+        from: { x: from.x, y: from.y },
+        timer: null,
+        held: true,
+      });
+    }
+  }
+
+  /** A gesture's timer stopped: its snap, or the next frame of its fling. */
+  private _stopGesture(gesture: UserScroll): void {
+    if (gesture.timer !== null) snapClock.disarm(gesture.timer);
+    gesture.timer = null;
   }
 
   /**
@@ -16067,6 +16157,12 @@ export class HtmlViewNode extends Node {
    */
   private _viewportWheel(dx: number, dy: number): boolean {
     if (!this._rootBox()?.style.scrollSnapType) return false;
+    return this._paneRoom(dx, dy);
+  }
+
+  /** Whether the pane around the document can move the way a delta goes,
+   *  on an axis the root lets it be scrolled on. */
+  private _paneRoom(dx: number, dy: number): boolean {
     const pane = this._pane();
     if (!pane) return false;
     const overflow = this._tree?.viewportOverflow;
@@ -16087,43 +16183,303 @@ export class HtmlViewNode extends Node {
     this._scrolledBy.add(this._source.document);
     const pane = this._pane();
     if (!pane || !this._viewportWheel(by.x ?? 0, by.y ?? 0)) return;
+    this._armWheelSnap(this._source.document, pane.scrollX, pane.scrollY);
+    this._panePanBy(by.x ?? 0, by.y ?? 0);
+  }
+
+  /** The pane moved by logical pixels, on the axes the root lets it. */
+  private _panePanBy(dx: number, dy: number): void {
+    const pane = this._pane();
+    if (!pane) return;
     const s = this._scale;
     const overflow = this._tree?.viewportOverflow;
-    this._armWheelSnap(null, pane.scrollX, pane.scrollY);
     pane.scrollTo({
-      x: pane.scrollX / s + (overflow?.x !== 'hidden' ? (by.x ?? 0) : 0),
-      y: pane.scrollY / s + (overflow?.y !== 'hidden' ? (by.y ?? 0) : 0),
+      x: pane.scrollX / s + (overflow?.x !== 'hidden' ? dx : 0),
+      y: pane.scrollY / s + (overflow?.y !== 'hidden' ? dy : 0),
     });
   }
 
-  /** The wheel's scroll of a snap container, until it rests: where the
-   *  container was when it began, and which — null for the viewport. */
-  private _wheelGesture: {
-    box: Box | null;
-    from: { x: number; y: number };
-    timer: unknown;
-  } | null = null;
+  /** The user's scroll of each container — the wheel's or a finger's —
+   *  until it rests and snaps: by the container's element, and the
+   *  viewport's by the document. */
+  private _userScrolls = new Map<Element | Document, UserScroll>();
+
+  /** The box a gesture's key scrolls now, null for the viewport, or
+   *  undefined where it is no scroll container any more: a build since it
+   *  began made new boxes. */
+  private _gestureBox(key: Element | Document): Box | null | undefined {
+    if (key === this._source.document) return null;
+    return this._scrollerOf(key as Element) ?? undefined;
+  }
+
+  /**
+   * Whether the user's scroll of a scroll container — the viewport's for
+   * null — is still under way: a wheel that has not rested, a finger down,
+   * a fling, or the snap they end in. Its `scrollend` waits for it, as a
+   * browser tells it only once the snap has landed (CSSOM View 13.1).
+   */
+  scrollGestureOwed(element: Element | null): boolean {
+    return this._userScrolls.has(element ?? this._source.document);
+  }
 
   /** The wheel rested on a snap container: it comes to rest where the
    *  snap points ahead of where the gesture began say. */
-  private _snapUserScroll(): void {
-    const gesture = this._wheelGesture;
-    this._wheelGesture = null;
+  private _snapUserScroll(key: Element | Document): void {
+    const gesture = this._userScrolls.get(key);
+    this._userScrolls.delete(key);
     if (!gesture || !this._tree) return;
     const s = this._scale;
     const from = { from: gesture.from };
-    if (!gesture.box) {
+    const box = this._gestureBox(key);
+    if (box === undefined) return;
+    if (!box) {
       const pane = this._pane();
       if (!pane) return;
       const at = this._snapViewportAt(pane.scrollX, pane.scrollY, from);
       pane.scrollTo({ x: at.x / s, y: at.y / s });
       return;
     }
-    const el = gesture.box.el;
-    if (!el || this._scrollerOf(el) !== gesture.box) return;
-    const state = scrollStateOf(gesture.box);
-    const at = this._snapScroll(gesture.box, state.x, state.y, from);
-    this._scrollBox(gesture.box, at.x / s, at.y / s);
+    const state = scrollStateOf(box);
+    const at = this._snapScroll(box, state.x, state.y, from);
+    this._scrollBox(box, at.x / s, at.y / s);
+  }
+
+  // --- a finger (`<Html>`'s touch, Pointer Events 3, 11) --------------------
+  //
+  // A press a finger makes pans what is under it once it has gone
+  // `TOUCH_SLOP_PX`: the innermost scroll container that can move the way
+  // the finger first goes and that `touch-action` lets pan, or the pane
+  // around the document, held for the rest of the gesture, as a browser
+  // latches it. Let go, it flings on at the finger's speed and comes to rest
+  // where its snap points say, ahead of where the pan began, as the wheel
+  // does once it rests.
+
+  /** The finger down now, from where it was pressed. */
+  private _pan: {
+    at: { x: number; y: number };
+    /** What it pans, once it has latched; undefined until then. */
+    key: Element | Document | null | undefined;
+    /** The axes `touch-action` lets it pan, from what it pressed out. */
+    allowed: string;
+  } | null = null;
+
+  /** A finger pressed at a logical window point. A fling under way on what
+   *  it presses stops where it is, and comes to rest once this one does. */
+  touchStart(x: number, y: number): void {
+    // a finger whose release never came is let go of first
+    if (this._pan) this.touchEnd(0, 0);
+    this._pan = {
+      at: { x, y },
+      key: undefined,
+      allowed: this._touchAction(x, y),
+    };
+    for (const gesture of this._userScrolls.values()) {
+      if (gesture.flinging) {
+        this._stopGesture(gesture);
+        gesture.flinging = false;
+        gesture.held = true;
+      }
+    }
+  }
+
+  /** Whether a finger is down. */
+  get touching(): boolean {
+    return this._pan !== null;
+  }
+
+  /**
+   * The axes a finger pressed at a point may pan (Pointer Events 3, 11.1):
+   * what `touch-action` lets on each element from the one pressed out to the
+   * nearest scroll container around it, all of them.
+   */
+  private _touchAction(x: number, y: number): string {
+    const tree = this._tree;
+    if (!tree) return 'xy';
+    const boxes = this._firstBoxesOf(tree);
+    let allowed = 'xy';
+    for (let el = this._drawnAt(x, y); el; el = flatParentOf(el)) {
+      const box = boxes.get(el);
+      if (!box) continue;
+      const own = box.style.touchAction;
+      allowed = [...allowed].filter((axis) => own.includes(axis)).join('');
+      if (isScroller(box)) break;
+    }
+    return allowed;
+  }
+
+  /**
+   * The finger down moved by logical pixels: what it pans scrolls the other
+   * way, as the content follows the finger. Answers whether the finger is
+   * panning: false where `touch-action` keeps its press a press, which a
+   * page then goes on hearing. What it pans is chosen at its first move
+   * that has an axis to go on.
+   */
+  touchPan(dx: number, dy: number): boolean {
+    const pan = this._pan;
+    if (!pan) return false;
+    const mx = pan.allowed.includes('x') ? dx : 0;
+    const my = pan.allowed.includes('y') ? dy : 0;
+    if (pan.key === undefined) {
+      if (!mx && !my) return false;
+      pan.key = this._latch(pan.at, -mx, -my);
+    }
+    const key = pan.key;
+    if (!key) return true;
+    const box = this._gestureBox(key);
+    if (box === undefined) return true;
+    if (!box) {
+      this._scrolledBy.add(this._source.document);
+      this._panePanBy(-mx, -my);
+      return true;
+    }
+    const state = scrollStateOf(box);
+    const s = this._scale;
+    this._scrollBox(
+      box,
+      state.x / s - (wheelScrolls(box, 'x') ? mx : 0),
+      state.y / s - (wheelScrolls(box, 'y') ? my : 0),
+    );
+    return true;
+  }
+
+  /** What a finger's pan goes to, from where it was pressed, scrolling by
+   *  `dx`, `dy`: a scroll container, the document for the pane, or null for
+   *  nothing that can move that way. Its gesture is noted from where it is. */
+  private _latch(
+    at: { x: number; y: number },
+    dx: number,
+    dy: number,
+  ): Element | Document | null {
+    const box = this._scrollerAt(at, dx, dy);
+    let key: Element | Document | null = null;
+    let from: { x: number; y: number } | null = null;
+    if (box?.el) {
+      key = box.el;
+      const state = scrollStateOf(box);
+      from = { x: state.x, y: state.y };
+    } else if (this._paneRoom(dx, dy)) {
+      const pane = this._pane()!;
+      key = this._source.document;
+      from = { x: pane.scrollX, y: pane.scrollY };
+    }
+    if (!key || !from) return null;
+    this._holdGesture(key, from);
+    // a stopped fling elsewhere comes to rest, which this finger is not on
+    for (const [other, g] of this._userScrolls) {
+      if (other !== key && g.held && g.timer === null)
+        this._comeToRest(other, 0, 0);
+    }
+    return key;
+  }
+
+  /**
+   * The finger let go, going at `vx`, `vy` logical pixels a millisecond:
+   * what it panned flings on, the other way, as far as that speed carries it
+   * (`FLING_TAU_MS`), and comes to rest there — at the snap position ahead
+   * of where the pan began, in a snap container — a frame at a time.
+   */
+  touchEnd(vx: number, vy: number): void {
+    const pan = this._pan;
+    this._pan = null;
+    // a fling the press stopped and nothing panned since comes to rest
+    for (const [key, g] of this._userScrolls) {
+      if (key !== pan?.key && g.held && g.timer === null)
+        this._comeToRest(key, 0, 0);
+    }
+    if (!pan?.key) return;
+    const fast = Math.hypot(vx, vy) >= FLING_MIN_SPEED;
+    const mx = fast && pan.allowed.includes('x') ? vx : 0;
+    const my = fast && pan.allowed.includes('y') ? vy : 0;
+    this._comeToRest(pan.key, -mx * FLING_TAU_MS, -my * FLING_TAU_MS);
+  }
+
+  /** A user's scroll of a container let go of, to go on by `dx`, `dy`
+   *  logical pixels and come to rest at its snap position: where it is
+   *  going is chosen now, and gone to a frame at a time. */
+  private _comeToRest(key: Element | Document, dx: number, dy: number): void {
+    const gesture = this._userScrolls.get(key);
+    const box = this._gestureBox(key);
+    if (!gesture || box === undefined || !this._tree) {
+      this._userScrolls.delete(key);
+      return;
+    }
+    this._stopGesture(gesture);
+    gesture.held = false;
+    const s = this._scale;
+    const pane = box ? null : this._pane();
+    if (!box && !pane) {
+      this._userScrolls.delete(key);
+      return;
+    }
+    // where it is and how far it can go, in device pixels
+    let x: number;
+    let y: number;
+    let maxX: number;
+    let maxY: number;
+    if (box) {
+      const state = scrollStateOf(box);
+      x = state.x;
+      y = state.y;
+      maxX = wheelScrolls(box, 'x') ? maxScroll(state, 'x') : x;
+      maxY = wheelScrolls(box, 'y') ? maxScroll(state, 'y') : y;
+    } else {
+      const client = pane!.contentBox();
+      const overflow = this._tree.viewportOverflow;
+      x = pane!.scrollX;
+      y = pane!.scrollY;
+      maxX =
+        overflow?.x === 'hidden'
+          ? x
+          : Math.max(0, pane!.contentWidth - client.width);
+      maxY =
+        overflow?.y === 'hidden'
+          ? y
+          : Math.max(0, pane!.contentHeight - client.height);
+    }
+    const clamp = (v: number, max: number) => Math.min(max, Math.max(0, v));
+    let to = {
+      x: clamp(x + dx * s, Math.max(x, maxX)),
+      y: clamp(y + dy * s, Math.max(y, maxY)),
+    };
+    const from = { from: gesture.from };
+    const snaps = box
+      ? !!box.style.scrollSnapType
+      : !!this._rootBox()?.style.scrollSnapType;
+    if (snaps) {
+      to = box
+        ? this._snapScroll(box, to.x, to.y, from)
+        : this._snapViewportAt(to.x, to.y, from);
+    }
+    if (Math.abs(to.x - x) < 0.5 && Math.abs(to.y - y) < 0.5) {
+      this._userScrolls.delete(key);
+      return;
+    }
+    gesture.flinging = true;
+    const begun = snapClock.now();
+    const step = () => {
+      gesture.timer = null;
+      const now = this._gestureBox(key);
+      if (now === undefined || !this._tree) {
+        this._userScrolls.delete(key);
+        return;
+      }
+      // eased out over the fling: what is left falls by e every tau
+      const t = snapClock.now() - begun;
+      const left = Math.exp(-t / FLING_TAU_MS);
+      const done =
+        left * Math.max(Math.abs(to.x - x), Math.abs(to.y - y)) < 0.5;
+      const at = done
+        ? to
+        : { x: to.x + (x - to.x) * left, y: to.y + (y - to.y) * left };
+      if (now) this._scrollBox(now, at.x / s, at.y / s);
+      else this._pane()?.scrollTo({ x: at.x / s, y: at.y / s });
+      if (done) {
+        this._userScrolls.delete(key);
+        return;
+      }
+      gesture.timer = snapClock.arm(step, FLING_FRAME_MS);
+    };
+    gesture.timer = snapClock.arm(step, FLING_FRAME_MS);
   }
 
   /** A press at a logical window point: where the scroll keys start from
@@ -16238,7 +16594,16 @@ export class HtmlViewNode extends Node {
   /** The innermost scroll container under where the wheel turned that the
    *  wheel scrolls and that has room to move the way a delta goes. */
   private _wheelScroller(dx: number, dy: number): Box | null {
-    const at = this._wheelAt;
+    return this._scrollerAt(this._wheelAt, dx, dy);
+  }
+
+  /** The innermost scroll container under a logical window point that the
+   *  user may scroll and that has room to move the way a delta goes. */
+  private _scrollerAt(
+    at: { x: number; y: number } | null,
+    dx: number,
+    dy: number,
+  ): Box | null {
     const tree = this._tree;
     if (!at || !tree || (!dx && !dy)) return null;
     const local = this._toDocument(at.x, at.y);
@@ -16463,7 +16828,7 @@ export class HtmlViewNode extends Node {
     const hit = ev.button === 1 ? this._barAt(ev.x, ev.y) : null;
     if (!hit) {
       this.interactive?.pressLanded(this.elementAtPoint(ev.x, ev.y));
-      const refused = this._noSelection;
+      const refused = this._noSelection || this._pan !== null;
       this._noSelection = false;
       if (ev.button !== 1 || (!refused && this.startsSelectionAt(ev.x, ev.y))) {
         super.defaultMouseDown?.(ev);
@@ -16478,6 +16843,8 @@ export class HtmlViewNode extends Node {
         axis: hit.bar.axis,
         grab: along - hit.bar.thumbStart,
       };
+      // the user's scroll of it, which comes to rest at its release
+      if (hit.box.el) this._holdGesture(hit.box.el, scrollStateOf(hit.box));
       ev.capturePointer();
       return;
     }
@@ -16495,6 +16862,8 @@ export class HtmlViewNode extends Node {
 
   override defaultMouseDrag(ev: X11MouseEvent): void {
     const drag = this._barDrag;
+    // a finger's drag pans, and selects nothing (`touchPan`)
+    if (!drag && this._pan) return;
     if (!drag) {
       super.defaultMouseDrag?.(ev);
       // a press on the document holds the pointer, and core leaves the
@@ -16523,8 +16892,11 @@ export class HtmlViewNode extends Node {
   }
 
   override defaultMouseUp(ev: X11MouseEvent): void {
-    if (this._barDrag) {
+    const drag = this._barDrag;
+    if (drag) {
       this._barDrag = null;
+      // a thumb let go of snaps, as a finger that stopped does
+      if (drag.box.el) this._comeToRest(drag.box.el, 0, 0);
       return;
     }
     super.defaultMouseUp?.(ev);
@@ -21662,6 +22034,9 @@ const CARET_WIDTH = 1.5;
  * `globalThis`, unref'd, and exported for a test to hold.
  */
 export const snapClock = {
+  now(): number {
+    return timers.performance?.now?.() ?? Date.now();
+  },
   arm(step: () => void, ms: number): unknown {
     const handle = timers.setTimeout?.(step, ms) ?? null;
     (handle as { unref?(): void } | null)?.unref?.();

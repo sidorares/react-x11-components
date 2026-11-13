@@ -1406,6 +1406,10 @@ export interface ComputedStyle {
   scrollSnapAlign: readonly [SnapAlign, SnapAlign];
   /** `scroll-snap-stop`. */
   scrollSnapStop: 'normal' | 'always';
+  /** `touch-action` (Pointer Events 3, 11), as the axes it lets a finger
+   *  pan: `'xy'` for `auto`, `''` for `none`. Its zooms are nothing here,
+   *  so `manipulation` is `'xy'` and `pinch-zoom` alone is `''`. */
+  touchAction: '' | 'x' | 'y' | 'xy';
   /** `scroll-initial-target` (CSS Scroll Snap 2, 3.1): whether the box is
    *  what its nearest scroll container is first scrolled to. */
   scrollInitialTarget: 'none' | 'nearest';
@@ -2064,6 +2068,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     scrollSnapType: null,
     scrollSnapAlign: NO_SNAP_ALIGN,
     scrollSnapStop: 'normal',
+    touchAction: 'xy',
     scrollInitialTarget: 'none',
     scrollPaddingTop: AUTO,
     scrollPaddingRight: AUTO,
@@ -3216,6 +3221,11 @@ export function applyDeclaration(
     case 'scroll-snap-stop': {
       const v = value.trim().toLowerCase();
       if (v === 'normal' || v === 'always') style.scrollSnapStop = v;
+      return;
+    }
+    case 'touch-action': {
+      const t = parseTouchAction(value);
+      if (t !== null) style.touchAction = t;
       return;
     }
     case 'scroll-initial-target': {
@@ -9994,6 +10004,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'scroll-snap-type': ['scrollSnapType'],
   'scroll-snap-align': ['scrollSnapAlign'],
   'scroll-snap-stop': ['scrollSnapStop'],
+  'touch-action': ['touchAction'],
   'scroll-initial-target': ['scrollInitialTarget'],
   'scroll-padding': [
     'scrollPaddingTop',
@@ -10610,4 +10621,26 @@ function axisList(value: string): string | null {
     out.push(v);
   }
   return out.length ? out.join(', ') : null;
+}
+
+/** `touch-action`'s value as the axes a finger may pan, or null where it is
+ *  none of the property's: `auto | none | [pan-x | pan-left | pan-right] ||
+ *  [pan-y | pan-up | pan-down] || pinch-zoom | manipulation`. A direction is
+ *  its axis here, since nothing pans one way only. */
+function parseTouchAction(value: string): '' | 'x' | 'y' | 'xy' | null {
+  const words = value.trim().toLowerCase().split(/\s+/);
+  if (words.length === 1) {
+    if (words[0] === 'auto' || words[0] === 'manipulation') return 'xy';
+    if (words[0] === 'none' || words[0] === 'pinch-zoom') return '';
+  }
+  let x = false;
+  let y = false;
+  let zoom = false;
+  for (const w of words) {
+    if (/^pan-(?:x|left|right)$/.test(w) && !x) x = true;
+    else if (/^pan-(?:y|up|down)$/.test(w) && !y) y = true;
+    else if (w === 'pinch-zoom' && !zoom) zoom = true;
+    else return null;
+  }
+  return x && y ? 'xy' : x ? 'x' : y ? 'y' : null;
 }
