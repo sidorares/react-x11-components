@@ -20,6 +20,7 @@ import type {
   RTCConnectionEvents,
   RTCDataChannelInitLike,
 } from '../../src/html/rtc.js';
+import { codecThreads } from '../../src/html/media-codecs.js';
 import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
 import { WeriftTransports } from '../../src/html/werift-transports.js';
 import type { WTransportsPeer } from '../../src/html/werift-transports.js';
@@ -1096,8 +1097,15 @@ test('Opus flows both ways: a remote track unmutes on its first packet, and its 
     var out = [...sent.values()].find(function (x) { return x.type === 'outbound-rtp'; });
     log('outbound', !!out && out.packetsSent > 0, out && out.kind, out && out.mid,
       [...sent.values()].some(function (x) { return x.type === 'transport'; }));
-    var got = await r2.getStats();
-    var inb = [...got.values()].find(function (x) { return x.type === 'inbound-rtp'; });
+    // what is decoded is counted as it is decoded, which on the codecs'
+    // thread is a round trip after the packet arrived
+    var got, inb;
+    for (var tries = 0; ; tries++) {
+      got = await r2.getStats();
+      inb = [...got.values()].find(function (x) { return x.type === 'inbound-rtp'; });
+      if ((inb && inb.totalSamplesReceived > 0) || tries >= 100) break;
+      await new Promise(function (r) { setTimeout(r, 20); });
+    }
     log('inbound', !!inb && inb.packetsReceived > 0, inb && inb.trackIdentifier === remote.id,
       [...got.values()].some(function (x) { return x.type === 'outbound-rtp'; }));
     var all = await pc2.getStats();
@@ -1220,6 +1228,8 @@ test('an offer the page changed before it set it, as Meet does with simulcast an
 });
 
 test('VP8 flows from a canvas into a remote <video>, which loads its metadata at the canvas’s size and plays', async () => {
+  assert.equal(codecThreads.running, 0, 'no codec left open by a test before');
+  const started = codecThreads.started;
   const logs = await run(`
     ${CALL}
     var canvas = document.createElement('canvas');
@@ -1276,6 +1286,15 @@ test('VP8 flows from a canvas into a remote <video>, which loads its metadata at
   ]) {
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
+  // encoded and decoded on the codecs' thread, not the page's, which ends
+  // with the codecs the connections closed
+  assert.equal(codecThreads.pageThread, false);
+  assert.equal(codecThreads.started, started + 1);
+  const end = Date.now() + 2000;
+  while (codecThreads.running && Date.now() < end) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.equal(codecThreads.running, 0, 'the thread ends with the call');
 });
 
 test('a disabled track sends black VP8 frames and silent Opus, and an ended one sends nothing, while a clone of each keeps its source alive', async () => {

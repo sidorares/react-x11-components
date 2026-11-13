@@ -5352,6 +5352,18 @@ list.
   both clone walkers with its data walked as any buffer is, so two frames
   over one buffer share it again; it refuses storage, which is what
   `serializeClone` with no transfer is.
+- **A connection's codecs run on a thread of their own, which ends with
+  the last of them** (`media-codecs.ts`, `media-codec-thread.ts`): libav.js
+  there, its codecs by number, the page's thread posting a frame and
+  awaiting what it came to. So **anything that makes a codec closes the one
+  it no longer wants, one still being made included**, or the thread is
+  never ended: a sender stopped while its Opus encoder was on its way kept
+  the encoder that came, for good, which on the page's thread had been made
+  too soon to show. What a codec is handed is copied before it is moved,
+  since a source's frame is read by its other readers until the next, and
+  what comes back was made on the thread and is moved. Where no thread can
+  be made the codecs run on the page's thread (`codecThreads.pageThread`),
+  which is the same code, so the two come to the same bytes.
 - **A transceiver's header extensions are werift's transceiver's
   `headerExtensions`, written before each offer and answer** (`forOffer`,
   `forAnswer` in `werift.ts`): werift offers all it is configured with and
