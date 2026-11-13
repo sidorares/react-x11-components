@@ -13,6 +13,7 @@ import {
   childrenOf,
   flatChildrenOf,
   isElement,
+  namespaceOf,
   tagOf,
 } from './dom.js';
 import { controlValue, inputType, typedText } from './form.js';
@@ -67,7 +68,13 @@ function heldDirection(el: Element): Direction | null {
       continue;
     }
     if (!isElement(node)) continue;
-    if (node !== el && (PASSED_OVER.has(tagOf(node)) || saysDirection(node))) {
+    // HTML's: an SVG `<style>` or `<script>` holds text like any element
+    if (
+      node !== el &&
+      ((PASSED_OVER.has(tagOf(node)) &&
+        namespaceOf(node) === 'http://www.w3.org/1999/xhtml') ||
+        saysDirection(node))
+    ) {
       continue;
     }
     const kids =

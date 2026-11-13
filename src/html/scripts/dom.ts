@@ -104,6 +104,7 @@ export function installDom(
   encodedTransform: typeof installEncodedTransform,
   textTracksApi: typeof installTextTracks,
   namedAccess: boolean,
+  inWorker: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
   // this one's on its way up the stack
@@ -301,6 +302,8 @@ export function installDom(
     'closest',
     'parsedForm',
     'named',
+    'docNames',
+    'lastModified',
     'byId',
     'byTag',
     'byTagNS',
@@ -1275,6 +1278,14 @@ export function installDom(
       }
       return dispatch(this, event);
     }
+  }
+  // a Web IDL operation is enumerable (3.7.7), where a class's method is not
+  for (const name of [
+    'addEventListener',
+    'removeEventListener',
+    'dispatchEvent',
+  ]) {
+    Object.defineProperty(EventTarget.prototype, name, { enumerable: true });
   }
   /** The events a pointer's moves make, which the host goes on telling
    *  only once a page listens for one (`movesHeard`). */
@@ -5994,6 +6005,15 @@ export function installDom(
 
   const wrappers = new Map<number, Any>();
 
+  /** The elements an element's ARIA references were set to (HTML 2.6.1,
+   *  "explicitly set attr-elements"), by the element and the attribute. */
+  const ariaExplicit = new WeakMap<object, Map<string, Any>>();
+  /** The element's content attribute `n` is set or taken away by other than
+   *  the reflecting setter: what was set explicitly goes. */
+  const ariaReferenceChanged = (el: Any, n: string): void => {
+    ariaExplicit.get(el)?.delete(n);
+  };
+
   /**
    * Whether this realm has had a canvas, an element's or an
    * `OffscreenCanvas`, and the media elements whose video source is a
@@ -6020,6 +6040,107 @@ export function installDom(
     canvasSeen = true;
     for (const ask of streamVideos) keepStreamFrames(ask);
   }
+
+  /**
+   * A document's named properties (HTML 3.1.5): its named `embed`s,
+   * `form`s, `iframe`s, `img`s and `object`s, read from the host once a
+   * list would read again (`attrEpoch`), and the collection each name with
+   * more than one element hands out, the same one while it does.
+   */
+  const DOC_NAMES = new WeakMap<
+    object,
+    { at: number; names: Map<string, number[]>; lists: Map<string, Any> }
+  >();
+  const docNamesOf = (doc: Any): Map<string, number[]> => {
+    let state = DOC_NAMES.get(doc);
+    if (!state) {
+      state = { at: -1, names: new Map(), lists: new Map() };
+      DOC_NAMES.set(doc, state);
+    }
+    if (state.at !== attrEpoch) {
+      const names = new Map<string, number[]>();
+      const answer = String(call('docNames', doc._id));
+      if (answer) {
+        for (const entry of answer.split('\u0002')) {
+          const cut = entry.indexOf('\u0001');
+          names.set(entry.slice(0, cut), idList(entry.slice(cut + 1)));
+        }
+      }
+      state.names = names;
+      state.at = attrEpoch;
+    }
+    return state.names;
+  };
+  const { get: docGet, has: docHas } = Reflect;
+  const docOwn = Reflect.getOwnPropertyDescriptor;
+  const docKeys = Reflect.ownKeys;
+  /** What `name` names on a document, where nothing of its own or up its
+   *  prototypes goes by it: a document's named properties shadow none of
+   *  its members (WPT's `nameditem-no-shadowing.tentative.html`, as the
+   *  browsers have it), so a page that names an `<img>` `forms` still has
+   *  `document.forms`. */
+  const docNamed = (doc: Any, name: string): Any => {
+    if (docHas(doc, name)) return undefined;
+    const ids = docNamesOf(doc).get(name);
+    if (!ids) return undefined;
+    if (ids.length === 1) {
+      const el = wrap(ids[0]);
+      // an iframe alone is its window (HTML 3.1.5, step 2)
+      if (el.localName === 'iframe') return el.contentWindow ?? el;
+      return el;
+    }
+    const lists = DOC_NAMES.get(doc)!.lists;
+    let made = lists.get(name);
+    if (!made) {
+      made = liveCollection(
+        () => (docNamesOf(doc).get(name) ?? []).map(wrap),
+        true,
+      );
+      lists.set(name, made);
+    }
+    return made;
+  };
+  /** A document is a legacy platform object with named properties (Web IDL
+   *  3.9), which only a proxy over it makes, and `wrap` hands out the
+   *  proxy. They are unenumerable (`[LegacyUnenumerableNamedProperties]`)
+   *  and in `Object.getOwnPropertyNames`. Nothing here runs for a member a
+   *  document has, so a read of one costs a trap, and a name that begins
+   *  with `_` is the facade's, whatever a page names an `<img>`. */
+  const DOC_PROXY: ProxyHandler<Any> = {
+    get(target: Any, key: string | symbol, receiver: Any): Any {
+      const value = docGet(target, key, receiver);
+      // the facade's own fields begin with `_`, and one it reads that a
+      // document has not got yet costs no op
+      if (value !== undefined || typeof key !== 'string' || key[0] === '_') {
+        return value;
+      }
+      const named = docNamed(target, key);
+      return named === undefined ? value : named;
+    },
+    has(target: Any, key: string | symbol): boolean {
+      return (
+        docHas(target, key) ||
+        (typeof key === 'string' && docNamesOf(target).has(key))
+      );
+    },
+    getOwnPropertyDescriptor(target: Any, key: string | symbol): Any {
+      const own = docOwn(target, key);
+      if (own || typeof key !== 'string') return own;
+      const value = docNamed(target, key);
+      return value === undefined
+        ? undefined
+        : { value, writable: false, enumerable: false, configurable: true };
+    },
+    ownKeys(target: Any): (string | symbol)[] {
+      const own = docKeys(target);
+      const names = [...docNamesOf(target).keys()].filter(
+        (name) => !docHas(target, name),
+      );
+      if (!names.length) return own;
+      const seen = new Set(names);
+      return [...names, ...own.filter((key) => !seen.has(key as string))];
+    },
+  };
 
   /** The wrapper of a node id, made the first time it is asked for. */
   const wrap = (id: number): Any => {
@@ -6085,6 +6206,7 @@ export function installDom(
       node._unloadCounter = 0;
       node._leaveChecked = false;
       node._unloaded = false;
+      node = new Proxy(node, DOC_PROXY);
     }
     wrappers.set(id, node);
     return node;
@@ -7864,6 +7986,7 @@ export function installDom(
       }
       // before it is set, so that a handler finds the attribute it replaces
       if (n.startsWith('on')) handlerAttributeChanged(this, n.slice(2), true);
+      if (n.startsWith('aria-')) ariaReferenceChanged(this, n);
       const asked = call('setAttr', this._id, n, str(value));
       // a frame of this realm's sent somewhere by its `src` or `srcdoc`,
       // whose window hears it first (`_attributeNavigation`)
@@ -7907,6 +8030,7 @@ export function installDom(
         handlerAttributeChanged(this, n.slice(2), false);
       }
       if (n === 'nonce') nonces.delete(this);
+      if (n.startsWith('aria-')) ariaReferenceChanged(this, n);
       call('delAttr', this._id, n);
     }
     removeAttributeNS(ns: Any, name: Any): void {
@@ -8544,6 +8668,136 @@ export function installDom(
         if (v === null || v === undefined) this.removeAttribute(attr);
         else this.setAttribute(attr, v);
       },
+      configurable: true,
+    });
+  }
+
+  // ARIA's element references (HTML 2.6.1, "reflecting content attributes
+  // in IDL attributes", `Element?` and `FrozenArray<Element>?`): what a page
+  // set explicitly, kept by the element and the attribute, until the content
+  // attribute is set or taken away by anything else (`ariaReferenceChanged`);
+  // and where nothing was set, the elements the attribute's IDs name in the
+  // element's own tree.
+  /** What each `FrozenArray` getter handed out last, so that a page reads
+   *  the same array while what it holds is the same. */
+  const ariaFrozen = new WeakMap<object, Map<string, readonly Any[]>>();
+  const rootOfNode = (node: Any): Any => Node.prototype.getRootNode.call(node);
+  /** Whether `target` is a descendant of one of `el`'s shadow-including
+   *  ancestors: in `el`'s tree, or in a tree a shadow host of it is in. */
+  const ariaInScope = (el: Any, target: Any): boolean => {
+    if (!(target instanceof Element)) return false;
+    const there = rootOfNode(target);
+    if (there === target) return false;
+    for (let root = rootOfNode(el); ;) {
+      if (root === there) return root !== el;
+      if (!(root instanceof ShadowRoot)) return false;
+      root = rootOfNode(root.host);
+    }
+  };
+  /** The first element in tree order with the ID `id` whose root is
+   *  `el`'s. */
+  const ariaById = (el: Any, id: string): Any => {
+    const root = rootOfNode(el);
+    if (root instanceof Element && root.id === id) return root;
+    return wrap(Number(call('byId', id, root._id)));
+  };
+  const ARIA_ELEMENT_ERROR = (name: string) =>
+    new TypeError(
+      `Failed to set the '${name}' property on 'Element': The provided value is not of type 'Element'.`,
+    );
+  Object.defineProperty(Element.prototype, 'ariaActiveDescendantElement', {
+    get(this: Any): Any {
+      const set = ariaExplicit.get(this)?.get('aria-activedescendant');
+      if (set !== undefined) return ariaInScope(this, set) ? set : null;
+      const value = this.getAttribute('aria-activedescendant');
+      return value === null ? null : ariaById(this, value);
+    },
+    set(this: Any, v: Any) {
+      if (v === null || v === undefined) {
+        ariaExplicit.get(this)?.delete('aria-activedescendant');
+        this.removeAttribute('aria-activedescendant');
+        return;
+      }
+      if (!(v instanceof Element)) {
+        throw ARIA_ELEMENT_ERROR('ariaActiveDescendantElement');
+      }
+      this.setAttribute('aria-activedescendant', '');
+      let held = ariaExplicit.get(this);
+      if (!held) ariaExplicit.set(this, (held = new Map()));
+      held.set('aria-activedescendant', v);
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  for (const name of [
+    'ariaControlsElements',
+    'ariaDescribedByElements',
+    'ariaDetailsElements',
+    'ariaErrorMessageElements',
+    'ariaFlowToElements',
+    'ariaLabelledByElements',
+    'ariaOwnsElements',
+  ]) {
+    const attr = `aria-${name.slice(4, -8).toLowerCase()}`;
+    Object.defineProperty(Element.prototype, name, {
+      get(this: Any): Any {
+        let elements: Any[] | null;
+        const set = ariaExplicit.get(this)?.get(attr);
+        if (set !== undefined) {
+          elements = set.filter((el: Any) => ariaInScope(this, el));
+        } else {
+          const value = this.getAttribute(attr);
+          if (value === null) elements = null;
+          else {
+            elements = [];
+            for (const id of value.split(/[\t\n\f\r ]+/)) {
+              if (!id) continue;
+              const found = ariaById(this, id);
+              if (found) elements.push(found);
+            }
+          }
+        }
+        let cache = ariaFrozen.get(this);
+        if (!cache) ariaFrozen.set(this, (cache = new Map()));
+        const last = cache.get(attr);
+        if (elements === null) {
+          cache.delete(attr);
+          return null;
+        }
+        if (
+          last &&
+          last.length === elements.length &&
+          last.every((el, i) => el === elements![i])
+        ) {
+          return last;
+        }
+        const frozen = Object.freeze(elements);
+        cache.set(attr, frozen);
+        return frozen;
+      },
+      set(this: Any, v: Any) {
+        if (v === null || v === undefined) {
+          ariaExplicit.get(this)?.delete(attr);
+          this.removeAttribute(attr);
+          return;
+        }
+        // a `sequence<Element>` (Web IDL 3.2.20): an iterable, each an element
+        if (typeof v !== 'object' || typeof v[Symbol.iterator] !== 'function') {
+          throw new TypeError(
+            `Failed to set the '${name}' property on 'Element': The provided value cannot be converted to a sequence.`,
+          );
+        }
+        const elements: Any[] = [];
+        for (const el of v) {
+          if (!(el instanceof Element)) throw ARIA_ELEMENT_ERROR(name);
+          elements.push(el);
+        }
+        this.setAttribute(attr, '');
+        let held = ariaExplicit.get(this);
+        if (!held) ariaExplicit.set(this, (held = new Map()));
+        held.set(attr, elements);
+      },
+      enumerable: true,
       configurable: true,
     });
   }
@@ -19534,6 +19788,14 @@ export function installDom(
     get readyState(): string {
       return this._ready;
     }
+    /** When the document was last modified, in local time as
+     *  `MM/DD/YYYY hh:mm:ss` (HTML 3.1.2). */
+    get lastModified(): string {
+      const told = Number(call('lastModified', this._id));
+      const at = new Date(told >= 0 ? told : Date.now());
+      const two = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+      return `${two(at.getMonth() + 1)}/${two(at.getDate())}/${at.getFullYear()} ${two(at.getHours())}:${two(at.getMinutes())}:${two(at.getSeconds())}`;
+    }
     /** The sheets a page constructed and adopted, which `<Html>` applies
      *  after the document's own, as CSSOM orders them: an array a page
      *  may set whole or edit in place, as Chrome's is. */
@@ -19683,8 +19945,13 @@ export function installDom(
       );
     }
     get images(): Any {
+      // HTML's `<img>`s alone, not another namespace's of the name
       return heldList(this, 'images', () =>
-        liveCollection(() => wrapAll(call('byTag', this._id, 'img'))),
+        liveCollection(() =>
+          wrapAll(call('byTag', this._id, 'img')).filter(
+            (el) => el.namespaceURI === HTML_NS,
+          ),
+        ),
       );
     }
     /** Its `<embed>`s, as `plugins` lists them too (HTML 3.1.4). */
@@ -29416,11 +29683,22 @@ export function installDom(
     get length(): number {
       return itemsOf(listState(this)).length;
     }
-    item(index: Any): Any {
-      return itemsOf(listState(this))[Number(index) >>> 0] ?? null;
+    // each takes one argument it cannot do without (Web IDL 3.7.7)
+    item(...args: Any[]): Any {
+      if (!args.length) {
+        throw new TypeError(
+          "Failed to execute 'item' on 'DOMStringList': 1 argument required, but only 0 present.",
+        );
+      }
+      return itemsOf(listState(this))[Number(args[0]) >>> 0] ?? null;
     }
-    contains(name: Any): boolean {
-      return itemsOf(listState(this)).includes(str(name));
+    contains(...args: Any[]): boolean {
+      if (!args.length) {
+        throw new TypeError(
+          "Failed to execute 'contains' on 'DOMStringList': 1 argument required, but only 0 present.",
+        );
+      }
+      return itemsOf(listState(this)).includes(str(args[0]));
     }
   }
   Object.defineProperty(DOMStringList.prototype, Symbol.iterator, {
@@ -39348,12 +39626,27 @@ export function installDom(
 
   // --- the global ------------------------------------------------------------------
 
+  /** A property of the global: an interface or a namespace, which Web IDL
+   *  has unenumerable, or one of the window's operations, which it has
+   *  enumerable (Web IDL 3.7.7), told apart by the case they are named in. */
   const define = (name: string, value: Any): void => {
     Object.defineProperty(G, name, {
       value,
       writable: true,
       configurable: true,
-      enumerable: false,
+      enumerable:
+        typeof value === 'function' &&
+        /^[a-z]/.test(name) &&
+        !name.startsWith('webkit'),
+    });
+  };
+  /** A readonly attribute of the window, as an accessor (Web IDL 3.7.6). */
+  const readonlyAttribute = (name: string, get: () => Any): void => {
+    Object.defineProperty(G, name, {
+      get,
+      set: undefined,
+      configurable: true,
+      enumerable: true,
     });
   };
   /** A window attribute, `[Replaceable]` where HTML says so: what a page
@@ -39364,7 +39657,9 @@ export function installDom(
     const replaceable =
       name !== 'closed' &&
       name !== 'isSecureContext' &&
-      name !== 'crossOriginIsolated';
+      name !== 'crossOriginIsolated' &&
+      name !== 'localStorage' &&
+      name !== 'sessionStorage';
     Object.defineProperty(G, name, {
       get,
       ...(replaceable && {
@@ -39377,8 +39672,9 @@ export function installDom(
           });
         },
       }),
+      ...(!replaceable && { set: undefined }),
       configurable: true,
-      enumerable: false,
+      enumerable: true,
     });
   };
 
@@ -39847,14 +40143,30 @@ export function installDom(
     define(name, value);
   }
 
-  define('window', G);
-  define('self', G);
-  define('top', G);
-  define('parent', G);
-  define('frames', G);
+  // `window`, `document`, `location` and `top` are `[LegacyUnforgeable]`,
+  // accessors of the window's own that no page redefines (Web IDL 3.7.6), and
+  // `self`, `frames` and `parent` `[Replaceable]` ones; `top`, `parent` and
+  // `frameElement` read what linking this realm to its parent's set
+  let topWindow: Any = G;
+  let parentWindow: Any = G;
+  let frameElementNow: () => Any = () => null;
+  const unforgeable = (name: string, get: () => Any): void => {
+    Object.defineProperty(G, name, {
+      get,
+      set: undefined,
+      // a worker's global gives them up as it becomes one
+      configurable: inWorker,
+      enumerable: true,
+    });
+  };
+  unforgeable('window', () => G);
+  getter('self', () => G);
+  unforgeable('top', () => topWindow);
+  getter('parent', () => parentWindow);
+  getter('frames', () => G);
   define('opener', null);
-  define('frameElement', null);
-  define('document', document);
+  readonlyAttribute('frameElement', () => frameElementNow());
+  unforgeable('document', () => document);
   // an address assigned to it is a navigation, as `location.href = …` is:
   // a data property took the string in place of the location, and every
   // read of it after was the string's
@@ -39866,9 +40178,9 @@ export function installDom(
     configurable: false,
     enumerable: true,
   });
-  define('history', history);
+  readonlyAttribute('history', () => history);
   define('navigation', navigation);
-  define('navigator', navigator);
+  readonlyAttribute('navigator', () => navigator);
   /** What only a secure context has, which a worker asks again of its own
    *  address (`[SecureContext]`, Web IDL 3.3.17). */
   const secureGlobals = (secure: boolean): void => {
@@ -40159,7 +40471,7 @@ export function installDom(
       return { timeOrigin: this.timeOrigin };
     },
   });
-  define('screen', {
+  const screenObject = {
     get width() {
       return viewport().width;
     },
@@ -40177,7 +40489,18 @@ export function installDom(
     get orientation() {
       return screenOrientation;
     },
+  };
+  getter('screen', () => screenObject);
+  // HTML 16.3, obsolete: an `External` whose two operations do nothing
+  const external = {
+    AddSearchProvider(): void {},
+    IsSearchProviderInstalled(): void {},
+  };
+  Object.defineProperty(external, Symbol.toStringTag, {
+    value: 'External',
+    configurable: true,
   });
+  getter('external', () => external);
   // The interfaces of the window's own objects, which a page asks
   // `instanceof` of and reads prototypes from — mazda.com.au's scripts ask
   // for `Location` — each object made the one instance of its own.
@@ -40188,7 +40511,7 @@ export function installDom(
   for (const [name, object] of [
     ['Location', location],
     ['Navigator', navigator],
-    ['Screen', G.screen],
+    ['Screen', screenObject],
   ] as [string, Any][]) {
     const Interface = { [name]: class {} }[name];
     Object.defineProperty(Interface.prototype, Symbol.toStringTag, {
@@ -40225,7 +40548,7 @@ export function installDom(
       WINDOWS?.named(windowName);
     },
     configurable: true,
-    enumerable: false,
+    enumerable: true,
   });
   Object.defineProperty(G, 'status', {
     get: () => windowStatus,
@@ -40233,7 +40556,7 @@ export function installDom(
       windowStatus = str(v);
     },
     configurable: true,
-    enumerable: false,
+    enumerable: true,
   });
   getter('closed', () => WINDOWS?.closed() ?? false);
   // the document's frames, which is what `length` counts
@@ -40466,6 +40789,16 @@ export function installDom(
   define('resizeTo', (width: Any, height: Any) => {
     resizeWindow(Number(width) || 0, Number(height) || 0);
   });
+  // a window is not moved: what a page's features asked for is where it is
+  // (CSSOM View 4, "moveTo", which a browser declines outside a popup)
+  define('moveTo', (x: Any, y: Any) => {
+    void x;
+    void y;
+  });
+  define('moveBy', (x: Any, y: Any) => {
+    void x;
+    void y;
+  });
   define('resizeBy', (dx: Any, dy: Any) => {
     const at = windowSize ?? [viewport().width, viewport().height];
     resizeWindow(at[0] + (Number(dx) || 0), at[1] + (Number(dy) || 0));
@@ -40590,6 +40923,11 @@ export function installDom(
     'pagehide',
     'online',
     'offline',
+    'afterprint',
+    'beforeprint',
+    'storage',
+    'close',
+    'invalid',
   ]) {
     Object.defineProperty(G, `on${type}`, windowHandler(type));
     windowHandlerTypes.add(type);
@@ -42659,12 +42997,9 @@ export function installDom(
       );
       proxiedFrames.set(window, null);
       parentLink = { global: null, window, frame };
-      define('parent', window);
-      define('top', window);
-      Object.defineProperty(G, 'frameElement', {
-        get: () => null,
-        configurable: true,
-      });
+      parentWindow = window;
+      topWindow = window;
+      frameElementNow = () => null;
       return true;
     }
     const global = handed();
@@ -42691,12 +43026,9 @@ export function installDom(
     proxiedFrames.set(window, null);
     parentLink = { global, window, frame };
     const top = Reflect.get(global, 'top', global);
-    define('parent', window);
-    define('top', top === global ? window : top);
-    Object.defineProperty(G, 'frameElement', {
-      get: () => global.__frameElement(frame),
-      configurable: true,
-    });
+    parentWindow = window;
+    topWindow = top === global ? window : top;
+    frameElementNow = () => global.__frameElement(frame);
     return true;
   });
   /** A message of another realm's told here, as a task of its own: `from`
@@ -43170,6 +43502,10 @@ export function installDom(
       if (location && typeof location === 'object') markChain(location, 8);
     } catch {
       /* no location in this realm */
+    }
+    // and the window's other objects behind its accessors, as `location`
+    for (const held of [navigator, history, screenObject, external]) {
+      markChain(held, 8);
     }
     // and the interfaces no global names, reached through a getter alone:
     // `document.fonts`'s, and the faces it hands over

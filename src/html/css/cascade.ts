@@ -11112,23 +11112,27 @@ const PSEUDOS = {
   // css-select's, but its ranges and tags lower-cased as ASCII has it, and
   // no other script (CSS 2.1 4.1.3): Unicode's took `:lang(\u212Al)`, a
   // Kelvin sign for the K, for `:lang(kl)`
-  lang: (el: Element, code: string | null): boolean => {
-    const ranges = (code ?? '')
-      .split(',')
-      .map((range) => range.trim().replace(/^['"]|['"]$/g, ''))
-      .filter((range) => range.length > 0)
-      .map((range) => asciiLower(range).split('-'));
-    const value = languageOf(el);
-    if (!value) return ranges.some((range) => range[0] === '');
-    const tag = asciiLower(value).split('-');
-    return ranges.some((range) => langRangeMatches(tag, range));
-  },
+  lang: (el: Element, code: string | null): boolean => matchesLang(el, code),
 };
 
 /** Whether an element opens and shuts by its `open` attribute: a
  *  `<details>` or a `<dialog>`. */
 function opens(el: Element): boolean {
   return el.name === 'details' || el.name === 'dialog';
+}
+
+/** Whether an element's language is in one of `:lang()`'s ranges (CSS
+ *  Selectors 4, 7.2): the cascade's and a page's query's alike. */
+export function matchesLang(el: Element, code: string | null): boolean {
+  const ranges = (code ?? '')
+    .split(',')
+    .map((range) => range.trim().replace(/^['"]|['"]$/g, ''))
+    .filter((range) => range.length > 0)
+    .map((range) => asciiLower(range).split('-'));
+  const value = languageOf(el);
+  if (!value) return ranges.some((range) => range[0] === '');
+  const tag = asciiLower(value).split('-');
+  return ranges.some((range) => langRangeMatches(tag, range));
 }
 
 /**

@@ -163,6 +163,10 @@ export interface EngineOptions {
   /** While frozen, more is waiting than a document kept to be shown again
    *  should hold (`HELD_MAX`): told once, for the host to let it go. */
   overflow?(): void;
+  /** Whether the context is a worker's, whose global loses a window's
+   *  members (`__becomeWorker`): a window's `[LegacyUnforgeable]` ones are
+   *  made so only where it is not. */
+  worker?: boolean;
 }
 
 /** `vm.SourceTextModule`, where the runtime has it: Bun always, Node behind
@@ -341,9 +345,11 @@ const INSTALL = `(function () {
   const textTracks = (${installTextTracks.toString()});
   const bridge = globalThis.__bridge;
   const named = globalThis.__named === true;
+  const worker = globalThis.__worker === true;
   delete globalThis.__bridge;
   delete globalThis.__named;
-  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, svgDom, webcrypto, transfers, clipboards, notifying, windowing, serviceWorkers, cacheStorage, uiEvents, pointers, editing, encoded, textTracks, named);
+  delete globalThis.__worker;
+  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, svgDom, webcrypto, transfers, clipboards, notifying, windowing, serviceWorkers, cacheStorage, uiEvents, pointers, editing, encoded, textTracks, named, worker);
 })()`;
 
 /**
@@ -737,6 +743,8 @@ export class ScriptEngine {
     // have its named properties
     (this._context as Record<string, unknown>).__bridge = this._bridge(bridge);
     (this._context as Record<string, unknown>).__named = namedAccessWorks();
+    (this._context as Record<string, unknown>).__worker =
+      this._options.worker === true;
     // under a name of its own, which the page's stacks leave out
     // (`lockStacks`)
     run(INSTALL, FACADE);
