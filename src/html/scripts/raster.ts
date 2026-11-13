@@ -113,6 +113,9 @@ export interface StrokeStyle {
   miterLimit: number;
   dash: number[];
   dashOffset: number;
+  /** The transform the stroke is traced under, from the space the width
+   *  and the dashes are in to the bitmap's; none for the bitmap's own. */
+  pen?: Matrix | null;
 }
 
 export interface RasterInstall {
@@ -171,6 +174,20 @@ export interface RasterInstall {
     x: number,
     y: number,
   ): boolean;
+  /** An image's source rectangle drawn into a destination rectangle through
+   *  `m` (HTML 4.12.5.1.14, `drawImage`): a shape like any other, so the
+   *  operator, the clip and the shadow are a fill's. `src` and `dst` are
+   *  `[x, y, w, h]`, each made positive; `smooth` reads it bilinearly,
+   *  clamped to the image's edge, where it would take the nearest pixel. */
+  image(
+    target: Bitmap,
+    source: Bitmap,
+    src: number[],
+    dst: number[],
+    m: Matrix,
+    smooth: boolean,
+    draw: Omit<Draw, 'paint'>,
+  ): number[] | null;
   /** A solid paint of straight RGBA bytes. */
   solid(rgba: number[]): Paint;
   /** A gradient's or a pattern's paint, under the matrix it is drawn
@@ -299,30 +316,46 @@ export function installRaster(
       m: Matrix,
     ): void {
       if (!finite(x, y, w, h)) return;
-      const list = Array.isArray(radii)
-        ? radii
-        : radii === undefined
-          ? [0]
-          : [radii];
+      // `(unrestricted double or DOMPointInit or sequence<…>)`: an iterable
+      // object is a list, any other object one point, the rest a number
+      // (Web IDL 3.2.24); a BigInt is no `double`, and `+` says so
+      const num = (v: unknown): number => +(v as number);
+      const point = (v: Any): [number, number] => {
+        // a dictionary's members in their order: w, x, y, z
+        num(v.w ?? 0);
+        const px = num(v.x ?? 0);
+        const py = num(v.y ?? 0);
+        num(v.z ?? 0);
+        return [px, py];
+      };
+      const item = (v: Any): [number, number] =>
+        v !== null && (typeof v === 'object' || typeof v === 'function')
+          ? point(v)
+          : [num(v), num(v)];
+      const list: [number, number][] =
+        radii === undefined
+          ? [[0, 0]]
+          : radii !== null &&
+              typeof radii === 'object' &&
+              typeof (radii as Any)[Symbol.iterator] === 'function'
+            ? Array.from(radii as Iterable<Any>, item)
+            : [item(radii)];
       if (list.length < 1 || list.length > 4) {
         throw new RangeError(
           `Failed to execute 'roundRect': ${list.length} radii provided. Between one and four radii are necessary.`,
         );
       }
-      const corner = (r: Any): [number, number] => {
-        const pair: [number, number] =
-          r && typeof r === 'object'
-            ? [Number(r.x ?? 0), Number(r.y ?? 0)]
-            : [Number(r), Number(r)];
-        if (pair[0] < 0 || pair[1] < 0) {
+      // a radius of no finite size draws nothing, and a negative one throws
+      for (const [rx, ry] of list) {
+        if (!finite(rx, ry)) return;
+        if (rx < 0 || ry < 0) {
           throw new RangeError(
             "Failed to execute 'roundRect': The radius provided is negative.",
           );
         }
-        return pair;
-      };
-      const r = list.map(corner);
-      const [tl, tr, br, bl] =
+      }
+      const r = list;
+      let [tl, tr, br, bl] =
         r.length === 1
           ? [r[0], r[0], r[0], r[0]]
           : r.length === 2
@@ -330,70 +363,95 @@ export function installRaster(
             : r.length === 3
               ? [r[0], r[1], r[2], r[1]]
               : r;
-      // a box drawn from its far corner is the same box (HTML 4.12.5.1.8)
+      // a box drawn from another corner is the same box, its corners named
+      // from where it starts, and wound the other way where one side runs
+      // back (HTML 4.12.5.1.8)
+      const x0 = x;
+      const y0 = y;
+      const reversed = w < 0 !== h < 0;
       if (w < 0) {
         x += w;
         w = -w;
+        [tl, tr] = [tr, tl];
+        [bl, br] = [br, bl];
       }
       if (h < 0) {
         y += h;
         h = -h;
+        [tl, bl] = [bl, tl];
+        [tr, br] = [br, tr];
       }
-      // radii too large for the box are scaled down together
+      // radii too large for the box are scaled down together; a side whose
+      // two radii are none limits nothing
+      const room = (side: number, a: number, b: number) =>
+        a + b > 0 ? side / (a + b) : Infinity;
       const f = Math.min(
         1,
-        w / (tl[0] + tr[0] || Infinity),
-        w / (bl[0] + br[0] || Infinity),
-        h / (tl[1] + bl[1] || Infinity),
-        h / (tr[1] + br[1] || Infinity),
+        room(w, tl[0], tr[0]),
+        room(w, bl[0], br[0]),
+        room(h, tl[1], bl[1]),
+        room(h, tr[1], br[1]),
       );
       const k = 0.5522847498;
       const [a, b, c, d] = [tl, tr, br, bl].map(
         ([rx, ry]) => [rx * f, ry * f] as [number, number],
       );
-      this.moveTo(x + a[0], y, m);
-      this.lineTo(x + w - b[0], y, m);
-      this.cubicTo(
-        x + w - b[0] + b[0] * k,
-        y,
-        x + w,
-        y + b[1] - b[1] * k,
-        x + w,
-        y + b[1],
-        m,
-      );
-      this.lineTo(x + w, y + h - c[1], m);
-      this.cubicTo(
-        x + w,
-        y + h - c[1] + c[1] * k,
-        x + w - c[0] + c[0] * k,
-        y + h,
-        x + w - c[0],
-        y + h,
-        m,
-      );
-      this.lineTo(x + d[0], y + h, m);
-      this.cubicTo(
-        x + d[0] - d[0] * k,
-        y + h,
-        x,
-        y + h - d[1] + d[1] * k,
-        x,
-        y + h - d[1],
-        m,
-      );
-      this.lineTo(x, y + a[1], m);
-      this.cubicTo(
-        x,
-        y + a[1] - a[1] * k,
-        x + a[0] - a[0] * k,
-        y,
-        x + a[0],
-        y,
-        m,
-      );
+      // the outline clockwise, as segments: each a line and then a corner,
+      // `[x, y]` to end at and the two controls before it
+      type Seg = number[];
+      const segs: Seg[] = [
+        [x + w - b[0], y],
+        [
+          x + w - b[0] + b[0] * k,
+          y,
+          x + w,
+          y + b[1] - b[1] * k,
+          x + w,
+          y + b[1],
+        ],
+        [x + w, y + h - c[1]],
+        [
+          x + w,
+          y + h - c[1] + c[1] * k,
+          x + w - c[0] + c[0] * k,
+          y + h,
+          x + w - c[0],
+          y + h,
+        ],
+        [x + d[0], y + h],
+        [
+          x + d[0] - d[0] * k,
+          y + h,
+          x,
+          y + h - d[1] + d[1] * k,
+          x,
+          y + h - d[1],
+        ],
+        [x, y + a[1]],
+        [x, y + a[1] - a[1] * k, x + a[0] - a[0] * k, y, x + a[0], y],
+      ];
+      const start: [number, number] = [x + a[0], y];
+      if (!reversed) {
+        this.moveTo(start[0], start[1], m);
+        for (const g of segs) {
+          if (g.length === 2) this.lineTo(g[0], g[1], m);
+          else this.cubicTo(g[0], g[1], g[2], g[3], g[4], g[5], m);
+        }
+      } else {
+        // the same outline the other way round: each segment from its end
+        // back to where the one before it ended
+        const ends: [number, number][] = [start];
+        for (const g of segs) ends.push([g[g.length - 2], g[g.length - 1]]);
+        this.moveTo(start[0], start[1], m);
+        for (let i = segs.length - 1; i >= 0; i -= 1) {
+          const g = segs[i];
+          const to = ends[i];
+          if (g.length === 2) this.lineTo(to[0], to[1], m);
+          else this.cubicTo(g[2], g[3], g[0], g[1], to[0], to[1], m);
+        }
+      }
       this.close();
-      this.moveTo(x, y, m);
+      this.moveTo(x0, y0, m);
     }
     ellipse(
       x: number,
@@ -415,14 +473,15 @@ export function installRaster(
       }
       // the sweep, as canvas has it (HTML 4.12.5.1.8): a whole turn or
       // more is a whole turn, and less goes the way it is asked to
+      // which, where the end is the start's way round, is what is left of
+      // a whole turn: `arc(x, y, r, 0, 2π, true)` is a circle, as browsers
+      // draw it (Chromium's `adjustEndAngle`)
       let sweep: number;
       if (!ccw && end - start >= TAU) sweep = TAU;
       else if (ccw && start - end >= TAU) sweep = -TAU;
-      else {
-        sweep = (end - start) % TAU;
-        if (!ccw && sweep < 0) sweep += TAU;
-        if (ccw && sweep > 0) sweep -= TAU;
-      }
+      else if (!ccw && start > end) sweep = TAU - ((start - end) % TAU);
+      else if (ccw && start < end) sweep = -(TAU - ((end - start) % TAU));
+      else sweep = end - start;
       const cos = Math.cos(rotation);
       const sin = Math.sin(rotation);
       const point = (t: number): [number, number] => {
@@ -851,9 +910,48 @@ export function installRaster(
   interface Polyline {
     pts: number[];
     closed: boolean;
+    /** Which way the path goes at its first point and at its last, where a
+     *  curve starts or ends it: a stroke's ends are cut square to these and
+     *  not to the chord flattening made, which a wide pen shows. */
+    head?: number[];
+    tail?: number[];
   }
+  /** The first of some directions that has a length, or null. */
+  const heading = (...d: number[]): number[] | null => {
+    for (let k = 0; k < d.length; k += 2) {
+      if (d[k] || d[k + 1]) return [d[k], d[k + 1]];
+    }
+    return null;
+  };
   const TOLERANCE = 0.25;
-  const flatten = (path: PathData, m: Matrix): Polyline[] => {
+  /** How far a curve's control polygon turns, in radians: no less than
+   *  the curve itself does. */
+  const turnOf = (...p: number[]): number => {
+    let turn = 0;
+    let px = 0;
+    let py = 0;
+    let has = false;
+    for (let k = 2; k < p.length; k += 2) {
+      const dx = p[k] - p[k - 2];
+      const dy = p[k + 1] - p[k - 1];
+      if (!dx && !dy) continue;
+      if (has)
+        turn += Math.abs(Math.atan2(px * dy - py * dx, px * dx + py * dy));
+      px = dx;
+      py = dy;
+      has = true;
+    }
+    return turn;
+  };
+  /** A path's polylines. `maxTurn` bounds how far one segment of a curve
+   *  turns, which a stroke asks for: a wide pen offsets each chord by its
+   *  half width, and a chord that turns as far as the tolerance alone
+   *  allows puts the offset a few pixels out. */
+  const flatten = (
+    path: PathData,
+    m: Matrix,
+    maxTurn = Infinity,
+  ): Polyline[] => {
     const out: Polyline[] = [];
     let cur: Polyline | null = null;
     const c = path.cmds;
@@ -874,15 +972,24 @@ export function installRaster(
         i += 3;
       } else if (op === L) {
         const [px, py] = ap(m, c[i + 1], c[i + 2]);
+        if (px !== x || py !== y) cur!.tail = undefined;
         push(px, py);
         i += 3;
       } else if (op === Q) {
         const [ax, ay] = ap(m, c[i + 1], c[i + 2]);
         const [bx, by] = ap(m, c[i + 3], c[i + 4]);
+        if (cur!.pts.length === 2) {
+          cur!.head = heading(ax - x, ay - y, bx - x, by - y) ?? undefined;
+        }
+        cur!.tail = heading(bx - ax, by - ay, bx - x, by - y) ?? undefined;
         const dd = Math.hypot(x - 2 * ax + bx, y - 2 * ay + by);
         const n = Math.min(
           1000,
-          Math.max(1, Math.ceil(Math.sqrt((0.25 * dd) / TOLERANCE))),
+          Math.max(
+            1,
+            Math.ceil(Math.sqrt((0.25 * dd) / TOLERANCE)),
+            Math.ceil(turnOf(x, y, ax, ay, bx, by) / maxTurn),
+          ),
         );
         const x0 = x;
         const y0 = y;
@@ -899,13 +1006,25 @@ export function installRaster(
         const [ax, ay] = ap(m, c[i + 1], c[i + 2]);
         const [bx, by] = ap(m, c[i + 3], c[i + 4]);
         const [ex, ey] = ap(m, c[i + 5], c[i + 6]);
+        if (cur!.pts.length === 2) {
+          cur!.head =
+            heading(ax - x, ay - y, bx - x, by - y, ex - x, ey - y) ??
+            undefined;
+        }
+        cur!.tail =
+          heading(ex - bx, ey - by, ex - ax, ey - ay, ex - x, ey - y) ??
+          undefined;
         const dd = Math.max(
           Math.hypot(x - 2 * ax + bx, y - 2 * ay + by),
           Math.hypot(ax - 2 * bx + ex, ay - 2 * by + ey),
         );
         const n = Math.min(
           1000,
-          Math.max(1, Math.ceil(Math.sqrt((0.75 * dd) / TOLERANCE))),
+          Math.max(
+            1,
+            Math.ceil(Math.sqrt((0.75 * dd) / TOLERANCE)),
+            Math.ceil(turnOf(x, y, ax, ay, bx, by, ex, ey) / maxTurn),
+          ),
         );
         const x0 = x;
         const y0 = y;
@@ -958,6 +1077,8 @@ export function installRaster(
     evenodd: boolean,
     width: number,
     height: number,
+    left = 0,
+    top = 0,
   ): Coverage | null => {
     // the edges, top to bottom, with which way each goes
     const ex0: number[] = [];
@@ -1000,9 +1121,9 @@ export function installRaster(
       }
     }
     if (!ex0.length) return null;
-    const x0 = Math.max(0, Math.floor(minX));
+    const x0 = Math.max(left, Math.floor(minX));
     const x1 = Math.min(width, Math.ceil(maxX) + 1);
-    const y0 = Math.max(0, Math.floor(minY));
+    const y0 = Math.max(top, Math.floor(minY));
     const y1 = Math.min(height, Math.ceil(maxY));
     if (x1 <= x0 || y1 <= y0) return null;
     const w = x1 - x0;
@@ -1098,18 +1219,67 @@ export function installRaster(
     m: Matrix,
     style: StrokeStyle,
   ): number[][] => {
-    // the pen's half width where the matrix puts it: a turn and a scale
-    // keep it round, and a skew is taken as its area's scale
-    const scale = Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2]));
+    // a pen's stroke is in the space its transform maps from (HTML
+    // 4.12.5.1.5, "trace a path"): the path, flattened where it is drawn,
+    // is taken back through the transform, widened there, and the outline
+    // mapped out again, so a scale that is not the same both ways, or a
+    // skew, draws the pen as it draws everything else
+    const pen = style.pen ?? null;
+    let back: Matrix | null = null;
+    let tol = TOLERANCE;
+    let scale = 1;
+    if (pen) {
+      back = invert(pen);
+      if (!back) return [];
+      const [a, b, c, d] = pen;
+      const sq = a * a + b * b + c * c + d * d;
+      const det = a * d - b * c;
+      const most = Math.sqrt(
+        (sq + Math.sqrt(Math.max(0, sq * sq - 4 * det * det))) / 2,
+      );
+      tol = TOLERANCE / (most || 1);
+    } else {
+      // no pen: the width where the matrix puts it, a skew taken as its
+      // area's scale
+      scale = Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2]));
+    }
     const hw = (style.width * scale) / 2;
     if (!(hw > 0) || !Number.isFinite(hw)) return [];
-    let lines = flatten(path, m);
+    // the half width where the curve is flattened: the bitmap's pixels
+    const hwDrawn = pen ? (hw * TOLERANCE) / tol : hw;
+    let lines = flatten(path, m, (2 * TOLERANCE) / Math.max(hwDrawn, 1));
+    if (back) {
+      for (const line of lines) {
+        const q = line.pts;
+        for (let k = 0; k < q.length; k += 2) {
+          const [ux, uy] = ap(back, q[k], q[k + 1]);
+          q[k] = ux;
+          q[k + 1] = uy;
+        }
+        // a direction takes the transform's linear part alone
+        for (const d of [line.head, line.tail]) {
+          if (!d) continue;
+          const [dx, dy] = d;
+          d[0] = back[0] * dx + back[2] * dy;
+          d[1] = back[1] * dx + back[3] * dy;
+        }
+      }
+    }
     const dash = style.dash.map((d) => d * scale);
     if (dash.length && dash.some((d) => d > 0)) {
       lines = dashed(lines, dash, style.dashOffset * scale);
     }
     const out: number[][] = [];
-    const add = (poly: number[]) => {
+    const add = (raw: number[]) => {
+      let poly = raw;
+      if (pen) {
+        poly = new Array(raw.length);
+        for (let k = 0; k < raw.length; k += 2) {
+          const [dx, dy] = ap(pen, raw[k], raw[k + 1]);
+          poly[k] = dx;
+          poly[k + 1] = dy;
+        }
+      }
       // wound one way: positive area
       let area = 0;
       const n = poly.length / 2;
@@ -1127,10 +1297,7 @@ export function installRaster(
     const circle = (cx: number, cy: number) => {
       const n = Math.max(
         8,
-        Math.min(
-          256,
-          Math.ceil(TAU / Math.acos(Math.max(-1, 1 - TOLERANCE / hw))),
-        ),
+        Math.min(256, Math.ceil(TAU / Math.acos(Math.max(-1, 1 - tol / hw)))),
       );
       const poly: number[] = [];
       for (let k = 0; k < n; k += 1) {
@@ -1161,25 +1328,19 @@ export function installRaster(
         }
       }
       const n = p.length / 2;
-      if (n === 1) {
-        // a subpath of no length draws its caps alone, as a dot or a square
-        if (style.cap === 'round') circle(p[0], p[1]);
-        else if (style.cap === 'square') {
-          add([
-            p[0] - hw,
-            p[1] - hw,
-            p[0] + hw,
-            p[1] - hw,
-            p[0] + hw,
-            p[1] + hw,
-            p[0] - hw,
-            p[1] + hw,
-          ]);
-        }
-        continue;
-      }
-      if (n === 2) closed = false;
+      // a subpath of no length is pruned, caps and all (HTML 4.12.5.1.5,
+      // "zero-length line segments must be pruned before stroking")
+      if (n === 1) continue;
+      // a closed subpath of two points goes there and back, a join at each
+      // end where an open one has caps
       const segs = closed ? n : n - 1;
+      // an open line's ends go the way the curve does there
+      const unit = (d: number[] | undefined) => {
+        const len = d ? Math.hypot(d[0], d[1]) : 0;
+        return d && len ? [d[0] / len, d[1] / len] : null;
+      };
+      const head = closed ? null : unit(line.head);
+      const tail = closed ? null : unit(line.tail);
       const dirs: number[] = [];
       for (let k = 0; k < segs; k += 1) {
         const j = (k + 1) % n;
@@ -1187,15 +1348,25 @@ export function installRaster(
         const dy = p[2 * j + 1] - p[2 * k + 1];
         const len = Math.hypot(dx, dy);
         dirs.push(dx / len, dy / len);
-        const nx = (-dy / len) * hw;
-        const ny = (dx / len) * hw;
+        let nx = (-dy / len) * hw;
+        let ny = (dx / len) * hw;
+        let mx = nx;
+        let my = ny;
+        if (k === 0 && head) {
+          nx = -head[1] * hw;
+          ny = head[0] * hw;
+        }
+        if (k === segs - 1 && tail) {
+          mx = -tail[1] * hw;
+          my = tail[0] * hw;
+        }
         add([
           p[2 * k] + nx,
           p[2 * k + 1] + ny,
-          p[2 * j] + nx,
-          p[2 * j + 1] + ny,
-          p[2 * j] - nx,
-          p[2 * j + 1] - ny,
+          p[2 * j] + mx,
+          p[2 * j + 1] + my,
+          p[2 * j] - mx,
+          p[2 * j + 1] - my,
           p[2 * k] - nx,
           p[2 * k + 1] - ny,
         ]);
@@ -1266,8 +1437,10 @@ export function installRaster(
             ]);
           }
         };
-        cap(p[0], p[1], -dirs[0], -dirs[1]);
-        cap(p[2 * n - 2], p[2 * n - 1], dirs[2 * segs - 2], dirs[2 * segs - 1]);
+        const [hx, hy] = head ?? [dirs[0], dirs[1]];
+        const [tx, ty] = tail ?? [dirs[2 * segs - 2], dirs[2 * segs - 1]];
+        cap(p[0], p[1], -hx, -hy);
+        cap(p[2 * n - 2], p[2 * n - 1], tx, ty);
       }
     }
     return out;
@@ -1362,20 +1535,34 @@ export function installRaster(
       const g = GRADIENTS.get(this);
       if (!g) throw new TypeError('Illegal invocation');
       const o = Number(offset);
+      // a `double`: what is no finite number is Web IDL's to refuse
+      if (!Number.isFinite(o)) {
+        throw new TypeError(
+          "Failed to execute 'addColorStop' on 'CanvasGradient': The provided double value is non-finite.",
+        );
+      }
       if (!(o >= 0 && o <= 1)) {
         throw new DOMException(
           `The provided value (${String(offset)}) is outside the range (0.0, 1.0).`,
           'IndexSizeError',
         );
       }
-      const rgba = colourOf(String(color));
+      // a stop's `currentColor` is black (HTML 4.12.5.1.10)
+      const rgba = colourOf(String(color).replace(/currentcolor/gi, '#000'));
       if (!rgba) {
         throw new DOMException(
           `The value provided ('${String(color)}') could not be parsed as a color.`,
           'SyntaxError',
         );
       }
-      g.stops.push({ offset: o, rgba });
+      // a legacy sRGB colour, which a gradient of nothing else mixes in
+      // sRGB; one stop of any other kind mixes all of it in Oklab (CSS
+      // Color 4, 12.1), as browsers mix a canvas's
+      const text = String(color).trim();
+      const legacy =
+        !/\bnone\b/i.test(text) &&
+        /^(?:#|[a-z]+$|(?:rgba?|hsla?|hwb)\((?![^)]*\bfrom\b))/i.test(text);
+      g.stops.push({ offset: o, rgba, legacy });
       g.stops.sort((a: Any, b: Any) => a.offset - b.offset);
       g.lut = null;
     }
@@ -1387,12 +1574,77 @@ export function installRaster(
   };
   /** A gradient's colours at 1,024 steps, premultiplied, interpolated
    *  unpremultiplied between its stops, as canvas has it. */
+  /** sRGB, 0 to 1, to Oklab and back (Björn Ottosson's matrices). */
+  const toLinear = (c: number) =>
+    c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  const toGamma = (c: number) =>
+    c <= 0.0031308 ? 12.92 * c : 1.055 * Math.cbrt(c) ** (3 / 2.4) - 0.055;
+  const oklabOf = (r: number, g: number, b: number): number[] => {
+    r = toLinear(r);
+    g = toLinear(g);
+    b = toLinear(b);
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    return [
+      0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+      1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+      0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+    ];
+  };
+  const srgbOf = (L: number, a: number, b: number): number[] => {
+    const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+    const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+    const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
+    return [
+      4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+      -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+      -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
+    ].map((c) => Math.min(1, Math.max(0, toGamma(Math.max(0, c)))));
+  };
+  /** A gradient's table mixed in Oklab, its alpha premultiplied there. */
+  const oklabLut = (stops: Any[], lut: Float64Array, N: number): void => {
+    const lab = stops.map((st: Any) => {
+      const [L, a, b] = oklabOf(
+        st.rgba[0] / 255,
+        st.rgba[1] / 255,
+        st.rgba[2] / 255,
+      );
+      const alpha = st.rgba[3] / 255;
+      return [L * alpha, a * alpha, b * alpha, alpha];
+    });
+    for (let i = 0; i < N; i += 1) {
+      const t = i / (N - 1);
+      let k = 0;
+      while (k < stops.length && stops[k].offset <= t) k += 1;
+      const ia = Math.max(0, k - 1);
+      const ib = Math.min(stops.length - 1, k);
+      const span = stops[ib].offset - stops[ia].offset;
+      const f = span > 0 ? (t - stops[ia].offset) / span : 0;
+      const mix = (n: number) => lab[ia][n] + (lab[ib][n] - lab[ia][n]) * f;
+      const alpha = mix(3);
+      if (!(alpha > 0)) {
+        lut[4 * i] = lut[4 * i + 1] = lut[4 * i + 2] = lut[4 * i + 3] = 0;
+        continue;
+      }
+      const [r, g, b] = srgbOf(mix(0) / alpha, mix(1) / alpha, mix(2) / alpha);
+      lut[4 * i] = r * alpha;
+      lut[4 * i + 1] = g * alpha;
+      lut[4 * i + 2] = b * alpha;
+      lut[4 * i + 3] = alpha;
+    }
+  };
   const lutOf = (g: Any): Float64Array | null => {
     if (!g.stops.length) return null;
     if (g.lut) return g.lut;
     const N = 1024;
     const lut = new Float64Array(N * 4);
     const stops = g.stops;
+    if (!stops.every((st: Any) => st.legacy)) {
+      oklabLut(stops, lut, N);
+      g.lut = lut;
+      return lut;
+    }
     for (let i = 0; i < N; i += 1) {
       const t = i / (N - 1);
       let k = 0;
@@ -1421,14 +1673,30 @@ export function installRaster(
       const p = PATTERNS.get(this);
       if (!p) throw new TypeError('Illegal invocation');
       const x = t ?? {};
-      const m = [
-        x.a ?? x.m11 ?? 1,
-        x.b ?? x.m12 ?? 0,
-        x.c ?? x.m21 ?? 0,
-        x.d ?? x.m22 ?? 1,
-        x.e ?? x.m41 ?? 0,
-        x.f ?? x.m42 ?? 0,
-      ].map(Number);
+      // a `DOMMatrix2DInit`: each of `a` to `f` and its `m` name, which
+      // must agree where both are given (Geometry 1, "validate and fixup")
+      const pairs: [string, string, number][] = [
+        ['a', 'm11', 1],
+        ['b', 'm12', 0],
+        ['c', 'm21', 0],
+        ['d', 'm22', 1],
+        ['e', 'm41', 0],
+        ['f', 'm42', 0],
+      ];
+      const m = pairs.map(([short, long, fallback]) => {
+        const s = x[short] === undefined ? undefined : +x[short];
+        const l = x[long] === undefined ? undefined : +x[long];
+        if (
+          s !== undefined &&
+          l !== undefined &&
+          !(s === l || (s !== s && l !== l))
+        ) {
+          throw new TypeError(
+            `Failed to execute 'setTransform' on 'CanvasPattern': The '${short}' property should equal the '${long}' property.`,
+          );
+        }
+        return s ?? l ?? fallback;
+      });
       if (m.every(Number.isFinite)) p.matrix = m;
     }
   }
@@ -1668,10 +1936,12 @@ export function installRaster(
       data[o] = data[o + 1] = data[o + 2] = data[o + 3] = 0;
       return;
     }
-    data[o] = Math.min(255, (rr / ra) * 255 + 0.5);
-    data[o + 1] = Math.min(255, (rg / ra) * 255 + 0.5);
-    data[o + 2] = Math.min(255, (rb / ra) * 255 + 0.5);
-    data[o + 3] = ra * 255 + 0.5;
+    // a `Uint8ClampedArray` rounds what it is given: half a level more
+    // first rounds a value that is a level exactly one up
+    data[o] = (rr / ra) * 255;
+    data[o + 1] = (rg / ra) * 255;
+    data[o + 2] = (rb / ra) * 255;
+    data[o + 3] = ra * 255;
   };
 
   /** How many points a side of each pixel a mask is read at: a mask set
@@ -1688,6 +1958,8 @@ export function installRaster(
     m: Matrix,
     width: number,
     height: number,
+    left = 0,
+    top = 0,
   ): Coverage | null => {
     const [a, b, c, d, e, f] = m;
     const det = a * d - b * c;
@@ -1705,8 +1977,8 @@ export function installRaster(
       b * u0 + d * v1,
       b * u1 + d * v1,
     ];
-    const x0 = Math.max(0, Math.floor(Math.min(...xs) + e));
-    const y0 = Math.max(0, Math.floor(Math.min(...ys) + f));
+    const x0 = Math.max(left, Math.floor(Math.min(...xs) + e));
+    const y0 = Math.max(top, Math.floor(Math.min(...ys) + f));
     const x1 = Math.min(width, Math.ceil(Math.max(...xs) + e));
     const y1 = Math.min(height, Math.ceil(Math.max(...ys) + f));
     if (x1 <= x0 || y1 <= y0) return null;
@@ -1838,6 +2110,33 @@ export function installRaster(
     return { x0, y0, x1, y1, cov };
   };
 
+  /** The rectangle of pixels a shape's coverage is wanted over, `[x0, y0,
+   *  x1, y1]`: the bitmap's, and where the context casts a shadow, as far
+   *  past it as the shadow reaches from, so that a shape drawn off the
+   *  bitmap still casts one onto it (HTML 4.12.5.1.18). */
+  const regionOf = (target: Bitmap, draw: Pick<Draw, 'shadow'>): number[] => {
+    const sh = draw.shadow;
+    const r = [0, 0, target.width, target.height];
+    if (!sh || sh.rgba[3] <= 0) return r;
+    if (sh.blur <= 0 && sh.x === 0 && sh.y === 0) return r;
+    const pad = sh.blur > 0 ? Math.ceil((sh.blur / 2) * 3) : 0;
+    const ox = Math.round(sh.x);
+    const oy = Math.round(sh.y);
+    // far enough for a gigabyte of coverage, and no further
+    const most = 8192;
+    r[0] = Math.max(-most, Math.min(0, -ox - pad));
+    r[1] = Math.max(-most, Math.min(0, -oy - pad));
+    r[2] = Math.min(
+      target.width + most,
+      Math.max(target.width, target.width - ox + pad),
+    );
+    r[3] = Math.min(
+      target.height + most,
+      Math.max(target.height, target.height - oy + pad),
+    );
+    return r;
+  };
+
   /** A shape's coverage painted into a bitmap, its shadow first where the
    *  context draws one: answers the rectangle it changed. */
   const paintCoverage = (
@@ -1881,10 +2180,13 @@ export function installRaster(
     const unbounded = UNBOUNDED.has(draw.op);
     if (!shape && !unbounded) return null;
     const alpha = Math.min(1, Math.max(0, draw.alpha));
-    const x0 = unbounded ? 0 : shape!.x0;
-    const y0 = unbounded ? 0 : shape!.y0;
-    const x1 = unbounded ? width : shape!.x1;
-    const y1 = unbounded ? height : shape!.y1;
+    // the shape may reach past the bitmap, where it was covered for its
+    // shadow's sake
+    const x0 = unbounded ? 0 : Math.max(0, shape!.x0);
+    const y0 = unbounded ? 0 : Math.max(0, shape!.y0);
+    const x1 = unbounded ? width : Math.min(width, shape!.x1);
+    const y1 = unbounded ? height : Math.min(height, shape!.y1);
+    if (!unbounded && (x1 <= x0 || y1 <= y0)) return null;
     const src = new Float64Array(4);
     if (draw.paint.solid) draw.paint.at(0, 0, src);
     const clip = draw.clip;
@@ -1911,6 +2213,53 @@ export function installRaster(
     return [x0, y0, x1, y1];
   };
 
+  /** An image's rectangle composited over a bitmap's at a whole pixel and
+   *  its own size, source-over: `image`'s commonest case, as `blend` would
+   *  have it, pixel for pixel. */
+  const blit = (
+    target: Bitmap,
+    source: Bitmap,
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
+    dx: number,
+    dy: number,
+    alpha: number,
+  ): number[] | null => {
+    const a = Math.min(1, Math.max(0, alpha));
+    const x0 = Math.max(0, dx);
+    const y0 = Math.max(0, dy);
+    const x1 = Math.min(target.width, dx + sw);
+    const y1 = Math.min(target.height, dy + sh);
+    if (x1 <= x0 || y1 <= y0 || !(a > 0)) return null;
+    const out = target.data;
+    const src = source.data;
+    const px = new Float64Array(4);
+    for (let y = y0; y < y1; y += 1) {
+      for (let x = x0; x < x1; x += 1) {
+        const i = ((y - dy + sy) * source.width + (x - dx + sx)) * 4;
+        const sa = src[i + 3];
+        if (!sa) continue;
+        const o = (y * target.width + x) * 4;
+        if (sa === 255 && a === 1) {
+          out[o] = src[i];
+          out[o + 1] = src[i + 1];
+          out[o + 2] = src[i + 2];
+          out[o + 3] = 255;
+          continue;
+        }
+        const k = sa / 255;
+        px[0] = (src[i] / 255) * k;
+        px[1] = (src[i + 1] / 255) * k;
+        px[2] = (src[i + 2] / 255) * k;
+        px[3] = k;
+        blend(out, o, px, a, 'source-over', 1);
+      }
+    }
+    return [x0, y0, x1, y1];
+  };
+
   /** Whether a point is inside polygons by a rule. */
   const inside = (
     polys: number[][],
@@ -1918,6 +2267,27 @@ export function installRaster(
     y: number,
     evenodd: boolean,
   ): boolean => {
+    if (!finite(x, y)) return false;
+    // a point on the outline is inside, as browsers have it
+    for (const p of polys) {
+      const n = p.length / 2;
+      for (let k = 0; k < n; k += 1) {
+        const j = (k + 1) % n;
+        const ax = p[2 * k];
+        const ay = p[2 * k + 1];
+        const bx = p[2 * j];
+        const by = p[2 * j + 1];
+        const dx = bx - ax;
+        const dy = by - ay;
+        const len = dx * dx + dy * dy;
+        if (!len) continue;
+        const t = ((x - ax) * dx + (y - ay) * dy) / len;
+        if (t < 0 || t > 1) continue;
+        const cx = ax + t * dx - x;
+        const cy = ay + t * dy - y;
+        if (cx * cx + cy * cy < 1e-12) return true;
+      }
+    }
     let wind = 0;
     for (const p of polys) {
       const n = p.length / 2;
@@ -1940,25 +2310,18 @@ export function installRaster(
     newPath: () => new Path(),
     pathOf: (p) => (p && typeof p === 'object' ? (PATHS.get(p) ?? null) : null),
     fill(target, path, m, rule, draw) {
-      const shape = cover(
-        fillPolys(path, m),
-        rule === 'evenodd',
-        target.width,
-        target.height,
-      );
+      const [l, t, r, b] = regionOf(target, draw);
+      const shape = cover(fillPolys(path, m), rule === 'evenodd', r, b, l, t);
       return paintCoverage(target, shape, draw);
     },
     stroke(target, path, m, style, draw) {
-      const shape = cover(
-        strokePolys(path, m, style),
-        false,
-        target.width,
-        target.height,
-      );
+      const [l, t, r, b] = regionOf(target, draw);
+      const shape = cover(strokePolys(path, m, style), false, r, b, l, t);
       return paintCoverage(target, shape, draw);
     },
     mask(target, mask, width, ink, m, draw) {
-      const shape = coverMask(mask, width, ink, m, target.width, target.height);
+      const [l, t, r, b] = regionOf(target, draw);
+      const shape = coverMask(mask, width, ink, m, r, b, l, t);
       return paintCoverage(target, shape, draw);
     },
     clipMask(width, height, path, m, rule, was) {
@@ -1984,6 +2347,118 @@ export function installRaster(
     },
     strokeContains(path, m, style, x, y) {
       return inside(strokePolys(path, m, style), x, y, false);
+    },
+    image(target, source, src, dst, m, smooth, draw) {
+      // the source rectangle cut to the image, and the destination with it
+      // (HTML 4.12.5.1.14, step 4): what is past the image draws nothing
+      let [sx, sy, sw, sh] = src;
+      let [dx, dy, dw, dh] = dst;
+      const kx = dw / sw;
+      const ky = dh / sh;
+      if (sx < 0) {
+        dx -= sx * kx;
+        dw += sx * kx;
+        sw += sx;
+        sx = 0;
+      }
+      if (sy < 0) {
+        dy -= sy * ky;
+        dh += sy * ky;
+        sh += sy;
+        sy = 0;
+      }
+      if (sx + sw > source.width) {
+        dw -= (sx + sw - source.width) * kx;
+        sw = source.width - sx;
+      }
+      if (sy + sh > source.height) {
+        dh -= (sy + sh - source.height) * ky;
+        sh = source.height - sy;
+      }
+      // a sprite: drawn at its size, at a whole pixel, over what is there,
+      // with nothing to cut it or cast from it, is a copy a row at a time,
+      // which is every pixel the general path would make
+      if (
+        draw.op === 'source-over' &&
+        !draw.clip &&
+        !(draw.shadow && draw.shadow.rgba[3] > 0) &&
+        m[0] === 1 &&
+        m[1] === 0 &&
+        m[2] === 0 &&
+        m[3] === 1 &&
+        sw === dw &&
+        sh === dh &&
+        Number.isInteger(dx + m[4]) &&
+        Number.isInteger(dy + m[5]) &&
+        Number.isInteger(sx) &&
+        Number.isInteger(sy) &&
+        Number.isInteger(sw) &&
+        Number.isInteger(sh)
+      ) {
+        return blit(
+          target,
+          source,
+          sx,
+          sy,
+          sw,
+          sh,
+          dx + m[4],
+          dy + m[5],
+          draw.alpha,
+        );
+      }
+      const path = new Path();
+      // nothing of the image is left: the shape is none, which an
+      // operator that reaches past it still clears with
+      if (sw > 0 && sh > 0 && dw > 0 && dh > 0) path.rect(dx, dy, dw, dh, m);
+      const back = invert(m);
+      const data = source.data;
+      const W = source.width;
+      const H = source.height;
+      const ux = sw / dw;
+      const uy = sh / dh;
+      const read = (ix: number, iy: number, w: number, out: Float64Array) => {
+        const o = (iy * W + ix) * 4;
+        const a = (data[o + 3] / 255) * w;
+        out[0] += (data[o] / 255) * a;
+        out[1] += (data[o + 1] / 255) * a;
+        out[2] += (data[o + 2] / 255) * a;
+        out[3] += a;
+      };
+      const paint: Paint = {
+        solid: false,
+        at(px, py, out) {
+          out[0] = out[1] = out[2] = out[3] = 0;
+          if (!back) return;
+          const qx = back[0] * px + back[2] * py + back[4];
+          const qy = back[1] * px + back[3] * py + back[5];
+          const u = sx + (qx - dx) * ux;
+          const v = sy + (qy - dy) * uy;
+          if (!Number.isFinite(u) || !Number.isFinite(v)) return;
+          if (!smooth) {
+            const ix = Math.min(W - 1, Math.max(0, Math.floor(u)));
+            const iy = Math.min(H - 1, Math.max(0, Math.floor(v)));
+            read(ix, iy, 1, out);
+            return;
+          }
+          // clamp-to-edge: a point past the image reads its edge
+          const fu = Math.min(W - 0.5, Math.max(0.5, u)) - 0.5;
+          const fv = Math.min(H - 0.5, Math.max(0.5, v)) - 0.5;
+          const x0 = Math.floor(fu);
+          const y0 = Math.floor(fv);
+          const tx = fu - x0;
+          const ty = fv - y0;
+          const x1 = Math.min(W - 1, x0 + 1);
+          const y1 = Math.min(H - 1, y0 + 1);
+          read(x0, y0, (1 - tx) * (1 - ty), out);
+          if (tx) read(x1, y0, tx * (1 - ty), out);
+          if (ty) read(x0, y1, (1 - tx) * ty, out);
+          if (tx && ty) read(x1, y1, tx * ty, out);
+        },
+      };
+      const [l, t, r, b] = regionOf(target, draw);
+      const shape = cover(fillPolys(path, IDENTITY), false, r, b, l, t);
+      return paintCoverage(target, shape, { ...draw, paint });
     },
     solid,
     paintOf,

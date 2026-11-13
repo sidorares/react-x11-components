@@ -938,9 +938,13 @@ test("the page's own image, and one asked for by CORS, leave a canvas its own", 
       const x = document.createElement('canvas').getContext('2d');
       x.drawImage(image, 0, 0);
       read('pixels', () => x.getImageData(0, 0, 1, 1));
+      console.log('drawn', Array.from(x.getImageData(0, 0, 1, 1).data).join(','));
       `,
     );
     assert.equal(await seen(logs, 'pixels'), 'read');
+    // the image's own pixels, which the host hands over for an image that
+    // is the document's to read, and for no other
+    assert.equal(await seen(logs, 'drawn'), '255,0,0,127');
     await cleanup();
   }
 });

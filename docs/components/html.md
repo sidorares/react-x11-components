@@ -1617,7 +1617,31 @@ them, and to another peer the host can reach.
   `OffscreenCanvas`, and only then: a page that previews its camera and
   draws nothing pays nothing for it. A `<video>` that plays a file is the
   platform player's, whose frames never reach JavaScript, and draws
-  nothing; neither does an `<img>` yet.
+  nothing.
+- **`drawImage` is a fill** (`raster.ts`'s `image`): the source rectangle,
+  cut to the image, is painted into the destination rectangle through the
+  transform as a shape like any other, so every compositing operator, the
+  clip, `globalAlpha` and the shadow reach it, and an operator that reaches
+  past it clears what it leaves (WPT's `2d.composite.uncovered`). It reads
+  the image bilinearly, clamped to its edge, where `imageSmoothingEnabled`
+  is on, and its nearest pixel where it is off; a canvas drawn onto itself
+  is read as it was before the draw. An `<img>`'s pixels are the host's
+  decoded raster, for an image of the document's origin or one CORS let
+  through (see "A canvas keeps `origin-clean`"); an SVG image is no raster
+  and draws nothing yet, and one still on its way draws nothing, as HTML
+  has it.
+- **A context's colours are CSS's** (`css/color.ts`, through the host's
+  `color` and `canvasColor` ops): what the cascade refuses a context
+  ignores, `currentColor` is the canvas's `color` as it is set and black
+  where it is in no document, and one that is no legacy sRGB colour, a mix
+  or a relative colour, reads back as CSS serializes it, `color(srgb …)`. A
+  gradient with such a stop mixes in Oklab, as browsers mix one.
+- **A stroke is traced under the transform** (`StrokeStyle.pen`): its path
+  is taken back through the transform, widened by `lineWidth` and dashed
+  there, and the outline drawn through it, so a scale that is not the same
+  both ways or a skew reaches the pen too. A subpath of no length is
+  pruned, caps and all, and an open end is cut square to the curve where it
+  ends.
 - **A canvas is a source on any page** (`captureStream(frameRequestRate)`,
   Media Capture from DOM Elements): a stream of one
   `CanvasCaptureMediaStreamTrack`, its frames the host's copy of the
@@ -3397,9 +3421,11 @@ page asks from, since the facade runs where a page can replace what it calls.
   named; one a redirect took to another origin taints. An `<img>` with a
   `crossorigin` attribute is asked for by CORS, and one whose answer does not
   let the document have it is an `error`, and no image; where the host says
-  nothing of the headers it had, it is drawn, and taints. An `<img>` is drawn
-  as nothing on a canvas in any case, so none of its pixels reach a page: this
-  is what a page is told.
+  nothing of the headers it had, it is drawn, and taints. An `<img>` that taints
+  is drawn as nothing all the same: the page's realm runs the context, so a
+  flag there keeps nothing from a page, and the host hands over the pixels of
+  a CORS-same-origin image alone (the `image` op's `pixels`). Tainting is what
+  a page is told.
 - **Not held to any of this:** a stylesheet's own `crossorigin` (a `<link>`'s
   sheet has no rules a script can read, of any origin); a `<video>`'s, whose
   `crossorigin` is taken at its word; the origin a sandboxed document asks for

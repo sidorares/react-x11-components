@@ -3041,6 +3041,33 @@ export class HtmlViewNode extends Node {
   }
 
   /**
+   * An `<img>`'s pixels as a canvas draws them (HTML 4.12.5.1.14): its
+   * size and its straight RGBA, or null where what it shows is no decoded
+   * raster — still on its way, broken, or a drawing.
+   */
+  imagePixels(
+    el: Element,
+  ): { width: number; height: number; data: Uint8Array } | null {
+    const url = choosesSource(el)
+      ? this._images.chosen(el)?.url
+      : imageUrlOf(el);
+    const image = url
+      ? (this._resources.image(url) as {
+          width?: number;
+          height?: number;
+          data?: Uint8Array;
+        } | null)
+      : null;
+    const data = image?.data;
+    const width = image?.width ?? 0;
+    const height = image?.height ?? 0;
+    if (!data || !width || !height || data.length !== width * height * 4) {
+      return null;
+    }
+    return { width, height, data };
+  }
+
+  /**
    * Ask for every `background-image` the styles name. Known only once the
    * cascade has run, where an `<img>` is known from the markup; the store
    * asks once a URL, so a tree built again asks nothing new. An

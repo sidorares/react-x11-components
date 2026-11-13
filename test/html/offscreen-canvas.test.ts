@@ -88,6 +88,8 @@ test('transferToImageBitmap hands over the bitmap and leaves a clear one, and a 
       'log("taken", Object.prototype.toString.call(bm), bm.width, bm.height, px(x, 0, 0), x.fillStyle);' +
       // drawn on another canvas, scaled
       'var c = document.createElement("canvas"); c.width = 8; c.height = 4; var cx = c.getContext("2d");' +
+      // the nearest pixel, as a smoothed scale blends the edges
+      'cx.imageSmoothingEnabled = false;' +
       'cx.drawImage(bm, 0, 0, 8, 4); log("drawn", px(cx, 1, 1), px(cx, 3, 3), px(cx, 4, 1), bm.width);' +
       // serializable: a clone is a copy, and a transfer gives it up
       'var copy = structuredClone(bm); log("cloned", copy !== bm, copy.width, bm.width);' +
@@ -256,9 +258,9 @@ test('createImageBitmap takes an image once it has come, and refuses one with no
     { [new URL('a.png', PAGE).href]: RED_PNG },
   );
   assert.equal(await p.until('no image|'), 'InvalidStateError');
-  // an image's pixels are the host's, which a 2d context draws as nothing:
-  // its bitmap is transparent, at its size
-  assert.equal(await p.until('image|'), '10|10|true|0,0,0,0');
+  // an image's pixels, which the host hands over for one the document may
+  // read, at its size
+  assert.equal(await p.until('image|'), '10|10|true|255,0,0,255');
 });
 
 test('a transfer moves an OffscreenCanvas and leaves the one it moved detached; one with a context does not move', async () => {

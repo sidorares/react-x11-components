@@ -168,6 +168,8 @@ export function installDom(
       op !== 'computedSvg' &&
       op !== 'editingStyle' &&
       op !== 'colorText' &&
+      op !== 'color' &&
+      op !== 'canvasColor' &&
       op !== 'fontMedium' &&
       op !== 'customProperty' &&
       op !== 'frameDocument' &&
@@ -308,6 +310,7 @@ export function installDom(
     'xpath',
     'xpathPrefixes',
     'color',
+    'canvasColor',
     'supports',
     'rect',
     'svg',
@@ -12479,44 +12482,186 @@ export function installDom(
   // --- <canvas> --------------------------------------------------------------
 
   /** Pixels a page holds: straight RGBA, as a canvas reads them out. */
-  class ImageData {
-    readonly data: Uint8ClampedArray;
-    readonly width: number;
-    readonly height: number;
-    readonly colorSpace = 'srgb';
-    constructor(a: Any, b: Any, c?: Any) {
-      if (a instanceof Uint8ClampedArray) {
-        const width = Number(b) >>> 0;
-        if (!width || a.length % (4 * width)) {
-          throw new DOMException(
-            "Failed to construct 'ImageData': The input data length is not a multiple of (4 * width).",
-            'IndexSizeError',
-          );
-        }
-        const height = a.length / (4 * width);
-        if (c !== undefined && Number(c) >>> 0 !== height) {
-          throw new DOMException(
-            "Failed to construct 'ImageData': The input data length is not equal to (4 * width * height).",
-            'IndexSizeError',
-          );
-        }
-        this.data = a;
-        this.width = width;
-        this.height = height;
-      } else {
-        const width = Math.abs(Math.trunc(Number(a)));
-        const height = Math.abs(Math.trunc(Number(b)));
-        if (!width || !height) {
-          throw new DOMException(
-            `Failed to construct 'ImageData': The source ${width ? 'height' : 'width'} is zero or not a number.`,
-            'IndexSizeError',
-          );
-        }
-        this.data = new Uint8ClampedArray(width * height * 4);
-        this.width = width;
-        this.height = height;
-      }
+  /** What an `ImageData` is made of, kept out of the page's reach: its
+   *  attributes are read-only accessors (HTML 4.12.5.1.15). */
+  const IMAGE_DATA = new WeakMap<
+    object,
+    { data: Any; width: number; height: number; format: string; space: string }
+  >();
+  /** An `unsigned long` as Web IDL converts one with no `[EnforceRange]`:
+   *  what is no finite number is 0, and the rest is taken modulo 2³². */
+  const unsignedLong = (v: Any): number => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.trunc(n) >>> 0 : 0;
+  };
+  /** An `[EnforceRange] long`: what is no finite number, or past a
+   *  `long`'s range, a `TypeError` (Web IDL 3.2.4.9). */
+  const enforcedLong = (v: Any, where: string): number => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) {
+      throw new TypeError(`${where}: Value is not a finite number.`);
     }
+    const t = Math.trunc(n);
+    if (t < -2147483648 || t > 2147483647) {
+      throw new TypeError(`${where}: Value is outside the 'long' value range.`);
+    }
+    return t;
+  };
+  const F16: Any =
+    typeof (globalThis as Any).Float16Array === 'function'
+      ? (globalThis as Any).Float16Array
+      : null;
+  /** An `ImageDataSettings` dictionary's two members, each an enum. */
+  const imageDataSettings = (
+    settings: Any,
+    where: string,
+  ): { format: string | null; space: string } => {
+    if (
+      settings !== undefined &&
+      settings !== null &&
+      typeof settings !== 'object' &&
+      typeof settings !== 'function'
+    ) {
+      throw new TypeError(
+        `${where}: The provided value is not of type 'ImageDataSettings'.`,
+      );
+    }
+    const space = settings?.colorSpace;
+    const format = settings?.pixelFormat;
+    if (space !== undefined && !['srgb', 'display-p3'].includes(str(space))) {
+      throw new TypeError(
+        `${where}: Failed to read the 'colorSpace' property from 'ImageDataSettings': The provided value '${str(space)}' is not a valid enum value of type PredefinedColorSpace.`,
+      );
+    }
+    if (
+      format !== undefined &&
+      !['rgba-unorm8', 'rgba-float16'].includes(str(format))
+    ) {
+      throw new TypeError(
+        `${where}: Failed to read the 'pixelFormat' property from 'ImageDataSettings': The provided value '${str(format)}' is not a valid enum value of type ImageDataPixelFormat.`,
+      );
+    }
+    return {
+      format: format === undefined ? null : str(format),
+      space: space === undefined ? 'srgb' : str(space),
+    };
+  };
+  /** The most pixels an `ImageData` holds: a gigabyte of them. */
+  const IMAGE_DATA_MOST = 2 ** 28;
+  class ImageData {
+    constructor(a: Any, b?: Any, c?: Any, d?: Any) {
+      const where = "Failed to construct 'ImageData'";
+      if (arguments.length < 2) {
+        throw new TypeError(
+          `${where}: 2 arguments required, but only ${arguments.length} present.`,
+        );
+      }
+      const isData =
+        a instanceof Uint8ClampedArray || (F16 !== null && a instanceof F16);
+      if (isData) {
+        // (data, sw, optional sh, optional settings)
+        const settings = imageDataSettings(d, where);
+        const width = unsignedLong(b);
+        const given = c === undefined ? null : unsignedLong(c);
+        const float = F16 !== null && a instanceof F16;
+        // what the settings do not say is `rgba-unorm8`, whatever the data
+        const format = settings.format ?? 'rgba-unorm8';
+        if (float !== (format === 'rgba-float16')) {
+          throw new DOMException(
+            `${where}: The input data type is not compatible with the requested pixel format.`,
+            'InvalidStateError',
+          );
+        }
+        const length = a.length;
+        if (!length || length % 4) {
+          throw new DOMException(
+            `${where}: The input data length is ${length ? 'not a multiple of 4' : 'zero'}.`,
+            'InvalidStateError',
+          );
+        }
+        if (!width) {
+          throw new DOMException(
+            `${where}: The source width is zero or not a number.`,
+            'IndexSizeError',
+          );
+        }
+        if ((length / 4) % width) {
+          throw new DOMException(
+            `${where}: The input data length is not a multiple of (4 * width).`,
+            'IndexSizeError',
+          );
+        }
+        const height = length / 4 / width;
+        if (given !== null && given !== height) {
+          throw new DOMException(
+            `${where}: The input data length is not equal to (4 * width * height).`,
+            'IndexSizeError',
+          );
+        }
+        IMAGE_DATA.set(this, {
+          data: a,
+          width,
+          height,
+          format,
+          space: settings.space,
+        });
+        return;
+      }
+      // (sw, sh, optional settings)
+      const settings = imageDataSettings(c, where);
+      const width = unsignedLong(a);
+      const height = unsignedLong(b);
+      if (!width || !height) {
+        throw new DOMException(
+          `${where}: The source ${width ? 'height' : 'width'} is zero or not a number.`,
+          'IndexSizeError',
+        );
+      }
+      if (width * height > IMAGE_DATA_MOST) {
+        throw new DOMException(
+          `${where}: The requested image size exceeds the supported range.`,
+          'IndexSizeError',
+        );
+      }
+      const format = settings.format ?? 'rgba-unorm8';
+      const data =
+        format === 'rgba-float16' && F16
+          ? new F16(width * height * 4)
+          : new Uint8ClampedArray(width * height * 4);
+      IMAGE_DATA.set(this, {
+        data,
+        width,
+        height,
+        format: F16 ? format : 'rgba-unorm8',
+        space: settings.space,
+      });
+    }
+    get data(): Any {
+      return imageDataOf(this).data;
+    }
+    get width(): number {
+      return imageDataOf(this).width;
+    }
+    get height(): number {
+      return imageDataOf(this).height;
+    }
+    get colorSpace(): string {
+      return imageDataOf(this).space;
+    }
+    get pixelFormat(): string {
+      return imageDataOf(this).format;
+    }
+  }
+  const imageDataOf = (image: Any) => {
+    const slots = IMAGE_DATA.get(image);
+    if (!slots) throw new TypeError('Illegal invocation');
+    return slots;
+  };
+  for (const name of ['data', 'width', 'height', 'colorSpace', 'pixelFormat']) {
+    Object.defineProperty(ImageData.prototype, name, {
+      ...Object.getOwnPropertyDescriptor(ImageData.prototype, name),
+      enumerable: true,
+    });
   }
 
   /** WebGL's interfaces and a canvas's context of it (`webgl.ts`). */
@@ -12583,15 +12728,24 @@ export function installDom(
     const n = parseHtmlInteger(attrValue(canvas, name) ?? '');
     return n !== null && n >= 0 && n <= MAX_LONG ? n : fallback;
   };
-  const newCanvasState = (width: number, height: number): CanvasState => ({
-    width,
-    height,
-    data: new Uint8ClampedArray(width * height * 4),
-    dirty: null,
-    context: null,
-    kind: null,
-    sized: `${width},${height}`,
-  });
+  /** The most pixels a canvas's bitmap holds: a gigabyte of them. One
+   *  sized past it has no bitmap, a canvas of no pixels, as a browser that
+   *  cannot allocate one has (HTML 4.12.5), and its size reads as set. */
+  const CANVAS_MOST = 2 ** 28;
+  const bitmapSize = (width: number, height: number): number[] =>
+    width * height > CANVAS_MOST ? [0, 0] : [width, height];
+  const newCanvasState = (w: number, h: number): CanvasState => {
+    const [width, height] = bitmapSize(w, h);
+    return {
+      width,
+      height,
+      data: new Uint8ClampedArray(width * height * 4),
+      dirty: null,
+      context: null,
+      kind: null,
+      sized: `${w},${h}`,
+    };
+  };
   /** A canvas's bitmap, made anew — cleared — where its size changed; an
    *  `OffscreenCanvas`'s, made as it is first drawn on or read. */
   const canvasState = (canvas: Any): CanvasState => {
@@ -12636,9 +12790,10 @@ export function installDom(
     width: number,
     height: number,
   ): void => {
+    state.sized = `${width},${height}`;
+    [width, height] = bitmapSize(width, height);
     state.width = width;
     state.height = height;
-    state.sized = `${width},${height}`;
     state.data = new Uint8ClampedArray(width * height * 4);
     state.tainted = false;
     if (is2d(state.context)) state.context._reset();
@@ -12803,23 +12958,26 @@ export function installDom(
   const IDENTITY = [1, 0, 0, 1, 0, 0];
 
   /** A colour a page sets on a context as the context reads it back (HTML
-   *  4.12.5.1.6, "serialization of a color"): `#rrggbb` where it is
-   *  opaque, `rgba(r, g, b, a)` where it is not; null where it is none. */
+   *  4.12.5.1.6, "serialization of a color"): `#rrggbb` where it is an
+   *  opaque legacy sRGB colour, `rgba(r, g, b, a)` where it is a
+   *  translucent one, and any other as CSS serializes it, `color(srgb …)`
+   *  for a mix; null where it is none. `currentColor` is the canvas's
+   *  `color` as it is set, and black where the canvas is in no document or
+   *  is an `OffscreenCanvas` (4.12.5.1.6). */
   const canvasColours = new Map<string, string | null>();
-  const canvasColour = (value: string): string | null => {
+  const CURRENT_COLOR = /currentcolor/i;
+  const canvasColour = (value: string, canvas?: Any): string | null => {
+    if (CURRENT_COLOR.test(value)) {
+      const current =
+        canvas instanceof HTMLCanvasElement && canvas.isConnected
+          ? str(getComputedStyle(canvas).color || 'rgb(0, 0, 0)')
+          : 'rgb(0, 0, 0)';
+      value = value.replace(/currentcolor/gi, current);
+    }
     let text = canvasColours.get(value);
     if (text === undefined) {
-      text = null;
-      if (colourOf(value)) {
-        const css = String(call('colorText', value) ?? '');
-        const m = /^rgb\((\d+), (\d+), (\d+)\)$/.exec(css);
-        text = m
-          ? '#' +
-            [m[1], m[2], m[3]]
-              .map((n) => Number(n).toString(16).padStart(2, '0'))
-              .join('')
-          : css || null;
-      }
+      text = str(call('canvasColor', value) ?? '') || null;
+      if (canvasColours.size > 4096) canvasColours.clear();
       canvasColours.set(value, text);
     }
     return text;
@@ -13281,6 +13439,8 @@ export function installDom(
       const [x0, y0, x1, y1] = this._pixels(r, state);
       const alpha =
         (rgba[3] / 255) * Math.min(1, Math.max(0, this._state.globalAlpha));
+      // a colour of no alpha, over what is there, changes nothing
+      if (!(alpha > 0)) return;
       const data = state.data;
       for (let py = y0; py < y1; py += 1) {
         for (let px = x0; px < x1; px += 1) {
@@ -13309,25 +13469,70 @@ export function installDom(
       path.rect(Number(x), Number(y), Number(w), Number(h), this._matrix);
       this._strokePath(path);
     }
-    createImageData(a: Any, b?: Any): Any {
-      if (a instanceof ImageData) return new ImageData(a.width, a.height);
-      return new ImageData(a, b);
+    /** Where a method of this context is: `Failed to execute 'name' on
+     *  'CanvasRenderingContext2D'`, its interface checked first, so a
+     *  method called on what is no context is a `TypeError` (Web IDL). */
+    _where(method: string): string {
+      if (!is2d(this)) throw new TypeError('Illegal invocation');
+      return `Failed to execute '${method}' on '${
+        this instanceof OffscreenCanvasRenderingContext2D
+          ? 'OffscreenCanvasRenderingContext2D'
+          : 'CanvasRenderingContext2D'
+      }'`;
+    }
+    createImageData(a: Any, b?: Any, c?: Any): Any {
+      const where = this._where('createImageData');
+      // `(ImageData imagedata)` or `([EnforceRange] long sw, [EnforceRange]
+      // long sh, optional ImageDataSettings settings)` (HTML 4.12.5.1.15)
+      if (arguments.length < 2) {
+        if (!(a instanceof ImageData)) {
+          throw new TypeError(
+            arguments.length
+              ? `${where}: parameter 1 is not of type 'ImageData'.`
+              : `${where}: 1 argument required, but only 0 present.`,
+          );
+        }
+        return new ImageData(a.width, a.height, { colorSpace: a.colorSpace });
+      }
+      const w = enforcedLong(a, where);
+      const h = enforcedLong(b, where);
+      const settings = imageDataSettings(c, where);
+      if (!w || !h) {
+        throw new DOMException(
+          `${where}: The source ${w ? 'height' : 'width'} is 0.`,
+          'IndexSizeError',
+        );
+      }
+      return new ImageData(Math.abs(w), Math.abs(h), {
+        colorSpace: settings.space,
+        ...(settings.format ? { pixelFormat: settings.format } : {}),
+      });
     }
     getImageData(sx: Any, sy: Any, sw: Any, sh: Any): Any {
-      refuseTainted(
-        canvasState(this._canvas),
-        "'getImageData' on 'CanvasRenderingContext2D'",
-      );
-      let x = Math.trunc(Number(sx));
-      let y = Math.trunc(Number(sy));
-      let w = Math.trunc(Number(sw));
-      let h = Math.trunc(Number(sh));
+      const where = this._where('getImageData');
+      if (arguments.length < 4) {
+        throw new TypeError(
+          `${where}: 4 arguments required, but only ${arguments.length} present.`,
+        );
+      }
+      let x = enforcedLong(sx, where);
+      let y = enforcedLong(sy, where);
+      let w = enforcedLong(sw, where);
+      let h = enforcedLong(sh, where);
       if (!w || !h) {
         throw new DOMException(
           `Failed to execute 'getImageData' on 'CanvasRenderingContext2D': The source ${w ? 'height' : 'width'} is 0.`,
           'IndexSizeError',
         );
       }
+      refuseTainted(
+        canvasState(this._canvas),
+        `'getImageData' on '${
+          this instanceof OffscreenCanvasRenderingContext2D
+            ? 'OffscreenCanvasRenderingContext2D'
+            : 'CanvasRenderingContext2D'
+        }'`,
+      );
       if (w < 0) {
         x += w;
         w = -w;
@@ -13362,19 +13567,27 @@ export function installDom(
       dirtyWidth: Any = image?.width,
       dirtyHeight: Any = image?.height,
     ): void {
-      if (!(image instanceof ImageData)) {
+      const where = this._where('putImageData');
+      if (arguments.length !== 3 && arguments.length !== 7) {
         throw new TypeError(
-          "Failed to execute 'putImageData' on 'CanvasRenderingContext2D': parameter 1 is not of type 'ImageData'.",
+          arguments.length < 3
+            ? `${where}: 3 arguments required, but only ${arguments.length} present.`
+            : `${where}: Valid arities are: [3, 7], but ${arguments.length} arguments provided.`,
         );
       }
-      // HTML 4.12.5.1.15, the dirty rectangle made positive and cut to the
-      // image, then put without the transform, the alpha or the clip
+      if (!(image instanceof ImageData)) {
+        throw new TypeError(
+          `${where}: parameter 1 is not of type 'ImageData'.`,
+        );
+      }
+      // each an `[EnforceRange] long` (HTML 4.12.5.1.15); the dirty
+      // rectangle made positive and cut to the image, then put without the
+      // transform, the alpha or the clip
+      const ox = enforcedLong(dx, where);
+      const oy = enforcedLong(dy, where);
       let [x, y, w, h] = [dirtyX, dirtyY, dirtyWidth, dirtyHeight].map((v) =>
-        Math.trunc(Number(v)),
+        enforcedLong(v, where),
       );
-      const ox = Math.trunc(Number(dx));
-      const oy = Math.trunc(Number(dy));
-      if (![x, y, w, h, ox, oy].every(Number.isFinite)) return;
       if (w < 0) {
         x += w;
         w = -w;
@@ -13411,55 +13624,73 @@ export function installDom(
       markCanvas(this._canvas, state, x0 + ox, y0 + oy, x1 + ox, y1 + oy);
     }
     drawImage(source: Any, ...args: Any[]): void {
-      // another canvas, an `OffscreenCanvas` or an `ImageBitmap`, an
-      // `ImageData`'s pixels being no source: what this realm has the
-      // pixels of
+      const where = `Failed to execute 'drawImage' on '${
+        this instanceof OffscreenCanvasRenderingContext2D
+          ? 'OffscreenCanvasRenderingContext2D'
+          : 'CanvasRenderingContext2D'
+      }'`;
+      // three arguments, five or nine (HTML 4.12.5.1.14), and an image
+      // source first, whose type Web IDL checks before anything is read
+      if (args.length !== 2 && args.length !== 4 && args.length !== 8) {
+        throw new TypeError(
+          arguments.length < 3
+            ? `${where}: 3 arguments required, but only ${arguments.length} present.`
+            : `${where}: Valid arities are: [3, 5, 9], but ${arguments.length} arguments provided.`,
+        );
+      }
+      if (!isImageSource(source)) {
+        throw new TypeError(
+          `${where}: The provided value is not of type '(CSSImageValue or HTMLCanvasElement or HTMLImageElement or HTMLVideoElement or ImageBitmap or OffscreenCanvas or SVGImageElement or VideoFrame)'.`,
+        );
+      }
+      // each a `unrestricted double`: one that is not finite draws nothing
+      const n = args.map(Number);
+      // another canvas, an `OffscreenCanvas`, an `ImageBitmap`, an image
+      // or a stream's frame: what this realm has the pixels of
       const from = drawnPixels(source, this, 'drawImage');
       if (!originClean(source)) canvasState(this._canvas).tainted = true;
-      if (!from) return;
+      if (!from || !n.every(Number.isFinite)) return;
       let [sx, sy, sw, sh] = [0, 0, from.width, from.height];
       let dx: number;
       let dy: number;
       let dw: number;
       let dh: number;
-      if (args.length >= 8) {
-        [sx, sy, sw, sh, dx, dy, dw, dh] = args.map(Number);
-      } else if (args.length >= 4) {
-        [dx, dy, dw, dh] = args.map(Number);
+      if (n.length === 8) {
+        [sx, sy, sw, sh, dx, dy, dw, dh] = n;
+      } else if (n.length === 4) {
+        [dx, dy, dw, dh] = n;
       } else {
-        [dx, dy] = args.map(Number);
+        [dx, dy] = n;
         dw = sw;
         dh = sh;
       }
-      const r = this._rect(dx, dy, dw, dh);
-      if (!r || !sw || !sh) return;
+      // a rectangle is its four corners, so a negative side is the same
+      // rectangle the other way, and nothing of either is flipped
+      if (sw < 0) [sx, sw] = [sx + sw, -sw];
+      if (sh < 0) [sy, sh] = [sy + sh, -sh];
+      if (dw < 0) [dx, dw] = [dx + dw, -dw];
+      if (dh < 0) [dy, dh] = [dy + dh, -dh];
+      if (!sw || !sh || !dw || !dh) return;
       const state = canvasState(this._canvas);
-      const [x0, y0, x1, y1] = this._pixels(r, state);
-      const alpha = Math.min(1, Math.max(0, this._state.globalAlpha));
-      const copy = this._state.globalCompositeOperation === 'copy';
-      const data = state.data;
-      for (let py = y0; py < y1; py += 1) {
-        const fy = Math.floor(sy + ((py + 0.5 - r[1]) / (r[3] - r[1])) * sh);
-        if (fy < 0 || fy >= from.height) continue;
-        for (let px = x0; px < x1; px += 1) {
-          const fx = Math.floor(sx + ((px + 0.5 - r[0]) / (r[2] - r[0])) * sw);
-          if (fx < 0 || fx >= from.width) continue;
-          const i = (fy * from.width + fx) * 4;
-          const o = (py * state.width + px) * 4;
-          const sa = (from.data[i + 3] / 255) * alpha;
-          const da = data[o + 3] / 255;
-          const oa = copy ? sa : sa + da * (1 - sa);
-          for (let k = 0; k < 3; k += 1) {
-            data[o + k] = oa
-              ? (from.data[i + k] * sa +
-                  (copy ? 0 : data[o + k] * da * (1 - sa))) /
-                oa
-              : 0;
-          }
-          data[o + 3] = oa * 255;
-        }
-      }
-      markCanvas(this._canvas, state, x0, y0, x1, y1);
+      // a canvas drawn onto itself is read as it was before the draw
+      const image =
+        from === state || from.data === state.data
+          ? { width: from.width, height: from.height, data: from.data.slice() }
+          : from;
+      const st = this._state;
+      this._paint(
+        (target, how) =>
+          RASTER.image(
+            target,
+            image,
+            [sx, sy, sw, sh],
+            [dx, dy, dw, dh],
+            this._matrix,
+            !!st.imageSmoothingEnabled,
+            how,
+          ),
+        this._howOf(),
+      );
     }
     // the current path, its points mapped by the transform as they are added
     beginPath(): void {
@@ -13564,8 +13795,8 @@ export function installDom(
      *  in them already — and the fill rule after it. */
     _pathArgs(a: Any, b: Any): [PathData, number[], string] {
       const given = RASTER.pathOf(a);
-      if (given) return [given, this._matrix, str(b ?? 'nonzero')];
-      return [this._path, IDENTITY, str(a ?? 'nonzero')];
+      if (given) return [given, this._matrix, fillRuleOf(b)];
+      return [this._path, IDENTITY, fillRuleOf(a)];
     }
     /** How a fill or a stroke with a style is drawn, or null for a style
      *  that paints nothing. */
@@ -13579,6 +13810,11 @@ export function installDom(
             })()
           : RASTER.paintOf(style, this._matrix);
       if (!paint) return null;
+      return { paint, ...this._howOf() };
+    }
+    /** How anything is drawn, whatever it is painted with: the alpha, the
+     *  operator, the clip and the shadow. */
+    _howOf(): Any {
       const state = this._state;
       const shadowed =
         state.shadowBlur > 0 ||
@@ -13586,7 +13822,6 @@ export function installDom(
         state.shadowOffsetY !== 0;
       const rgba = shadowed ? colourOf(state.shadowColor) : null;
       return {
-        paint,
         alpha: state.globalAlpha,
         op: state.globalCompositeOperation,
         clip: this._clip,
@@ -13631,27 +13866,14 @@ export function installDom(
         miterLimit: this._state.miterLimit,
         dash: this._dash,
         dashOffset: this._state.lineDashOffset,
+        // traced in the space the transform maps from, now
+        pen: this._matrix.slice(),
       };
     }
-    /** The scale the transform gives a pen's width. */
-    _penScale(): number {
-      const m = this._matrix;
-      return Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2]));
-    }
     _strokePath(path: PathData, m: number[] = IDENTITY): void {
-      // the pen is the transform's now: a path already in the canvas's
-      // pixels is stroked with a width the transform scales
-      const style = this._strokeStyle();
-      const s = this._penScale();
-      const pen =
-        m === IDENTITY
-          ? {
-              ...style,
-              width: style.width * s,
-              dash: style.dash.map((d: number) => d * s),
-              dashOffset: style.dashOffset * s,
-            }
-          : style;
+      // the pen is the transform's now, whatever transform the path's
+      // points were added under
+      const pen = this._strokeStyle();
       this._paint(
         (target, how) => RASTER.stroke(target, path, m, pen, how),
         this._drawOf(this._state.strokeStyle),
@@ -13679,14 +13901,21 @@ export function installDom(
       );
     }
     isPointInPath(a: Any, b: Any, c?: Any, d?: Any): boolean {
+      // `(x, y, fillRule)` or `(Path2D, x, y, fillRule)`: four arguments
+      // are the second, whatever the first is (Web IDL's overloads)
       const given = RASTER.pathOf(a);
+      if (!given && arguments.length >= 4) {
+        throw new TypeError(
+          "Failed to execute 'isPointInPath' on 'CanvasRenderingContext2D': parameter 1 is not of type 'Path2D'.",
+        );
+      }
       if (given) {
         return RASTER.contains(
           given,
           this._matrix,
           Number(b),
           Number(c),
-          str(d ?? 'nonzero'),
+          fillRuleOf(d),
         );
       }
       return RASTER.contains(
@@ -13694,7 +13923,7 @@ export function installDom(
         IDENTITY,
         Number(a),
         Number(b),
-        str(c ?? 'nonzero'),
+        fillRuleOf(c),
       );
     }
     isPointInStroke(a: Any, b: Any, c?: Any): boolean {
@@ -13712,7 +13941,7 @@ export function installDom(
       return RASTER.strokeContains(
         this._path,
         IDENTITY,
-        { ...style, width: style.width * this._penScale() },
+        style,
         Number(a),
         Number(b),
       );
@@ -13971,6 +14200,17 @@ export function installDom(
     }
     drawFocusIfNeeded(): void {}
   }
+  /** A `CanvasFillRule`: what is neither of its two is a `TypeError`. */
+  const fillRuleOf = (v: Any): string => {
+    if (v === undefined) return 'nonzero';
+    const rule = str(v);
+    if (rule !== 'nonzero' && rule !== 'evenodd') {
+      throw new TypeError(
+        `The provided value '${rule}' is not a valid enum value of type CanvasFillRule.`,
+      );
+    }
+    return rule;
+  };
   /** Numbers a gradient is made from, each finite or a `TypeError`. */
   const finiteArgs = (method: string, args: Any[]): number[] =>
     args.map((v) => {
@@ -14046,15 +14286,29 @@ export function installDom(
         // what a style is set to is kept as text, and one that is not a
         // colour, nor a gradient or a pattern, is ignored
         if (name === 'fillStyle' || name === 'strokeStyle') {
-          if (typeof v === 'string') {
-            const colour = canvasColour(v);
-            if (colour) this._state[name] = colour;
-          } else if (v && typeof v === 'object') this._state[name] = v;
+          // a gradient or a pattern is kept as it is, and anything else is
+          // its string, which a colour is read from (`(DOMString or
+          // CanvasGradient or CanvasPattern)`)
+          if (
+            v instanceof (RASTER.classes.CanvasGradient as Any) ||
+            v instanceof (RASTER.classes.CanvasPattern as Any)
+          ) {
+            this._state[name] = v;
+            return;
+          }
+          const colour = canvasColour(str(v), this._canvas);
+          if (colour) this._state[name] = colour;
           return;
         }
         if (name === 'shadowColor') {
-          const colour = canvasColour(str(v));
+          const colour = canvasColour(str(v), this._canvas);
           if (colour) this._state[name] = colour;
+          return;
+        }
+        // an alpha outside of none to all is ignored, as is none of a number
+        if (name === 'globalAlpha') {
+          const n = Number(v);
+          if (n >= 0 && n <= 1) this._state[name] = n;
           return;
         }
         // a width and a miter limit of none, or less, are ignored
@@ -14253,6 +14507,48 @@ export function installDom(
     return pixels;
   };
 
+  /** What a canvas may draw (HTML 4.12.5.1.14, `CanvasImageSource`): what
+   *  else Web IDL turns down with a `TypeError` before anything is read. */
+  const isImageSource = (source: Any): boolean =>
+    source instanceof HTMLImageElement ||
+    source instanceof SVGImageElement ||
+    source instanceof HTMLVideoElement ||
+    source instanceof HTMLCanvasElement ||
+    source instanceof ImageBitmap ||
+    source instanceof OffscreenCanvas;
+
+  /** Each `<img>`'s pixels as last drawn, by the address they were of: a
+   *  page that draws one image at every frame asks the host for it once. */
+  const imagePixelsKept = new WeakMap<
+    Any,
+    {
+      src: string;
+      pixels: { data: Uint8ClampedArray; width: number; height: number };
+    }
+  >();
+  const imageElementPixels = (
+    el: Any,
+  ): { data: Uint8ClampedArray; width: number; height: number } | null => {
+    const src = str(call('image', el._id, 'src') ?? '');
+    const kept = imagePixelsKept.get(el);
+    if (kept && kept.src === src && src) return kept.pixels;
+    const answer = call('image', el._id, 'pixels');
+    if (typeof answer !== 'string' || !answer) return null;
+    const bar = answer.indexOf('|');
+    const [width, height] = answer.slice(0, bar).split(',').map(Number);
+    const bytes = bytesOfBase64(answer.slice(bar + 1));
+    if (!(width > 0 && height > 0) || bytes.length !== width * height * 4) {
+      return null;
+    }
+    const pixels = {
+      data: new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, bytes.length),
+      width,
+      height,
+    };
+    imagePixelsKept.set(el, { src, pixels });
+    return pixels;
+  };
+
   const drawnPixels = (
     source: Any,
     context: Any,
@@ -14287,6 +14583,22 @@ export function installDom(
         );
       }
       from = canvasBitmap(source);
+    } else if (source instanceof HTMLImageElement) {
+      // what the host decoded; one still on its way, or with no address,
+      // draws nothing, and one whose address came to nothing throws
+      // (HTML 4.12.5.1.14, "check the usability of the image argument")
+      if (call('image', source._id, 'complete') !== true) return null;
+      const pixels = imageElementPixels(source);
+      if (pixels) {
+        from = pixels;
+      } else {
+        if (call('image', source._id, 'available') === true) return null;
+        if (!str(source.getAttribute('src') ?? '').trim()) return null;
+        throw new DOMException(
+          `${where}: The HTMLImageElement provided is in the 'broken' state.`,
+          'InvalidStateError',
+        );
+      }
     } else if (source instanceof HTMLVideoElement) {
       // a stream's frame, where the host holds one; a video it has no
       // current frame of yet draws nothing (HTML 4.12.5.1.14)
@@ -14362,6 +14674,87 @@ export function installDom(
    * `instanceof CanvasRenderingContext2D` is false for one. Its members are
    * the 2d context's, copied onto its prototype below.
    */
+  /** How many arguments each of a 2d context's methods requires (HTML
+   *  4.12.5.1, its IDL): one called with fewer is a `TypeError`, as Web
+   *  IDL's overload resolution has it, before anything else is read. */
+  const CONTEXT_ARITY: Record<string, number> = {
+    arc: 5,
+    arcTo: 5,
+    bezierCurveTo: 6,
+    clearRect: 4,
+    createConicGradient: 3,
+    createImageData: 1,
+    createLinearGradient: 4,
+    createPattern: 2,
+    createRadialGradient: 6,
+    drawFocusIfNeeded: 1,
+    drawImage: 3,
+    ellipse: 7,
+    fillRect: 4,
+    fillText: 3,
+    getImageData: 4,
+    isPointInPath: 2,
+    isPointInStroke: 2,
+    lineTo: 2,
+    measureText: 1,
+    moveTo: 2,
+    putImageData: 3,
+    quadraticCurveTo: 4,
+    rect: 4,
+    roundRect: 4,
+    rotate: 1,
+    scale: 2,
+    setLineDash: 1,
+    strokeRect: 4,
+    strokeText: 3,
+    transform: 6,
+    translate: 2,
+  };
+  for (const [name, count] of Object.entries(CONTEXT_ARITY)) {
+    const proto = CanvasRenderingContext2D.prototype as Any;
+    const method = proto[name];
+    if (typeof method !== 'function') continue;
+    const checked = {
+      [name](this: Any, ...args: Any[]) {
+        if (args.length < count) {
+          throw new TypeError(
+            `Failed to execute '${name}' on '${
+              this instanceof OffscreenCanvasRenderingContext2D
+                ? 'OffscreenCanvasRenderingContext2D'
+                : 'CanvasRenderingContext2D'
+            }': ${count} argument${count === 1 ? '' : 's'} required, but only ${args.length} present.`,
+          );
+        }
+        return method.apply(this, args);
+      },
+    }[name];
+    Object.defineProperty(checked, 'length', { value: count });
+    Object.defineProperty(proto, name, {
+      ...Object.getOwnPropertyDescriptor(proto, name),
+      value: checked,
+    });
+  }
+  // `setTransform()` takes none, a matrix, or all six (HTML 4.12.5.1.8)
+  {
+    const proto = CanvasRenderingContext2D.prototype as Any;
+    const method = proto.setTransform;
+    const checked = {
+      setTransform(this: Any, ...args: Any[]) {
+        if (args.length > 1 && args.length < 6) {
+          throw new TypeError(
+            `Failed to execute 'setTransform' on 'CanvasRenderingContext2D': 6 arguments required, but only ${args.length} present.`,
+          );
+        }
+        return method.apply(this, args);
+      },
+    }.setTransform;
+    Object.defineProperty(checked, 'length', { value: 0 });
+    Object.defineProperty(proto, 'setTransform', {
+      ...Object.getOwnPropertyDescriptor(proto, 'setTransform'),
+      value: checked,
+    });
+  }
+
   class OffscreenCanvasRenderingContext2D {
     constructor(canvas: Any, key?: Any) {
       if (key !== CANVAS_KEY) throw new TypeError('Illegal constructor');
@@ -14909,8 +15302,10 @@ export function installDom(
               : 'The image element contains no image data.',
           );
         }
-        // a stream's frame, as `drawImage` reads it
-        const frame = video ? streamFramePixels(image) : null;
+        // a stream's frame, and an image's pixels, as `drawImage` reads them
+        const frame = video
+          ? streamFramePixels(image)
+          : imageElementPixels(image);
         if (frame) {
           return made({
             data: new Uint8ClampedArray(frame.data),
@@ -14988,6 +15383,11 @@ export function installDom(
      *  once the canvas has one (HTML 4.12.5): a 2d context, a
      *  `bitmaprenderer` one, or a WebGL one (`webgl.ts`). */
     getContext(type: Any, options?: Any): Any {
+      if (arguments.length < 1) {
+        throw new TypeError(
+          "Failed to execute 'getContext' on 'HTMLCanvasElement': 1 argument required, but only 0 present.",
+        );
+      }
       notPlaceholder(
         this,
         "Failed to execute 'getContext'",
