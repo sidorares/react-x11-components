@@ -1120,7 +1120,6 @@ test('a module imported as CSS is a constructed sheet a page adopts', async () =
       "import sheet from './p.css' with { type: 'css' };" +
       'document.adoptedStyleSheets = [sheet];' +
       "note(String(sheet instanceof CSSStyleSheet) + ':' + sheet.cssRules.length);" +
-      "setTimeout(function () { note('color:' + getComputedStyle(document.getElementById('p')).color) }, 50);" +
       "import('./p.css', { with: { type: 'css' } }).then(function (m) { note('same:' + (m.default === sheet)) });" +
       "import('./p.css').catch(function (e) { note('script:' + e.name) });" +
       '</script></body></html>',
@@ -1141,12 +1140,18 @@ test('a module imported as CSS is a constructed sheet a page adopts', async () =
   );
   const log = await rootLog(
     doc,
-    (t) => t.includes('same') && t.includes('script') && t.includes('color'),
+    (t) => t.includes('same') && t.includes('script'),
   );
   assert.ok(log.startsWith('true:1'), log);
-  assert.ok(log.includes('color:rgb(1, 2, 3)'), log);
   assert.ok(log.includes('same:true'), log);
   assert.ok(log.includes('script:TypeError'), log);
+  // the adopted sheet reaches the document at a render, which a page's
+  // timer can beat on a slow runner: wait for the style, not for a time
+  const p = doc.byId('p');
+  const color = () => doc.view.computedStyle(p)?.color;
+  const end = Date.now() + 3000;
+  while (color() !== 'rgb(1, 2, 3)' && Date.now() < end) await settle(20);
+  assert.equal(color(), 'rgb(1, 2, 3)');
 });
 
 test('a script is prepared by its type string: its language read, a type matched exactly and a module only as written', async () => {
