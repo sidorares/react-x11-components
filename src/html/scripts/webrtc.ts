@@ -40,6 +40,9 @@ export interface WebRTCDeps {
   fire(target: unknown, event: unknown): void;
   /** Runs `fn` in a task of its own, after `ms`. */
   setTimer(fn: () => void, ms: number): unknown;
+  /** Which task the realm is in: a number that moves as the host enters
+   *  it, and stays through the microtasks the entry runs. */
+  task(): number;
   URL: unknown;
   bytesOfBase64(text: string): Uint8Array;
   media: MediaStreamsInternals;
@@ -86,6 +89,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
   const Event: Any = D.Event;
   const fire: Any = D.fire;
   const setTimer: Any = D.setTimer;
+  const taskNow: Any = D.task;
   const URLClass: Any = D.URL;
   const bytesOfBase64: Any = D.bytesOfBase64;
   const media: Any = D.media;
@@ -726,18 +730,23 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     getParameters(): Any {
       const s = slotOf(this, 'sender');
       const p = s.parameters ?? NO_PARAMETERS();
+      // what a later `setParameters` is checked against lasts this task
+      // (WebRTC 1.0, 5.2: a task queued clears it), and a second call in
+      // the same task, microtasks and a `setParameters` between them, is
+      // the same transaction, as every browser has it
+      const task = taskNow();
+      const held = s.lastReturned && s.lastTask === task;
       const out = {
-        transactionId: String(++transactionSeq),
+        transactionId: held
+          ? s.lastReturned.transactionId
+          : String(++transactionSeq),
         encodings: s.encodings.map((e: Any) => ({ ...e })),
         headerExtensions: p.headerExtensions.map((e: Any) => ({ ...e })),
         rtcp: { ...p.rtcp },
         codecs: p.codecs.map((c: Any) => ({ ...c })),
       };
       s.lastReturned = parse(stringify(out));
-      // what a later `setParameters` is checked against lasts this task
-      setTimer(() => {
-        s.lastReturned = null;
-      }, 0);
+      s.lastTask = task;
       return out;
     }
     setParameters(parameters: Any, _options?: Any): Promise<void> {
@@ -749,7 +758,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       }
       const pc = s.tx.pc;
       if (pc.closed || s.tx.stopping) return rejected(invalidState());
-      const last = s.lastReturned;
+      const last = s.lastTask === taskNow() ? s.lastReturned : null;
       if (!last) {
         return rejected(
           invalidState(
@@ -840,7 +849,22 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           );
         }
       }
-      s.lastReturned = null;
+      // webrtc-extensions' `encodingOptions`: one for each encoding, or
+      // none, and a key frame asked of a video sender's
+      const options = _options?.encodingOptions;
+      let keyFrame = false;
+      if (video && options !== undefined && options !== null) {
+        const list = [...options];
+        if (list.length && list.length !== encodings.length) {
+          return rejected(
+            domError(
+              'encodingOptions must have one for each encoding.',
+              'InvalidModificationError',
+            ),
+          );
+        }
+        keyFrame = list.some((o: Any) => !!o?.keyFrame);
+      }
       const next = encodings.map((e: Any) => {
         const enc: Any = {
           active: e.active === undefined ? true : !!e.active,
@@ -868,7 +892,14 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       });
       return then(
         ask((req) =>
-          call('rtcParameters', s.tx.id, req, stringify({ encodings: next })),
+          call(
+            'rtcParameters',
+            s.tx.id,
+            req,
+            stringify(
+              keyFrame ? { encodings: next, keyFrame } : { encodings: next },
+            ),
+          ),
         ),
         () => {
           s.encodings = next;

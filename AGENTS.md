@@ -5322,7 +5322,14 @@ list.
   paired in an `a=ssrc-group:FID`, which Meet's client splits without a
   check, and one id for an extension's URI in every section of a bundle
   (`keepExtensionIds`, where werift numbers them again), since Meet adds
-  its own at ids the sections leave free. **Where werift
+  its own at ids the sections leave free. **A codec is kept out of an offer
+  or an answer by the preferences, never by taking it out of
+  `OFFERED_CODECS`** (`src/html/werift-codecs.ts`): werift's own reading
+  of the preferences keeps any codec a preferred rtx carries, so the
+  adapter narrows what werift resolves (`keepPreferredCodecs`), for an
+  offer, an answer and a remote offer as it is set. Anything new werift
+  resolves codecs in goes through the same narrowing, or the RTX that Meet
+  needs keeps alive a codec the page took out. **Where werift
   says what a browser would not, one side corrects it and the PRD's table
   says which** ("Where werift differs, case by case"): the protocol in the
   adapter (`werift.ts`), the API in the facade. A werift release that
