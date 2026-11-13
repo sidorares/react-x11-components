@@ -201,8 +201,51 @@ How the parts behave:
   with `onLink`, or with a kind that activates. With cards alone a link keeps
   the text's cursor.
 
+### How a link of a kind is drawn
+
+A kind can also say how its links look — what turns a bare URL into a pull
+request's icon and `owner/repo#12 · title`:
+
+```tsx
+const pullRequest = linkKind({
+  match: (href) => PR_URL.exec(href),
+  look: (m) => ({ icon: PR_ICON, underline: false }),
+  label: (m, text) => `${m[1]}#${m[2]} · ${text}`,
+  card: (m) => <PullRequestCard repo={m[1]} number={Number(m[2])} />,
+});
+const session = linkKind({
+  match: (href) => sessionIdOf(href),
+  look: (id) => ({ icon: dot(colourOf(sessions.get(id))) }),
+  watch: (id, changed) => sessions.subscribe(id, changed),
+});
+```
+
+- **`look(ref, link)`** answers a `LinkLook` over the document's link look:
+  `color`, `underline` (a colour, or `false` for none), `underlineStyle`,
+  `bg` and `bgFill` for a chip, `weight`, `style`, and an `icon` drawn
+  before the label with `iconGap` (default 4) after it. A code span inside
+  the link keeps its code colour and chip.
+- **`icon`** is an `InlineDrawing` — `{ width, draw(ctx, box) }` — which
+  [`<richtext>`](richtext.md#the-element) makes room for in the line and
+  hands the device-pixel box to, baseline and display scale included. It is
+  part of the link, so a click on it follows the link. Give the same object
+  for the same picture; a new one each time lays the paragraph out again.
+- **`label(ref, text)`** is the text drawn in place of what the document
+  wrote. The document keeps its text: copy-as-markdown and the source are
+  unchanged, and a selection of the drawn text copies the label.
+- **`watch(ref, changed)`** is how a look or a label that reads live state
+  stays current. `<Markdown>` asks once for each href in the document that a
+  watching kind has, calls the returned function when the link is gone, and
+  on `changed()` draws again only the blocks that hold a link to it — the
+  rest keep their elements and their layouts.
+
+`look` and `label` are called as a block is drawn, so they read state
+synchronously; a state they cannot know yet — a pull request not fetched —
+is a look of its own until `changed()` says otherwise.
+
 The card's `text` is everything the document draws for the link, so a link
-written `[the **parser** fix](…)` hands over `the parser fix`. Two links to
+written `[the **parser** fix](…)` hands over `the parser fix`, or the
+kind's `label` where it has one, and an icon is no part of it. Two links to
 one address written side by side read as one link: the element knows runs
 by their `href` and nothing else.
 

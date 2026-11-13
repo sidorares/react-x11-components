@@ -23,7 +23,12 @@ import type { RenderX11Options } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 
 import { Markdown, RichTextNode, linkKind } from '../src/index.js';
-import type { LinkKinds } from '../src/index.js';
+import type {
+  InlineBox,
+  InlineDrawing,
+  LinkKinds,
+  TextRun,
+} from '../src/index.js';
 import {
   cardClock,
   CARD_CLOSE_DELAY,
@@ -387,5 +392,195 @@ test(
     await waitFor(() =>
       assert.ok(screen.queryByText('card 12') === null, 'Escape closed it'),
     );
+  },
+);
+
+// --- how a link of a kind is drawn -------------------------------------------
+
+/** The runs a paragraph was handed. */
+function runsOf(node: RichTextNode): TextRun[] {
+  return (node as unknown as { props: { runs: TextRun[] } }).props.runs;
+}
+
+test(
+  "a kind's look and label are the link's runs; the document's text is what it was",
+  { skip: !FONTS },
+  async () => {
+    const para = await mount({
+      links: [
+        linkKind({
+          match: pullRequest.match,
+          look: () => ({
+            color: '#2da44e',
+            underline: false,
+            bg: '#ddf4e4',
+            weight: 700,
+          }),
+          label: (n: number) => `o/r#${n} · Fix the parser`,
+        }),
+      ],
+    });
+    const runs = runsOf(para);
+    const link = runs.filter((r) => r.href === PR);
+    assert.deepEqual(
+      link.map((r) => r.text).join(''),
+      'o/r#12 · Fix the parser',
+      'the label in place of what the document wrote',
+    );
+    for (const r of link) {
+      assert.strictEqual(r.color, '#2da44e');
+      assert.strictEqual(r.underline, undefined, 'no underline');
+      assert.strictEqual(r.bg, '#ddf4e4');
+      assert.strictEqual(r.weight, 700);
+    }
+    const docs = runs.find((r) => r.href === 'https://docs.example');
+    assert.ok(docs?.underline, 'a link no kind draws keeps the document look');
+  },
+);
+
+test(
+  'an icon takes its width before the label, is drawn there, and a click on it follows the link',
+  { skip: !FONTS },
+  async () => {
+    for (const scale of [1, 2]) {
+      const boxes: InlineBox[] = [];
+      const icon: InlineDrawing = {
+        width: 12,
+        draw: (_ctx, box) => boxes.push(box),
+      };
+      const followed: string[] = [];
+      const para = await mount(
+        {
+          links: [
+            linkKind({
+              match: pullRequest.match,
+              look: () => ({ icon, iconGap: 6 }),
+            }),
+          ],
+          onLink: (href: string) => followed.push(href),
+        },
+        { scale } as Partial<RenderX11Options>,
+      );
+      const text = para.textContent();
+      const start = text.indexOf('PR twelve');
+      // the icon is a run of its own before the label, one character
+      const iconRun = runsOf(para).find((r) => r.inline);
+      assert.ok(iconRun, 'an icon run');
+      assert.strictEqual(iconRun.text.length, 1);
+      assert.strictEqual(iconRun.href, PR, 'part of the link');
+      assert.strictEqual(text[start - 1], iconRun.text);
+      // its room: the label starts the icon and the gap after where it does
+      const iconAt = para.textCaretRect(start - 1)!;
+      const labelAt = para.textCaretRect(start)!;
+      assert.ok(
+        Math.abs(labelAt.x - iconAt.x - 18 * scale) < 1,
+        `${labelAt.x - iconAt.x} device pixels for 18 logical at ${scale}x`,
+      );
+      // drawn, at its own width and on its line, in device pixels
+      await act();
+      assert.ok(boxes.length > 0, `drawn at ${scale}x`);
+      const box = boxes[boxes.length - 1];
+      assert.ok(Math.abs(box.x - iconAt.x) < 1, 'where its run is');
+      assert.ok(Math.abs(box.width - 12 * scale) < 1, 'without the gap');
+      assert.strictEqual(box.scale, scale);
+      assert.ok(box.baseline > box.y && box.baseline < box.y + box.height);
+      // a click on it is a click on the link
+      const dx = iconAt.x + 3 * scale - (para.abs.x + para.abs.width / 2);
+      const dy =
+        iconAt.y + iconAt.height / 2 - (para.abs.y + para.abs.height / 2);
+      await act(async () => {
+        fireEvent.mouseDown(drawn(para), { dx, dy });
+        fireEvent.mouseUp(drawn(para), { dx, dy });
+      });
+      assert.deepEqual(followed, [PR], 'the icon is the link');
+      // and the card's label is the text, not the icon's room
+      const p = at(para, start + 1, scale);
+      assert.strictEqual(para.linkAtPoint(p.x, p.y)?.text, 'PR twelve here');
+      await cleanup();
+    }
+  },
+);
+
+test(
+  'a kind that watches draws its links again when told, and only the blocks that hold one',
+  { skip: !FONTS },
+  async () => {
+    const state = { merged: false };
+    const listeners = new Map<number, () => void>();
+    let stops = 0;
+    const kind = linkKind({
+      match: pullRequest.match,
+      look: () => ({ color: state.merged ? '#8250df' : '#2da44e' }),
+      label: (n: number) => (state.merged ? `#${n} merged` : `#${n} open`),
+      watch: (n: number, changed) => {
+        listeners.set(n, changed);
+        return () => {
+          stops += 1;
+          listeners.delete(n);
+        };
+      },
+    });
+    const links: LinkKinds = [kind];
+    const source = `Plain words first.\n\nThe fix: [pr](${PR}).`;
+    await renderX11(
+      h(
+        'box',
+        { style: { flexGrow: 1, padding: 10 } },
+        h(Markdown, { source, links }),
+      ),
+      { fonts: FONTS!, width: 520, height: 240 },
+    );
+    const nodes = (): RichTextNode[] =>
+      screen
+        .all((n) => n instanceof RichTextNode)
+        .map((n) => n as unknown as RichTextNode);
+    const [plain, withLink] = nodes();
+    const plainRuns = runsOf(plain);
+    assert.ok(listeners.has(12), 'the link is listened to');
+    assert.match(withLink.textContent(), /#12 open/);
+
+    state.merged = true;
+    await act(async () => listeners.get(12)!());
+    const [plainAfter, linkAfter] = nodes();
+    assert.match(linkAfter.textContent(), /#12 merged/, 'drawn again');
+    assert.strictEqual(
+      runsOf(linkAfter).find((r) => r.href === PR)?.color,
+      '#8250df',
+    );
+    assert.strictEqual(
+      runsOf(plainAfter),
+      plainRuns,
+      'the block with no link to it kept its runs',
+    );
+
+    await cleanup();
+    assert.strictEqual(stops, 1, 'stopped listening as the document went');
+  },
+);
+
+test(
+  'a link that leaves the document stops being listened to',
+  { skip: !FONTS },
+  async () => {
+    const listening = new Set<number>();
+    const kind = linkKind({
+      match: pullRequest.match,
+      look: () => ({ color: '#2da44e' }),
+      watch: (n: number) => {
+        listening.add(n);
+        return () => listening.delete(n);
+      },
+    });
+    const links: LinkKinds = [kind];
+    const doc = (source: string) =>
+      h('box', { style: { flexGrow: 1 } }, h(Markdown, { source, links }));
+    const r = await renderX11(doc(`[a](${PR}) and [b](${PR}/x)`), {
+      fonts: FONTS!,
+      width: 400,
+      height: 120,
+    });
+    assert.deepEqual([...listening], [12], 'one listener for the one href');
+    await act(async () => r.rerender(doc('no links now')));
+    assert.deepEqual([...listening], [], 'gone with the link');
   },
 );

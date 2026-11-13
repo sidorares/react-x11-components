@@ -66,8 +66,31 @@ interface TextRun {
   strikeStyle?: 'single' | 'double' | 'curly' | 'dotted' | 'dashed';
   strikeThickness?: number; // default 1
   href?: string | null; // link target; null is a link still streaming in
+  inline?: InlineDrawing; // drawn in place of the text — an icon
+}
+
+interface InlineDrawing {
+  width: number; // logical pixels the run takes on its line
+  draw(ctx: Context2D, box: InlineBox): void;
+}
+// device pixels: the run's place, the line's height, its baseline, the scale
+interface InlineBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  baseline: number;
+  scale: number;
 }
 ```
+
+A run with `inline` is an icon in a line. Its text is laid out as no-break
+spaces spaced to the drawing's width — as many as the text has code units,
+so every offset holds — and `draw` paints into that room after the ink and
+the rules, with the context saved and restored around it. The run's `text`
+is still what a selection copies, so one character, a space, is usual. Give
+the same drawing for the same picture: runs are compared field by field by
+identity, and a new object lays the paragraph out again.
 
 `text`, `family`, `size`, `weight`, `style`, `color` and `letterSpacing`
 are the text engine's span vocabulary and pass straight through to

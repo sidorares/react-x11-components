@@ -28,6 +28,8 @@ export {
   RichTextNode,
 } from './node.js';
 export type {
+  InlineBox,
+  InlineDrawing,
   LinkAt,
   NtkApp,
   RichTextProps,
@@ -51,6 +53,7 @@ export type {
   LinkInfo,
   LinkKind,
   LinkKinds,
+  LinkLook,
   LinksResult,
   UseLinksOptions,
 } from './links.js';

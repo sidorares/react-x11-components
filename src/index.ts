@@ -478,12 +478,15 @@ export {
   useSelectionMenu,
 } from './richtext/index.js';
 export type {
+  InlineBox,
+  InlineDrawing,
   LinkAt,
   LinkCardContext,
   LinkHandlers,
   LinkInfo,
   LinkKind,
   LinkKinds,
+  LinkLook,
   RichTextProps,
   SelectionMenuHandlers,
   TextRun,

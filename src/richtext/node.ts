@@ -147,6 +147,37 @@ export interface TextRun {
    *  as a browser shapes it. ntk's, from 8.15.0; CoreText takes a spaced
    *  glyph's spacing in place of its pairs either way. */
   kernAcross?: boolean;
+  /**
+   * Drawn in place of the run's text — an icon in a line. The run takes
+   * `width` logical pixels on its line, kept with the text after it as a
+   * no-break space is, and `draw` paints into them over the ink. The run's
+   * `text` is still what a selection copies and what offsets count: one
+   * character, a space, is usual. Compared by identity like the run's
+   * other fields, so the same drawing should be the same object.
+   */
+  inline?: InlineDrawing;
+}
+
+/** Something a run draws in its line instead of its text. */
+export interface InlineDrawing {
+  /** The room it takes, in logical pixels. */
+  width: number;
+  /** Paint into `box`. The context is the window's, saved and restored
+   *  around the call, and `box` is in its device pixels: the run's place
+   *  on its line, the line's height, and where its baseline is. */
+  draw(ctx: Context2D, box: InlineBox): void;
+}
+
+/** Where an inline drawing goes, in device pixels. */
+export interface InlineBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** The line's baseline, from the window's top like `y`. */
+  baseline: number;
+  /** Device pixels per logical pixel. */
+  scale: number;
 }
 
 /** The props `<richtext>` takes. */
@@ -246,6 +277,10 @@ interface FontsLike {
 /** Spacing that tells runs apart and moves nothing: an engine that merges
  *  adjacent runs alike (CoreText) keeps a tab's space to itself. */
 const HAIR = 1e-6;
+
+/** What an inline drawing's text is laid out as: room that keeps to the
+ *  word after it. */
+const NBSP = '\u00a0';
 
 /**
  * The runs with each tab laid out as a space of its own, letter-spaced to
@@ -492,13 +527,42 @@ export class RichTextNode extends Node {
     scale: number,
   ): TextRun[] {
     const from = this._runs();
-    const runs = this._deviceRuns(scale);
+    const runs = this._inlineRuns(fonts, base, this._deviceRuns(scale), scale);
     if (!runs.some((run) => run.text.includes('\t'))) return runs;
     const kept = this._tabbed;
     if (kept && kept.from === from && kept.scale === scale) return kept.to;
     const to = tabbedRuns(fonts, runs, base);
     this._tabbed = { from, scale, to };
     return to;
+  }
+
+  /** The runs with each inline drawing's text laid out as no-break spaces
+   *  spaced to the drawing's width: as many as the text has code units, so
+   *  every offset holds, and the drawing kept to the word after it. */
+  private _inlineRuns(
+    fonts: FontsLike,
+    base: Record<string, unknown>,
+    runs: TextRun[],
+    scale: number,
+  ): TextRun[] {
+    if (!runs.some((run) => run.inline)) return runs;
+    return runs.map((run) => {
+      const inline = run.inline;
+      if (!inline || run.text.length === 0) return run;
+      const n = run.text.length;
+      const face = {
+        family: run.family ?? base.family,
+        size: run.size ?? base.size,
+        weight: run.weight,
+        style: run.style,
+      };
+      const advance = advanceOf(fonts, face, NBSP);
+      return {
+        ...run,
+        text: NBSP.repeat(n),
+        letterSpacing: (inline.width * scale) / n - advance,
+      };
+    });
   }
 
   // --- units ---------------------------------------------------------------
@@ -704,7 +768,11 @@ export class RichTextNode extends Node {
     while (last < runs.length - 1 && runs[last + 1].href === href) last += 1;
     const start = starts[first];
     const end = starts[last + 1];
-    const text = this.textContent().slice(start, end);
+    // what the link reads as: an icon a run draws is no part of its label
+    let text = '';
+    for (let i = first; i <= last; i += 1) {
+      if (!runs[i].inline) text += runs[i].text;
+    }
     // a piece a line: the laid runs of the link on each line, joined
     const rects: Rect[] = [];
     let rect: Rect | null = null;
@@ -789,7 +857,25 @@ export class RichTextNode extends Node {
     // 4. rules over the ink: link underlines, strikethrough
     for (const line of layout.lines) paintRunRules(ctx, line, x, y, s);
 
-    // 5. anything that belongs over everything — a subclass's caret
+    // 5. what a run draws in place of its text — an icon
+    for (const line of layout.lines) {
+      for (const r of line.runs) {
+        const inline = r.span?.inline;
+        if (!inline) continue;
+        ctx.save();
+        inline.draw(ctx, {
+          x: x + line.x + r.x,
+          y: y + line.y,
+          width: r.width,
+          height: line.height,
+          baseline: y + line.baseline,
+          scale: s,
+        });
+        ctx.restore();
+      }
+    }
+
+    // 6. anything that belongs over everything — a subclass's caret
     this.paintOverlay(ctx);
 
     ctx.restore();

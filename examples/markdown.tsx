@@ -6,13 +6,13 @@
 // block), Ctrl+A / Ctrl+C, middle-click-paste the PRIMARY selection into a
 // terminal. When the stream finishes, `partial` flips off and the tail is
 // re-read under final-document rules.
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot } from 'react-x11';
 
 import { Formula } from '../src/formula/index.js';
 import { linkKind, Markdown } from '../src/markdown/index.js';
-import type { LinkKinds } from '../src/markdown/index.js';
+import type { InlineDrawing, LinkKinds } from '../src/markdown/index.js';
 import { Mermaid } from '../src/mermaid/index.js';
 import type { FenceInfo } from '../src/markdown/index.js';
 
@@ -119,8 +119,81 @@ function PullRequestCard(props: { repo: string; n: number }): ReactElement {
   );
 }
 
+// A session's state as an application would hold it: outside React, with a
+// way to hear it change — which the link's status dot reads through `look`
+// and hears through `watch`, and the card reads as it is drawn.
+const sessions = (() => {
+  let i = 0;
+  const heard = new Set<() => void>();
+  setInterval(() => {
+    i = (i + 1) % SESSION.length;
+    for (const f of heard) f();
+  }, 1200).unref();
+  return {
+    get: (): (typeof SESSION)[number] => SESSION[i],
+    subscribe(f: () => void): () => void {
+      heard.add(f);
+      return () => heard.delete(f);
+    },
+  };
+})();
+
+const SESSION_COLOUR: Record<(typeof SESSION)[number], string> = {
+  'in progress': '#2da44e',
+  'waiting on you': '#bf8700',
+  stopped: '#8c959f',
+};
+
+// An icon is a drawing a run makes room for. One object per picture: a
+// run's fields are compared by identity.
+const DOTS = new Map<string, InlineDrawing>();
+function dot(colour: string): InlineDrawing {
+  let icon = DOTS.get(colour);
+  if (!icon) {
+    icon = {
+      width: 8,
+      draw: (ctx, box) => {
+        const r = 4 * box.scale;
+        ctx.fillStyle = colour;
+        ctx.beginPath();
+        ctx.arc(box.x + r, box.baseline - r * 1.1, r, 0, Math.PI * 2);
+        ctx.fill();
+      },
+    };
+    DOTS.set(colour, icon);
+  }
+  return icon;
+}
+
+// A pull request's glyph: two branches and the line between them.
+const PR_ICON: InlineDrawing = {
+  width: 12,
+  draw: (ctx, box) => {
+    const s = box.scale;
+    const x = box.x;
+    const top = box.baseline - 11 * s;
+    ctx.strokeStyle = '#2da44e';
+    ctx.lineWidth = 1.5 * s;
+    const ring = (cx: number, cy: number): void => {
+      ctx.beginPath();
+      ctx.arc(x + cx * s, top + cy * s, 1.8 * s, 0, Math.PI * 2);
+      ctx.stroke();
+    };
+    ring(2.5, 2.5);
+    ring(2.5, 10);
+    ring(9.5, 10);
+    ctx.beginPath();
+    ctx.moveTo(x + 2.5 * s, top + 4.3 * s);
+    ctx.lineTo(x + 2.5 * s, top + 8.2 * s);
+    ctx.moveTo(x + 9.5 * s, top + 8.2 * s);
+    ctx.lineTo(x + 9.5 * s, top + 4.5 * s);
+    ctx.lineTo(x + 7 * s, top + 2.5 * s);
+    ctx.stroke();
+  },
+};
+
 function SessionCard(props: { id: string; title: string }): ReactElement {
-  const state = useTicking(SESSION, 1200);
+  const state = useSyncExternalStore(sessions.subscribe, sessions.get);
   return (
     <box style={{ flexDirection: 'column', gap: 4, width: 220 }}>
       <text style={{ fontWeight: 'bold' }}>{props.title}</text>
@@ -134,6 +207,8 @@ const LINKS: LinkKinds = [
   linkKind({
     match: (href) =>
       /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/.exec(href),
+    look: () => ({ icon: PR_ICON, underline: false }),
+    label: (m, text) => `${m[1]}#${m[2]} · ${text}`,
     card: (m) => <PullRequestCard repo={m[1]} n={Number(m[2])} />,
   }),
   linkKind({
@@ -142,6 +217,11 @@ const LINKS: LinkKinds = [
         ? href.slice('agent-session://'.length)
         : null,
     activate: (id) => console.log('open session:', id),
+    look: () => ({
+      icon: dot(SESSION_COLOUR[sessions.get()]),
+      underlineStyle: 'dotted',
+    }),
+    watch: (_id, changed) => sessions.subscribe(changed),
     card: (id, { text }) => <SessionCard id={id} title={text} />,
   }),
 ];

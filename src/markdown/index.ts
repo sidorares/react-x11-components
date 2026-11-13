@@ -55,6 +55,7 @@ import type {
   TableBlock,
 } from '../internal/markdown/ast.js';
 import {
+  matchLink,
   registerRichText,
   RICHTEXT_ELEMENT,
   useLinks,
@@ -93,10 +94,13 @@ export type {
 export { SPREAD_PREFIX } from '../internal/markdown/ast.js';
 export { CARD_OPEN_DELAY, linkKind } from '../richtext/index.js';
 export type {
+  InlineBox,
+  InlineDrawing,
   LinkCardContext,
   LinkInfo,
   LinkKind,
   LinkKinds,
+  LinkLook,
 } from '../richtext/index.js';
 export { scanTag } from '../internal/markdown/tags.js';
 export type { ScannedTag, ScanResult } from '../internal/markdown/tags.js';
@@ -418,6 +422,11 @@ interface RenderCtx {
   evaluate?: Evaluate;
   /** True while rendering the live tail block of a streaming document. */
   live?: boolean;
+  /** `MarkdownProps.links`, which draw the links they have a look for. */
+  links?: LinkKinds;
+  /** What the watched links in this block were at — a table keeps its
+   *  measured cells only while it holds. */
+  linkSig?: string;
 }
 
 interface FontsMeasureLike {
@@ -470,7 +479,7 @@ function renderBlock(
     case 'paragraph':
       return richtext(
         key,
-        runsOf(block.children, look.inline),
+        runsOf(block.children, look.inline, ctx.links),
         { ...look.body, ...look.styles.paragraph },
         look.linkCursor,
       );
@@ -483,7 +492,7 @@ function renderBlock(
       });
       return richtext(
         key,
-        runsOf(block.children, s),
+        runsOf(block.children, s, ctx.links),
         {
           marginTop: first ? 0 : Math.round(look.blockGap * 0.6),
           ...look.styles.heading,
@@ -775,7 +784,7 @@ function renderList(list: ListBlock, ctx: RenderCtx, key: number): ReactNode {
       only?.type === 'paragraph'
         ? richtext(
             0,
-            runsOf(only.children, look.inline),
+            runsOf(only.children, look.inline, ctx.links),
             { ...STYLES.itemText, ...look.body },
             look.linkCursor,
           )
@@ -801,19 +810,32 @@ function renderTable(
   ctx: RenderCtx,
   key: number,
 ): ReactNode {
-  return h(MarkdownTable, { key, table, look: ctx.look, fonts: ctx.fonts });
+  return h(MarkdownTable, {
+    key,
+    table,
+    look: ctx.look,
+    fonts: ctx.fonts,
+    links: ctx.links,
+    linkSig: ctx.linkSig ?? '',
+  });
 }
 
 interface MarkdownTableProps {
   table: TableBlock;
   look: Look;
   fonts: FontsMeasureLike | null;
+  links: LinkKinds | undefined;
+  linkSig: string;
 }
 
 /** What a table keeps between renders. */
 interface TableKept {
   look: Look;
   fonts: FontsMeasureLike | null;
+  /** The link kinds and the watched links' versions the cells were
+   *  measured with: a kind's label is text the cell's width is of. */
+  links: LinkKinds | undefined;
+  linkSig: string;
   /** Each cell's measured width, by what the cell holds. */
   widthOf: Map<string, number>;
   /** The column widths the rows were built at. */
@@ -831,7 +853,7 @@ interface TableKept {
  * element while it holds the same cells at the same column widths.
  */
 function MarkdownTable(props: MarkdownTableProps): ReactElement {
-  const { table, look, fonts } = props;
+  const { table, look, fonts, links, linkSig } = props;
   const size = look.inline.size;
   const padX = Math.round(size * 0.6);
   const padY = Math.round(size * 0.35);
@@ -841,11 +863,15 @@ function MarkdownTable(props: MarkdownTableProps): ReactElement {
   if (
     !keptRef.current ||
     keptRef.current.look !== look ||
-    keptRef.current.fonts !== fonts
+    keptRef.current.fonts !== fonts ||
+    keptRef.current.links !== links ||
+    keptRef.current.linkSig !== linkSig
   ) {
     keptRef.current = {
       look,
       fonts,
+      links,
+      linkSig,
       widthOf: new Map(),
       widths: '',
       rows: new Map(),
@@ -871,7 +897,7 @@ function MarkdownTable(props: MarkdownTableProps): ReactElement {
       let w = widthOf.get(cellKey) ?? kept.widthOf.get(cellKey);
       if (w === undefined) {
         if (fonts) {
-          w = fonts.layout(runsOf(cells[c], s), {
+          w = fonts.layout(runsOf(cells[c], s, links), {
             family: s.family,
             size: s.size,
           }).width;
@@ -924,7 +950,7 @@ function MarkdownTable(props: MarkdownTableProps): ReactElement {
       ...cells.map((cell, c) =>
         richtext(
           c,
-          runsOf(cell, s),
+          runsOf(cell, s, links),
           {
             textAlign: table.align[c] ?? undefined,
             width: widths[c] - padX * 2,
@@ -1004,6 +1030,37 @@ interface RenderedBlock {
   last: boolean;
   key: number;
   element: ReactNode;
+  /** The links in the block a kind watches, and the versions they were
+   *  drawn at: a change to one draws the block again. */
+  watched?: string[];
+  sig?: string;
+}
+
+/** The hrefs in a block that a kind with `watch` has, each once: the
+ *  links whose state the block's drawing depends on. The tree is walked as
+ *  plain data, so every block shape — a list, a quote, a table's cells —
+ *  is reached without a case of its own. */
+function watchedIn(
+  block: BlockNode,
+  kinds: LinkKinds | undefined,
+): string[] | undefined {
+  const found = new Set<string>();
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const v of value) walk(v);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    const node = value as { type?: unknown; href?: unknown };
+    if (node.type === 'link' && typeof node.href === 'string') {
+      if (matchLink(kinds, node.href)?.kind.watch) found.add(node.href);
+    }
+    for (const v of Object.values(value)) {
+      if (v && typeof v === 'object') walk(v);
+    }
+  };
+  walk(block);
+  return found.size ? [...found] : undefined;
 }
 
 interface BlockCache {
@@ -1069,6 +1126,17 @@ export function Markdown(props: MarkdownProps): ReactElement {
   });
   const menu = useSelectionMenu(selectable);
 
+  // Links a kind watches: each href the document links to is listened to
+  // once, and a change bumps its version, which every cached block holding
+  // it compares, so those blocks alone are drawn again.
+  const watching = !!kinds?.some((k) => typeof k.watch === 'function');
+  const linkVersions = React.useRef(new Map<string, number>());
+  const [, redraw] = React.useState(0);
+  const listening = React.useRef<{
+    kinds: LinkKinds | undefined;
+    stops: Map<string, () => void>;
+  }>({ kinds, stops: new Map() });
+
   // The gate the parser asks. Memoised on the map's identity so that a
   // stable `components` prop keeps one function, and the parse memo below
   // does not re-read the whole document on every render.
@@ -1132,25 +1200,29 @@ export function Markdown(props: MarkdownProps): ReactElement {
     resolveLanguage: MarkdownProps['resolveLanguage'];
     components: MarkdownProps['components'];
     scope: MarkdownProps['scope'];
+    links: MarkdownProps['links'];
     gen: number;
   }>({
     fences: props.fences,
     resolveLanguage: props.resolveLanguage,
     components: props.components,
     scope: props.scope,
+    links: kinds,
     gen: 0,
   });
   if (
     seamsRef.current.fences !== props.fences ||
     seamsRef.current.resolveLanguage !== props.resolveLanguage ||
     seamsRef.current.components !== props.components ||
-    seamsRef.current.scope !== props.scope
+    seamsRef.current.scope !== props.scope ||
+    seamsRef.current.links !== kinds
   ) {
     seamsRef.current = {
       fences: props.fences,
       resolveLanguage: props.resolveLanguage,
       components: props.components,
       scope: props.scope,
+      links: kinds,
       gen: seamsRef.current.gen + 1,
     };
   }
@@ -1192,7 +1264,11 @@ export function Markdown(props: MarkdownProps): ReactElement {
       resolveLanguage: props.resolveLanguage,
       components: props.components,
       ...(evaluate ? { evaluate } : null),
+      ...(kinds ? { links: kinds } : null),
     };
+    const versions = linkVersions.current;
+    const sigOf = (watched: string[] | undefined): string =>
+      watched ? watched.map((href) => versions.get(href) ?? 0).join(',') : '';
     for (let i = 0; i < n; i += 1) {
       const raw = doc.raws[i];
       const live = partial && i === n - 1;
@@ -1208,28 +1284,84 @@ export function Markdown(props: MarkdownProps): ReactElement {
               ? was[i]
               : undefined;
       const key = before ? before.key : cache.next++;
-      const element =
+      const reuse =
         before &&
         before.element !== undefined &&
         before.raw === raw &&
         before.live === live &&
         before.first === first &&
-        before.last === last
-          ? before.element
-          : renderBlock(
-              doc.blocks[i],
-              live ? { ...ctx, live } : ctx,
-              key,
-              first,
-              last,
-            );
+        before.last === last &&
+        (before.sig ?? '') === sigOf(before.watched);
+      let element: ReactNode;
+      let watched: string[] | undefined;
+      let sig: string | undefined;
+      if (reuse) {
+        element = before.element;
+        watched = before.watched;
+        sig = before.sig;
+      } else {
+        watched = watching ? watchedIn(doc.blocks[i], kinds) : undefined;
+        sig = sigOf(watched);
+        const blockCtx: RenderCtx = {
+          ...ctx,
+          ...(live ? { live } : null),
+          ...(sig ? { linkSig: sig } : null),
+        };
+        element = renderBlock(doc.blocks[i], blockCtx, key, first, last);
+      }
       children.push(element);
-      kept.push({ raw, live, first, last, key, element });
+      kept.push({
+        raw,
+        live,
+        first,
+        last,
+        key,
+        element,
+        ...(watched?.length ? { watched, sig } : null),
+      });
     }
     // what the next render lines up against; the rest falls away with the
     // text that made it
     cache.blocks = kept;
   }
+
+  React.useEffect(() => {
+    const l = listening.current;
+    if (l.kinds !== kinds) {
+      for (const stop of l.stops.values()) stop();
+      l.stops.clear();
+      l.kinds = kinds;
+    }
+    const wanted = new Set<string>();
+    for (const block of cacheRef.current?.blocks ?? []) {
+      for (const href of block.watched ?? []) wanted.add(href);
+    }
+    for (const [href, stop] of l.stops) {
+      if (wanted.has(href)) continue;
+      stop();
+      l.stops.delete(href);
+    }
+    for (const href of wanted) {
+      if (l.stops.has(href)) continue;
+      const found = matchLink(kinds, href);
+      if (!found?.kind.watch) continue;
+      l.stops.set(
+        href,
+        found.kind.watch(found.ref, () => {
+          const v = linkVersions.current;
+          v.set(href, (v.get(href) ?? 0) + 1);
+          redraw((n) => n + 1);
+        }),
+      );
+    }
+  });
+  React.useEffect(
+    () => () => {
+      for (const stop of listening.current.stops.values()) stop();
+      listening.current.stops.clear();
+    },
+    [],
+  );
 
   const rootStyle: Style = {
     flexDirection: 'column',

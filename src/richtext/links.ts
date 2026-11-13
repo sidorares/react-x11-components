@@ -43,7 +43,7 @@ import type {
 import type { Style } from 'react-x11/style';
 import { XK_ESCAPE } from 'react-x11/keysyms';
 
-import type { LinkAt } from './node.js';
+import type { InlineDrawing, LinkAt, TextRun } from './node.js';
 import { cancelLater, later } from '../internal/timers.js';
 import type { DelayTick } from '../internal/timers.js';
 
@@ -116,6 +116,49 @@ export interface LinkKind<Ref = unknown> {
   /** How long the pointer rests before the card opens, in ms. Default
    *  `CARD_OPEN_DELAY`. */
   cardDelay?: number;
+  /**
+   * How the link is drawn: its colour, underline, chip, weight, and an
+   * icon before it. Called as the document is drawn, so it may read the
+   * thing's state now — and `watch` is how the document hears that the
+   * answer changed. Absent: the document's own link look.
+   */
+  look?(ref: Ref, link: LinkInfo): LinkLook | null | undefined;
+  /**
+   * The text drawn for the link, in place of the label the document wrote
+   * — `owner/repo#12 · Fix the parser` for a bare pull request URL. The
+   * document keeps what it wrote: this changes what is drawn, and what a
+   * selection of the drawn text copies. Absent, or `undefined`: the
+   * document's label.
+   */
+  label?(ref: Ref, text: string): string | undefined;
+  /**
+   * Hear when `look` or `label` would answer differently for this
+   * reference — the thing's state moved. Call `changed`, and the blocks
+   * holding a link to it are drawn again; return what stops listening.
+   * Asked once for each reference the document links to, for as long as
+   * it does.
+   */
+  watch?(ref: Ref, changed: () => void): () => void;
+}
+
+/** How a link of a kind is drawn, over the document's own link look. */
+export interface LinkLook {
+  /** The text's colour. */
+  color?: string;
+  /** The underline's colour, or `false` for none. */
+  underline?: string | false;
+  underlineStyle?: TextRun['underlineStyle'];
+  /** A fill behind the label — a chip. */
+  bg?: string;
+  bgFill?: TextRun['bgFill'];
+  weight?: TextRun['weight'];
+  style?: TextRun['style'];
+  /** Drawn before the label, in its line — an icon, a status dot. Give the
+   *  same object for the same picture: a run's fields are compared by
+   *  identity, and a new one lays the paragraph out again. */
+  icon?: InlineDrawing;
+  /** Room between the icon and the label, in logical pixels. Default 4. */
+  iconGap?: number;
 }
 
 /** A kind, with its reference type inferred from `match` — so the other

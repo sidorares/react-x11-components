@@ -2,7 +2,12 @@
 // namespace, both as a component and as the raw `<richtext>` element the
 // shared module's augmentation adds.
 import { linkKind, Markdown, parseMarkdown } from '../../src/index.js';
-import type { LinkKinds, MarkdownProps, TextRun } from '../../src/index.js';
+import type {
+  InlineDrawing,
+  LinkKinds,
+  MarkdownProps,
+  TextRun,
+} from '../../src/index.js';
 
 export const asComponent = (
   <box style={{ overflow: 'scroll', flexGrow: 1 }}>
@@ -47,6 +52,14 @@ export const missingSource = <Markdown partial />;
 // @ts-expect-error a richtext takes runs, not children
 export const withChildren = <richtext>nope</richtext>;
 
+const ICON: InlineDrawing = {
+  width: 12,
+  draw: (ctx, box) => {
+    void ctx;
+    void (box.baseline * box.scale);
+  },
+};
+
 // A link kind: its reference type comes from `match`, and the other
 // callbacks are checked against it.
 const pullRequest = linkKind({
@@ -58,6 +71,20 @@ const pullRequest = linkKind({
   },
   card: (m, ctx) => <text>{`#${m[1]} ${ctx.text}`}</text>,
   cardDelay: 300,
+  look: (m, link) => ({
+    color: link.href.length > 0 ? '#2da44e' : undefined,
+    underline: false,
+    underlineStyle: 'dotted',
+    bg: '#eee',
+    icon: ICON,
+    iconGap: 2,
+  }),
+  label: (m, text) => `#${m[1]} ${text}`,
+  watch: (m, changed) => {
+    void m[1];
+    changed();
+    return () => {};
+  },
 });
 const session = linkKind({
   match: (href) =>
