@@ -486,10 +486,13 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         const tokens = value.trim().split(/\s+/);
         for (let i = 0; i + 1 < tokens.length; i += 2) {
           if (tokens[i] !== 'recv') continue;
+          // a rid named twice is one stream (w3c/webrtc-pc#2780), and a
+          // paused one, `~`, is a stream all the same: it says nothing of
+          // the sender's `active`
           current.simulcastRecv = tokens[i + 1]
             .split(';')
             .map((alt) => alt.split(',')[0].replace(/^~/, ''))
-            .filter((rid) => rid !== '');
+            .filter((rid, j, all) => rid !== '' && all.indexOf(rid) === j);
         }
       } else if (current && name === 'msid') {
         current.msid = true;
@@ -563,6 +566,27 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     (a.channels ?? 1) === (b.channels ?? 1) &&
     (a.sdpFmtpLine ?? '') === (b.sdpFmtpLine ?? '');
 
+  /** An encoding's `scaleResolutionDownTo` (WebRTC Extensions,
+   *  `RTCResolutionRestriction`), its two sizes `unsigned long`s, or what
+   *  says it is wrong: a size of 0, which no frame fits. */
+  const restrictionOf = (value: Any): Any => {
+    if (value === undefined || value === null) return undefined;
+    const r = dictionary(value, 'RTCResolutionRestriction');
+    const size = (v: Any): number => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.trunc(n) >>> 0 : 0;
+    };
+    const out = { maxWidth: size(r.maxWidth), maxHeight: size(r.maxHeight) };
+    return out.maxWidth > 0 && out.maxHeight > 0 ? out : null;
+  };
+  /** Whether a sender's encodings restrict their sizes as one: each
+   *  active one, or none (WebRTC Extensions, `scaleResolutionDownTo`). */
+  const restrictedAlike = (list: Any[]): boolean => {
+    const active = list.filter((e: Any) => e.active !== false);
+    const some = active.filter((e: Any) => e.scaleResolutionDownTo);
+    return some.length === 0 || some.length === active.length;
+  };
+
   /** The most encodings a sender sends at once, as Chrome's simulcast has
    *  them. */
   const MAX_ENCODINGS = 4;
@@ -582,11 +606,16 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       .filter((e: Any) => e.rid !== undefined)
       .map((e: Any) => String(e.rid));
     for (const rid of rids) {
-      if (!/^[A-Za-z0-9_-]{1,16}$/.test(rid)) {
+      // letters and digits, at most 16 (WebRTC 1.0, addTransceiver), where
+      // RFC 8851's grammar takes `-` and `_` as well
+      if (!/^[A-Za-z0-9]{1,16}$/.test(rid)) {
         throw typeError(`Invalid rid '${rid}'.`);
       }
     }
-    if (given.length > 1 && rids.length !== given.length) {
+    // some with a rid and some without is no simulcast anyone can name;
+    // none with one is a sender's encodings all the same (WebRTC 1.0,
+    // addTransceiver)
+    if (rids.length && rids.length !== given.length) {
       throw typeError('Every encoding of a simulcast sender needs a rid.');
     }
     if (new Set(rids).size !== rids.length) {
@@ -640,6 +669,14 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         enc.scalabilityMode = String(e.scalabilityMode);
       if (e.codec !== undefined) enc.codec = { ...e.codec };
       if (kind === 'video') {
+        const to = restrictionOf(e.scaleResolutionDownTo);
+        if (to === null) {
+          throw domError(
+            'scaleResolutionDownTo needs a width and a height above 0.',
+            'OperationError',
+          );
+        }
+        if (to) enc.scaleResolutionDownTo = to;
         if (e.maxFramerate !== undefined)
           enc.maxFramerate = Number(e.maxFramerate);
         enc.scaleResolutionDownBy =
@@ -653,6 +690,12 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       }
       out.push(enc);
     });
+    if (!restrictedAlike(out)) {
+      throw domError(
+        'scaleResolutionDownTo is set on some active encodings and not on others.',
+        'OperationError',
+      );
+    }
     out.splice(kept);
     if (!out.length) {
       out.push(
@@ -740,7 +783,11 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         transactionId: held
           ? s.lastReturned.transactionId
           : String(++transactionSeq),
-        encodings: s.encodings.map((e: Any) => ({ ...e })),
+        encodings: s.encodings.map((e: Any) =>
+          e.scaleResolutionDownTo
+            ? { ...e, scaleResolutionDownTo: { ...e.scaleResolutionDownTo } }
+            : { ...e },
+        ),
         headerExtensions: p.headerExtensions.map((e: Any) => ({ ...e })),
         rtcp: { ...p.rtcp },
         codecs: p.codecs.map((c: Any) => ({ ...c })),
@@ -849,10 +896,30 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           );
         }
       }
+      if (video) {
+        // a restriction no frame fits, or one on some active encodings and
+        // not on others (WebRTC Extensions, `scaleResolutionDownTo`)
+        const restricted = encodings.map((e: Any) => ({
+          active: e?.active,
+          scaleResolutionDownTo: restrictionOf(e?.scaleResolutionDownTo),
+        }));
+        if (
+          restricted.some((e: Any) => e.scaleResolutionDownTo === null) ||
+          !restrictedAlike(restricted)
+        ) {
+          return rejected(
+            domError(
+              'scaleResolutionDownTo is not one every active encoding can take.',
+              'InvalidModificationError',
+            ),
+          );
+        }
+      }
       // webrtc-extensions' `encodingOptions`: one for each encoding, or
-      // none, and a key frame asked of a video sender's
+      // none, and a key frame asked of each encoding it says so of; a
+      // video sender's alone
       const options = _options?.encodingOptions;
-      let keyFrame = false;
+      let keyFrames: boolean[] = [];
       if (video && options !== undefined && options !== null) {
         const list = [...options];
         if (list.length && list.length !== encodings.length) {
@@ -863,7 +930,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
             ),
           );
         }
-        keyFrame = list.some((o: Any) => !!o?.keyFrame);
+        keyFrames = list.map((o: Any) => !!o?.keyFrame);
       }
       const next = encodings.map((e: Any) => {
         const enc: Any = {
@@ -880,6 +947,8 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         }
         if (e.codec !== undefined) enc.codec = { ...e.codec };
         if (video) {
+          const to = restrictionOf(e.scaleResolutionDownTo);
+          if (to) enc.scaleResolutionDownTo = to;
           if (e.maxFramerate !== undefined) {
             enc.maxFramerate = Number(e.maxFramerate);
           }
@@ -897,12 +966,25 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
             s.tx.id,
             req,
             stringify(
-              keyFrame ? { encodings: next, keyFrame } : { encodings: next },
+              keyFrames.some((k) => k)
+                ? { encodings: next, keyFrames }
+                : { encodings: next },
             ),
           ),
         ),
         () => {
-          s.encodings = next;
+          // what a negotiation took away while it was applied stays away,
+          // the rest as the page set it (WebRTC 1.0, 5.2, setParameters)
+          const now = s.encodings;
+          s.encodings =
+            now.length < next.length
+              ? next.filter((e: Any) => now.some((n: Any) => n.rid === e.rid))
+              : next;
+          // and where it took them all, as a rollback to one encoding
+          // with no rid does, what it left stands
+          if (!s.encodings.length) s.encodings = now;
+          s.toldEncodings = stringify(next);
+          tellEncodings(s.tx);
         },
       );
     }
@@ -1889,6 +1971,31 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     return [null, null];
   };
 
+  /** The remote offer a local answer answers: current once it is set. */
+  const remoteOfferOf = (s: Any): string | null =>
+    descriptionsOf(s).currentRemote;
+
+  /** A sender's encodings narrowed to the rids the other side receives, in
+   *  the sender's order, and to the first where it receives none of them
+   *  or no simulcast at all (WebRTC 1.0, 4.4.1.6). */
+  const narrowEncodings = (sender: Any, rids: string[] | null): void => {
+    if (sender.encodings.length <= 1) return;
+    const kept = rids?.length
+      ? sender.encodings.filter((e: Any) => rids.includes(e.rid))
+      : [];
+    sender.encodings = kept.length ? kept : [sender.encodings[0]];
+  };
+
+  /** The host told a sender's encodings where they are not what it was
+   *  last told: what its layers encode and its descriptions name. */
+  const tellEncodings = (t: Any): void => {
+    const sender = apply(wmGet, slots, [t.sender]);
+    const text = stringify(sender.encodings);
+    if (sender.toldEncodings === text) return;
+    sender.toldEncodings = text;
+    call('rtcEncodings', t.id, text);
+  };
+
   /** What a description that was applied left: the connection's mirror of
    *  its transceivers brought up to date, and the tracks it adds and takes
    *  away, to be told. */
@@ -1964,22 +2071,39 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
             delete e.codec;
           }
         }
-        // a remote answer narrows the encodings a sender sends to the rids
-        // its `a=simulcast` receives, in the sender's order, and one with
-        // none to the first, its rid gone (WebRTC 1.0, 4.4.1.6)
-        const section = answered?.find((m) => m.mid === st.mid);
-        if (section && sender.encodings.length > 1) {
-          const rids = section.simulcastRecv;
-          if (rids === null) {
-            const [first] = sender.encodings;
-            delete first.rid;
-            sender.encodings = [first];
-          } else {
-            const kept = sender.encodings.filter((e: Any) =>
-              rids.includes(e.rid),
-            );
-            if (kept.length) sender.encodings = kept;
-          }
+        // an answer narrows the encodings a sender sends to the rids the
+        // remote side's `a=simulcast` receives, in the sender's order, and
+        // one with none to the first: a remote answer's, or the remote
+        // offer a local answer answers (WebRTC 1.0, 4.4.1.6)
+        const section = (
+          answered ?? (remote ? null : sectionsOf(remoteOfferOf(s)))
+        )?.find((m) => m.mid === st.mid);
+        if (section) narrowEncodings(sender, section.simulcastRecv);
+        sender.beforeOffer = null;
+      } else if (remote && type === 'offer' && t.kind === 'video') {
+        // a remote offer that asks to receive simulcast makes a sender of
+        // one encoding with no rid send it, its rids the offer's in its
+        // order, each half the size of the next; one simulcast already
+        // waits for the answer to narrow it (WebRTC 1.0, 4.4.1.6)
+        const sender = apply(wmGet, slots, [t.sender]);
+        const rids = sectionsOf(sdp).find(
+          (m) => m.mid === st.mid,
+        )?.simulcastRecv;
+        const [only] = sender.encodings;
+        if (
+          rids?.length &&
+          sender.encodings.length === 1 &&
+          only.rid === undefined
+        ) {
+          sender.beforeOffer = sender.encodings;
+          const n = Math.min(rids.length, MAX_ENCODINGS);
+          sender.encodings = rids.slice(0, n).map((rid: string, i: number) => ({
+            rid,
+            active: true,
+            priority: only.priority ?? 'low',
+            networkPriority: only.networkPriority ?? 'low',
+            scaleResolutionDownBy: 2 ** (n - i - 1),
+          }));
         }
       }
       t.negotiatedExtensions = st.headerExtensions ?? [];
@@ -2074,6 +2198,17 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       // has a data m-section for (WebRTC 1.0, 4.4.1.6, "if description is
       // of type rollback")
       dropSctp = !current.some((m) => m.kind === 'application' && m.port !== 0);
+      // the encodings a rolled-back remote offer made simulcast are what
+      // they were before it
+      if (remote) {
+        for (const x of s.transceivers) {
+          const sender = apply(wmGet, slots, [apply(wmGet, slots, [x]).sender]);
+          if (sender.beforeOffer) {
+            sender.encodings = sender.beforeOffer;
+            sender.beforeOffer = null;
+          }
+        }
+      }
       if (dropSctp) {
         s.sctpTransport = null;
         channels.sctpDropped(s);
@@ -2112,6 +2247,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         return false;
       });
     }
+    for (const x of s.transceivers) tellEncodings(apply(wmGet, slots, [x]));
     if (state.sctp && !dropSctp) {
       s.sctpTransport = state.sctp.transport;
       channels.sctpNegotiated(

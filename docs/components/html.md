@@ -1576,10 +1576,27 @@ them, and to another peer the host can reach.
   is not. A frame's times are the worker's `performance.now()`, whose
   origin is when the page made the worker.
   Frames clone, with `structuredClone` and across a thread, but not for
-  storage. Not here: a key frame for one simulcast `rid`, since a
-  sender sends one encoding; SFrame; and Chrome's `createEncodedStreams()`,
+  storage. Not here: SFrame; and Chrome's `createEncodedStreams()`,
   whose frames are not detached as they are written and which nothing
   standardizes.
+- **A sender of several encodings sends simulcast**, a stream an
+  encoding. Each is encoded on its own, scaled down by its
+  `scaleResolutionDownBy`, or to fit its `scaleResolutionDownTo` either way
+  round, held to its `maxFramerate`, and sent only while it is `active`,
+  each with its own SSRC and its rid in its packets. werift's sender sends
+  one stream, so the first goes through it and the rest straight onto the
+  transport, with no RTCP of their own; each has an `outbound-rtp` of its
+  own, with its `rid` and `encodingIndex`. A remote offer that receives
+  simulcast gives a video sender of one encoding the offer's rids, once
+  each and the first of each choice, which its rollback takes away; an
+  answer narrows a sender to the rids the other side receives, a remote
+  answer's or the remote offer a local answer answers, and to its first
+  where it receives none, which keeps its rid. A rid with `~` is a stream
+  all the same, and says nothing of `active`. `generateKeyFrame(rid)` asks
+  that stream for a key frame, and `NotFoundError` names one the last
+  negotiation took away. What arrives with no SSRC a description named and
+  no rid is routed by its MID, as RFC 8843 has it, which is how WPT's
+  `simulcast.js` receives each layer on an m-section of its own.
 - **Header extensions are a transceiver's to negotiate** (WebRTC
   Extensions): `getHeaderExtensionsToNegotiate()` lists what a transceiver
   can offer, `setHeaderExtensionsToNegotiate()` stops or starts each (mid

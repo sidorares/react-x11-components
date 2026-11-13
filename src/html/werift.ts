@@ -63,9 +63,9 @@ import type {
   RTCDataChannelInitLike,
   RTCDataChannelLike,
   RTCDescriptionsLike,
-  RTCEncodingLike,
   RTCDirectionLike,
   RTCEncodedFrameLike,
+  RTCEncodingLike,
   RTCHeaderExtensionChoice,
   RTCHeaderExtensionLike,
   RTCRtpParametersLike,
@@ -76,6 +76,11 @@ import type {
   RTCTransceiverState,
   RTCTransformSide,
 } from './rtc.js';
+
+declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
+
+const MID_URI = 'urn:ietf:params:rtp-hdrext:sdes:mid';
+const RID_URI = 'urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id';
 
 // --- werift's shape, the slice read here ------------------------------------
 
@@ -95,6 +100,9 @@ interface WExtension {
 interface WSender {
   setStreams(streams: unknown[]): void;
   replaceTrack(track: unknown | null): Promise<void>;
+  setSendEncodings?(encodings: { rid?: string; active?: boolean }[]): void;
+  /** The rid werift writes into what it sends. */
+  rtpStreamId?: string;
 }
 
 /** What of werift's sender says which codec it sends, which
@@ -719,14 +727,62 @@ class WeriftTransceiver implements RTCTransceiverLike {
   /** Whether werift's sender sends a codec `_sendCodec` chose for it. */
   private _switched = false;
 
+  /**
+   * The sender's encodings, as the page's realm last set them: what its
+   * `MediaSender` encodes a layer for each of, and the rids werift writes
+   * into an offer's `a=rid` and `a=simulcast` lines (`options.simulcast`,
+   * read as an offer is made) and an answer's (`answerSimulcast`).
+   */
   setParameters(parameters: {
     encodings: RTCEncodingLike[];
-    keyFrame?: boolean;
+    keyFrames?: boolean[];
   }): Promise<void> {
-    this._sendCodec = parameters.encodings[0]?.codec ?? null;
+    const encodings = parameters.encodings ?? [];
+    this._sendCodec = encodings[0]?.codec ?? null;
     this._chooseSendCodec();
-    if (parameters.keyFrame) this.keyFrame();
+    this.encodings = encodings.map((e) => ({ ...e }));
+    const rids = this.rids();
+    // encodings with no rid are no streams a receiver could tell apart:
+    // the first is sent
+    this._send?.setEncodings(
+      (rids.length ? encodings : encodings.slice(0, 1)).map((e) => ({
+        ...(e.rid !== undefined ? { rid: e.rid } : {}),
+        active: e.active !== false,
+        ...(e.scaleResolutionDownBy !== undefined
+          ? { scaleResolutionDownBy: e.scaleResolutionDownBy }
+          : {}),
+        ...(e.maxFramerate !== undefined
+          ? { maxFramerate: e.maxFramerate }
+          : {}),
+        ...(e.scaleResolutionDownTo
+          ? { scaleResolutionDownTo: { ...e.scaleResolutionDownTo } }
+          : {}),
+      })),
+    );
+    parameters.keyFrames?.forEach((key, i) => {
+      if (key) this._send?.keyFrameAt(i);
+    });
+    const t = this.t as unknown as {
+      options?: { simulcast?: { rid: string; direction: string }[] };
+    };
+    if (t.options) {
+      t.options.simulcast = rids.length
+        ? rids.map((rid) => ({ rid, direction: 'send' }))
+        : undefined;
+    }
+    // the first layer's rid is werift's to write, and no rid where it has
+    // none: werift keeps the one it was made with
+    const sender = this.t.sender;
+    sender.rtpStreamId = rids.length ? encodings[0]?.rid : undefined;
     return Promise.resolve();
+  }
+  /** Its sender's encodings, last set. */
+  encodings: RTCEncodingLike[] = [];
+  /** The rids its sender sends, where it sends more than one stream. */
+  rids(): string[] {
+    return this.kind === 'video' && this.encodings.length > 1
+      ? this.encodings.flatMap((e) => (e.rid !== undefined ? [e.rid] : []))
+      : [];
   }
 
   /**
@@ -829,6 +885,10 @@ class WeriftTransceiver implements RTCTransceiverLike {
   sendStats() {
     return this._send?.stats() ?? { outbound: {}, source: {} };
   }
+  /** Its sender's simulcast layers beyond the first, for its stats. */
+  sendLayers(): ReturnType<MediaSender['layers']> {
+    return this._send?.layers() ?? [];
+  }
   receiveStats(): Record<string, unknown> {
     return this._receive?.stats() ?? {};
   }
@@ -860,8 +920,8 @@ class WeriftTransceiver implements RTCTransceiverLike {
     if (side === 'sender') this._send?.write(frame);
     else this._receive?.write(frame);
   }
-  keyFrame(): void {
-    this._send?.keyFrame();
+  keyFrame(rid?: string | null): void {
+    this._send?.keyFrame(rid);
   }
   requestKeyFrame(): Promise<void> {
     return this._receive?.requestKeyFrame() ?? Promise.resolve();
@@ -933,6 +993,179 @@ function keepExtensionIds(pc: WPeer): void {
   }
 }
 
+/**
+ * An answer's `a=rid` and `a=simulcast` lines written from what each
+ * sender sends (RFC 8853, 5.3): werift's copy the offer's, turned round,
+ * with a rid named twice and the choices of a stream as they were, where
+ * the answerer sends each rid once and the first of each choice (WebRTC
+ * 1.0, 4.4.1.6: what a remote offer's simulcast makes of the encodings).
+ * An m-section of a sender that sends one stream has none.
+ */
+function answerSimulcast(
+  sdp: string,
+  ridsOf: (mid: string) => string[] | null,
+): string {
+  return answerLines(sdp, (mid) => {
+    const rids = ridsOf(mid);
+    if (rids === null) return null;
+    return rids.length
+      ? [
+          ...rids.map((rid) => `a=rid:${rid} send`),
+          `a=simulcast:send ${rids.join(';')}`,
+        ]
+      : [];
+  });
+}
+
+/** Each m-section's `a=rid` and `a=simulcast` lines, by its mid, where it
+ *  has an `a=simulcast`. */
+function simulcastLines(sdp: string): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const section of sdp.split(/\r?\nm=/).slice(1)) {
+    const lines = section.split(/\r?\n/);
+    const mid = lines
+      .find((l) => l.startsWith('a=mid:'))
+      ?.slice(6)
+      .trim();
+    const kept = lines.filter(
+      (l) => l.startsWith('a=rid:') || l.startsWith('a=simulcast:'),
+    );
+    if (mid !== undefined && kept.some((l) => l.startsWith('a=simulcast:'))) {
+      out.set(
+        mid,
+        kept.map((l) => l.trim()),
+      );
+    }
+  }
+  return out;
+}
+
+/** A description werift read back with the `a=rid` and `a=simulcast`
+ *  lines it was set with in place of what werift wrote of them. */
+function withSimulcast(
+  sdp: string | null,
+  lines: Map<string, string[]> | null,
+): string | null {
+  if (sdp === null || !lines?.size) return sdp;
+  return answerLines(sdp, (mid) => lines.get(mid) ?? null);
+}
+
+/** A description each of whose m-sections has the `a=rid` and
+ *  `a=simulcast` lines `linesOf` gives its mid in place of its own, or its
+ *  own where it gives null. */
+function answerLines(
+  sdp: string,
+  linesOf: (mid: string) => string[] | null,
+): string {
+  const lines = sdp.split('\r\n');
+  const out: string[] = [];
+  let section: string[] | null = null;
+  const flush = () => {
+    if (!section) return;
+    const mid = section.find((l) => l.startsWith('a=mid:'))?.slice(6);
+    const own = mid === undefined ? null : linesOf(mid);
+    if (own === null) out.push(...section);
+    else {
+      const kept = section.filter(
+        (l) => !l.startsWith('a=rid:') && !l.startsWith('a=simulcast:'),
+      );
+      const end = kept.length && kept[kept.length - 1] === '' ? 1 : 0;
+      out.push(...kept.slice(0, kept.length - end), ...own);
+      out.push(...kept.slice(kept.length - end));
+    }
+    section = null;
+  };
+  for (const line of lines) {
+    if (line.startsWith('m=')) {
+      flush();
+      section = [line];
+    } else if (section) section.push(line);
+    else out.push(line);
+  }
+  flush();
+  return out.join('\r\n');
+}
+
+/**
+ * Routes a packet by its MID where nothing else names it (RFC 8843, 9.2).
+ * werift's router reads a packet's SSRC, or its rid, and drops one that
+ * carries neither an SSRC a description named nor a rid: an offer with no
+ * `a=ssrc` lines, as WPT's simulcast harness makes from a browser's, has
+ * every packet dropped. A packet of an unknown SSRC that names the MID of a
+ * receiving transceiver, and no rid, is routed to that receiver as werift
+ * routes a rid it heard, its SSRC kept as one learned from a packet.
+ * werift has no public way to do this, so this wraps its router's
+ * `routeRtp`; a werift without the fields routes as before.
+ */
+function routeByMid(pc: WPeer): void {
+  type Route = (packet: {
+    header: { ssrc: number; extensions: { id: number; payload: Uint8Array }[] };
+  }) => void;
+  const router = (
+    pc as unknown as {
+      router?: {
+        routeRtp?: Route;
+        ssrcTable?: Record<number, unknown>;
+        extIdUriMap?: Record<number, string>;
+        learnedSsrcs?: Set<number>;
+        registerRtpReceiverBySsrc?(
+          t: unknown,
+          params: {
+            encodings: { ssrc: number }[];
+            codecs: WCodec[];
+            headerExtensions: [];
+          },
+        ): void;
+      };
+    }
+  ).router;
+  const route = router?.routeRtp;
+  if (
+    !router ||
+    typeof route !== 'function' ||
+    !router.ssrcTable ||
+    !router.extIdUriMap ||
+    typeof router.registerRtpReceiverBySsrc !== 'function'
+  )
+    return;
+  const decoder = new TextDecoder();
+  router.routeRtp = (packet) => {
+    const { ssrc, extensions } = packet.header;
+    if (!(ssrc in router.ssrcTable!)) {
+      let mid: string | null = null;
+      let rid = false;
+      for (const e of extensions) {
+        const uri = router.extIdUriMap![e.id];
+        if (uri === MID_URI) mid = decoder.decode(e.payload);
+        else if (uri === RID_URI) rid = true;
+      }
+      const t =
+        mid !== null && !rid
+          ? pc
+              .getTransceivers()
+              .find(
+                (x) =>
+                  x.mid === mid &&
+                  !x.stopped &&
+                  (x.currentDirection === 'recvonly' ||
+                    x.currentDirection === 'sendrecv' ||
+                    x.direction === 'recvonly' ||
+                    x.direction === 'sendrecv'),
+              )
+          : undefined;
+      if (t) {
+        router.registerRtpReceiverBySsrc!(t, {
+          encodings: [{ ssrc }],
+          codecs: t.codecs,
+          headerExtensions: [],
+        });
+        router.learnedSsrcs?.add(ssrc);
+      }
+    }
+    route.call(router, packet);
+  };
+}
+
 function codecFor(
   w: WeriftModule,
   c: (typeof OFFERED_CODECS)['audio'][number],
@@ -988,6 +1221,7 @@ class WeriftConnection implements RTCConnectionLike {
     const config = configOf(request, _w, certificates);
     this._pc = new _w.RTCPeerConnection(config);
     keepExtensionIds(this._pc);
+    routeByMid(this._pc);
     keepPreferredCodecs(this._pc);
     const codecs = config.codecs as { audio: WCodec[]; video: WCodec[] };
     this._codecs = [...codecs.audio, ...codecs.video];
@@ -1273,8 +1507,31 @@ class WeriftConnection implements RTCConnectionLike {
     if (side === 'local' && type !== 'rollback') this._checkServers();
     if (type === 'answer' || type === 'pranswer')
       this._noteNegotiated(side, sdp);
+    this._noteSimulcast(side, type, sdp);
     this._offered = false;
     return this._state();
+  }
+
+  /** The `a=rid` and `a=simulcast` lines of each m-section of the remote
+   *  descriptions as they were set: werift writes a stream's choices out
+   *  of what it reads back, and a page reads the description it set. */
+  private _simulcastPending: Map<string, string[]> | null = null;
+  private _simulcastCurrent: Map<string, string[]> | null = null;
+  private _noteSimulcast(
+    side: 'local' | 'remote',
+    type: string,
+    sdp: string,
+  ): void {
+    if (side === 'remote') {
+      if (type === 'rollback') this._simulcastPending = null;
+      else if (type === 'answer') {
+        this._simulcastCurrent = simulcastLines(sdp);
+        this._simulcastPending = null;
+      } else this._simulcastPending = simulcastLines(sdp);
+    } else if (type === 'answer') {
+      this._simulcastCurrent = this._simulcastPending ?? this._simulcastCurrent;
+      this._simulcastPending = null;
+    }
   }
 
   /** Each m-section's header extensions of a local description, into the
@@ -1338,6 +1595,7 @@ class WeriftConnection implements RTCConnectionLike {
         : {}),
     });
     const wrapped = this._wrap(t);
+    void wrapped.setParameters({ encodings: init.sendEncodings });
     wrapped.sendFrom(init.source, track);
     return wrapped;
   }
@@ -1432,7 +1690,14 @@ class WeriftConnection implements RTCConnectionLike {
     }
     try {
       return namingNoStream(
-        restoreUnknown((await this._pc.createAnswer()).sdp, this._unknown),
+        restoreUnknown(
+          answerSimulcast((await this._pc.createAnswer()).sdp, (mid) => {
+            const t = this._pc.getTransceivers().find((x) => x.mid === mid);
+            const w = t ? this._wrapped.get(t) : undefined;
+            return w ? w.rids() : null;
+          }),
+          this._unknown,
+        ),
       );
     } catch (error) {
       throw asRtcError(error);
@@ -1501,8 +1766,14 @@ class WeriftConnection implements RTCConnectionLike {
     return {
       currentLocal: local(pc.currentLocalDescription),
       pendingLocal: local(pc.pendingLocalDescription),
-      currentRemote: as(pc.currentRemoteDescription),
-      pendingRemote: as(pc.pendingRemoteDescription),
+      currentRemote: withSimulcast(
+        as(pc.currentRemoteDescription),
+        this._simulcastCurrent,
+      ),
+      pendingRemote: withSimulcast(
+        as(pc.pendingRemoteDescription),
+        this._simulcastPending,
+      ),
     };
   }
 
@@ -1537,6 +1808,10 @@ class WeriftConnection implements RTCConnectionLike {
     }
     const list = await this._net.stats();
     const byId = new Map(list.map((s) => [s.id, s]));
+    // a simulcast sender's layers beyond the first, which werift's stats
+    // know nothing of: each an outbound-rtp of its own, of its own SSRC,
+    // rid and index (WebRTC Statistics, 5.6)
+    const layers: RTCStatsLike[] = [];
     const live = list.filter((s) => {
       if (s.type === 'outbound-rtp' || s.type === 'inbound-rtp') {
         const seen = (s.type === 'outbound-rtp' ? senders : receivers).get(
@@ -1558,6 +1833,24 @@ class WeriftConnection implements RTCConnectionLike {
           Object.assign(s, outbound);
           const media = byId.get(String(s.mediaSourceId));
           if (media?.type === 'media-source') Object.assign(media, source);
+          for (const layer of seen.w.sendLayers()) {
+            const copy: RTCStatsLike = {
+              ...s,
+              ...layer.outbound,
+              id: `${s.id}-${layer.ssrc}`,
+              ssrc: layer.ssrc,
+              encodingIndex: layer.encodingIndex,
+              nackCount: 0,
+              firCount: 0,
+              pliCount: 0,
+              retransmittedPacketsSent: 0,
+              retransmittedBytesSent: 0,
+            };
+            delete copy.remoteId;
+            delete copy.rid;
+            if (layer.rid !== undefined) copy.rid = layer.rid;
+            layers.push(copy);
+          }
         } else Object.assign(s, seen.w.receiveStats());
         return true;
       }
@@ -1567,6 +1860,7 @@ class WeriftConnection implements RTCConnectionLike {
     });
     const playout = audioPlayout(live);
     if (playout) live.push(playout);
+    live.push(...layers);
     const ids = new Set(live.map((s) => s.id));
     const kept = live.filter(
       (s) =>
@@ -1592,12 +1886,12 @@ class WeriftConnection implements RTCConnectionLike {
     side: 'sender' | 'receiver',
   ): Promise<RTCStatsLike[]> {
     const ssrcs = side === 'receiver' ? t.receiverSsrcs() : null;
-    const ssrc = t.senderSsrc;
+    const sent = new Set([t.senderSsrc, ...t.sendLayers().map((l) => l.ssrc)]);
     const all = await this.stats();
     const byId = new Map(all.map((s) => [s.id, s]));
     const queue = all.filter((s) =>
       side === 'sender'
-        ? s.type === 'outbound-rtp' && Number(s.ssrc) === ssrc
+        ? s.type === 'outbound-rtp' && sent.has(Number(s.ssrc))
         : s.type === 'inbound-rtp' && ssrcs!.has(Number(s.ssrc)),
     );
     const out = new Map<string, RTCStatsLike>();

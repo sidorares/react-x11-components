@@ -378,17 +378,41 @@ export class PagePeers {
         const t = this._transceivers.get(Number(a));
         const parameters = json(c) as {
           encodings?: unknown[];
-          keyFrame?: boolean;
+          keyFrames?: boolean[];
         } | null;
         this._settle(
           Number(b),
           t
             ? t.transceiver.setParameters({
                 encodings: (parameters?.encodings ?? []) as never,
-                ...(parameters?.keyFrame ? { keyFrame: true } : {}),
+                keyFrames: parameters?.keyFrames ?? [],
               })
             : Promise.resolve(),
         );
+        return null;
+      }
+      case 'rtcEncodings': {
+        // a sender's encodings, as a description or `setParameters` left
+        // them in the page's realm: what its layers encode
+        const t = this._transceivers.get(Number(a));
+        const encodings = json(b);
+        if (t && Array.isArray(encodings)) {
+          t.transceiver
+            .setParameters({ encodings: encodings as never })
+            .catch(() => {});
+          // a sender's transform hears the rids it may ask a key frame of
+          for (const on of this._transforms.values()) {
+            if (on.tx === Number(a) && on.side === 'sender') {
+              this._seams.toWorker?.(on.worker, {
+                kind: 'rtc',
+                op: 'tf',
+                tf: on.tf,
+                e: 'rids',
+                v: t.transceiver.rids?.() ?? [],
+              });
+            }
+          }
+        }
         return null;
       }
       case 'rtcOffer': {
@@ -594,7 +618,11 @@ export class PagePeers {
     }
     const on: Transform = { tf, tx, side, worker };
     this._transforms.set(tf, on);
-    tell(on, 'attach', { side, kind: t.transceiver.kind });
+    tell(on, 'attach', {
+      side,
+      kind: t.transceiver.kind,
+      rids: side === 'sender' ? (t.transceiver.rids?.() ?? []) : [],
+    });
     t.transceiver.transform?.(side, (frame) => {
       if (this._transforms.get(tf) === on) tell(on, 'frame', frameWire(frame));
     });
@@ -610,7 +638,7 @@ export class PagePeers {
       const frame = frameOfWire(v);
       if (frame) t.writeFrame?.(on.side, frame);
     } else if (e === 'key') {
-      t.keyFrame?.();
+      t.keyFrame?.(typeof v === 'string' ? v : null);
     } else if (e === 'pli') {
       void (t.requestKeyFrame?.() ?? Promise.resolve())
         .catch(() => {})

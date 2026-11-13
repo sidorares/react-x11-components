@@ -1065,7 +1065,7 @@ on Node 22 and later and on Bun, so `webrtc-werift.test.ts` skips on Node
 `src/html/rtc-codecs.ts`, which `getCapabilities` answers from before
 werift is loaded. Where werift differs from a browser the adapter
 corrects what it can, and docs/prd-webrtc.md lists the rest as issues to
-file upstream. **The adapter reaches into werift three times**, each for what
+file upstream. **The adapter reaches into werift four times**, each for what
 werift has no public way to do, and a werift without the field goes on as
 before. An empty message, which werift sends as nothing, is put on its
 `RTCSctpTransport`'s own send queue as RFC 8831's one byte under payload
@@ -1075,8 +1075,16 @@ overtakes a retransmission, and werift's far side drops what arrives after
 one. And a connection whose page names no STUN server asks none
 (`_gatherFromNamed`, clearing each transport's `stunServer`): werift falls back
 to Google's whatever `iceServers` says, which is a request nobody asked for and
-five seconds of `setLocalDescription` on a network that does not answer. Ask
-werift for each of these before reaching in anywhere else.
+five seconds of `setLocalDescription` on a network that does not answer. A
+packet of an SSRC no description named, with no rid, is routed by its MID
+(`routeByMid`, wrapping its router's `routeRtp`): werift drops it, and WPT's
+simulcast harness receives every layer so. Ask werift for each of these
+before reaching in anywhere else. Simulcast itself uses only what werift
+has in the open: werift's sender sends one stream, so a sender's other
+layers go onto its DTLS transport through `sendRtp` with SSRCs of their own
+(`MediaSender._sendVideo`), and the rids an offer writes are its
+transceiver's `options.simulcast`. **Anything new a layer sends goes through
+`_sendVideo`**, which writes its MID and rid where werift would.
 
 `publicSuffixList()` in `src/html/cookies.ts` is the fourth: `tldts`, the
 Public Suffix List with its private domains, is an **optional peer** and a

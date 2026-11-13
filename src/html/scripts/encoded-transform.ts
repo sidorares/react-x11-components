@@ -359,20 +359,26 @@ export function installEncodedTransform(
           'generateKeyFrame() is a video sender transform’s.',
         );
       }
-      if (rid !== undefined) {
+      let named: string | null = null;
+      if (rid !== undefined && rid !== null) {
         const text = String(rid);
         // RFC 8851's rid-syntax, which RFC 8852's narrows
         if (!/^[A-Za-z0-9]{1,255}$/.test(text)) {
           return rejected('NotAllowedError', `The rid '${text}' is not valid.`);
         }
-        return rejected(
-          'NotFoundError',
-          `The sender has no encoding with the rid '${text}'.`,
-        );
+        // a rid of a stream the sender sends: its simulcast's, as the last
+        // negotiation left them (4.3.1)
+        if (!s.rids.includes(text)) {
+          return rejected(
+            'NotFoundError',
+            `The sender has no encoding with the rid '${text}'.`,
+          );
+        }
+        named = text;
       }
       return new Promise((resolve) => {
-        s.keyWaiters.push(resolve);
-        if (s.attached) call('rtcTfAsk', s.n, 'key', 'null');
+        s.keyWaiters.push({ rid: named, resolve });
+        if (s.attached) call('rtcTfAsk', s.n, 'key', JSON.stringify(named));
       });
     }
     sendKeyFrameRequest(): Promise<void> {
@@ -491,6 +497,9 @@ export function installEncodedTransform(
       lastWritten: 0,
       controller: null,
       keyWaiters: [] as Any[],
+      /** The rids of the streams its sender sends, where it sends more
+       *  than one. */
+      rids: [] as string[],
       requestWaiters: new Map<number, Any>(),
       requests: 0,
     };
@@ -523,8 +532,13 @@ export function installEncodedTransform(
       s.attached = true;
       s.side = v?.side === 'receiver' ? 'receiver' : 'sender';
       s.kind = v?.kind === 'audio' ? 'audio' : 'video';
+      s.rids = Array.isArray(v?.rids) ? v.rids.map(String) : [];
       // a key frame asked for before the transform was on its sender
-      if (s.keyWaiters.length) call('rtcTfAsk', s.n, 'key', 'null');
+      for (const w of s.keyWaiters) {
+        call('rtcTfAsk', s.n, 'key', JSON.stringify(w.rid));
+      }
+    } else if (e === 'rids') {
+      s.rids = Array.isArray(v) ? v.map(String) : [];
     } else if (e === 'detach') {
       s.attached = false;
     } else if (e === 'frame') {
@@ -555,7 +569,16 @@ export function installEncodedTransform(
       // the frame is enqueued (4.3.1)
       if (kind === 'video' && type === 'key' && s.keyWaiters.length) {
         const ts = Number(metadata.rtpTimestamp ?? 0);
-        for (const resolve of s.keyWaiters.splice(0)) resolve(ts);
+        // a key frame of the stream each asked of: its rid's, or the
+        // first's where it named none
+        const of = metadata.rid === undefined ? null : String(metadata.rid);
+        const first = s.rids[0] ?? null;
+        s.keyWaiters = s.keyWaiters.filter((w: Any) => {
+          const mine =
+            w.rid === null ? of === first || of === null : w.rid === of;
+          if (mine) w.resolve(ts);
+          return !mine;
+        });
       }
       try {
         // a transformer that reads none of them is dropped what arrives

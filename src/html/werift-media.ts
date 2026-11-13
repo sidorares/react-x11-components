@@ -62,6 +62,7 @@ declare const setInterval: (fn: () => void, ms: number) => unknown;
 declare const setTimeout: (fn: () => void, ms: number) => unknown;
 declare const clearInterval: (handle: unknown) => void;
 declare const performance: { now(): number; timeOrigin: number };
+declare const TextEncoder: new () => { encode(text: string): Uint8Array };
 declare const Buffer: {
   from(bytes: ArrayBufferLike, offset: number, length: number): Uint8Array;
 };
@@ -87,6 +88,7 @@ export interface WRtpHeader {
   payloadType: number;
   csrc: number[];
   extensions: { id: number; payload: Uint8Array }[];
+  readonly serializeSize?: number;
 }
 
 export interface WRtpPacket {
@@ -113,7 +115,12 @@ export interface WMediaTransceiver {
     readonly codec?: WMediaCodec;
     readonly stopped?: boolean;
     readonly sendSuppressed?: boolean;
-    readonly dtlsTransport?: { readonly state: string };
+    readonly dtlsTransport?: {
+      readonly state: string;
+      /** RTP onto the transport, encrypted: what a simulcast layer werift's
+       *  sender does not send goes by. */
+      sendRtp?(payload: Uint8Array, header: WRtpHeader): Promise<number>;
+    };
     readonly onKeyFrameRequest?: WEvent<[string]>;
     readonly onPictureLossIndication?: WEvent<[]>;
   };
@@ -331,6 +338,165 @@ const seqAfter = (a: number, b: number): boolean =>
 
 // --- sending ------------------------------------------------------------------
 
+/** One of a sender's encodings, as the page's realm hands it on: what a
+ *  layer of a simulcast sender encodes (WebRTC 1.0, 5.2). */
+export interface SendEncoding {
+  rid?: string;
+  active: boolean;
+  scaleResolutionDownBy?: number;
+  scaleResolutionDownTo?: { maxWidth: number; maxHeight: number };
+  maxFramerate?: number;
+}
+
+/** What a layer of a video sender keeps: its encoding, its encoder and
+ *  packetizer, the SSRC and sequence numbers it sends with, and what it
+ *  encoded and sent, which its outbound-rtp reports. */
+interface VideoLayer {
+  encoding: SendEncoding;
+  /** Null for the first, which werift's sender sends with its own. */
+  ssrc: number | null;
+  seq: number;
+  codec: VideoCodecName | null;
+  encoder: Promise<VideoEncoderLike | null> | null;
+  packetizer: WPacketizer | null;
+  packetizerKey: string;
+  wantKey: boolean;
+  busy: boolean;
+  /** When it last took a frame, which `maxFramerate` holds it to. */
+  took: number;
+  count: {
+    framesEncoded: number;
+    keyFramesEncoded: number;
+    /** The PSNR of each frame the encoder measured, added up, and how
+     *  many it measured (WebRTC Statistics, `psnrSum`). */
+    psnr: { y: number; u: number; v: number };
+    psnrMeasurements: number;
+    /** The quantizers frames were coded with, added up, where the encoder
+     *  said (`qpSum`). */
+    qpSum: number;
+    qpFrames: number;
+    framesSent: number;
+    totalEncodeTime: number;
+    width: number;
+    height: number;
+    sent: number[];
+    packetsSent: number;
+    bytesSent: number;
+    headerBytesSent: number;
+  };
+}
+
+const newLayer = (encoding: SendEncoding): VideoLayer => ({
+  encoding,
+  ssrc: null,
+  seq: randomStart() & 0xffff,
+  codec: null,
+  encoder: null,
+  packetizer: null,
+  packetizerKey: '',
+  wantKey: true,
+  busy: false,
+  took: -Infinity,
+  count: {
+    framesEncoded: 0,
+    keyFramesEncoded: 0,
+    psnr: { y: 0, u: 0, v: 0 },
+    psnrMeasurements: 0,
+    qpSum: 0,
+    qpFrames: 0,
+    framesSent: 0,
+    totalEncodeTime: 0,
+    width: 0,
+    height: 0,
+    sent: [],
+    packetsSent: 0,
+    bytesSent: 0,
+    headerBytesSent: 0,
+  },
+});
+
+/** A layer's encoding identifies it by its rid, and the one encoding of a
+ *  sender with none by having none. */
+const layerKey = (e: SendEncoding): string => e.rid ?? '';
+
+/** How far a layer scales a frame of a size down: to fit its
+ *  `scaleResolutionDownTo` either way round, keeping its shape, where it
+ *  has one, else by its `scaleResolutionDownBy`; never up. */
+export function downscaleOf(
+  e: SendEncoding,
+  width: number,
+  height: number,
+): number {
+  const to = e.scaleResolutionDownTo;
+  if (!to) return Math.max(1, e.scaleResolutionDownBy ?? 1);
+  let { maxWidth, maxHeight } = to;
+  if (width >= height !== maxWidth >= maxHeight) {
+    [maxWidth, maxHeight] = [maxHeight, maxWidth];
+  }
+  return Math.max(1, width / maxWidth, height / maxHeight);
+}
+
+/** An I420 frame scaled down by `by` (`scaleResolutionDownBy`), each
+ *  sample the mean of the box it stands for: what a lower layer of a
+ *  simulcast sender encodes. */
+export function scaledDown(
+  frame: MediaVideoFrame,
+  by: number,
+): MediaVideoFrame {
+  if (!(by > 1)) return frame;
+  const f = toI420(frame);
+  // a size a hair under a whole pixel by its arithmetic is that pixel
+  const width = Math.max(1, Math.floor(f.width / by + 1e-9));
+  const height = Math.max(1, Math.floor(f.height / by + 1e-9));
+  if (width === f.width && height === f.height) return f;
+  const plane = (
+    src: Uint8Array,
+    stride: number,
+    sw: number,
+    sh: number,
+    dw: number,
+    dh: number,
+  ): Uint8Array => {
+    const out = new Uint8Array(dw * dh);
+    const fx = sw / dw;
+    const fy = sh / dh;
+    for (let y = 0; y < dh; y++) {
+      const y0 = Math.floor(y * fy);
+      const y1 = Math.max(y0 + 1, Math.min(sh, Math.floor((y + 1) * fy)));
+      for (let x = 0; x < dw; x++) {
+        const x0 = Math.floor(x * fx);
+        const x1 = Math.max(x0 + 1, Math.min(sw, Math.floor((x + 1) * fx)));
+        let sum = 0;
+        for (let yy = y0; yy < y1; yy++) {
+          const row = yy * stride;
+          for (let xx = x0; xx < x1; xx++) sum += src[row + xx];
+        }
+        out[y * dw + x] = Math.round(sum / ((y1 - y0) * (x1 - x0)));
+      }
+    }
+    return out;
+  };
+  const cw = (width + 1) >> 1;
+  const ch = (height + 1) >> 1;
+  const scw = (f.width + 1) >> 1;
+  const sch = (f.height + 1) >> 1;
+  return {
+    ...f,
+    format: 'I420',
+    width,
+    height,
+    planes: [
+      plane(f.planes[0], f.strides[0], f.width, f.height, width, height),
+      plane(f.planes[1], f.strides[1], scw, sch, cw, ch),
+      plane(f.planes[2], f.strides[2], scw, sch, cw, ch),
+    ],
+    strides: [width, cw, cw],
+  };
+}
+
+const MID_URI = 'urn:ietf:params:rtp-hdrext:sdes:mid';
+const RID_URI = 'urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id';
+
 /**
  * What a transceiver's sender sends: the frames of the source it is handed,
  * encoded in the codec the last description negotiated, as RTP written into
@@ -343,25 +509,9 @@ export class MediaSender {
   private _track: WMediaTrack | null = null;
   private _stopped = false;
   private _sending = false;
-  private _wantKey = true;
   private _repeat: unknown = null;
   /** What it read and encoded, which its stats report. */
   private readonly _count = {
-    framesEncoded: 0,
-    keyFramesEncoded: 0,
-    /** The PSNR of each frame the encoder measured, added up, and how
-     *  many it measured (WebRTC Statistics, `psnrSum`). */
-    psnr: { y: 0, u: 0, v: 0 },
-    psnrMeasurements: 0,
-    /** The quantizers frames were coded with, added up, where the encoder
-     *  said (`qpSum`). */
-    qpSum: 0,
-    qpFrames: 0,
-    framesSent: 0,
-    totalEncodeTime: 0,
-    width: 0,
-    height: 0,
-    sent: [] as number[],
     read: [] as number[],
     sourceFrames: 0,
     sourceWidth: 0,
@@ -373,12 +523,14 @@ export class MediaSender {
   };
 
   // video
-  private _videoCodec: VideoCodecName | null = null;
-  private _video: Promise<VideoEncoderLike | null> | null = null;
+  /** One a sender encoding (`setEncodings`): the first is sent from the
+   *  werift track, the rest straight onto the DTLS transport. */
+  private _layers: VideoLayer[] = [newLayer({ active: true })];
   private _latest: MediaVideoFrame | null = null;
   private _encodedLatest = false;
   private _lastSentAt = 0;
   private _busy = false;
+  // audio's
   private _packetizer: WPacketizer | null = null;
   private _packetizerKey = '';
   private readonly _start = randomStart();
@@ -397,7 +549,7 @@ export class MediaSender {
     private readonly _t: WMediaTransceiver,
   ) {
     const key = () => {
-      this._wantKey = true;
+      for (const l of this._layers) l.wantKey = true;
       this._encodedLatest = false;
       this._pump();
     };
@@ -415,7 +567,7 @@ export class MediaSender {
     this._track = track;
     this._latest = null;
     this._encodedLatest = false;
-    this._wantKey = true;
+    for (const l of this._layers) l.wantKey = true;
     this._pending = new Float32Array(0);
     if (!source || this._stopped) {
       this._stopRepeat();
@@ -448,9 +600,8 @@ export class MediaSender {
     if (this._stopped) return;
     this.attach(null, null);
     this._stopped = true;
-    void this._video?.then((e) => e?.close());
+    for (const l of this._layers) this._closeLayer(l);
     this._audio?.close();
-    this._video = null;
     this._audio = null;
     // one still being made is closed as it comes (`_chunk`): the codecs'
     // thread ends with its last codec, and a codec kept here never ends
@@ -473,32 +624,54 @@ export class MediaSender {
     this._transform = frames;
   }
 
-  /** `generateKeyFrame()`: the next frame encoded is a key frame. */
-  keyFrame(): void {
+  /** `generateKeyFrame(rid)`: the next frame the layer of that rid
+   *  encodes, or the first layer's where it names none, is a key frame. */
+  keyFrame(rid?: string | null): void {
     if (this._t.kind !== 'video') return;
-    this._wantKey = true;
+    const layer =
+      rid === undefined || rid === null
+        ? this._layers[0]
+        : this._layers.find((l) => l.encoding.rid === rid);
+    if (!layer) return;
+    layer.wantKey = true;
     this._encodedLatest = false;
     this._pump();
   }
 
-  /** A frame a transform wrote back: sent, at its RTP timestamp. */
+  /** `setParameters`' `encodingOptions`: the next frame of the layer at
+   *  that index is a key frame. */
+  keyFrameAt(index: number): void {
+    const layer = this._layers[index];
+    if (this._t.kind !== 'video' || !layer) return;
+    layer.wantKey = true;
+    this._encodedLatest = false;
+    this._pump();
+  }
+
+  /** A frame a transform wrote back: sent, at its RTP timestamp, by the
+   *  layer whose SSRC it carries. */
   write(frame: RTCEncodedFrameLike): void {
     if (frame.kind !== this._t.kind || !frame.data.length) return;
     if (!this._sendable()) return;
     const codec = this._t.sender.codec;
     if (!codec || !this._track) return;
+    const time = Number(frame.metadata.rtpTimestamp) >>> 0;
+    const captured = pageTime();
+    if (this._t.kind === 'video') {
+      const ssrc = Number(frame.metadata.synchronizationSource) >>> 0;
+      const layer =
+        this._layers.find((l) => l.ssrc === ssrc) ?? this._layers[0];
+      if (!layer) return;
+      this._sendVideo(layer, codec, bytes(frame.data), time, captured);
+      return;
+    }
     const packetizer = this._packetizerFor(codec);
     if (!packetizer) return;
-    const time = Number(frame.metadata.rtpTimestamp) >>> 0;
-    const level =
-      this._t.kind === 'audio'
-        ? this._t.headerExtensions.find((e) => e.uri === AUDIO_LEVEL)
-        : undefined;
+    const level = this._t.headerExtensions.find((e) => e.uri === AUDIO_LEVEL);
     const loudness =
       typeof frame.metadata.audioLevel === 'number'
         ? dbovOf(frame.metadata.audioLevel)
         : 127;
-    const captured = pageTime();
     for (const packet of this._stamped(
       packetizer.packetize(bytes(frame.data), time),
       captured,
@@ -510,10 +683,6 @@ export class MediaSender {
         });
       }
       this._track.writeRtp(packet);
-    }
-    if (this._t.kind === 'video') {
-      this._count.framesSent += 1;
-      recent(this._count.sent).push(performance.now());
     }
   }
 
@@ -540,6 +709,7 @@ export class MediaSender {
     key: boolean,
     rtpTimestamp: number,
     extra: Record<string, unknown>,
+    ssrc = this._t.sender.ssrc,
   ): RTCEncodedFrameLike {
     const codec = this._t.sender.codec!;
     return {
@@ -547,7 +717,7 @@ export class MediaSender {
       type: key ? 'key' : 'delta',
       data: data.slice(),
       metadata: {
-        synchronizationSource: this._t.sender.ssrc >>> 0,
+        synchronizationSource: ssrc >>> 0,
         payloadType: codec.payloadType ?? 96,
         contributingSources: [],
         rtpTimestamp,
@@ -571,26 +741,94 @@ export class MediaSender {
       s.dtlsTransport?.state === 'connected';
     // a run of sending starts with a key frame, which is what a receiver
     // that has heard nothing yet can begin decoding at
-    if (ok && !this._sending) this._wantKey = true;
+    if (ok && !this._sending) for (const l of this._layers) l.wantKey = true;
     this._sending = ok;
     return ok;
+  }
+
+  // --- encodings ------------------------------------------------------------
+
+  /**
+   * The sender's encodings, as the page's realm last set them: by
+   * `addTransceiver`, a description that made it simulcast or narrowed it,
+   * or `setParameters`. A video sender encodes a layer for each, each
+   * scaled down by its `scaleResolutionDownBy`, held to its
+   * `maxFramerate`, and sent only while `active`; a layer keeps its
+   * encoder and its SSRC while its rid stays. The first is sent from the
+   * werift track, with werift's SSRC; werift's sender sends one stream
+   * (its "sender simulcast unsupported"), so each other goes onto the DTLS
+   * transport with one of its own, the MID and the rid in its header
+   * (RFC 8852, 3), as a browser's simulcast sends it.
+   */
+  setEncodings(encodings: SendEncoding[]): void {
+    const next = this._t.kind === 'video' ? encodings : encodings.slice(0, 1);
+    if (!next.length) return;
+    const was = this._layers;
+    this._layers = next.map((e, i) => {
+      const found =
+        was.find((l) => layerKey(l.encoding) === layerKey(e)) ??
+        (next.length === 1 && was.length === 1 ? was[0] : undefined);
+      const layer = found ?? newLayer(e);
+      // one that went from not sending to sending starts with a key frame
+      if (found && !found.encoding.active && e.active) layer.wantKey = true;
+      layer.encoding = { ...e };
+      const ssrc = i === 0 ? null : (layer.ssrc ?? randomStart());
+      if (ssrc !== layer.ssrc) layer.wantKey = true;
+      layer.ssrc = ssrc;
+      return layer;
+    });
+    for (const l of was) if (!this._layers.includes(l)) this._closeLayer(l);
+    this._encodedLatest = false;
+    this._pump();
+  }
+
+  private _closeLayer(l: VideoLayer): void {
+    void l.encoder?.then((e) => e?.close());
+    l.encoder = null;
+    l.codec = null;
+  }
+
+  /** The layers beyond the first: the outbound-rtp each has of its own,
+   *  which werift's stats have nothing of. */
+  layers(): {
+    ssrc: number;
+    rid?: string;
+    encodingIndex: number;
+    outbound: Record<string, unknown>;
+  }[] {
+    const out = [];
+    for (const [i, l] of this._layers.entries()) {
+      if (l.ssrc === null) continue;
+      out.push({
+        ssrc: l.ssrc,
+        ...(l.encoding.rid !== undefined ? { rid: l.encoding.rid } : {}),
+        encodingIndex: i,
+        outbound: {
+          ...this._videoStats(l),
+          packetsSent: l.count.packetsSent,
+          bytesSent: l.count.bytesSent,
+          headerBytesSent: l.count.headerBytesSent,
+        },
+      });
+    }
+    return out;
   }
 
   /**
    * What it adds to its outbound-rtp and to its track's media-source stats
    * (WebRTC Statistics, 5.6 and 5.12): what its source gave and what it
-   * encoded and sent, a video's frames and sizes, an audio's level.
+   * encoded and sent, a video's frames and sizes, an audio's level. A
+   * video's are its first layer's, with that layer's rid and index.
    */
   stats(): {
     outbound: Record<string, unknown>;
     source: Record<string, unknown>;
   } {
     const c = this._count;
-    const now = performance.now();
     if (this._t.kind === 'audio') {
       return {
         outbound: {
-          active: !this._stopped,
+          active: !this._stopped && this._layers[0].encoding.active,
           // what the encoder is set to: Opus at 32 kb/s (`OpusEncoder`),
           // G.711 at its one rate
           ...(this._audioCodec
@@ -604,39 +842,13 @@ export class MediaSender {
         },
       };
     }
+    const first = this._layers[0];
     return {
       outbound: {
-        active: !this._stopped,
-        framesEncoded: c.framesEncoded,
-        keyFramesEncoded: c.keyFramesEncoded,
-        framesSent: c.framesSent,
-        hugeFramesSent: 0,
-        totalEncodeTime: c.totalEncodeTime,
-        totalPacketSendDelay: 0,
-        encoderImplementation: 'libvpx',
-        powerEfficientEncoder: false,
-        ...(c.psnrMeasurements
-          ? { psnrSum: { ...c.psnr }, psnrMeasurements: c.psnrMeasurements }
-          : {}),
-        ...(c.qpFrames ? { qpSum: c.qpSum } : {}),
-        // one spatial layer and one temporal one is all it encodes
-        scalabilityMode: 'L1T1',
-        qualityLimitationReason: 'none',
-        qualityLimitationDurations: {
-          none: (now - c.since) / 1000,
-          cpu: 0,
-          bandwidth: 0,
-          other: 0,
-        },
-        qualityLimitationResolutionChanges: 0,
-        ...(c.width
-          ? {
-              // what the encoder is set to; nothing adapts it
-              targetBitrate: bitRateFor(c.width, c.height),
-              frameWidth: c.width,
-              frameHeight: c.height,
-              framesPerSecond: recent(c.sent).length,
-            }
+        ...this._videoStats(first),
+        encodingIndex: 0,
+        ...(first.encoding.rid !== undefined
+          ? { rid: first.encoding.rid }
           : {}),
       },
       source: {
@@ -646,6 +858,45 @@ export class MediaSender {
           ? { width: c.sourceWidth, height: c.sourceHeight }
           : {}),
       },
+    };
+  }
+
+  private _videoStats(l: VideoLayer): Record<string, unknown> {
+    const c = l.count;
+    const now = performance.now();
+    return {
+      active: !this._stopped && l.encoding.active,
+      framesEncoded: c.framesEncoded,
+      keyFramesEncoded: c.keyFramesEncoded,
+      framesSent: c.framesSent,
+      hugeFramesSent: 0,
+      totalEncodeTime: c.totalEncodeTime,
+      totalPacketSendDelay: 0,
+      encoderImplementation: 'libvpx',
+      powerEfficientEncoder: false,
+      ...(c.psnrMeasurements
+        ? { psnrSum: { ...c.psnr }, psnrMeasurements: c.psnrMeasurements }
+        : {}),
+      ...(c.qpFrames ? { qpSum: c.qpSum } : {}),
+      // one spatial layer and one temporal one is all a layer encodes
+      scalabilityMode: 'L1T1',
+      qualityLimitationReason: 'none',
+      qualityLimitationDurations: {
+        none: (now - this._count.since) / 1000,
+        cpu: 0,
+        bandwidth: 0,
+        other: 0,
+      },
+      qualityLimitationResolutionChanges: 0,
+      ...(c.width
+        ? {
+            // what the encoder is set to; nothing adapts it
+            targetBitrate: bitRateFor(c.width, c.height),
+            frameWidth: c.width,
+            frameHeight: c.height,
+            framesPerSecond: recent(c.sent).length,
+          }
+        : {}),
     };
   }
 
@@ -671,116 +922,238 @@ export class MediaSender {
     this._pump();
   }
 
-  private _encoder(): Promise<VideoEncoderLike | null> | null {
+  private _encoder(layer: VideoLayer): Promise<VideoEncoderLike | null> | null {
     const mime = this._t.sender.codec?.mimeType ?? '';
     const codec = videoCodecOf(mime);
     if (!codec) return null;
-    if (codec !== this._videoCodec || !this._video) {
-      void this._video?.then((e) => e?.close());
-      this._videoCodec = codec;
-      this._video = videoEncoder(codec);
-      this._wantKey = true;
+    if (codec !== layer.codec || !layer.encoder) {
+      void layer.encoder?.then((e) => e?.close());
+      layer.codec = codec;
+      layer.encoder = videoEncoder(codec);
+      layer.wantKey = true;
     }
-    return this._video;
+    return layer.encoder;
+  }
+
+  /** Whether a layer takes a frame now: it is active, and its
+   *  `maxFramerate` has let enough time pass since its last. */
+  private _due(layer: VideoLayer, now: number): boolean {
+    const e = layer.encoding;
+    if (!e.active) return false;
+    if (e.maxFramerate === undefined) return true;
+    if (!(e.maxFramerate > 0)) return false;
+    // a frame early by a few milliseconds of the source's own jitter is
+    // not a frame too many
+    return now - layer.took >= 1000 / e.maxFramerate - 4;
   }
 
   private _pump(): void {
     if (this._busy || this._encodedLatest || !this._latest) return;
     if (!this._sendable()) return;
-    const making = this._encoder();
-    if (!making) return;
+    if (!videoCodecOf(this._t.sender.codec?.mimeType ?? '')) return;
     const frame = this._latest;
-    const key = this._wantKey;
     this._encodedLatest = true;
-    this._busy = true;
     // the encoder's clock only goes forward; RTP's starts anywhere and
     // wraps (RFC 3550, 5.1)
     const ticks = Math.round((performance.now() - this._clock) * 90);
     const time = (this._start + ticks) >>> 0;
     const captured = pageTime();
-    void making
-      .then(async (encoder) => {
-        if (!encoder || !this._sendable()) return;
-        const began = performance.now();
-        const chunks = await encoder.encode(frame, key, ticks);
-        const c = this._count;
-        c.totalEncodeTime += (performance.now() - began) / 1000;
-        c.framesEncoded += chunks.length ? 1 : 0;
-        c.keyFramesEncoded += chunks.some((x) => x.key) ? 1 : 0;
-        for (const chunk of chunks) {
-          if (chunk.qp !== undefined) {
-            c.qpSum += chunk.qp;
-            c.qpFrames += 1;
-          }
-          if (!chunk.psnr) continue;
-          c.psnr.y += chunk.psnr.y;
-          c.psnr.u += chunk.psnr.u;
-          c.psnr.v += chunk.psnr.v;
-          c.psnrMeasurements += 1;
-        }
-        c.width = frame.width;
-        c.height = frame.height;
-        if (!chunks.length) return;
-        if (key && chunks.some((c) => c.key)) this._wantKey = false;
-        this._lastSentAt = performance.now();
-        const codec = this._t.sender.codec;
-        if (!codec || !this._track) return;
-        const transform = this._transform;
-        if (transform) {
-          // a frame goes out once the transform writes it back
-          for (const chunk of chunks) {
-            const id = this._ids.of(time);
-            const before = this._ids.previous;
-            transform(
-              this._frameOf(chunk.data, chunk.key, time, {
-                frameId: id,
-                dependencies: chunk.key || before === null ? [] : [before],
-                width: frame.width,
-                height: frame.height,
-                spatialIndex: 0,
-                temporalIndex: 0,
-              }),
-            );
-          }
-          return;
-        }
-        const packetizer = this._packetizerFor(codec);
-        if (!packetizer) return;
-        for (const chunk of chunks) {
-          for (const packet of this._stamped(
-            packetizer.packetize(bytes(chunk.data), time),
-            captured,
-          )) {
-            this._track.writeRtp(packet);
-          }
-        }
-        c.framesSent += 1;
-        recent(c.sent).push(performance.now());
-      })
-      .catch(() => {})
-      .finally(() => {
-        this._busy = false;
-        this._pump();
-      });
+    const now = performance.now();
+    const due = this._layers.filter((l) => !l.busy && this._due(l, now));
+    if (!due.length) return;
+    this._busy = true;
+    this._lastSentAt = now;
+    const scaled = new Map<number, MediaVideoFrame>();
+    const sized = (by: number): MediaVideoFrame => {
+      let f = scaled.get(by);
+      if (!f) scaled.set(by, (f = scaledDown(frame, by)));
+      return f;
+    };
+    void Promise.all(
+      due.map((layer) => {
+        layer.took = now;
+        layer.busy = true;
+        return this._encodeLayer(
+          layer,
+          sized(downscaleOf(layer.encoding, frame.width, frame.height)),
+          ticks,
+          time,
+          captured,
+        )
+          .catch(() => {})
+          .finally(() => {
+            layer.busy = false;
+          });
+      }),
+    ).finally(() => {
+      this._busy = false;
+      this._pump();
+    });
+  }
+
+  private async _encodeLayer(
+    layer: VideoLayer,
+    frame: MediaVideoFrame,
+    ticks: number,
+    time: number,
+    captured: number,
+  ): Promise<void> {
+    const making = this._encoder(layer);
+    if (!making) return;
+    const key = layer.wantKey;
+    const encoder = await making;
+    if (!encoder || !this._sendable() || !this._layers.includes(layer)) return;
+    const began = performance.now();
+    const chunks = await encoder.encode(frame, key, ticks);
+    const c = layer.count;
+    c.totalEncodeTime += (performance.now() - began) / 1000;
+    c.framesEncoded += chunks.length ? 1 : 0;
+    c.keyFramesEncoded += chunks.some((x) => x.key) ? 1 : 0;
+    for (const chunk of chunks) {
+      if (chunk.qp !== undefined) {
+        c.qpSum += chunk.qp;
+        c.qpFrames += 1;
+      }
+      if (!chunk.psnr) continue;
+      c.psnr.y += chunk.psnr.y;
+      c.psnr.u += chunk.psnr.u;
+      c.psnr.v += chunk.psnr.v;
+      c.psnrMeasurements += 1;
+    }
+    c.width = frame.width;
+    c.height = frame.height;
+    if (!chunks.length) return;
+    if (key && chunks.some((x) => x.key)) layer.wantKey = false;
+    const codec = this._t.sender.codec;
+    if (!codec || !this._track || !this._layers.includes(layer)) return;
+    const transform = this._transform;
+    if (transform) {
+      // a frame goes out once the transform writes it back
+      const index = this._layers.indexOf(layer);
+      for (const chunk of chunks) {
+        const id = this._ids.of(time);
+        const before = this._ids.previous;
+        transform(
+          this._frameOf(
+            chunk.data,
+            chunk.key,
+            time,
+            {
+              frameId: id,
+              dependencies: chunk.key || before === null ? [] : [before],
+              width: frame.width,
+              height: frame.height,
+              spatialIndex: 0,
+              temporalIndex: 0,
+              ...(this._layers.length > 1 && layer.encoding.rid !== undefined
+                ? { rid: layer.encoding.rid }
+                : {}),
+            },
+            index === 0 ? this._t.sender.ssrc : (layer.ssrc ?? 0),
+          ),
+        );
+      }
+      return;
+    }
+    for (const chunk of chunks) {
+      this._sendVideo(layer, codec, bytes(chunk.data), time, captured, false);
+    }
+    c.framesSent += 1;
+    recent(c.sent).push(performance.now());
+  }
+
+  /** A video frame's packets sent by a layer: the first's written into the
+   *  werift track, with its rid, and every other's onto the transport. */
+  private _sendVideo(
+    layer: VideoLayer,
+    codec: WMediaCodec,
+    data: Uint8Array,
+    time: number,
+    captured: number,
+    counted = true,
+  ): void {
+    const packetizer = this._layerPacketizer(layer, codec);
+    if (!packetizer || !this._track) return;
+    const exts = this._t.headerExtensions;
+    const ridId = exts.find((e) => e.uri === RID_URI)?.id;
+    const midId = exts.find((e) => e.uri === MID_URI)?.id;
+    // a sender of one stream sends no rid, whatever its one encoding's
+    const rid = this._layers.length > 1 ? layer.encoding.rid : undefined;
+    const text = new TextEncoder();
+    for (const packet of this._stamped(
+      packetizer.packetize(data, time),
+      captured,
+    )) {
+      if (rid !== undefined && ridId !== undefined) {
+        packet.header.extensions.push({
+          id: ridId,
+          payload: bytes(text.encode(rid)),
+        });
+      }
+      if (layer.ssrc === null) {
+        this._track.writeRtp(packet);
+        continue;
+      }
+      const h = packet.header;
+      if (midId !== undefined && this._t.mid !== null) {
+        h.extensions.push({
+          id: midId,
+          payload: bytes(text.encode(this._t.mid)),
+        });
+      }
+      h.extensions.sort((a, b) => a.id - b.id);
+      h.ssrc = layer.ssrc;
+      h.sequenceNumber = layer.seq;
+      layer.seq = (layer.seq + 1) & 0xffff;
+      h.payloadType = codec.payloadType ?? 96;
+      const dtls = this._t.sender.dtlsTransport;
+      if (!dtls?.sendRtp) continue;
+      const c = layer.count;
+      c.packetsSent += 1;
+      c.bytesSent += packet.payload.length;
+      c.headerBytesSent += h.serializeSize ?? 12;
+      void dtls.sendRtp(packet.payload, h).catch(() => {});
+    }
+    if (counted) {
+      layer.count.framesSent += 1;
+      recent(layer.count.sent).push(performance.now());
+    }
+  }
+
+  private _layerPacketizer(
+    layer: VideoLayer,
+    codec: WMediaCodec,
+  ): WPacketizer | null {
+    const key = `${codec.mimeType}/${codec.payloadType}`;
+    if (layer.packetizer && layer.packetizerKey === key)
+      return layer.packetizer;
+    const make = this._packetizerClass(codec);
+    if (!make) return null;
+    layer.packetizer = new make({ payloadType: codec.payloadType ?? 96 });
+    layer.packetizerKey = key;
+    return layer.packetizer;
+  }
+
+  private _packetizerClass(codec: WMediaCodec): WPacketizerClass | undefined {
+    const name = codec.mimeType.split('/')[1]?.toUpperCase();
+    return name === 'VP8'
+      ? this._w.Vp8Packetizer
+      : name === 'VP9'
+        ? this._w.Vp9Packetizer
+        : name === 'OPUS'
+          ? this._w.OpusPacketizer
+          : name === 'PCMU'
+            ? this._w.PcmuPacketizer
+            : name === 'PCMA'
+              ? this._w.PcmaPacketizer
+              : undefined;
   }
 
   private _packetizerFor(codec: WMediaCodec): WPacketizer | null {
     const key = `${codec.mimeType}/${codec.payloadType}`;
     if (this._packetizer && this._packetizerKey === key)
       return this._packetizer;
-    const name = codec.mimeType.split('/')[1]?.toUpperCase();
-    const make: WPacketizerClass | undefined =
-      name === 'VP8'
-        ? this._w.Vp8Packetizer
-        : name === 'VP9'
-          ? this._w.Vp9Packetizer
-          : name === 'OPUS'
-            ? this._w.OpusPacketizer
-            : name === 'PCMU'
-              ? this._w.PcmuPacketizer
-              : name === 'PCMA'
-                ? this._w.PcmaPacketizer
-                : undefined;
+    const make = this._packetizerClass(codec);
     if (!make) return null;
     this._packetizer = new make({ payloadType: codec.payloadType ?? 96 });
     this._packetizerKey = key;
@@ -798,7 +1171,8 @@ export class MediaSender {
     this._count.level = rms;
     this._count.energy += rms * rms * seconds;
     this._count.duration += seconds;
-    if (!this._sendable()) {
+    // an encoding that is not active sends nothing (WebRTC 1.0, 5.2)
+    if (!this._sendable() || !this._layers[0].encoding.active) {
       this._pending = new Float32Array(0);
       return;
     }
