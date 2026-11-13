@@ -157,6 +157,41 @@ export function hasMedia(w: unknown): w is WeriftMediaModule {
 // --- shared -------------------------------------------------------------------
 
 const AUDIO_LEVEL = 'urn:ietf:params:rtp-hdrext:ssrc-audio-level';
+const ABS_CAPTURE_TIME =
+  'http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time';
+/** The NTP epoch, 1900, from the Unix one, in milliseconds. */
+const NTP_EPOCH_MS = 2208988800000;
+
+/**
+ * abs-capture-time's payload for a frame captured at `ms`, the page's
+ * time: its capture time as a 64-bit NTP timestamp (UQ32.32), and an
+ * estimated capture clock offset of 0 (Q32.32), since the system that
+ * captured it is the one sending it. Sixteen bytes, which a one-byte
+ * header still holds.
+ */
+export function absCaptureTime(ms: number): Uint8Array {
+  const out = new Uint8Array(16);
+  const v = new DataView(out.buffer);
+  const ntp = ms + NTP_EPOCH_MS;
+  const seconds = Math.floor(ntp / 1000);
+  const fraction = Math.floor(((ntp - seconds * 1000) / 1000) * 2 ** 32);
+  v.setUint32(0, seconds >>> 0);
+  v.setUint32(4, Math.min(fraction, 0xffffffff) >>> 0);
+  return out;
+}
+
+/** What an abs-capture-time payload says, in milliseconds: the capture
+ *  time on the NTP clock, and the offset where it has one. */
+export function readAbsCaptureTime(
+  p: Uint8Array,
+): { ntp: number; offset?: number } | null {
+  if (p.length < 8) return null;
+  const v = new DataView(p.buffer, p.byteOffset, p.byteLength);
+  const ntp = v.getUint32(0) * 1000 + (v.getUint32(4) / 2 ** 32) * 1000;
+  if (p.length < 16) return { ntp };
+  const offset = v.getInt32(8) * 1000 + (v.getUint32(12) / 2 ** 32) * 1000;
+  return { ntp, offset };
+}
 
 /** How long a remote track goes with no packet before it is muted. */
 export const MUTE_AFTER_MS = 2000;
@@ -450,7 +485,11 @@ export class MediaSender {
       typeof frame.metadata.audioLevel === 'number'
         ? dbovOf(frame.metadata.audioLevel)
         : 127;
-    for (const packet of packetizer.packetize(bytes(frame.data), time)) {
+    const captured = pageTime();
+    for (const packet of this._stamped(
+      packetizer.packetize(bytes(frame.data), time),
+      captured,
+    )) {
       if (level) {
         packet.header.extensions.push({
           id: level.id,
@@ -463,6 +502,23 @@ export class MediaSender {
       this._count.framesSent += 1;
       recent(this._count.sent).push(performance.now());
     }
+  }
+
+  /** A frame's packets, the first given abs-capture-time where it is
+   *  negotiated: a receiver works out the rest of a frame's, and the frames
+   *  between, from the RTP timestamps (WebRTC Extensions, 7). */
+  private _stamped(packets: WRtpPacket[], captured: number): WRtpPacket[] {
+    const id = this._t.headerExtensions.find(
+      (e) => e.uri === ABS_CAPTURE_TIME,
+    )?.id;
+    if (id !== undefined && packets[0]) {
+      packets[0].header.extensions.push({
+        id,
+        // a Buffer: werift serializes a payload with its `copy`
+        payload: bytes(absCaptureTime(captured)),
+      });
+    }
+    return packets;
   }
 
   /** What a transform is handed for a frame this encoded. */
@@ -613,6 +669,7 @@ export class MediaSender {
     // wraps (RFC 3550, 5.1)
     const ticks = Math.round((performance.now() - this._clock) * 90);
     const time = (this._start + ticks) >>> 0;
+    const captured = pageTime();
     void making
       .then(async (encoder) => {
         if (!encoder || !this._sendable()) return;
@@ -651,7 +708,10 @@ export class MediaSender {
         const packetizer = this._packetizerFor(codec);
         if (!packetizer) return;
         for (const chunk of chunks) {
-          for (const packet of packetizer.packetize(bytes(chunk.data), time)) {
+          for (const packet of this._stamped(
+            packetizer.packetize(bytes(chunk.data), time),
+            captured,
+          )) {
             this._track.writeRtp(packet);
           }
         }
@@ -741,6 +801,7 @@ export class MediaSender {
       const time = this._audioTime;
       this._audioTime = (this._audioTime + step) >>> 0;
       const loudness = audioLevelOf(frame);
+      const captured = pageTime();
       void encoder.encode(frame).then((packets) => {
         const codec = this._t.sender.codec;
         if (!codec || !this._track || this._audio !== encoder) return;
@@ -758,7 +819,10 @@ export class MediaSender {
         const packetizer = this._packetizerFor(codec);
         if (!packetizer) return;
         for (const data of packets) {
-          for (const packet of packetizer.packetize(bytes(data), time)) {
+          for (const packet of this._stamped(
+            packetizer.packetize(bytes(data), time),
+            captured,
+          )) {
             if (level) {
               packet.header.extensions.push({
                 id: level.id,
@@ -798,6 +862,13 @@ export class MediaReceiver implements MediaSourceLike {
   private _stopped = false;
   private readonly _heard = new WeakSet<WMediaTrack>();
   private readonly _sources = new Map<number, RTCRtpSourceLike>();
+  /** By SSRC, the last abs-capture-time it carried and the RTP timestamp
+   *  of the packet that carried it: what a packet without one is worked
+   *  out from. */
+  private readonly _captures = new Map<
+    number,
+    { ntp: number; offset?: number; rtpTimestamp: number }
+  >();
   private _lastPacket = 0;
   private _timer: unknown = null;
   /** Packets received, which inbound-rtp's lifetime starts at. */
@@ -1078,8 +1149,28 @@ export class MediaReceiver implements MediaSourceLike {
         rtpTimestamp: header.timestamp >>> 0,
         mimeType: this._codecOf(header.payloadType)?.mimeType ?? '',
         receiveTime: pageTime(),
+        ...this._captureMetadata(header),
         ...extra,
       },
+    };
+  }
+
+  /** A received frame's `captureTime` and `senderCaptureTimeOffset`,
+   *  where abs-capture-time is negotiated: its capture time on the
+   *  sender's NTP clock, moved onto this one by the offset and given as
+   *  the page's time (WebRTC Encoded Transform, 6). None where it is not,
+   *  which a page tells by the member being absent. */
+  private _captureMetadata(header: WRtpHeader): Record<string, number> {
+    const capture = this._captureAt(
+      header.ssrc,
+      header.timestamp,
+      header.payloadType,
+    );
+    if (!capture) return {};
+    const offset = capture.offset ?? 0;
+    return {
+      captureTime: capture.ntp + offset - NTP_EPOCH_MS,
+      senderCaptureTimeOffset: offset,
     };
   }
 
@@ -1104,12 +1195,26 @@ export class MediaReceiver implements MediaSourceLike {
     const { header } = rtp;
     const level =
       this.kind === 'audio' ? this._levelOf(rtp, extensions) : undefined;
+    this._noteCapture(rtp);
+    const capture = this._captureAt(
+      header.ssrc,
+      header.timestamp,
+      header.payloadType,
+    );
     this._sources.set(header.ssrc, {
       kind: 'synchronization',
       source: header.ssrc,
       timestamp: now,
       rtpTimestamp: header.timestamp >>> 0,
       ...(level !== undefined ? { audioLevel: level } : {}),
+      ...(capture
+        ? {
+            captureTimestamp: capture.ntp,
+            ...(capture.offset !== undefined
+              ? { senderCaptureTimeOffset: capture.offset }
+              : {}),
+          }
+        : {}),
     });
     for (const csrc of header.csrc ?? []) {
       this._sources.set(-1 - csrc, {
@@ -1138,6 +1243,47 @@ export class MediaReceiver implements MediaSourceLike {
       // plays it out: its level and energy are its stats
       this._audio(rtp, level);
     }
+  }
+
+  /** The abs-capture-time a packet carries, kept for its SSRC, where the
+   *  extension is negotiated. */
+  private _noteCapture(rtp: WRtpPacket): void {
+    const id = this._t.headerExtensions.find(
+      (e) => e.uri === ABS_CAPTURE_TIME,
+    )?.id;
+    if (id === undefined) {
+      this._captures.clear();
+      return;
+    }
+    const raw = rtp.header.extensions.find((e) => e.id === id);
+    const read = raw ? readAbsCaptureTime(raw.payload) : null;
+    if (!read) return;
+    const was = this._captures.get(rtp.header.ssrc);
+    this._captures.set(rtp.header.ssrc, {
+      ntp: read.ntp,
+      // an offset a packet leaves out is the last one given (WebRTC
+      // Extensions, 7)
+      offset: read.offset ?? was?.offset,
+      rtpTimestamp: rtp.header.timestamp >>> 0,
+    });
+  }
+
+  /** The capture time of what an SSRC sent at an RTP timestamp: the last
+   *  abs-capture-time it carried, moved on by the RTP clock where the
+   *  packet carried none (timestamp interpolation, abs-capture-time's
+   *  own rule). Undefined where none has come, or it is not negotiated. */
+  private _captureAt(
+    ssrc: number,
+    rtpTimestamp: number,
+    payloadType: number,
+  ): { ntp: number; offset?: number } | undefined {
+    const last = this._captures.get(ssrc);
+    if (!last) return undefined;
+    const rate = this._codecOf(payloadType)?.clockRate;
+    // a difference of RTP timestamps, which wrap, as a signed one
+    const ticks = ((rtpTimestamp >>> 0) - last.rtpTimestamp) | 0;
+    const ntp = rate ? last.ntp + (ticks * 1000) / rate : last.ntp;
+    return last.offset !== undefined ? { ntp, offset: last.offset } : { ntp };
   }
 
   /** Muted once no packet has come for a while. */

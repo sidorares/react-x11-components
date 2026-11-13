@@ -27,9 +27,14 @@ its own module scope, so an app that imports neither `<Markdown>` nor
 interface RichTextProps {
   runs: TextRun[];
   wrap?: boolean;
+  linkCursor?: string; // the cursor over a run with an href — 'pointer'
   style?: Style | Style[];
 }
 ```
+
+`linkCursor` is the cursor the element names (core's `cursorAt`) over a run
+whose `href` is a string. Unset, a link shows the element's own cursor,
+which is right for a link a click does nothing with.
 
 Give `runs` a **stable array identity** where you can — the streaming path
 keys off it. A new array that says what the last one said is recognised by
@@ -61,8 +66,31 @@ interface TextRun {
   strikeStyle?: 'single' | 'double' | 'curly' | 'dotted' | 'dashed';
   strikeThickness?: number; // default 1
   href?: string | null; // link target; null is a link still streaming in
+  inline?: InlineDrawing; // drawn in place of the text — an icon
+}
+
+interface InlineDrawing {
+  width: number; // logical pixels the run takes on its line
+  draw(ctx: Context2D, box: InlineBox): void;
+}
+// device pixels: the run's place, the line's height, its baseline, the scale
+interface InlineBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  baseline: number;
+  scale: number;
 }
 ```
+
+A run with `inline` is an icon in a line. Its text is laid out as no-break
+spaces spaced to the drawing's width — as many as the text has code units,
+so every offset holds — and `draw` paints into that room after the ink and
+the rules, with the context saved and restored around it. The run's `text`
+is still what a selection copies, so one character, a space, is usual. Give
+the same drawing for the same picture: runs are compared field by field by
+identity, and a new object lays the paragraph out again.
 
 `text`, `family`, `size`, `weight`, `style`, `color` and `letterSpacing`
 are the text engine's span vocabulary and pass straight through to
@@ -199,13 +227,42 @@ hyperlinks, and moved here rather than being copied — there is no markdown in
 it, only `TextRun.href` and `RichTextNode.hrefAtPoint`, both of which are this
 module's.
 
+## `useLinks({ onLink, kinds, cardStyle })`
+
+`useLinkClicks` and hover cards, from a list of **link kinds** — what
+`<Markdown links>` is made of, and what any surface over `<richtext>` can
+use. It returns handlers for the document root, the open card, and whether a
+click on a link does something (what `linkCursor` should say):
+
+```jsx
+const { handlers, card, follows } = useLinks({ onLink, kinds });
+
+<box selectable {...handlers}>
+  <richtext runs={runs} linkCursor={follows ? 'pointer' : undefined} />
+  {card}
+</box>;
+```
+
+A kind is `{ match, activate?, card?, cardDelay? }`, made with `linkKind` so
+its reference type is inferred from `match` — see
+[Markdown's "Links to things"](markdown.md#links-to-things) for what each
+does. The card asks the node under the pointer for `linkAtPoint`, so a
+surface whose nodes answer only `hrefAtPoint` (`<Html>`'s) gets clicks and
+no cards. `cardClock` is the timer the card opens and closes on, exported for
+tests to hold.
+
 ## Also exported
 
 - `RichTextNode` — the node class, for a component that wants to subclass or
   to type a ref. `hrefAtPoint(x, y)` is what `useLinkClicks` reads; it takes
   the logical window point a mouse event carries, whatever the display
   scale, while the four selection accessors keep core's device-pixel
-  contract.
+  contract. `linkAtPoint(x, y)` takes the same point and answers the whole
+  link (`LinkAt`): its href, its label across every run with that href on
+  either side, its extent in code units, and a rect a line in **logical
+  pixels from the element's corner** — the unit a `<popup anchor>`'s `at`
+  takes, which is how a card is hung off the piece of a wrapped link the
+  pointer is on.
 - `NtkApp`, `TextLayoutLike` — the structural types the node speaks. ntk is
   deliberately loose in react-x11's declarations, so an element says what it
   needs rather than importing a wide type.

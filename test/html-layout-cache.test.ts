@@ -149,6 +149,7 @@ const other: Record<(typeof RUN_FIELDS)[number], TextRun[keyof TextRun]> = {
   nowrap: true,
   shapeApart: true,
   kernAcross: true,
+  inline: { width: 10, draw: () => {} },
   stretch: 75,
 };
 

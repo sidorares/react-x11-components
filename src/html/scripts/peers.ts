@@ -51,6 +51,7 @@ import type { BufferClass } from './platform.js';
 declare const Buffer: BufferClass;
 declare const queueMicrotask: (fn: () => void) => void;
 declare const setTimeout: (fn: () => void, ms: number) => unknown;
+declare const performance: { readonly timeOrigin: number; now(): number };
 
 /** A value a task later. */
 const later = <T>(value: T): Promise<T> =>
@@ -89,12 +90,19 @@ interface FrameWire {
   y: 'key' | 'delta' | 'empty';
   d: string;
   m: Record<string, unknown>;
+  /** When the host sent it, as `performance.timeOrigin +
+   *  performance.now()` reads it: what `m`'s times are made the
+   *  receiving realm's from. */
+  t?: number;
 }
 const frameWire = (f: RTCEncodedFrameLike): FrameWire => ({
   k: f.kind,
   y: f.type,
   d: base64Of(f.data),
   m: f.metadata,
+  // when it was sent, on the clock its times are on, which the realm it
+  // goes to has no other way to read (`__rtcTf`)
+  t: performance.timeOrigin + performance.now(),
 });
 function frameOfWire(v: unknown): RTCEncodedFrameLike | null {
   const w = v as Partial<FrameWire> | null;
@@ -303,6 +311,15 @@ export class PagePeers {
         this._transceivers
           .get(Number(a))
           ?.transceiver.setStreams(Array.isArray(ids) ? ids.map(String) : []);
+        return null;
+      }
+      case 'rtcExtensions': {
+        const list = json(b);
+        this._transceivers
+          .get(Number(a))
+          ?.transceiver.setHeaderExtensionsToNegotiate(
+            Array.isArray(list) ? list : [],
+          );
         return null;
       }
       case 'rtcCodecs': {

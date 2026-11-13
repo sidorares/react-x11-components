@@ -1478,3 +1478,82 @@ test('an RTCRtpScriptTransform on each side sees every VP8 frame in its worker, 
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
 });
+
+test('abs-capture-time an app adds to its offer is answered and sent, and a receiver’s sources carry the capture time; offered by default it is not', async () => {
+  const logs = await run(`
+    ${CALL}
+    var ABS = 'http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time';
+    var canvas = document.createElement('canvas');
+    canvas.width = 160; canvas.height = 120;
+    var g = canvas.getContext('2d');
+    var n = 0;
+    var timer = setInterval(function () { g.fillStyle = n++ % 2 ? '#fff' : '#eee'; g.fillRect(0, 0, 160, 120); }, 50);
+    var ctx = new AudioContext();
+    var osc = ctx.createOscillator();
+    var dst = ctx.createMediaStreamDestination();
+    osc.connect(dst); osc.start();
+    // WPT's addHeaderExtensionToSdp
+    function add(sdp) {
+      var ids = sdp.split('\\n').filter(function (l) { return l.startsWith('a=extmap:'); })
+        .map(function (l) { return parseInt(l.split(' ')[0].substring(9), 10); });
+      var line = 'a=extmap:' + (Math.max.apply(null, ids) + 1) + ' ' + ABS + '\\r\\n';
+      var sections = sdp.split('\\nm=').map(function (part, i) {
+        return (i > 0 ? 'm=' + part : part).trim() + '\\r\\n';
+      });
+      var session = sections.shift();
+      return session + sections.map(function (m) { return m + line; }).join('');
+    }
+    async function session(munge) {
+      var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+      pc1.addTrack(canvas.captureStream().getVideoTracks()[0]);
+      pc1.addTrack(dst.stream.getAudioTracks()[0]);
+      pc1.onicecandidate = function (e) { pc2.addIceCandidate(e.candidate); };
+      pc2.onicecandidate = function (e) { pc1.addIceCandidate(e.candidate); };
+      var offer = await pc1.createOffer();
+      log('offered by default', offer.sdp.indexOf(ABS) >= 0);
+      if (munge) offer = { type: 'offer', sdp: add(offer.sdp) };
+      await pc1.setLocalDescription(offer);
+      await pc2.setRemoteDescription(offer);
+      var answer = await pc2.createAnswer();
+      log('answered', munge, (answer.sdp.match(new RegExp(ABS, 'g')) || []).length);
+      await pc2.setLocalDescription(answer);
+      await pc1.setRemoteDescription(answer);
+      var ext = pc1.getTransceivers()[0].getNegotiatedHeaderExtensions()
+        .find(function (e) { return e.uri === ABS; });
+      log('negotiated', munge, ext.direction);
+      return [pc1, pc2];
+    }
+    var on = await session(true);
+    for (var r of on[1].getReceivers()) {
+      var kind = r.track.kind;
+      var s = await wait(kind + ' capture', function () {
+        var x = r.getSynchronizationSources()[0];
+        return x && x.captureTimestamp !== undefined ? x : null;
+      });
+      var now = performance.timeOrigin + performance.now() + 2208988800000;
+      log('source', kind, s.senderCaptureTimeOffset, Math.abs(now - s.captureTimestamp) < 2000);
+    }
+    var off = await session(false);
+    var r2 = off[1].getReceivers()[0];
+    await wait('source', function () { return r2.getSynchronizationSources()[0]; });
+    log('without', 'captureTimestamp' in r2.getSynchronizationSources()[0]);
+    clearInterval(timer);
+    on.concat(off).forEach(function (pc) { pc.close(); });
+    ctx.close();
+    log('done');
+  `);
+  if (process.env.WERIFT_LOGS) console.log(logs.join('\n'));
+  for (const line of [
+    'offered by default|false',
+    'answered|true|2',
+    'negotiated|true|sendrecv',
+    'source|video|0|true',
+    'source|audio|0|true',
+    'answered|false|0',
+    'negotiated|false|stopped',
+    'without|false',
+    'done',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});

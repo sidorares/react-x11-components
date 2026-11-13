@@ -537,6 +537,13 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
   // --- senders, receivers, transceivers ------------------------------------------
 
   const DIRECTIONS = ['sendrecv', 'sendonly', 'recvonly', 'inactive'];
+  /** The header extensions a transceiver lists as `stopped` until a page
+   *  asks for them, as Chrome does: `rtc-codecs.ts`'s `stoppedByDefault`. */
+  const STOPPED_BY_DEFAULT = [
+    'http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time',
+  ];
+  /** What a transceiver negotiates both ways whatever a page says. */
+  const MANDATORY_EXTENSIONS = ['urn:ietf:params:rtp-hdrext:sdes:mid'];
   const PRIORITIES = ['very-low', 'low', 'medium', 'high'];
 
   const capabilitiesOf = (kind: string, side: string): Any => {
@@ -1119,6 +1126,10 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           rtpTimestamp: x.rtpTimestamp,
         };
         if (x.audioLevel !== undefined) out.audioLevel = x.audioLevel;
+        if (x.captureTimestamp !== undefined)
+          out.captureTimestamp = x.captureTimestamp;
+        if (x.senderCaptureTimeOffset !== undefined)
+          out.senderCaptureTimeOffset = x.senderCaptureTimeOffset;
         return out;
       });
   };
@@ -1240,14 +1251,24 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           "Failed to execute 'setHeaderExtensionsToNegotiate': parameter 1 is not a sequence.",
         );
       }
-      const list = [...extensions].map((e: Any) => ({
-        uri: String(e?.uri),
-        direction: enumOf(
-          e?.direction,
-          [...DIRECTIONS, 'stopped'],
-          'RTCRtpTransceiverDirection',
-        ),
-      }));
+      const list = [...extensions].map((e: Any) => {
+        // both members are required: an empty URI is none (webrtc-extensions,
+        // RTCRtpHeaderExtensionCapability)
+        const uri = e?.uri === undefined ? '' : String(e.uri);
+        if (uri === '') {
+          throw typeError(
+            "Failed to execute 'setHeaderExtensionsToNegotiate': an extension has no uri.",
+          );
+        }
+        return {
+          uri,
+          direction: enumOf(
+            e?.direction,
+            [...DIRECTIONS, 'stopped'],
+            'RTCRtpTransceiverDirection',
+          ),
+        };
+      });
       if (list.length !== s.extensionsToNegotiate.length) {
         throw domError(
           'The extensions cannot be added or removed.',
@@ -1261,19 +1282,37 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
             'InvalidModificationError',
           );
         }
+        if (
+          MANDATORY_EXTENSIONS.includes(e.uri) &&
+          e.direction !== 'sendrecv'
+        ) {
+          throw domError(
+            `${e.uri} is negotiated both ways, and cannot be ${e.direction}.`,
+            'InvalidModificationError',
+          );
+        }
       });
-      s.extensionsToNegotiate = list;
+      setToNegotiate(s, list);
     }
     getNegotiatedHeaderExtensions(): Any[] {
       const s = slotOf(this, 'transceiver');
       return s.extensionsToNegotiate.map((e: Any) => ({
         uri: e.uri,
         direction: s.negotiatedExtensions.some((n: Any) => n.uri === e.uri)
-          ? e.direction
+          ? e.direction === 'stopped'
+            ? 'sendrecv'
+            : e.direction
           : 'stopped',
       }));
     }
   }
+
+  /** A transceiver's `[[HeaderExtensionsToNegotiate]]`, which the host
+   *  offers and answers from. */
+  const setToNegotiate = (s: Any, list: Any[]): void => {
+    s.extensionsToNegotiate = list;
+    call('rtcExtensions', s.id, stringify(list));
+  };
 
   /** A transceiver of `pc`'s, the host's number `id`. */
   const makeTransceiver = (
@@ -1309,7 +1348,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       codecPreferences: [],
       extensionsToNegotiate: (caps?.headerExtensions ?? []).map((e: Any) => ({
         uri: e.uri,
-        direction: 'sendrecv',
+        direction: STOPPED_BY_DEFAULT.includes(e.uri) ? 'stopped' : 'sendrecv',
       })),
       negotiatedExtensions: [],
       /** Ever sent: an m-section negotiated it to send. */
@@ -1346,6 +1385,16 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         jitterBufferTarget: null,
       },
     ]);
+    // a new transceiver negotiates what the first of its kind not stopping
+    // does (webrtc-extensions, [[HeaderExtensionsToNegotiate]])
+    for (const other of pc.transceivers) {
+      const o = apply(wmGet, slots, [other]);
+      if (!o || o.kind !== kind || o.stopping || o.stopped) continue;
+      const list = o.extensionsToNegotiate.map((e: Any) => ({ ...e }));
+      if (stringify(list) !== stringify(s.extensionsToNegotiate))
+        setToNegotiate(s, list);
+      break;
+    }
     pc.transceivers.push(t);
     return t;
   };
@@ -1903,6 +1952,25 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         }
       }
       t.negotiatedExtensions = st.headerExtensions ?? [];
+      // what a remote answer did not take is stopped, and is not offered
+      // again until a page asks for it: the negotiated list becomes the one
+      // to negotiate (webrtc-extensions, "set a session description"). Not
+      // a local answer's: an extension the answerer let go is answered
+      // again where the offerer offers it anew, which is what Chrome does
+      if (
+        remote &&
+        type === 'answer' &&
+        answered?.some((m: Any) => m.mid === st.mid)
+      ) {
+        const reflected = t.extensionsToNegotiate.map((e: Any) =>
+          e.direction !== 'stopped' &&
+          !t.negotiatedExtensions.some((n: Any) => n.uri === e.uri)
+            ? { uri: e.uri, direction: 'stopped' }
+            : e,
+        );
+        if (stringify(reflected) !== stringify(t.extensionsToNegotiate))
+          setToNegotiate(t, reflected);
+      }
       if (st.stopped) {
         // stopped, its m-section is no longer its
         if (!t.stopped) {

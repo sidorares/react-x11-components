@@ -58,6 +58,7 @@ const {
   stopped,
   permissions,
   notifies,
+  born,
 } = workerData as WorkerThreadData;
 const port = parentPort!;
 const word = new Int32Array(flag);
@@ -436,6 +437,7 @@ engine.call('__becomeWorker', {
   name: init.name,
   shared: !!init.shared,
   service: init.service ?? null,
+  born,
 });
 
 /** The worker's script, where it has yet to run. */
