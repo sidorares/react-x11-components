@@ -733,6 +733,12 @@ class WeriftTransceiver implements RTCTransceiverLike {
   get done(): boolean {
     return this.stopAsked || this.t.stopped || this.t.stopping;
   }
+  /** Whether a negotiation took it out, which is when its RTP streams' stats
+   *  go (WebRTC Statistics, 3.2): a page's `stop()` alone keeps them until
+   *  the description that stops it is applied, as every browser has it. */
+  get negotiatedAway(): boolean {
+    return this.t.stopped;
+  }
   /** The SSRC its sender sends with. */
   get senderSsrc(): number | undefined {
     return (this.t as unknown as WMediaTransceiver).sender?.ssrc;
@@ -886,6 +892,9 @@ class WeriftConnection implements RTCConnectionLike {
    *  answer itself: werift sets none for one stopping, or `inactive`. */
   private readonly _negotiated = new WeakMap<WTransceiver, RTCDirectionLike>();
   private _closed = false;
+  /** Whether a description was ever applied: before one there is no
+   *  transport to have stats of, nor a certificate it uses. */
+  private _described = false;
   /** Whether the page's configuration names a STUN server. */
   private _namesStun: boolean;
   /** The page's servers, which a gathering is checked against
@@ -1180,6 +1189,7 @@ class WeriftConnection implements RTCConnectionLike {
     } catch (error) {
       throw asRtcError(error);
     }
+    if (type !== 'rollback') this._described = true;
     this._watchTransports();
     this._tellTransports();
     if (side === 'local' && type !== 'rollback') this._checkServers();
@@ -1372,11 +1382,12 @@ class WeriftConnection implements RTCConnectionLike {
     const receivers = new Map<number, Seen>();
     for (const w of this._wrapped.values()) {
       const mid = w.t.mid;
+      const live = !w.negotiatedAway && !this._closed;
       if (w.senderSsrc !== undefined) {
-        senders.set(w.senderSsrc, { mid, live: w.everSent && !w.done, w });
+        senders.set(w.senderSsrc, { mid, live: w.everSent && live, w });
       }
       for (const ssrc of w.receiverSsrcs()) {
-        receivers.set(ssrc, { mid, live: !w.done, w });
+        receivers.set(ssrc, { mid, live, w });
       }
     }
     const list = await this._net.stats();
@@ -1405,8 +1416,12 @@ class WeriftConnection implements RTCConnectionLike {
         } else Object.assign(s, seen.w.receiveStats());
         return true;
       }
-      return true;
+      // a transport, and the certificate and candidates it has, are a
+      // description's: werift makes them as its connection is made
+      return this._described || !BEFORE_DESCRIPTION.has(s.type);
     });
+    const playout = audioPlayout(live);
+    if (playout) live.push(playout);
     const ids = new Set(live.map((s) => s.id));
     const kept = live.filter(
       (s) =>
@@ -1460,6 +1475,52 @@ class WeriftConnection implements RTCConnectionLike {
     for (const w of this._wrapped.values()) w.dispose();
     this._pc.close().catch(() => {});
   }
+}
+
+/** The stats of what a connection has only once a description is applied. */
+const BEFORE_DESCRIPTION = new Set([
+  'transport',
+  'certificate',
+  'local-candidate',
+  'remote-candidate',
+  'candidate-pair',
+]);
+
+/**
+ * The connection's audio playout (WebRTC Statistics, 5.11,
+ * RTCAudioPlayoutStats): one for the device every audio receiver plays out
+ * on, as Chrome has it, from the first inbound-rtp of audio, which names it
+ * by its `playoutId`. Nothing is synthesized here: what is played out is
+ * what was decoded, a sample's delay its time in the jitter buffer.
+ */
+function audioPlayout(list: RTCStatsLike[]): RTCStatsLike | null {
+  const audio = list.filter(
+    (s) => s.type === 'inbound-rtp' && s.kind === 'audio',
+  );
+  if (!audio.length) return null;
+  const id = 'AP';
+  let count = 0;
+  let duration = 0;
+  let delay = 0;
+  let timestamp = 0;
+  for (const s of audio) {
+    s.playoutId = id;
+    count += Number(s.totalSamplesReceived) || 0;
+    duration += Number(s.totalSamplesDuration) || 0;
+    delay += Number(s.jitterBufferDelay) || 0;
+    timestamp = Math.max(timestamp, Number(s.timestamp) || 0);
+  }
+  return {
+    id,
+    type: 'media-playout',
+    timestamp,
+    kind: 'audio',
+    synthesizedSamplesDuration: 0,
+    synthesizedSamplesEvents: 0,
+    totalSamplesDuration: duration,
+    totalPlayoutDelay: delay,
+    totalSamplesCount: count,
+  };
 }
 
 /** A transceiver nothing carries: it takes what the page sets, and its

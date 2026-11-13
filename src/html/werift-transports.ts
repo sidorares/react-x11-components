@@ -127,6 +127,10 @@ export interface WChannel {
   bufferedAmountLowThreshold: number;
   readonly bufferedAmountLow: WEvent<[]>;
   addBufferedAmount(amount: number): void;
+  /** What its stats count as sent (WebRTC Statistics, 5.9). */
+  messagesSent?: number;
+  /** What its stats count as received. */
+  bytesReceived?: number;
   readonly stateChanged: WEvent<[string]>;
   readonly onMessage: WEvent<[string | Uint8Array]>;
   readonly error: WEvent<[Error]>;
@@ -184,6 +188,15 @@ class WeriftChannel implements RTCDataChannelLike {
     _ch.stateChanged.subscribe((state) => this._state(state));
     _ch.onMessage.subscribe((data) => {
       const message = typeof data === 'string' ? data : new Uint8Array(data);
+      // werift counts an empty message's one byte of padding (RFC 8831,
+      // 6.6) as a byte received, where the message had none
+      if (
+        (typeof message === 'string' ? message === '' : !message.byteLength) &&
+        typeof this._ch.bytesReceived === 'number' &&
+        this._ch.bytesReceived > 0
+      ) {
+        this._ch.bytesReceived -= 1;
+      }
       // what comes before the page listens, which a channel the far side
       // opened is told a microtask late, is held for it
       if (!this._events) {
@@ -279,6 +292,9 @@ class WeriftChannel implements RTCDataChannelLike {
     // werift takes what it flushed off the channel's bufferedAmount
     this._ch.addBufferedAmount(1);
     queue.push([this._ch, text ? 56 : 57, new Uint8Array([0])]);
+    // a message all the same, of no bytes, which werift's send would have
+    // counted (`RTCDataChannelStats.messagesSent`)
+    if (typeof this._ch.messagesSent === 'number') this._ch.messagesSent += 1;
     void sctp.dataChannelFlush();
   }
 

@@ -35,6 +35,7 @@ import {
   audioCodecOf,
   audioDecoder,
   audioEncoder,
+  bitRateFor,
   videoCodecOf,
   videoDecoder,
   videoEncoder,
@@ -348,6 +349,14 @@ export class MediaSender {
   private readonly _count = {
     framesEncoded: 0,
     keyFramesEncoded: 0,
+    /** The PSNR of each frame the encoder measured, added up, and how
+     *  many it measured (WebRTC Statistics, `psnrSum`). */
+    psnr: { y: 0, u: 0, v: 0 },
+    psnrMeasurements: 0,
+    /** The quantizers frames were coded with, added up, where the encoder
+     *  said (`qpSum`). */
+    qpSum: 0,
+    qpFrames: 0,
     framesSent: 0,
     totalEncodeTime: 0,
     width: 0,
@@ -580,7 +589,14 @@ export class MediaSender {
     const now = performance.now();
     if (this._t.kind === 'audio') {
       return {
-        outbound: { active: !this._stopped },
+        outbound: {
+          active: !this._stopped,
+          // what the encoder is set to: Opus at 32 kb/s (`OpusEncoder`),
+          // G.711 at its one rate
+          ...(this._audioCodec
+            ? { targetBitrate: this._audioCodec === 'OPUS' ? 32000 : 64000 }
+            : {}),
+        },
         source: {
           audioLevel: c.level,
           totalAudioEnergy: c.energy,
@@ -599,6 +615,12 @@ export class MediaSender {
         totalPacketSendDelay: 0,
         encoderImplementation: 'libvpx',
         powerEfficientEncoder: false,
+        ...(c.psnrMeasurements
+          ? { psnrSum: { ...c.psnr }, psnrMeasurements: c.psnrMeasurements }
+          : {}),
+        ...(c.qpFrames ? { qpSum: c.qpSum } : {}),
+        // one spatial layer and one temporal one is all it encodes
+        scalabilityMode: 'L1T1',
         qualityLimitationReason: 'none',
         qualityLimitationDurations: {
           none: (now - c.since) / 1000,
@@ -609,6 +631,8 @@ export class MediaSender {
         qualityLimitationResolutionChanges: 0,
         ...(c.width
           ? {
+              // what the encoder is set to; nothing adapts it
+              targetBitrate: bitRateFor(c.width, c.height),
               frameWidth: c.width,
               frameHeight: c.height,
               framesPerSecond: recent(c.sent).length,
@@ -683,6 +707,17 @@ export class MediaSender {
         c.totalEncodeTime += (performance.now() - began) / 1000;
         c.framesEncoded += chunks.length ? 1 : 0;
         c.keyFramesEncoded += chunks.some((x) => x.key) ? 1 : 0;
+        for (const chunk of chunks) {
+          if (chunk.qp !== undefined) {
+            c.qpSum += chunk.qp;
+            c.qpFrames += 1;
+          }
+          if (!chunk.psnr) continue;
+          c.psnr.y += chunk.psnr.y;
+          c.psnr.u += chunk.psnr.u;
+          c.psnr.v += chunk.psnr.v;
+          c.psnrMeasurements += 1;
+        }
         c.width = frame.width;
         c.height = frame.height;
         if (!chunks.length) return;
@@ -983,6 +1018,10 @@ export class MediaReceiver implements MediaSourceLike {
       jitterBufferTargetDelay: c.jitterBufferTargetDelay,
       jitterBufferMinimumDelay: c.jitterBufferMinimumDelay,
       jitterBufferEmittedCount: c.jitterBufferEmittedCount,
+      // no FEC is negotiated, so none is received (WebRTC Statistics, 5.4)
+      fecPacketsReceived: 0,
+      fecBytesReceived: 0,
+      fecPacketsDiscarded: 0,
     };
     if (this.kind === 'audio') {
       return {

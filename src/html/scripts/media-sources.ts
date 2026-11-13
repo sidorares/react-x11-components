@@ -780,6 +780,21 @@ export class PageSources {
     return false;
   }
 
+  /**
+   * Media Capture's "context capturing state", as WebRTC Statistics reads
+   * it to limit what it says of the hardware (14.1): whether a camera or a
+   * microphone this document opened is still live. A screen's picture, a
+   * canvas's and a synth's are no device's, so a page made of them alone
+   * learns no encoder's name.
+   */
+  capturing(): boolean {
+    for (const [id, held] of this._held) {
+      const view = this._views.get(id);
+      if (view?.deviceId !== undefined && !held.ended) return true;
+    }
+    return false;
+  }
+
   /** Whether the document may use a kind of device at all: a frame's
    *  `allow`, or the `Permissions-Policy` it was served with. */
   private _usable(name: 'camera' | 'microphone'): boolean {
