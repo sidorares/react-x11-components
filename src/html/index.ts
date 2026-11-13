@@ -1732,6 +1732,7 @@ export function makeHtmlHandle(
     offsetRect: (element: Element) =>
       nodeRef.current?.offsetRect(element) ?? null,
     askImage: (element) => nodeRef.current?.askImage(element),
+    imagePixels: (element) => nodeRef.current?.imagePixels(element) ?? null,
     imageState: (element) =>
       nodeRef.current?.imageState(element) ?? {
         complete: true,

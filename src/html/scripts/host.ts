@@ -144,6 +144,14 @@ import {
 import type { HighlightPseudoStyle } from '../css/cascade.js';
 import { uaStylesheet } from '../css/ua.js';
 import {
+  colorFormText,
+  LIGHT_DARK,
+  lightDark,
+  rgbaOf,
+  SYSTEM_COLOR,
+  systemColors,
+} from '../css/color.js';
+import {
   SHORTHAND_NAMES,
   comesFromBox,
   cssomShorthands,
@@ -770,6 +778,11 @@ export interface HandleInternals {
   /** What a page's script changed of an `<img>`, or the one it made, is
    *  asked for and watched (`HtmlViewNode.askImage`). */
   askImage(element: Element): void;
+  /** An `<img>`'s decoded pixels, straight RGBA, or null where it has no
+   *  raster in (`HtmlViewNode.imagePixels`). */
+  imagePixels?(
+    element: Element,
+  ): { width: number; height: number; data: Uint8Array } | null;
   /** What a page reads of an `<img>`: `complete` and its kin
    *  (`HtmlViewNode.imageState`). */
   imageState(element: Element): {
@@ -1441,6 +1454,26 @@ function closeShown(shown: HtmlShownNotification | null | undefined): void {
   } catch {
     // a page that has gone cannot hear it did not close
   }
+}
+
+/** A colour a canvas is handed, its system colours and `light-dark()`s
+ *  made the light scheme's, as a canvas, which is no element, has them. */
+function canvasColorValue(value: string): string {
+  let v = value.trim();
+  if (SYSTEM_COLOR.test(v)) v = systemColors(v, undefined);
+  if (LIGHT_DARK.test(v)) v = lightDark(v, 'light') ?? v;
+  return v;
+}
+
+/** An alpha byte as a canvas writes it: the shortest decimal that comes
+ *  back to the same byte, as Chrome has it — `0.5`, `0.25`, `0.004`. */
+function canvasAlpha(byte: number): string {
+  if (byte <= 0) return '0';
+  for (let digits = 1; digits < 4; digits += 1) {
+    const text = (byte / 255).toFixed(digits);
+    if (Math.round(Number(text) * 255) === byte) return String(Number(text));
+  }
+  return String(Number((byte / 255).toFixed(4)));
 }
 
 function base64Of(bytes: Uint8Array): string {
@@ -5004,9 +5037,28 @@ export class DomHost {
         return null;
       }
       // a colour a page names, as straight RGBA bytes
+      // a canvas's colours, read as CSS reads one (`css/color.ts`), which
+      // keeps to its grammar where ntk's reader is lenient, and closes what
+      // the end of the text leaves open
       case 'color': {
-        const rgba = cssColorStraight?.(text(a).trim());
+        const rgba = rgbaOf(canvasColorValue(text(a)));
         return rgba ? rgba.map((v) => Math.round(v * 255)).join(',') : '';
+      }
+      // and as a canvas reads one back (HTML 4.12.5.1.6, "serialization of
+      // a color"): a legacy sRGB colour as `#rrggbb` where it is opaque and
+      // `rgba()` where it is not, any other as CSS serializes it
+      case 'canvasColor': {
+        const value = canvasColorValue(text(a));
+        const rgba = rgbaOf(value);
+        if (!rgba) return '';
+        const form = colorFormText(value);
+        if (form) return form;
+        const [r, g, b] = rgba.slice(0, 3).map((v) => Math.round(v * 255));
+        const alpha = Math.round(rgba[3] * 255);
+        if (alpha >= 255) {
+          return `#${[r, g, b].map((n) => n.toString(16).padStart(2, '0')).join('')}`;
+        }
+        return `rgba(${r}, ${g}, ${b}, ${canvasAlpha(alpha)})`;
       }
       // and as a computed style serializes it (`cssomColor`), for the
       // editing commands, which compare colours by it
@@ -6565,6 +6617,16 @@ export class DomHost {
       case 'image': {
         const el = this._node(a) as Element;
         if (b === 'clean') return this._imageClean(el);
+        if (b === 'pixels') {
+          // as `w,h|base64`, or '' where there is no raster to draw. Never
+          // an image of another origin that no CORS let through: the
+          // page's realm runs the facade, so a canvas's taint there keeps
+          // nothing from a page, and those pixels are drawn as nothing
+          if (!this._imageDrawn(el)?.imageState?.(el)?.response) return '';
+          if (!this._imageClean(el)) return '';
+          const px = this._imageDrawn(el)?.imagePixels?.(el);
+          return px ? `${px.width},${px.height}|${base64Of(px.data)}` : '';
+        }
         const state = this._imageDrawn(el)?.imageState?.(el);
         // nothing draws it: as it would be with no image to wait for
         if (!state) return b === 'complete' ? true : b === 'src' ? '' : 0;
