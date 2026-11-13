@@ -1786,6 +1786,23 @@ on the page's thread. Nothing here encodes H.264.
 A stream whose description names no SSRC and whose packets carry no rid
 is not received, since werift routes RTP by nothing else.
 
+A transceiver's codec preferences are held as a browser holds them, in an
+offer, in an answer and in what a remote offer is answered with: a codec
+only if a preference names it, and an rtx only if one names rtx and the
+codec it carries is kept, so preferences that leave VP8 out take VP8 and
+its rtx out of the answer, and the other side's `setParameters` may not
+send it (`src/html/werift-codecs.ts`). A transceiver with none offers
+every codec, each rtx paired in an `a=ssrc-group:FID`, as Chrome's offer
+has them and Google Meet reads them. An offer after a negotiation lists
+every codec again, those negotiated at the payload types they were
+negotiated at (JSEP 5.2.2). An encoding's `codec` in `setParameters` is
+the codec its sender sends while the negotiated codecs have it, and
+`encodingOptions` asking for a key frame gets one on a video sender.
+`getParameters` is one transaction for a task: called twice in it, with
+microtasks or a `setParameters` between, it answers the same
+`transactionId`, and a `setParameters` after the task is refused.
+Nothing offers H.264, RED or ULPFEC, so the tests of them fail here.
+
 `fakeMediaDevices()` is a camera that draws colour bars with a band moving
 down them and its frame's number along the bottom, natively at 640×480,
 320×240, 1280×720 and 1920×1080, a microphone that plays a 440 Hz tone and

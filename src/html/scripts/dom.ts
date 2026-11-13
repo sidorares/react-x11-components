@@ -42017,6 +42017,7 @@ export function installDom(
       Event,
       fire: trusted,
       setTimer: (fn: () => void, ms: number) => setTimer(fn, ms, [], false),
+      task: () => taskEpoch,
       URL,
       bytesOfBase64,
       media: media.internals,

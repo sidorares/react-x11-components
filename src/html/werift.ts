@@ -38,6 +38,13 @@ import type {
   WeriftMediaModule,
 } from './werift-media.js';
 import { WeriftTransports } from './werift-transports.js';
+import {
+  asWeriftReads,
+  keepPreferredCodecs,
+  notePreferences,
+  reofferCodecs,
+} from './werift-codecs.js';
+import type { WCodecLike } from './werift-codecs.js';
 import type {
   WCandidate,
   WChannel,
@@ -56,6 +63,7 @@ import type {
   RTCDataChannelInitLike,
   RTCDataChannelLike,
   RTCDescriptionsLike,
+  RTCEncodingLike,
   RTCDirectionLike,
   RTCEncodedFrameLike,
   RTCHeaderExtensionChoice,
@@ -87,6 +95,16 @@ interface WExtension {
 interface WSender {
   setStreams(streams: unknown[]): void;
   replaceTrack(track: unknown | null): Promise<void>;
+}
+
+/** What of werift's sender says which codec it sends, which
+ *  `setParameters` changes (`_chooseSendCodec`). */
+interface WSendCodecs {
+  readonly negotiatedCodecs?: WCodec[];
+  codec?: WCodec;
+  sendPrimaryCodec?: WCodec;
+  rtxPayloadType?: number;
+  readonly track?: { codec?: WCodec };
 }
 
 interface WTransceiver {
@@ -586,6 +604,8 @@ class WeriftTransceiver implements RTCTransceiverLike {
       const found = this._codecs.find((c) => sameCodec(codec, c));
       if (found && !chosen.includes(found)) chosen.push(found);
     }
+    // what werift makes of them is held to them (`keepPreferredCodecs`)
+    notePreferences(this.t, codecs);
     this.t.setCodecPreferences(chosen);
   }
   /**
@@ -693,8 +713,64 @@ class WeriftTransceiver implements RTCTransceiverLike {
     (this.t as { headerExtensions: WExtension[] }).headerExtensions = next;
   }
 
-  setParameters(): Promise<void> {
+  /** The codec `setParameters` asked its first encoding to send, which
+   *  is sent while the negotiated codecs have it (`_chooseSendCodec`). */
+  private _sendCodec: RTCCodecLike | null = null;
+  /** Whether werift's sender sends a codec `_sendCodec` chose for it. */
+  private _switched = false;
+
+  setParameters(parameters: {
+    encodings: RTCEncodingLike[];
+    keyFrame?: boolean;
+  }): Promise<void> {
+    this._sendCodec = parameters.encodings[0]?.codec ?? null;
+    this._chooseSendCodec();
+    if (parameters.keyFrame) this.keyFrame();
     return Promise.resolve();
+  }
+
+  /**
+   * The codec werift's sender sends: the one `setParameters` chose, where
+   * the negotiated codecs have it, else the first of them, as werift has
+   * it. werift has no `setParameters` that changes a sender's codec, and
+   * puts its first negotiated one back at every description applied
+   * (`prepareSend`), so this is asked again then (`poll`). The media
+   * pipeline encodes in whatever the sender's codec is (`./werift-media.ts`).
+   */
+  private _chooseSendCodec(): void {
+    const sender = (this.t as unknown as { sender: WSendCodecs }).sender;
+    const negotiated = sender.negotiatedCodecs;
+    if (!negotiated?.length) return;
+    const isMedia = (c: WCodec): boolean =>
+      !['rtx', 'red', 'ulpfec', 'flexfec-03'].includes(
+        c.mimeType.toLowerCase().split('/')[1] ?? '',
+      );
+    const want = this._sendCodec;
+    const chosen = want
+      ? negotiated.find(
+          (c) =>
+            isMedia(c) &&
+            c.mimeType.toLowerCase() === want.mimeType.toLowerCase() &&
+            c.clockRate === want.clockRate &&
+            (c.channels ?? 1) === (want.channels ?? 1),
+        )
+      : // werift's own, where one chosen before was given up
+        this._switched
+        ? negotiated.find(isMedia)
+        : undefined;
+    if (want && !chosen) this._sendCodec = null;
+    this._switched = !!want && !!chosen;
+    // werift's own choice stands where nothing was asked
+    if (!chosen || sender.codec === chosen) return;
+    sender.codec = chosen;
+    sender.sendPrimaryCodec = chosen;
+    if (sender.track) sender.track.codec = chosen;
+    sender.rtxPayloadType = negotiated.find(
+      (c) =>
+        c.mimeType.toLowerCase().endsWith('/rtx') &&
+        /(?:^|;)\s*apt=(\d+)/.exec(c.parameters ?? '')?.[1] ===
+          String(chosen.payloadType),
+    )?.payloadType;
   }
   /**
    * `stop()`: werift's, but not while a negotiation is under way — an
@@ -725,6 +801,7 @@ class WeriftTransceiver implements RTCTransceiverLike {
    *  hear, and whether it was ever negotiated to send. */
   poll(currentDirection: RTCDirectionLike | null): void {
     this._receive?.watch();
+    if (this._sendCodec) this._chooseSendCodec();
     if (currentDirection === 'sendrecv' || currentDirection === 'sendonly') {
       this.everSent = true;
     }
@@ -911,6 +988,7 @@ class WeriftConnection implements RTCConnectionLike {
     const config = configOf(request, _w, certificates);
     this._pc = new _w.RTCPeerConnection(config);
     keepExtensionIds(this._pc);
+    keepPreferredCodecs(this._pc);
     const codecs = config.codecs as { audio: WCodec[]; video: WCodec[] };
     this._codecs = [...codecs.audio, ...codecs.video];
     this._net = new WeriftTransports(this._pc, _events, () => this._closed);
@@ -1147,7 +1225,7 @@ class WeriftConnection implements RTCConnectionLike {
       // WPT writes its own so — ran its lines together
       let text = sdp.replace(/\r?\n/g, '\r\n');
       if (side === 'local') text = withoutNoStream(text);
-      else text = udpCandidatesOnly(text);
+      else text = asWeriftReads(udpCandidatesOnly(text));
       if (type !== 'rollback') {
         // a kind werift does not read throws in its parser: it is handed a
         // rejected audio m-section in that one's place, and the answer
@@ -1174,7 +1252,7 @@ class WeriftConnection implements RTCConnectionLike {
         const created = pc.createdOffer;
         if (type === 'offer' && created && text !== created.sdp) {
           if (this._takeExtensions(text, created.transceiverByMid)) {
-            await this._pc.createOffer();
+            await this._offer();
           }
           text = pc.createdOffer?.sdp ?? created.sdp;
         } else if (type === 'answer') {
@@ -1264,15 +1342,82 @@ class WeriftConnection implements RTCConnectionLike {
     return wrapped;
   }
 
+  /**
+   * werift's `createOffer`, with each transceiver a negotiation has
+   * narrowed offering again every codec it supports (`reofferCodecs`,
+   * werift#818): its codecs are widened for the offer alone, and put back
+   * after, so the sender's parameters stay what was negotiated until an
+   * answer says otherwise. The offer set carries the wider list, which is
+   * what werift answers it from (`pendingLocalOfferCodecs`). The full list
+   * is werift's own resolution, the one an initial offer has, which the
+   * adapter reaches its transceiver manager for.
+   */
+  private async _offer(options?: {
+    iceRestart?: boolean;
+  }): Promise<WDescription> {
+    const tm = (
+      this._pc as unknown as {
+        transceiverManager?: { assignTransceiverCodecs?(t: unknown): void };
+      }
+    ).transceiverManager;
+    const widened: [{ codecs: WCodec[] }, WCodec[]][] = [];
+    for (const t of this._pc.getTransceivers()) {
+      const r = t as unknown as {
+        codecs: WCodec[];
+        codecPreferencesNeedResolution?: boolean;
+      };
+      if (
+        typeof tm?.assignTransceiverCodecs !== 'function' ||
+        t.stopped ||
+        t.stopping ||
+        !t.currentDirection ||
+        r.codecPreferencesNeedResolution ||
+        r.codecs.length === 0
+      )
+        continue;
+      const negotiated = r.codecs;
+      try {
+        tm.assignTransceiverCodecs(t);
+      } catch {
+        r.codecs = negotiated;
+        continue;
+      }
+      r.codecs = reofferCodecs(negotiated, r.codecs, (c, pt, parameters) =>
+        this._copyCodec(c, pt, parameters),
+      ) as WCodec[];
+      widened.push([r, negotiated]);
+    }
+    try {
+      return await this._pc.createOffer(options);
+    } finally {
+      for (const [r, negotiated] of widened) r.codecs = negotiated;
+    }
+  }
+
+  /** A werift codec at another payload type, and with other parameters. */
+  private _copyCodec(
+    c: WCodecLike,
+    payloadType: number,
+    parameters?: string,
+  ): WCodecLike {
+    const fmtp = parameters ?? c.parameters;
+    return new this._w.RTCRtpCodecParameters({
+      mimeType: c.mimeType,
+      clockRate: c.clockRate,
+      payloadType,
+      ...(c.channels !== undefined ? { channels: c.channels } : {}),
+      ...(fmtp ? { parameters: fmtp } : {}),
+      ...(c.rtcpFeedback ? { rtcpFeedback: c.rtcpFeedback } : {}),
+    }) as WCodecLike;
+  }
+
   async createOffer(options: { iceRestart: boolean }): Promise<string> {
     for (const w of this._wrapped.values()) {
       w.flushStop();
       w.forOffer();
     }
     try {
-      const offer = (
-        await this._pc.createOffer({ iceRestart: options.iceRestart })
-      ).sdp;
+      const offer = (await this._offer({ iceRestart: options.iceRestart })).sdp;
       this._offered = true;
       return namingNoStream(offer);
     } catch (error) {

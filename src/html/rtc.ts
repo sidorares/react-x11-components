@@ -225,6 +225,9 @@ export interface RTCTransceiverLike {
   setParameters(parameters: {
     encodings: RTCEncodingLike[];
     degradationPreference?: string;
+    /** `encodingOptions` asked a key frame of an encoding (webrtc-extensions):
+     *  the sender's next frame is one. */
+    keyFrame?: boolean;
   }): Promise<void>;
   /** `stop()`: it is stopped once the next negotiation takes it out. */
   stop(): void;
@@ -672,6 +675,7 @@ class DeferredTransceiver implements RTCTransceiverLike {
   setParameters(parameters: {
     encodings: RTCEncodingLike[];
     degradationPreference?: string;
+    keyFrame?: boolean;
   }): Promise<void> {
     return new Promise((resolve, reject) =>
       this._do((t) => t.setParameters(parameters).then(resolve, reject)),

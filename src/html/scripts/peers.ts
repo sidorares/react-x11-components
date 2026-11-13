@@ -376,12 +376,16 @@ export class PagePeers {
       }
       case 'rtcParameters': {
         const t = this._transceivers.get(Number(a));
-        const parameters = json(c) as { encodings?: unknown[] } | null;
+        const parameters = json(c) as {
+          encodings?: unknown[];
+          keyFrame?: boolean;
+        } | null;
         this._settle(
           Number(b),
           t
             ? t.transceiver.setParameters({
                 encodings: (parameters?.encodings ?? []) as never,
+                ...(parameters?.keyFrame ? { keyFrame: true } : {}),
               })
             : Promise.resolve(),
         );
