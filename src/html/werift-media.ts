@@ -202,10 +202,14 @@ const REPEAT_AFTER_MS = 1000;
  *  5.3.1). */
 const SOURCE_MEMORY_MS = 10000;
 
-/** The page's time, as `performance.timeOrigin + performance.now()`: what a
- *  synchronization source's `timestamp` and a stats object's are on. */
+/** The page's time, as `performance.timeOrigin + performance.now()` reads
+ *  it there: what a synchronization source's `timestamp` and a stats
+ *  object's are on. The realm's origin is this thread's, and its `now()`
+ *  this thread's read to five microseconds (`dom.ts`), so the same sum
+ *  here is the same clock, and a time stamped here before a page reads its
+ *  own is never after it. */
 export const pageTime = (): number =>
-  performance.timeOrigin + performance.now();
+  performance.timeOrigin + Math.floor(performance.now() * 200) / 200;
 
 const bytes = (data: Uint8Array): Uint8Array =>
   Buffer.from(data.buffer, data.byteOffset, data.byteLength);

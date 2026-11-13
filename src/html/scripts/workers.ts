@@ -46,6 +46,7 @@ import type { ChannelRelay } from './peers.js';
 import type { HtmlCacheAnswer, HtmlCacheAsk } from '../cache-storage.js';
 
 declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
+declare const performance: { now(): number; timeOrigin: number };
 declare const URL: UrlClass;
 declare const AbortController: AbortControllerClass;
 type AbortController = InstanceType<AbortControllerClass>;
@@ -124,9 +125,10 @@ export interface WorkerThreadData {
   permissions: Record<string, string>;
   /** Whether the page has anything to show a notification with. */
   notifies: boolean;
-  /** When the page made it, on the wall clock, which every thread reads
-   *  alike: where the worker's time starts (HR Time 3, the time origin),
-   *  however long its thread takes to come up. */
+  /** When the page made it, as `performance.timeOrigin +
+   *  performance.now()` reads it here, which a thread's own origin and
+   *  `now` come to alike: where the worker's time starts (HR Time 3, the
+   *  time origin), however long its thread takes to come up. */
   born: number;
 }
 
@@ -283,7 +285,7 @@ export class PageWorkers implements PageWorkersLike {
       stopped: this._stopped,
       permissions: this._seams.permissions?.() ?? {},
       notifies: !!this._seams.notifications,
-      born: Date.now(),
+      born: performance.timeOrigin + performance.now(),
     };
     const source = threadSource();
     const thread = new Thread(source, {

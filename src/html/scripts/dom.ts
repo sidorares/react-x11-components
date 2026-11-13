@@ -314,6 +314,7 @@ export function installDom(
     'active',
     'log',
     'now',
+    'timeOrigin',
     'navigator',
     'hasNetwork',
     'image',
@@ -39225,7 +39226,14 @@ export function installDom(
   };
   define('CSS', cssNamespace);
   define('customElements', customElements);
-  const timeOrigin = Date.now() - now();
+  // the host's clock's origin, which `now()` counts from, so that what the
+  // host stamps a time with — a synchronization source, werift's stats, an
+  // encoded frame's `receiveTime` — is on the clock a page reads. One of
+  // `Date.now() - now()` was the wall clock's, in whole milliseconds and
+  // drifting from the monotonic one, and came to a millisecond or so
+  // before the host's: a source stamped as a packet came was read as after
+  // the `performance.now()` the page read straight after asking for it.
+  const timeOrigin = Number(bridge('timeOrigin'));
   /** How the page's document came to be shown, for its navigation entry. */
   const pageArrival = (): string | null =>
     pageSession.session.arrived?.type ?? null;
@@ -39312,7 +39320,9 @@ export function installDom(
     get navigation() {
       return legacyNavigation(pageArrival());
     },
-    toJSON: () => ({ timeOrigin }),
+    toJSON() {
+      return { timeOrigin: this.timeOrigin };
+    },
   });
   define('screen', {
     get width() {
@@ -40787,10 +40797,14 @@ export function installDom(
     // read off the process's clock came to its page's, and which of the two
     // was first was a coin toss. It starts as the page made it, and not as
     // its thread came up, which can be a few hundred milliseconds later: a
-    // frame captured after `new Worker()` had a negative `captureTime`
-    const at = Date.now();
+    // frame captured after `new Worker()` had a negative `captureTime`. Both
+    // are read on the host's clock, its origin and its `now`, so that
+    // `timeOrigin + now()` is the same instant here and in the page: on the
+    // wall clock, in whole milliseconds and drifting, it was not
+    const threadNow = Number(bridge('now'));
+    const at = Number(bridge('timeOrigin')) + threadNow;
     const origin = typeof born === 'number' && born <= at ? born : at;
-    clockFrom = Number(bridge('now')) - (at - origin);
+    clockFrom = threadNow - (at - origin);
     (G as Any).performance.timeOrigin = origin;
     // a worker's navigator has no container of the page's
     delete (navigator as Any).serviceWorker;

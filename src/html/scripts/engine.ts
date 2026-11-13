@@ -1818,7 +1818,14 @@ const REFUSED =
 /** The ops the facade asks for itself, through the bridge rather than
  *  through `call`, which reads no error from what they answer: a refusal
  *  would be taken for the answer (`_bridge`). */
-const UNREFUSED = new Set(['log', 'now', 'rangeDrop', 'iterDrop', 'ceTake']);
+const UNREFUSED = new Set([
+  'log',
+  'now',
+  'timeOrigin',
+  'rangeDrop',
+  'iterDrop',
+  'ceTake',
+]);
 
 /** What an entry found as it began, which it puts back as it ends. */
 interface EntryMark {
