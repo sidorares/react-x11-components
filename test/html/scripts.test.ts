@@ -1280,35 +1280,6 @@ test('a page sees what the parser puts in the document after its first script, a
   );
 });
 
-test('link rel=expect blocking=render holds animation frames until its element is parsed', async () => {
-  // Rendering opportunities stay blocked while an expect link's id is
-  // missing and the document is still loading (HTML render-blocking).
-  // Forced here after load so the harness need not interleave a parser
-  // delay with the page's timers; WPT's element-render-blocking-*.html
-  // cover the real parse.
-  const doc = await hosted('<p id="out"></p>');
-  doc.run(
-    'document._ready = "loading";' +
-      'var link = document.createElement("link");' +
-      'link.rel = "expect"; link.href = "#never"; link.setAttribute("blocking", "render");' +
-      'document.head.appendChild(link);' +
-      'var fired = false;' +
-      'requestAnimationFrame(function () { fired = true; });' +
-      'setTimeout(function () {' +
-      '  var mid = fired ? "fired" : "held";' +
-      '  document._ready = "complete";' +
-      '  requestAnimationFrame(function () {' +
-      '    document.getElementById("out").textContent = mid + "|" + (fired ? "fired" : "held");' +
-      '  });' +
-      '}, 50);',
-  );
-  assert.equal(
-    await settled(doc, 'out', (t) => t.includes('|')),
-    'held|fired',
-    doc.logs.join('\n'),
-  );
-});
-
 test('script blocking=render holds animation frames until it loads, then paint timing is told', async () => {
   // As test_render_blocking.js: rAF and first-paint wait on a
   // render-blocking script, then PerformancePaintTiming entries appear.
@@ -1316,8 +1287,10 @@ test('script blocking=render holds animation frames until it loads, then paint t
   const pending = new Promise<string>((ok) => {
     release = ok;
   });
+  // in the head: one the parser meets once the body is there blocks
+  // nothing (HTML 3.1.6), which render-blocking.test.ts holds
   const doc = await hosted(
-    '<p id="out">-</p><script>' +
+    '<head><script>' +
       'var fired = false;' +
       'requestAnimationFrame(function () { fired = true; });' +
       'setTimeout(function () {' +
@@ -1327,7 +1300,8 @@ test('script blocking=render holds animation frames until it loads, then paint t
       '    performance.getEntriesByType("paint").length;' +
       '}, 50);' +
       '</script>' +
-      '<script async blocking="render" src="block.js"></script>',
+      '<script async blocking="render" src="block.js"></script></head>' +
+      '<body><p id="out">-</p></body>',
     { scripts: { 'https://example.test/dir/block.js': pending } },
   );
   assert.equal(

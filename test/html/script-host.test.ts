@@ -240,8 +240,10 @@ metric(
       '<style>body{margin:0}</style><p><a id="a" href="/next">a <b id="b">link</b></a></p>',
     );
     await clickOn(doc.el, doc.byId('b'));
-    // the pointer moved onto it first, which is told too
+    // the pointer moved onto it first, which is told too, after the
+    // `<style>`'s own `load`
     assert.deepStrictEqual(doc.told(), [
+      'load:style',
       'mousemove:b',
       'mousedown:b',
       'selectstart:b',
@@ -1019,7 +1021,7 @@ test('scriptsUnblocked settles once the sheets the parser met before a script ar
     '<html><head><script id="s0"></script>' +
       '<link id="a" rel="stylesheet" href="a.css">' +
       '<link id="m" rel="stylesheet" href="m.css" media="(max-width: 10px)">' +
-      '<style>@import "i.css";</style><script id="s1"></script></head>' +
+      '<style id="st">@import "i.css";</style><script id="s1"></script></head>' +
       '<body><link id="b" rel="stylesheet" href="b.css">' +
       '<p id="p">x</p><script id="s2"></script></body></html>',
     { onResource },
@@ -1055,7 +1057,8 @@ test('scriptsUnblocked settles once the sheets the parser met before a script ar
   );
   await act(async () => sheet('i.css', '#p { background: #00ff00 }'));
   await settle();
-  assert.deepStrictEqual(log, ['run:s0', 'load:a', 'run:s1']);
+  // and the `<style>` hears its `load` once what it imports is in
+  assert.deepStrictEqual(log, ['run:s0', 'load:a', 'load:st', 'run:s1']);
   const p = doc.el.computedStyle(doc.byId('p'))!;
   assert.strictEqual(p.color, 'rgb(255, 0, 0)');
   assert.strictEqual(p['background-color'], 'rgb(0, 255, 0)');
@@ -1069,11 +1072,11 @@ test('scriptsUnblocked settles once the sheets the parser met before a script ar
   );
   doc.el.touchDocument();
   await settle();
-  assert.deepStrictEqual(log.slice(3), []);
+  assert.deepStrictEqual(log.slice(4), []);
   await act(async () => sheet('b.css', null));
   await settle();
   assert.deepStrictEqual(
-    log.slice(3),
+    log.slice(4),
     ['error:b', 'run:s2', 'run:deferred'],
     'a sheet that failed holds nothing, and is told before what it held',
   );

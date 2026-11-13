@@ -4484,7 +4484,20 @@ export class HtmlViewNode extends Node {
     let told: [Element, 'load' | 'error'][] | null = null;
     const ask = (refs: readonly SheetRef[]) => {
       for (const ref of refs) {
-        if (ref.kind !== 'link') continue;
+        if (ref.constructed) continue;
+        // a `<style>`'s once the cascade has read it and what it imports
+        // came to something, again for each text it is given (HTML 4.2.6,
+        // "update a style block"): a loader that puts one in waits on it
+        if (ref.kind === 'inline') {
+          const key = `\u0000${ref.text}`;
+          if (this._sheetTold.get(ref.element) === key) continue;
+          const read = this._sheetsInForce.get(ref.element);
+          const outcome = read ? this._importsOutcome(read.imports) : null;
+          if (!outcome) continue;
+          this._sheetTold.set(ref.element, key);
+          (told ??= []).push([ref.element, outcome]);
+          continue;
+        }
         if (this._sheetTold.get(ref.element) === ref.href) continue;
         const outcome = this._sheetOutcome(ref.element, ref.href);
         if (!outcome) continue;
