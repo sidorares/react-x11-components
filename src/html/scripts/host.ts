@@ -335,6 +335,9 @@ declare const Buffer: BufferClass;
 declare const TextEncoder: new () => { encode(text: string): Uint8Array };
 declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
 
+/** The elements HTML's media elements are. */
+const MEDIA_TAGS = new Set(['video', 'audio']);
+
 /** A context's setting of its text as it crosses: its direction, its
  *  spacings in CSS pixels, its kerning and its capitals. */
 const textSetting = ([direction, letter, word, kerning, caps]: string[]) => ({
@@ -2183,6 +2186,17 @@ export const timerClock = {
   },
 };
 
+/** The root of the tree a node is in, through a shadow root's host: a
+ *  document, or what a script holds out of one. */
+function treeRootOf(node: AnyNode): AnyNode {
+  let at = node;
+  for (;;) {
+    if (at.parent) at = at.parent;
+    else if (at instanceof ShadowRoot) at = at.host;
+    else return at;
+  }
+}
+
 export class DomHost {
   private _ids = new WeakMap<AnyNode, number>();
   private _nodes = new Map<number, AnyNode>();
@@ -2850,17 +2864,45 @@ export class DomHost {
    * the op that wrote it made, which the op's own return tells: whether the
    * document's `<body>` was among it, whose `on…` attributes the window's
    * handlers come to be as the parser sets them, after a head's scripts
-   * listened (HTML 8.1.8.1).
+   * listened (HTML 8.1.8.1); and the media elements it made or put a node
+   * in, which select a source as the parser's insertion would have them
+   * (4.8.11.5), as a list of ids.
    */
-  parserInserted(): { body: boolean } | null {
+  parserInserted(): { body: boolean; media: string } | null {
     const made = this._seams.handle.parserMade?.();
     this._noteAutofocus(made ?? [], false);
-    if (!made?.length || this._disposed) return null;
+    if (this._disposed) return null;
+    // the first time, the media the parser made before the page's scripts
+    // began, which select a source before the first of them runs
+    const media = new Set<number>();
+    if (!this._mediaSwept) {
+      this._mediaSwept = true;
+      const walk = (nodes: readonly AnyNode[]): void => {
+        for (const node of nodes) {
+          // a template's content is in no document of its own yet
+          if (!(node instanceof Element) || tagOf(node) === 'template') {
+            continue;
+          }
+          if (MEDIA_TAGS.has(tagOf(node))) media.add(this.idOf(node));
+          walk(node.children);
+        }
+      };
+      walk(this.document.children);
+    }
+    if (!made?.length) {
+      return media.size ? { body: false, media: [...media].join(',') } : null;
+    }
     const fresh = this._custom || this._scoped ? new Set<AnyNode>(made) : null;
     let body = false;
     for (const node of made) {
       const parent = node.parent;
       if (!parent) continue;
+      if (node instanceof Element && MEDIA_TAGS.has(tagOf(node))) {
+        media.add(this.idOf(node));
+      }
+      if (parent instanceof Element && MEDIA_TAGS.has(tagOf(parent))) {
+        media.add(this.idOf(parent));
+      }
       if (
         node instanceof Element &&
         node.name === 'body' &&
@@ -2890,8 +2932,12 @@ export class DomHost {
         }
       }
     }
-    return { body };
+    return { body, media: [...media].join(',') };
   }
+
+  /** Whether the media the parser made before the scripts began have been
+   *  told to the page (`parserInserted`). */
+  private _mediaSwept = false;
 
   /** Load the frames the document has, as a browser loads a frame as the
    *  parser meets it: those its markup has, where the browser draws frames
@@ -2941,16 +2987,32 @@ export class DomHost {
   private _framesLoading = new Set<Element>();
   /** Told once no frame in the document is loading. */
   onFramesLoaded: (() => void) | null = null;
-  /** Whether a frame in the document is still loading its document. */
+  /** Whether a frame in the document is still loading its document, or a
+   *  media element its source (`_mediaDelaying`): either holds `load`. */
   get framesLoading(): boolean {
     for (const frame of this._framesLoading) {
       if (!this._loadsFrame(frame)) this._framesLoading.delete(frame);
     }
-    return this._framesLoading.size > 0;
+    return this._framesLoading.size > 0 || this._mediaDelaying.size > 0;
   }
   private _frameDone(frame: Element): void {
     if (!this._framesLoading.delete(frame)) return;
     if (!this.framesLoading) this.onFramesLoaded?.();
+  }
+  /** The media elements whose "delaying-the-load-event flag" is set (HTML
+   *  4.8.11.5), as the page's realm says (`mediaDelay`). */
+  private _mediaDelaying = new Set<Element>();
+  /** A media element's flag set or cleared: the last that holds `load`
+   *  lets it go in a task, since the realm says so from inside an op. */
+  private _mediaDelay(el: Element, on: boolean): void {
+    if (on) {
+      this._mediaDelaying.add(el);
+      return;
+    }
+    if (!this._mediaDelaying.delete(el) || this.framesLoading) return;
+    setTimeout(() => {
+      if (!this._disposed && !this.framesLoading) this.onFramesLoaded?.();
+    }, 0);
   }
 
   /** The frames a view of the page follows (`FramePage`), each with how
@@ -6720,7 +6782,8 @@ export class DomHost {
       case 'resolve':
         return this._resolve(
           text(a),
-          typeof b === 'number' ? this._node(b) : null,
+          typeof b === 'number' && b ? this._node(b) : null,
+          c === true,
         );
       case 'characterSet':
         return this._encodingOf(
@@ -7229,6 +7292,12 @@ export class DomHost {
         return null;
       case 'featureAllowed':
         return this._featureAllowed(text(a));
+      // whether the document's media may not play now: its frame says so
+      // where it is hidden, and a frame around it is (`mediaHeldHidden`)
+      case 'mediaHidden':
+        return a === true
+          ? !this._mediaWhileHidden()
+          : !this._mediaWhileHidden() && this._frameHidden();
       case 'fullyActive':
         return this._fullyActive();
       // a page's `crypto.subtle` (`subtle.ts`): what it asks the runtime,
@@ -7345,6 +7414,9 @@ export class DomHost {
       }
       case 'mediaFetch':
         this._mediaFetch(this._element(a), Number(b), text(c));
+        return null;
+      case 'mediaDelay':
+        this._mediaDelay(this._element(a), b === true);
         return null;
       case 'mediaAbort': {
         const el = this._element(a);
@@ -8037,12 +8109,7 @@ export class DomHost {
   }
 
   private _drawing(node: AnyNode): HtmlHandle | null {
-    let at: AnyNode = node;
-    for (;;) {
-      if (at.parent) at = at.parent;
-      else if (at instanceof ShadowRoot) at = at.host;
-      else break;
-    }
+    const at = treeRootOf(node);
     if (at === this.document) return this._seams.handle;
     return this._s.drawn.get(at as Document) ?? null;
   }
@@ -9961,7 +10028,13 @@ export class DomHost {
   private _pageBase: string | null = null;
   private _pageBaseKey = '';
 
-  private _resolve(url: string, node: AnyNode | null = null): string {
+  private _resolve(
+    url: string,
+    node: AnyNode | null = null,
+    /** Whether a URL that does not parse comes to `''` rather than itself
+     *  (HTML's "encoding-parse a URL" failing). */
+    strict = false,
+  ): string {
     try {
       // against the document the node is in: a frame's of this realm's has
       // its own address, and its own `<base>`
@@ -9981,7 +10054,7 @@ export class DomHost {
         ? new URL(url, base).href
         : encodingCodecs.urlInEncoding(encoding, url, base);
     } catch {
-      return url;
+      return strict ? '' : url;
     }
   }
 
@@ -10596,6 +10669,50 @@ export class DomHost {
     return (frame.attribs.allow ?? '')
       .split(';')
       .some((entry) => entry.trim().split(/\s+/)[0] === feature);
+  }
+
+  /** Whether this document's frame turns `media-playback-while-not-visible`
+   *  off (WICG's iframe media pausing): its `allow` naming it `'none'`. */
+  private _mediaWhileHidden(): boolean {
+    const frame = this._frameOf.get(this.document);
+    if (!frame) return true;
+    return !(frame.attribs.allow ?? '').split(';').some((entry) => {
+      const [name, ...list] = entry.trim().split(/\s+/);
+      return (
+        name === 'media-playback-while-not-visible' && list[0] === "'none'"
+      );
+    });
+  }
+
+  /** Whether a frame around this document is not rendered: none at all,
+   *  `visibility: hidden`, or of no size, in the document it is in, as
+   *  that document's `<Html>` has it — up to the top. */
+  private _frameHidden(): boolean {
+    const seen = new Set<AnyNode>();
+    for (let doc: AnyNode = this.document; !seen.has(doc);) {
+      seen.add(doc);
+      const frame = this._frameOf.get(doc as Document);
+      if (!frame) return false;
+      // the document the frame is in, which another realm's may be: this
+      // host's own `_ownerOf` knows only the documents it made
+      const root = treeRootOf(frame);
+      const handle = this._drawing(frame);
+      if (handle) {
+        // by its style, which a layout still owed says nothing of
+        const style = handle.computedStyle(frame, null);
+        if (
+          style &&
+          (style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            style.width === '0px' ||
+            style.height === '0px')
+        ) {
+          return true;
+        }
+      }
+      doc = root;
+    }
+    return false;
   }
 
   /** Whether the document is still where a user can see it: not one whose

@@ -71,6 +71,9 @@ export interface UsedBox {
    *  compute, a percentage as a percentage: what Chrome answers, having
    *  resolved them only for a box with a rectangle of its own. */
   inline?: boolean;
+  /** Whether it is replaced: an `<img>` or a `<video>` that is inline
+   *  still has a size of its own, which reads as layout used it. */
+  replaced?: boolean;
   /** Whether only its margins and padding are to be read, by what otherwise
    *  takes the computed value (`HtmlViewNode._edgesOf`). */
   edgesOnly?: boolean;
@@ -1329,7 +1332,7 @@ function cssomAt(
       if (v !== null) out[side] = v === 'auto' ? 'auto' : px(v, scale);
     });
   }
-  if (box && style.display !== 'inline') {
+  if (box && (style.display !== 'inline' || box.replaced)) {
     // the used size, of the box `box-sizing` says (CSSOM 9.1, the resolved
     // value of `width` and `height`)
     const content = style.boxSizing === 'content-box';

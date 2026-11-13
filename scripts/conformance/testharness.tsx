@@ -69,6 +69,7 @@ import {
   HtmlNetwork,
   HtmlServiceWorkers,
   HtmlSessionHistory,
+  canPlayMedia,
   fakeMediaDevices,
   isXmlType,
   memoryClipboard,
@@ -757,6 +758,9 @@ function Tab(props: {
       // two peers in one page, over werift
       webRTC: network.webRTC,
       mediaDevices: page.media,
+      // what the example browser answers on a Mac, whose player opens MP4,
+      // its audio and HLS: WPT's media helpers pick a file by it
+      canPlayType: canPlayMedia,
       clipboard: page.clipboard,
       notifications: page.notifications,
       permissions: {

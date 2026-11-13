@@ -137,6 +137,15 @@ export function installDom(
   /** An op's answer, or the host's error thrown as a `DOMException`. */
   /** A media element's text tracks (`text-tracks.ts`), once installed. */
   let textTracksOf: Any = null;
+  /** Whether the attribute being set is one `setAttributeNS` gave a
+   *  namespace: a `src` of another namespace's loads no media element. */
+  let settingInNamespace = false;
+  /** What a change to the tree does to the media elements choosing a
+   *  source (`mediaTreeOp`, in "loading"), once that code has run: asked
+   *  before the op, it hands back what to do after it, or null. */
+  let mediaTreeOp:
+    ((op: string, a: Primitive, b: Primitive) => (() => void) | null) | null =
+    null;
   const call = (
     op: string,
     a?: Primitive,
@@ -196,6 +205,14 @@ export function installDom(
         attrEpoch += 1;
       } else if (mutatesHas.call(LIST_ATTRIBUTES, b)) attrEpoch += 1;
     }
+    const afterMedia =
+      mediaTreeOp &&
+      op !== 'setAttr' &&
+      op !== 'delAttr' &&
+      op !== 'setStyle' &&
+      mutatesHas.call(MUTATES, op)
+        ? mediaTreeOp(op, a, b)
+        : null;
     const r = bridge(op, a, b, c, d);
     if (typeof r === 'string' && r.charCodeAt(0) === 1) {
       const parts = r.split('\u0001');
@@ -203,6 +220,7 @@ export function installDom(
         ? new QuotaExceededError(parts[2] ?? '')
         : new DOMException(parts[2] ?? '', parts[1] || 'Error');
     }
+    afterMedia?.();
     if (mutatesHas.call(MUTATES, op)) {
       opEdits += 1;
       mutated();
@@ -8054,10 +8072,20 @@ export function installDom(
       if (n === 'src' && this instanceof HTMLTrackElement) {
         textTracksOf?.srcChanged(this);
       }
-      // a media element's `src` set or changed loads it (HTML 4.8.11.2)
+      // a lazy media element set eager goes on (HTML 4.8.11.5)
+      if (
+        n === 'loading' &&
+        this instanceof HTMLMediaElement &&
+        str(value).toLowerCase() !== 'lazy'
+      ) {
+        mediaLazyResume(this);
+      }
+      // a media element's `src` set or changed loads it (HTML 4.8.11.2),
+      // and not one of the same name in another namespace
       if (
         n === 'src' &&
         this instanceof HTMLMediaElement &&
+        !settingInNamespace &&
         (mediaLoads() || askOf(this).source || mediaSourceUrls.has(str(value)))
       ) {
         mediaLoad(this);
@@ -8072,7 +8100,13 @@ export function installDom(
       const key = held ?? (ns ? qualified : qualified.slice(colon + 1));
       if (ns && colon >= 0) (this._attrSpaces ??= new Map()).set(key, str(ns));
       if (ns) call('attrSpace', this._id, key, str(ns));
-      this._setAttr(key, value);
+      const was = settingInNamespace;
+      settingInNamespace = !!ns;
+      try {
+        this._setAttr(key, value);
+      } finally {
+        settingInNamespace = was;
+      }
     }
     removeAttribute(name: Any): void {
       this._removeAttr(this._attrName(name));
@@ -8087,6 +8121,14 @@ export function installDom(
       if (n === 'nonce') nonces.delete(this);
       if (n.startsWith('aria-')) ariaReferenceChanged(this, n);
       call('delAttr', this._id, n);
+      // a missing `loading` is eager: a lazy media element goes on
+      if (n === 'loading' && this instanceof HTMLMediaElement) {
+        mediaLazyResume(this);
+      }
+      // a `<track>`'s `src` taken away fails to load (4.8.11.11.3)
+      if (n === 'src' && this instanceof HTMLTrackElement) {
+        textTracksOf?.srcChanged(this);
+      }
     }
     removeAttributeNS(ns: Any, name: Any): void {
       const key = this._attrNS(ns, name);
@@ -15876,8 +15918,65 @@ export function installDom(
     tasks: Set<number>;
     /** Its video source's frame count as it began to show it. */
     framesBefore: number;
+    /** Where it is among its `<source>`s, while it chooses one of them
+     *  (HTML 4.8.11.5, "the source elements will be used"). */
+    selection: MediaSelection | null;
+    /** The URL its fetch was suspended before, where `preload` is `none`,
+     *  until it is played (4.8.11.5, the resource fetch algorithm). */
+    suspended: string | null;
+    /** HTML's "delaying-the-load-event flag", as the host was last told. */
+    delaying: boolean;
+    /** Its "lazy load resumption steps", while it waits to come near the
+     *  viewport (HTML 4.8.11.5), and whether they ran for this load. */
+    lazy: (() => void) | null;
+    lazyResumed: boolean;
+    /** HTML's "show poster flag": set until it plays or is sought, and no
+     *  cue is current while it is (4.8.11.8, "time marches on"). */
+    poster: boolean;
+    /** Its "default playback start position": where a seek before its
+     *  metadata, or its URL's `#t=`, has it start (4.8.11.5). */
+    startAt: number;
+    /** What of its media it has played, and where the run of the clock
+     *  under way started, for `played` (4.8.11.6). */
+    ranges: [number, number][];
+    runFrom: number | null;
+  }
+  /** The source pointer: the node before it, null at the start of the
+   *  list; the candidate; and whether it waits for a node after it. */
+  interface MediaSelection {
+    pointer: Any;
+    candidate: Any;
+    waiting: boolean;
   }
   const mediaAsks = new WeakMap<Any, MediaAsk>();
+  /** What a page set `preservesPitch` to, by element. */
+  const mediaPitch = new WeakMap<Any, boolean>();
+  /** A `TimeRanges` of the ranges given. */
+  const timeRanges = (ranges: [number, number][]): Any => {
+    if (!ranges.length) return noTimeRanges;
+    const at = (i: number): [number, number] => {
+      const r = ranges[Number(i)];
+      if (!r) throw noTimeRanges.start();
+      return r;
+    };
+    return {
+      length: ranges.length,
+      start: (i: number) => at(i)[0],
+      end: (i: number) => at(i)[1],
+    };
+  };
+  /** A `TimeRanges` of one range, from `start` to `end`. */
+  const oneTimeRange = (start: number, end: number): Any => ({
+    length: 1,
+    start: (i: number) => {
+      if (Number(i) !== 0) throw noTimeRanges.start();
+      return start;
+    },
+    end: (i: number) => {
+      if (Number(i) !== 0) throw noTimeRanges.end();
+      return end;
+    },
+  });
   /** The `sinkId` each element was given (`setSinkId`). */
   const mediaSinks = new WeakMap<Any, string>();
   const askOf = (el: Any): MediaAsk => {
@@ -15923,6 +16022,15 @@ export function installDom(
         played: false,
         tasks: new Set(),
         framesBefore: 0,
+        selection: null,
+        suspended: null,
+        delaying: false,
+        lazy: null,
+        lazyResumed: false,
+        poster: true,
+        startAt: 0,
+        ranges: [],
+        runFrom: null,
       };
       mediaAsks.set(el, ask);
     }
@@ -16006,6 +16114,33 @@ export function installDom(
     if (ask.limit !== null) t = Math.min(t, Math.max(ask.time, ask.limit));
     return Number.isFinite(ask.duration) ? Math.min(t, ask.duration) : t;
   };
+  /** Whether the document's frame sets `media-playback-while-not-visible`
+   *  to `'none'`, asked once (WICG's iframe media pausing). */
+  let mediaPolicyHolds: boolean | null = null;
+  /** Whether that policy holds its media now: a frame around the document
+   *  is not rendered. A `play()` is turned down, and what plays pauses. */
+  const mediaHeldHidden = (): boolean => {
+    mediaPolicyHolds ??= bridge('mediaHidden', true) === true;
+    return mediaPolicyHolds && bridge('mediaHidden', false) === true;
+  };
+  /** A run of the clock that ended at `to`, kept in what `played` says
+   *  (HTML 4.8.11.6): the ranges joined where they meet. */
+  const mediaRan = (ask: MediaAsk, to: number): void => {
+    const from = ask.runFrom;
+    ask.runFrom = null;
+    if (from === null || !(to > from)) return;
+    ask.ranges = joinRanges([...ask.ranges, [from, to]]);
+  };
+  const joinRanges = (ranges: [number, number][]): [number, number][] => {
+    const sorted = ranges.slice().sort((a, b) => a[0] - b[0]);
+    const out: [number, number][] = [];
+    for (const [a, b] of sorted) {
+      const last = out[out.length - 1];
+      if (last && a <= last[1]) last[1] = Math.max(last[1], b);
+      else out.push([a, b]);
+    }
+    return out;
+  };
   /** Whether the clock runs: playing, with enough to go on, not seeking
    *  and not at its end. */
   const mediaRuns = (ask: MediaAsk): boolean =>
@@ -16019,9 +16154,11 @@ export function installDom(
     const runs = mediaRuns(ask);
     if (!runs && ask.since !== null) {
       ask.time = mediaTime(ask);
+      mediaRan(ask, ask.time);
       ask.since = null;
     }
     if (runs && ask.since === null) {
+      ask.runFrom = ask.time;
       ask.since = ask.stream ? taskNow() : now();
       if (ask.stream) ask.played = true;
     }
@@ -16050,6 +16187,11 @@ export function installDom(
   const mediaTick = (el: Any): void => {
     const ask = askOf(el);
     if (!mediaRuns(ask)) return;
+    // a frame hidden around one its policy holds pauses it
+    if (mediaHeldHidden()) {
+      mediaPauseSteps(el);
+      return;
+    }
     // a `MediaSource`'s clock that has reached the end of what is buffered
     // waits there (`mediaBuffered`)
     if (ask.source) {
@@ -16073,6 +16215,7 @@ export function installDom(
   const mediaEnd = (el: Any): void => {
     const ask = askOf(el);
     ask.time = Number.isFinite(ask.duration) ? ask.duration : mediaTime(ask);
+    mediaRan(ask, ask.time);
     ask.since = null;
     ask.ended = true;
     ask.paused = true;
@@ -16134,10 +16277,12 @@ export function installDom(
       Number.isFinite(ask.duration) ? Math.min(to, ask.duration) : to,
     );
     if (ask.since !== null) ask.time = mediaTime(ask);
+    mediaRan(ask, ask.time);
     ask.since = null;
     ask.seeking = true;
     ask.ended = false;
     ask.time = time;
+    ask.poster = false;
     mediaSync(el);
     // what a `MediaSource` has there, or a wait for what the page appends
     if (ask.source) mediaBuffered(el);
@@ -16153,6 +16298,8 @@ export function installDom(
         }
         ask.seeking = false;
         mediaSync(el);
+        // the cues follow it as a seek, which misses none on the way
+        textTracksOf?.timeMarchesOn(el, true);
         fireMedia(el, 'timeupdate');
         fireMedia(el, 'seeked');
       };
@@ -16162,9 +16309,11 @@ export function installDom(
   /** HTML's "notify about playing": `playing`, and the promises kept. */
   const notifyPlaying = (el: Any): void => {
     const ask = askOf(el);
-    fireMedia(el, 'playing');
+    // the promises taken first: a `pause()` in a `playing` handler turns
+    // down none of them
     const pending = ask.pending;
     ask.pending = [];
+    fireMedia(el, 'playing');
     for (const p of pending) p.resolve();
   };
   /** The ready state moved on to `ready`, and the events HTML has for each
@@ -16185,6 +16334,13 @@ export function installDom(
     if (ready <= was) return;
     ask.ready = ready;
     mediaSync(el);
+    // its first frame is in: the document's `load` no longer waits for it
+    if (ready >= 2) mediaDelay(el, false);
+    // a `<source>` that loaded ends the selection: no pointer moves again
+    if (ask.selection) {
+      ask.selection = null;
+      selectingMedia.delete(el);
+    }
     const load = ask.load;
     // each event a task of its own, as HTML queues each: a page that waits
     // for one with `await` sets its handler for the next in between
@@ -16192,6 +16348,14 @@ export function installDom(
       mediaTask(() => {
         if (ask.load === load) fn();
       }, el);
+    // past its metadata, it goes to where it was to start (4.8.11.5)
+    if (was < 1 && ask.startAt > 0 && !ask.stream) {
+      const start = ask.startAt;
+      ask.startAt = 0;
+      mediaTask(() => {
+        if (ask.load === load) mediaSeek(el, start);
+      }, el);
+    }
     if (was < 1) {
       step(() => fireMedia(el, 'durationchange'));
       step(() => {
@@ -16208,7 +16372,9 @@ export function installDom(
       });
     }
     if (ready >= 4) {
+      // `canplaythrough` before an autoplay's `play`, as browsers fire them
       step(() => {
+        if (was < 4) fireMedia(el, 'canplaythrough');
         if (
           ask.autoplaying &&
           ask.paused !== false &&
@@ -16216,12 +16382,16 @@ export function installDom(
         ) {
           ask.paused = false;
           ask.autoplaying = false;
+          autoplayMedia.delete(el);
           call('mediaState', el._id, 'paused', false);
           mediaSync(el);
+          if (ask.poster) {
+            ask.poster = false;
+            textTracksOf?.timeMarchesOn(el, false);
+          }
           fireMedia(el, 'play');
           notifyPlaying(el);
         }
-        if (was < 4) fireMedia(el, 'canplaythrough');
       });
     }
   };
@@ -16260,14 +16430,26 @@ export function installDom(
     ask.limit = MSE.ended(source) ? null : at + ahead;
     mediaReady(el, ahead >= MEDIA_ENOUGH || MSE.ended(source) ? 4 : 3);
   };
-  /** HTML's "dedicated media source failure steps", and those of a
-   *  `<source>` that was the last: an error, `error`, and the promises
-   *  turned down. */
+  /** The resource fetch failed (HTML 4.8.11.5): where it chooses among
+   *  its `<source>`s, the candidate failed and the next is tried
+   *  (`mediaCandidateFailed`); otherwise the dedicated media source
+   *  failure steps: an error at once, and in a task `error` and the
+   *  promises turned down. */
   const mediaFailed = (el: Any, load: number): void => {
     const ask = askOf(el);
     if (ask.load !== load) return;
     ask.abort?.();
     ask.abort = null;
+    mediaUnwatch(ask);
+    // what a detached `MediaSource` tells, `sourceclose`, is queued after
+    // the failure's `error`, as Chrome has it
+    if (ask.selection) {
+      mediaCandidateFailed(el, ask.selection, load);
+      mediaDetach(ask);
+      return;
+    }
+    // the state at once and the event in a task, as browsers have it
+    // (whatwg/html#11155)
     ask.error = new MediaError(4);
     ask.network = 3;
     mediaSync(el);
@@ -16284,7 +16466,8 @@ export function installDom(
           ),
         );
       }
-    });
+      mediaDelay(el, false);
+    }, el);
     mediaDetach(ask);
   };
   /** Three seconds from now, `stalled`, where nothing comes before
@@ -16405,11 +16588,14 @@ export function installDom(
       mediaUnwatch(ask);
       mediaReady(el, 4);
       ask.abort = null;
-      ask.network = 1;
       ask.stalled = false;
       mediaSync(el);
+      // idle with the `suspend` that says so, after the `progress` before it
       mediaTask(() => {
-        if (ask.load === load) fireMedia(el, 'suspend');
+        if (ask.load !== load) return;
+        ask.network = 1;
+        mediaSync(el);
+        fireMedia(el, 'suspend');
       });
     } else if (kind === 'failed') {
       mediaUnwatch(ask);
@@ -16519,60 +16705,466 @@ export function installDom(
     if (ask.shown && ask.shown !== '0|0') call('mediaStream', el._id, 0, 0);
     ask.shown = '';
   };
-  /** The resource selection algorithm (HTML 4.8.11.5): its `src`, or else
-   *  the first `<source>` whose type can play, fetched; neither, and it is
-   *  empty again. */
+  /** HTML's "await a stable state": a microtask of the realm's, on a
+   *  promise's reaction taken before any page code could replace it — a
+   *  script's end is one, and a `</script>` between two of them. */
+  const settledPromise = Promise.resolve();
+  const promiseThen = Promise.prototype.then;
+  const stableState = (fn: () => void): void => {
+    promiseThen.call(settledPromise, () => {
+      try {
+        fn();
+      } catch (e) {
+        report(e);
+      }
+    });
+  };
+  /** The media elements choosing among their `<source>`s, whose pointer
+   *  a change to the tree moves (`mediaTreeOp`). */
+  const selectingMedia = new Set<Any>();
+  /** HTML's "delaying-the-load-event flag": the document's `load` waits
+   *  while it is set (7.4.5), which the host holds it for. */
+  const mediaDelay = (el: Any, on: boolean): void => {
+    const ask = askOf(el);
+    if (ask.delaying === on) return;
+    ask.delaying = on;
+    bridge('mediaDelay', el._id, on);
+  };
+  /** Whether a node is an HTML `<source>`. */
+  const isSource = (node: Any): boolean =>
+    node instanceof Element &&
+    node.localName === 'source' &&
+    node.namespaceURI === HTML_NS;
+  /** The node after its source pointer, or null at the end of the list. */
+  const afterPointer = (el: Any, sel: MediaSelection): Any =>
+    sel.pointer ? sel.pointer.nextSibling : el.firstChild;
+  /** The resource selection algorithm (HTML 4.8.11.5), from its start:
+   *  `networkState` is `NETWORK_NO_SOURCE` at once, and once the script
+   *  is over (a stable state) it loads its `src`, or else the first
+   *  `<source>` it has and the next after each that fails, or — with
+   *  neither — it is empty again. */
   const mediaSelect = (el: Any): void => {
     const ask = askOf(el);
     ask.network = 3;
     mediaSync(el);
+    // one that loads lazily holds no `load` (4.8.11.5, step 4)
+    if (!mediaIsLazy(el)) mediaDelay(el, true);
     const load = ask.load;
-    mediaTask(() => {
+    const sync = (): void => {
       if (ask.load !== load) return;
+      // one with `loading="lazy"` as its fetch would start waits until it
+      // comes near the viewport, or something asks it to load
+      // (`mediaLazyResume`), and holds no `load` meanwhile
+      if (
+        !ask.stream &&
+        ask.lazy === null &&
+        !ask.lazyResumed &&
+        mediaIsLazy(el)
+      ) {
+        mediaDelay(el, false);
+        ask.lazy = () => {
+          ask.lazyResumed = true;
+          sync();
+        };
+        mediaWatchLazily(el);
+        return;
+      }
       // a media provider object (HTML 4.8.11.5, mode "object"): nothing is
       // fetched, and `preload` is not asked
       if (ask.stream) {
         ask.src = '';
         ask.network = 2;
         mediaSync(el);
-        fireMedia(el, 'loadstart');
+        mediaDelay(el, false);
+        mediaTask(() => fireMedia(el, 'loadstart'), el);
         mediaStreamPlay(el);
         return;
       }
-      let url: string | null = null;
-      if (el.hasAttribute('src')) {
-        const raw = el.getAttribute('src');
-        url = raw ? String(call('resolve', raw)) : '';
-      } else {
-        for (const source of Array.from(el.children as ArrayLike<Any>)) {
-          if (source.localName !== 'source' || !source.hasAttribute('src')) {
-            continue;
+      let first: Any = null;
+      if (!el.hasAttribute('src')) {
+        for (let n = el.firstChild; n; n = n.nextSibling) {
+          if (isSource(n)) {
+            first = n;
+            break;
           }
-          const type = source.getAttribute('type');
-          if (type && !el.canPlayType(type) && !READ_TYPES.test(type)) {
-            continue;
-          }
-          url = String(call('resolve', source.getAttribute('src')));
-          break;
         }
-        if (url === null) {
+        if (!first) {
           ask.network = 0;
           mediaSync(el);
+          mediaDelay(el, false);
           return;
         }
       }
-      if (!url) {
-        mediaFailed(el, load);
-        return;
-      }
-      ask.src = url;
       ask.network = 2;
       mediaSync(el);
-      fireMedia(el, 'loadstart');
-      const source = mediaSourceUrls.get(url);
-      if (source) mediaAttach(el, source);
-      else mediaFetch(el, url);
+      mediaTask(() => fireMedia(el, 'loadstart'), el);
+      if (!first) {
+        const raw = el.getAttribute('src');
+        if (!raw) {
+          mediaFailed(el, load);
+          return;
+        }
+        const url = String(call('resolve', raw, 0, true));
+        // a URL that does not parse is a failure, as an empty one is
+        if (!url) {
+          mediaFailed(el, load);
+          return;
+        }
+        ask.src = url;
+        mediaFragmentStart(ask, url);
+        mediaSync(el);
+        mediaResource(el, url);
+        return;
+      }
+      const sel: MediaSelection = {
+        pointer: first,
+        candidate: first,
+        waiting: false,
+      };
+      ask.selection = sel;
+      selectingMedia.add(el);
+      mediaCandidate(el, sel, load);
+    };
+    stableState(sync);
+  };
+  /** Whether a media element loads lazily (HTML 2.5.7, "will lazy load
+   *  element steps"): scripting runs wherever this does. */
+  const mediaIsLazy = (el: Any): boolean =>
+    str(el.getAttribute('loading') ?? '').toLowerCase() === 'lazy';
+  /** What watches the media that wait to load lazily: one observer of the
+   *  facade's own, near the viewport as a lazy image is. */
+  let lazyMediaWatch: Any = null;
+  const mediaWatchLazily = (el: Any): void => {
+    lazyMediaWatch ??= new IntersectionObserver(
+      (entries: Any[]) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) mediaLazyResume(entry.target);
+        }
+      },
+      { rootMargin: '1250px' },
+    );
+    lazyMediaWatch.observe(el);
+  };
+  /** A media element that waited to load lazily goes on: near the
+   *  viewport, played, or set `loading="eager"`. */
+  const mediaLazyResume = (el: Any): void => {
+    const ask = askOf(el);
+    const resume = ask.lazy;
+    if (!resume) return;
+    ask.lazy = null;
+    lazyMediaWatch?.unobserve(el);
+    resume();
+  };
+  /** A load puts a lazy wait away: the selection it runs waits again. */
+  const mediaLazyForget = (el: Any): void => {
+    const ask = askOf(el);
+    ask.lazyResumed = false;
+    if (ask.lazy === null) return;
+    ask.lazy = null;
+    lazyMediaWatch?.unobserve(el);
+  };
+  /** "Process candidate": a `<source>` with a `src`, whose `media`
+   *  matches and whose `type` can play, fetched; any other failed. */
+  const mediaCandidate = (el: Any, sel: MediaSelection, load: number): void => {
+    const ask = askOf(el);
+    const candidate = sel.candidate;
+    const raw = candidate.getAttribute('src');
+    const type = candidate.getAttribute('type');
+    if (
+      !raw ||
+      !mediaMatches(candidate) ||
+      (type && !el.canPlayType(type) && !READ_TYPES.test(type))
+    ) {
+      mediaCandidateFailed(el, sel, load);
+      return;
+    }
+    const url = String(call('resolve', raw, 0, true));
+    if (!url) {
+      mediaCandidateFailed(el, sel, load);
+      return;
+    }
+    ask.src = url;
+    mediaFragmentStart(ask, url);
+    mediaSync(el);
+    mediaResource(el, url);
+  };
+  /** A URL's media fragment, `#t=` (Media Fragments URI 1.0, its temporal
+   *  dimension in Normal Play Time): where it starts, as the default
+   *  playback start position, which `currentTime` reads until metadata. */
+  const mediaFragmentStart = (ask: MediaAsk, url: string): void => {
+    const hash = url.indexOf('#');
+    if (hash < 0) return;
+    for (const part of url.slice(hash + 1).split('&')) {
+      const eq = part.indexOf('=');
+      let key = part.slice(0, eq < 0 ? part.length : eq);
+      let value = eq < 0 ? '' : part.slice(eq + 1);
+      try {
+        key = decodeURIComponent(key);
+        value = decodeURIComponent(value);
+      } catch {
+        continue;
+      }
+      if (key !== 't') continue;
+      if (value.startsWith('npt:')) value = value.slice(4);
+      const start = value.split(',')[0];
+      const m = /^(?:(?:(\d+):)?(\d{1,2}):)?(\d+(?:\.\d*)?)$/.exec(start);
+      if (!m) continue;
+      const seconds =
+        Number(m[1] ?? 0) * 3600 + Number(m[2] ?? 0) * 60 + Number(m[3]);
+      if (Number.isFinite(seconds) && seconds > 0) {
+        ask.time = seconds;
+        ask.startAt = seconds;
+      }
+    }
+  };
+  /** "Failed with elements": `error` at the candidate, where it is still
+   *  the element's — one a page took out, or moved, is let go without one
+   *  — and, once the script is over, the next candidate. */
+  const mediaCandidateFailed = (
+    el: Any,
+    sel: MediaSelection,
+    load: number,
+  ): void => {
+    const ask = askOf(el);
+    const candidate = sel.candidate;
+    sel.candidate = null;
+    if (candidate && candidate.parentNode === el) {
+      mediaTask(() => {
+        if (ask.load === load) fireMedia(candidate, 'error');
+      }, el);
+    }
+    stableState(() => {
+      if (ask.load === load && ask.selection === sel) {
+        mediaNextCandidate(el, sel, load);
+      }
     });
+  };
+  /** "Find next candidate": the first `<source>` after the pointer, the
+   *  pointer moved past what it passes; at the end of the list, it waits
+   *  for a node to be put in there. */
+  const mediaNextCandidate = (
+    el: Any,
+    sel: MediaSelection,
+    load: number,
+  ): void => {
+    const ask = askOf(el);
+    for (;;) {
+      const next = afterPointer(el, sel);
+      if (!next) break;
+      sel.pointer = next;
+      if (isSource(next)) {
+        sel.candidate = next;
+        mediaCandidate(el, sel, load);
+        return;
+      }
+    }
+    // "waiting": nothing left to try, until a node is put in after it
+    sel.waiting = true;
+    ask.network = 3;
+    mediaSync(el);
+    mediaTask(() => {
+      if (ask.load === load) mediaDelay(el, false);
+    }, el);
+  };
+  /** A node put in after its pointer while it waits: once the script is
+   *  over, it loads again from there. */
+  const mediaWake = (el: Any, sel: MediaSelection): void => {
+    const ask = askOf(el);
+    sel.waiting = false;
+    const load = ask.load;
+    stableState(() => {
+      if (ask.load !== load || ask.selection !== sel) return;
+      mediaDelay(el, true);
+      ask.network = 2;
+      mediaSync(el);
+      mediaNextCandidate(el, sel, load);
+    });
+  };
+  /** The resource fetch algorithm's start (HTML 4.8.11.5): a
+   *  `MediaSource`'s URL attached, and any other fetched — or, where
+   *  `preload` is `none` and nothing asks it to play, suspended until
+   *  something does (`mediaResume`). */
+  const mediaResource = (el: Any, url: string): void => {
+    const ask = askOf(el);
+    const source = mediaSourceUrls.get(url);
+    if (source) {
+      // the page's own stream holds no `load`: it may never append
+      mediaDelay(el, false);
+      mediaAttach(el, source);
+      return;
+    }
+    if (
+      el.getAttribute('preload')?.toLowerCase() === 'none' &&
+      !el.hasAttribute('autoplay') &&
+      ask.paused !== false
+    ) {
+      ask.suspended = url;
+      ask.network = 1;
+      mediaSync(el);
+      const load = ask.load;
+      mediaTask(() => {
+        if (ask.load !== load) return;
+        fireMedia(el, 'suspend');
+        mediaDelay(el, false);
+      }, el);
+      return;
+    }
+    mediaFetch(el, url);
+  };
+  /** A fetch `preload="none"` suspended, gone on with: it is to play. */
+  const mediaResume = (el: Any): void => {
+    const ask = askOf(el);
+    const url = ask.suspended;
+    if (url === null) return;
+    ask.suspended = null;
+    ask.network = 2;
+    mediaSync(el);
+    mediaDelay(el, true);
+    mediaFetch(el, url);
+  };
+  /** What a change to the tree does to the media elements it reaches:
+   *  each source pointer kept where HTML 4.8.11.5 has it as nodes come and
+   *  go, one that waits woken by a node put in after it, and a `<source>`
+   *  put in an empty media element with no `src` starts its selection. */
+  const mediaTreeOps = (op: string, a: Primitive, b: Primitive) => {
+    // asked of every op that changes the tree, so through `Set.prototype`
+    // as it was before page code ran (`mutatesHas`, `setSize`)
+    const inserts = mutatesHas.call(INSERTING_OPS, op);
+    const parent = inserts && typeof a === 'number' ? wrappers.get(a) : null;
+    const adjacent = op === 'adjacent';
+    const removals = mediaRemovals();
+    if (
+      !setSize.call(selectingMedia) &&
+      !(parent instanceof HTMLMediaElement) &&
+      !adjacent
+    ) {
+      return removals;
+    }
+    if (!mediaLoads()) return removals;
+    // the node before each pointer, which it falls back to where the node
+    // before it goes (HTML 4.8.11.5, "if the node before pointer is
+    // removed")
+    const held: [Any, MediaSelection, number][] = [];
+    for (const el of selectingMedia) {
+      const sel = askOf(el).selection;
+      if (!sel) continue;
+      held.push([
+        el,
+        sel,
+        sel.pointer ? Number(bridge('prev', sel.pointer._id)) || 0 : 0,
+      ]);
+    }
+    return () => {
+      for (const [el, sel, prev] of held) {
+        if (askOf(el).selection !== sel) continue;
+        const pointer = sel.pointer;
+        if (
+          pointer &&
+          (Number(bridge('parent', pointer._id)) !== el._id ||
+            (op === 'insert' && b === pointer._id))
+        ) {
+          const back = prev ? wrap(prev) : null;
+          sel.pointer =
+            back && Number(bridge('parent', back._id)) === el._id ? back : null;
+        }
+        if (sel.waiting && afterPointer(el, sel)) mediaWake(el, sel);
+      }
+      const into = adjacent ? [parent, parent?.parentNode] : [parent];
+      for (const el of into) {
+        if (el instanceof HTMLMediaElement) mediaSourcesCame(el);
+      }
+      removals?.();
+    };
+  };
+  /** The ops that put nodes into the element their first argument names
+   *  (or, for `adjacent`, beside it). */
+  const INSERTING_OPS = new Set([
+    'insert',
+    'replace',
+    'replaceChildren',
+    'setHtml',
+    'adjacent',
+  ]);
+  /** HTML 4.8.11.5: a `<source>` put in a media element with no `src`
+   *  and an empty `networkState` invokes its resource selection. */
+  const mediaSourcesCame = (el: Any): void => {
+    const ask = askOf(el);
+    if (ask.network !== 0 || el.hasAttribute('src')) return;
+    for (let n = el.firstChild; n; n = n.nextSibling) {
+      if (isSource(n)) {
+        mediaSelect(el);
+        return;
+      }
+    }
+  };
+  /** What the parser put in: media elements it made, or gave a node, which
+   *  select a source as the parser's insertion would have them. */
+  const mediaParsed = (ids: string): void => {
+    if (!mediaLoads()) return;
+    for (const id of ids.split(',')) {
+      const el = wrap(Number(id));
+      if (!(el instanceof HTMLMediaElement)) continue;
+      const ask = askOf(el);
+      const sel = ask.selection;
+      if (sel) {
+        if (sel.waiting && afterPointer(el, sel)) mediaWake(el, sel);
+      } else if (ask.network === 0 && el.hasAttribute('src')) {
+        mediaSelect(el);
+      } else mediaSourcesCame(el);
+    }
+  };
+  /** The internal pause steps (HTML 4.8.11.8), which `pause()` and a
+   *  removal from the document share: paused at once, and in a task
+   *  `timeupdate`, `pause` and the promises `play()` handed out before it
+   *  turned down, as Chrome turns them down. */
+  const mediaPauseSteps = (el: Any): void => {
+    const ask = askOf(el);
+    const was = el.paused;
+    ask.paused = true;
+    ask.autoplaying = false;
+    autoplayMedia.delete(el);
+    call('mediaState', el._id, 'paused', true);
+    mediaSync(el);
+    if (was) return;
+    ask.pauses += 1;
+    const pending = ask.pending;
+    ask.pending = [];
+    mediaTask(() => {
+      fireMedia(el, 'timeupdate');
+      fireMedia(el, 'pause');
+      for (const p of pending) {
+        p.reject(
+          new DOMException(
+            'The play() request was interrupted by a call to pause().',
+            'AbortError',
+          ),
+        );
+      }
+    });
+  };
+  /** The media elements that may autoplay, which a removal from the
+   *  document stops from doing so. */
+  const autoplayMedia = new Set<Any>();
+  /** "When a media element is removed from a Document" (HTML 4.8.11.8):
+   *  at the next stable state, one still out of every document runs the
+   *  internal pause steps. Asked of the media that play or may autoplay,
+   *  which a change to the tree can take out. */
+  const mediaRemovals = (): (() => void) | null => {
+    if (!setSize.call(playingMedia) && !setSize.call(autoplayMedia)) {
+      return null;
+    }
+    const watched = [...playingMedia, ...autoplayMedia].filter(
+      (el) => !!bridge('connected', el._id),
+    );
+    if (!watched.length) return null;
+    return () => {
+      for (const el of watched) {
+        if (bridge('connected', el._id)) continue;
+        stableState(() => {
+          if (!el.isConnected) mediaPauseSteps(el);
+        });
+      }
+    };
   };
   /** The types a source is read here for whatever the player says. */
   const READ_TYPES =
@@ -16598,6 +17190,15 @@ export function installDom(
     ask.abort?.();
     ask.abort = null;
     mediaUnwatch(ask);
+    ask.selection = null;
+    selectingMedia.delete(el);
+    ask.suspended = null;
+    mediaDelay(el, false);
+    mediaLazyForget(el);
+    ask.poster = true;
+    ask.startAt = 0;
+    // what was current of its cues exits with what it played
+    if (network !== 0) textTracksOf?.timeMarchesOn(el, false);
     const load = ask.load;
     if (network === 2 || network === 1) {
       mediaTask(() => {
@@ -16628,6 +17229,8 @@ export function installDom(
       ask.seeking = false;
       const time = mediaTime(ask);
       ask.since = null;
+      ask.runFrom = null;
+      ask.ranges = [];
       ask.time = 0;
       if (time !== 0) {
         mediaTask(() => {
@@ -16648,6 +17251,7 @@ export function installDom(
     ask.ended = false;
     ask.stalled = false;
     ask.autoplaying = true;
+    if (el.hasAttribute('autoplay')) autoplayMedia.add(el);
     ask.player = false;
     mediaSelect(el);
   };
@@ -16666,6 +17270,19 @@ export function installDom(
     get message(): string {
       return this._code === 4 ? 'MEDIA_ELEMENT_ERROR: Format error' : '';
     }
+  }
+  // a constant is the prototype's too (Web IDL 3.7.4): `error.code` is
+  // compared with `error.MEDIA_ERR_SRC_NOT_SUPPORTED`
+  for (const [name, value] of [
+    ['MEDIA_ERR_ABORTED', 1],
+    ['MEDIA_ERR_NETWORK', 2],
+    ['MEDIA_ERR_DECODE', 3],
+    ['MEDIA_ERR_SRC_NOT_SUPPORTED', 4],
+  ] as const) {
+    Object.defineProperty(MediaError.prototype, name, {
+      value,
+      enumerable: true,
+    });
   }
 
   class HTMLMediaElement extends HTMLElement {
@@ -16689,8 +17306,10 @@ export function installDom(
       if (ask.paused !== null) return ask.paused;
       return mediaLoads() || !this.hasAttribute('autoplay');
     }
+    /** At its end going forwards, and not looping (HTML 4.8.11.8, "ended
+     *  playback"): `loop` set at the end makes it not ended. */
     get ended(): boolean {
-      return askOf(this).ended;
+      return askOf(this).ended && !this.hasAttribute('loop');
     }
     get seeking(): boolean {
       return askOf(this).seeking;
@@ -16718,8 +17337,10 @@ export function installDom(
       if (ask.stream) return;
       call('mediaState', this._id, 'currentTime', time);
       if (mediaLoads()) {
-        if (ask.ready === 0) ask.time = time;
-        else mediaSeek(this, time);
+        if (ask.ready === 0) {
+          ask.time = time;
+          ask.startAt = time;
+        } else mediaSeek(this, time);
         return;
       }
       ask.time = time;
@@ -16805,19 +17426,14 @@ export function installDom(
      *  (Media Capture 6.2), once it has run. */
     get played(): Any {
       const ask = askOf(this);
-      if (!ask.stream || !ask.played) return noTimeRanges;
-      const end = mediaTime(ask);
-      return {
-        length: 1,
-        start: (i: number) => {
-          if (Number(i) !== 0) throw noTimeRanges.start();
-          return 0;
-        },
-        end: (i: number) => {
-          if (Number(i) !== 0) throw noTimeRanges.end();
-          return end;
-        },
-      };
+      if (ask.stream) {
+        return ask.played ? oneTimeRange(0, mediaTime(ask)) : noTimeRanges;
+      }
+      const ranges =
+        ask.runFrom !== null && mediaTime(ask) > ask.runFrom
+          ? joinRanges([...ask.ranges, [ask.runFrom, mediaTime(ask)]])
+          : ask.ranges;
+      return timeRanges(ranges);
     }
     /** HTML 4.8.11.2: a media provider object — a `MediaStream` here — set,
      *  and the element loads it. */
@@ -16856,8 +17472,28 @@ export function installDom(
         mediaSinks.set(this, sink);
       });
     }
+    /** What it can be sought to (HTML 4.8.11.9): the whole of a fetched
+     *  source once its length is known, since its player reads it by
+     *  ranges; nothing of a stream or a `MediaSource`'s, or before that. */
     get seekable(): Any {
-      return noTimeRanges;
+      const ask = askOf(this);
+      if (
+        ask.stream ||
+        ask.source ||
+        ask.ready < 1 ||
+        !Number.isFinite(ask.duration)
+      ) {
+        return noTimeRanges;
+      }
+      return oneTimeRange(0, ask.duration);
+    }
+    /** Whether a rate other than 1 keeps the pitch (HTML 4.8.11.8): kept
+     *  for the page, since nothing here plays a sound at another rate. */
+    get preservesPitch(): boolean {
+      return mediaPitch.get(this) ?? true;
+    }
+    set preservesPitch(v: Any) {
+      mediaPitch.set(this, !!v);
     }
     get textTracks(): Any {
       return textTracksOf
@@ -16887,6 +17523,14 @@ export function installDom(
      */
     play(): Promise<void> {
       const ask = askOf(this);
+      if (mediaHeldHidden()) {
+        return Promise.reject(
+          new DOMException(
+            "play() can only be initiated while the frame is visible: its permissions policy disallows 'media-playback-while-not-visible'.",
+            'NotAllowedError',
+          ),
+        );
+      }
       // a stream loads as a fetched source does, whether there is a network
       // or not
       const loads = mediaLoads() || !!ask.stream;
@@ -16899,11 +17543,21 @@ export function installDom(
         );
       }
       if (loads && ask.network === 0) mediaSelect(this);
+      // played, it waits for the viewport no longer (4.8.11.8, step 3)
+      ask.lazyResumed = true;
+      mediaLazyResume(this);
+      if (ask.suspended !== null) mediaResume(this);
       if (loads && ask.ended && !ask.stream) mediaSeek(this, 0);
       const was = this.paused;
       const pauses = ask.pauses;
       ask.paused = false;
+      // the poster goes, and the cues where it is are current (4.8.11.8)
+      if (ask.poster) {
+        ask.poster = false;
+        textTracksOf?.timeMarchesOn(this, false);
+      }
       ask.autoplaying = false;
+      autoplayMedia.delete(this);
       call('mediaState', this._id, 'paused', false);
       mediaSync(this);
       const promise = new Promise<void>((resolve, reject) => {
@@ -16932,27 +17586,7 @@ export function installDom(
     pause(): void {
       const ask = askOf(this);
       if (mediaLoads() && ask.network === 0) mediaSelect(this);
-      const was = this.paused;
-      ask.paused = true;
-      ask.autoplaying = false;
-      call('mediaState', this._id, 'paused', true);
-      mediaSync(this);
-      if (was) return;
-      ask.pauses += 1;
-      const pending = ask.pending;
-      ask.pending = [];
-      mediaTask(() => {
-        fireMedia(this, 'timeupdate');
-        fireMedia(this, 'pause');
-        for (const p of pending) {
-          p.reject(
-            new DOMException(
-              'The play() request was interrupted by a call to pause().',
-              'AbortError',
-            ),
-          );
-        }
-      });
+      mediaPauseSteps(this);
     }
     /** HTML 4.8.11.5, the media element load algorithm: whatever it was
      *  doing ends, it is paused, and it loads its source again. */
@@ -16995,6 +17629,9 @@ export function installDom(
       enumerable: true,
     });
   }
+  // a change to the tree reaches the media elements from here on, now that
+  // there is a class to know one by
+  mediaTreeOp = mediaTreeOps;
   /** Media Playback Quality 3: how many frames a video has shown. */
   const mediaToken = Object.freeze(Object.create(null));
   class VideoPlaybackQuality {
@@ -40742,7 +41379,14 @@ export function installDom(
     return option;
   } as Any;
   Option.prototype = HTMLOptionElement.prototype;
-  const Audio = function (src?: Any): Any {
+  const Audio = function (this: Any, src?: Any): Any {
+    // a constructor, as `[LegacyFactoryFunction]` makes it: called without
+    // `new` it throws
+    if (!new.target) {
+      throw new TypeError(
+        "Failed to construct 'Audio': Please use the 'new' operator, this DOM object constructor cannot be called as a function.",
+      );
+    }
     const audio = document.createElement('audio');
     audio.setAttribute('preload', 'auto');
     if (src !== undefined) audio.setAttribute('src', str(src));
@@ -41241,7 +41885,12 @@ export function installDom(
       isTrack: (node: Any) => node instanceof HTMLTrackElement,
       clock: (media: Any) => {
         const ask = askOf(media);
-        return { time: mediaTime(ask), paused: media.paused, ready: ask.ready };
+        return {
+          time: mediaTime(ask),
+          paused: media.paused,
+          ready: ask.ready,
+          poster: ask.poster,
+        };
       },
       pause: (media: Any) => HTMLMediaElement.prototype.pause.call(media),
     });
@@ -41507,7 +42156,9 @@ export function installDom(
   // the scripts before it listened with: `<body onload>` runs after a
   // head's `addEventListener('load', …)`
   entry('__mutated', () => {
-    if (input() === true) {
+    const [body, media] = input();
+    if (media) mediaParsed(String(media));
+    if (body === true) {
       const body = document.body;
       if (body instanceof HTMLBodyElement) {
         for (const name of body.getAttributeNames()) {
@@ -42555,20 +43206,6 @@ export function installDom(
     // and loaded as the selection has them
     if (state === 'interactive' && textTracksOf) {
       textTracksOf.sweep(document.getElementsByTagName('track'));
-    }
-    // the media the markup made select a source, as each would have as
-    // the parser put it in (HTML 4.8.11.5), but one that loads nothing
-    // until it is played
-    if (state === 'interactive' && mediaLoads()) {
-      for (const el of document.querySelectorAll('video, audio')) {
-        if (
-          askOf(el).network === 0 &&
-          el.getAttribute('preload')?.toLowerCase() !== 'none' &&
-          (el.hasAttribute('src') || el.querySelector('source'))
-        ) {
-          mediaSelect(el);
-        }
-      }
     }
     noteReadiness(
       navigationTimingOf(document, String(call('location')), pageArrival()),
