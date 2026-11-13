@@ -36,8 +36,8 @@ export interface EncodedTransformDeps {
   base64OfBytes(bytes: Uint8Array): string;
   /** The realm's streams, read as each transformer is made. */
   streams(): { ReadableStream: unknown; WritableStream: unknown };
-  /** `performance.timeOrigin`, which a frame's times are from. */
-  timeOrigin(): number;
+  /** The realm's `performance.now()`. */
+  now(): number;
   /** The thread a `Worker` is, or null for what is no worker. */
   workerOf(worker: unknown): number | null;
   /** Posts a transform's options to its worker, as a message of its own:
@@ -78,8 +78,8 @@ export interface EncodedTransformInternals {
     metadata: Record<string, unknown>,
     data: unknown,
   ): unknown;
-  /** A message to a worker that is a transform's (`post`): fired as
-   *  `rtctransform`, true; false for any other. */
+  /** A transform posted to this realm, a worker's (`post`): its
+   *  transformer made, and told as `rtctransform`. */
   arrived(n: number, options: unknown): void;
 }
 
@@ -483,7 +483,6 @@ export function installEncodedTransform(
     const s: Any = {
       what: 'transformer',
       n,
-      self: transformer,
       options,
       side: null,
       kind: null,
@@ -531,10 +530,18 @@ export function installEncodedTransform(
     } else if (e === 'frame') {
       const bytes = D.bytesOfBase64(String(v?.d ?? ''));
       const metadata = { ...(v?.m ?? {}) };
-      // a time is the host's clock's; a frame's is this realm's
+      // a time is the host's clock's, and a frame's is this realm's: it is
+      // carried as how long before the host sent the frame (`t`) it was,
+      // and is that long before now here. A worker's clock starts on
+      // another thread's, whose origin is not the page process's, so no
+      // origin both share converts one into the other
+      const sent = Number(v?.t);
+      const here = D.now();
       for (const key of ['receiveTime', 'captureTime']) {
         if (typeof metadata[key] === 'number') {
-          metadata[key] = metadata[key] - D.timeOrigin();
+          metadata[key] = Number.isFinite(sent)
+            ? here - (sent - metadata[key])
+            : here;
         }
       }
       const kind = v?.k === 'audio' ? 'audio' : 'video';

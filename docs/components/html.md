@@ -1533,12 +1533,30 @@ them, and to another peer the host can reach.
   packet's sequence number and level. A video frame's `frameId` is its RTP
   timestamp counted past each wrap, and a delta frame depends on the frame
   before it, so both sides agree with no dependency descriptor extension.
+  Where abs-capture-time is negotiated, a received frame also has its
+  `captureTime` and `senderCaptureTimeOffset`, and has neither where it
+  is not. A frame's times are the worker's `performance.now()`, whose
+  origin is when the page made the worker.
   Frames clone, with `structuredClone` and across a thread, but not for
-  storage. Not here: `senderCaptureTimeOffset`, which needs the
-  abs-capture-time extension; a key frame for one simulcast `rid`, since a
+  storage. Not here: a key frame for one simulcast `rid`, since a
   sender sends one encoding; SFrame; and Chrome's `createEncodedStreams()`,
   whose frames are not detached as they are written and which nothing
   standardizes.
+- **Header extensions are a transceiver's to negotiate** (WebRTC
+  Extensions): `getHeaderExtensionsToNegotiate()` lists what a transceiver
+  can offer, `setHeaderExtensionsToNegotiate()` stops or starts each (mid
+  stays `sendrecv`), and `getNegotiatedHeaderExtensions()` says what the
+  last answer took. A new transceiver copies the list of the first of its
+  kind that is not stopping, and what a remote answer did not take is
+  `stopped` until a page asks for it again. abs-capture-time starts
+  `stopped`, as in Chrome, and is offered once a page asks for it, here
+  or by adding its `a=extmap` line to an offer; it is answered wherever
+  it is offered. Once negotiated, each frame's first packet carries its
+  capture time, and a receiver's `getSynchronizationSources()` has
+  `captureTimestamp`, on the capture system's NTP clock in milliseconds,
+  and `senderCaptureTimeOffset`, which is 0, since the system that
+  captured a frame is the one sending it. video-orientation is offered and
+  answered, and written into no packet.
 - **A track is transferable** (Media Capture Extensions): to a frame of
   the page's agent cluster, to a dedicated worker, or to itself with
   `structuredClone`, where the track made of it reaches its source back

@@ -40000,7 +40000,7 @@ export function installDom(
         ReadableStream: G.ReadableStream,
         WritableStream: G.WritableStream,
       }),
-      timeOrigin: () => Number(G.performance?.timeOrigin ?? 0),
+      now: () => now(),
       workerOf: (w: Any) => (w instanceof Worker && w._id ? w._id : null),
       post: postTransform,
       global: () => windowTarget,
@@ -40782,12 +40782,16 @@ export function installDom(
    * its location and its name.
    */
   entry('__becomeWorker', () => {
-    const { url, name, shared, service } = input();
+    const { url, name, shared, service, born } = input();
     // a worker's time starts with it (HR Time 3, the time origin), where one
     // read off the process's clock came to its page's, and which of the two
-    // was first was a coin toss
-    clockFrom = Number(bridge('now'));
-    (G as Any).performance.timeOrigin = Date.now();
+    // was first was a coin toss. It starts as the page made it, and not as
+    // its thread came up, which can be a few hundred milliseconds later: a
+    // frame captured after `new Worker()` had a negative `captureTime`
+    const at = Date.now();
+    const origin = typeof born === 'number' && born <= at ? born : at;
+    clockFrom = Number(bridge('now')) - (at - origin);
+    (G as Any).performance.timeOrigin = origin;
     // a worker's navigator has no container of the page's
     delete (navigator as Any).serviceWorker;
     GEOMETRY.worker();

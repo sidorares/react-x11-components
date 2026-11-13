@@ -58,6 +58,7 @@ import type {
   RTCDescriptionsLike,
   RTCDirectionLike,
   RTCEncodedFrameLike,
+  RTCHeaderExtensionChoice,
   RTCHeaderExtensionLike,
   RTCRtpParametersLike,
   RTCSessionState,
@@ -587,7 +588,111 @@ class WeriftTransceiver implements RTCTransceiverLike {
     }
     this.t.setCodecPreferences(chosen);
   }
-  setHeaderExtensionsToNegotiate(): void {}
+  /**
+   * `[[HeaderExtensionsToNegotiate]]`, as the page's realm last set it,
+   * each with whether its direction is still the one it starts with: null
+   * until it sets one. What werift offers and answers is the transceiver's
+   * `headerExtensions`, written from this before each (`forOffer`,
+   * `forAnswer`): werift offers everything its configuration has, and
+   * answers everything an offer has that its configuration does.
+   */
+  private _toNegotiate:
+    { uri: string; direction: string; byDefault: boolean }[] | null = null;
+
+  setHeaderExtensionsToNegotiate(extensions: RTCHeaderExtensionChoice[]): void {
+    const was = this._negotiable();
+    this._toNegotiate = extensions.map((e) => {
+      const before = was.find((w) => w.uri === e.uri);
+      return {
+        uri: e.uri,
+        direction: e.direction,
+        byDefault: !!before?.byDefault && before.direction === e.direction,
+      };
+    });
+  }
+
+  private _negotiable(): {
+    uri: string;
+    direction: string;
+    byDefault: boolean;
+  }[] {
+    return (
+      this._toNegotiate ??
+      OFFERED_EXTENSIONS[this.kind].map((e) => ({
+        uri: e.uri,
+        direction: e.stoppedByDefault ? 'stopped' : 'sendrecv',
+        byDefault: true,
+      }))
+    );
+  }
+
+  /** Before an offer: what werift is to write into this transceiver's
+   *  m-section, every extension not stopped, at the id the session gives
+   *  its URI where it gives one (RFC 8285, 7), else at its own, else at the
+   *  first id nothing else has. One stopped only by default that the
+   *  session negotiated, as an app's own offer can have it, is offered
+   *  again, as Chrome offers what is unstopped or present. */
+  forOffer(): void {
+    if (this.t.stopped || this.t.stopping) return;
+    const current = this.t.headerExtensions;
+    const next: WExtension[] = [];
+    const taken = (id: number, uri: string): boolean =>
+      next.some((e) => e.id === id) ||
+      current.some((e) => e.id === id && e.uri !== uri);
+    for (const e of this._negotiable()) {
+      if (
+        e.direction === 'stopped' &&
+        !(e.byDefault && current.some((c) => c.uri === e.uri))
+      )
+        continue;
+      const offered = OFFERED_EXTENSIONS[this.kind].find(
+        (o) => o.uri === e.uri,
+      );
+      if (!offered) continue;
+      let id = current.find((c) => c.uri === e.uri)?.id ?? offered.id;
+      if (taken(id, e.uri)) {
+        id = 1;
+        while (id < 15 && taken(id, e.uri)) id += 1;
+      }
+      next.push(
+        new this._w.RTCRtpHeaderExtensionParameters({ uri: e.uri, id }),
+      );
+    }
+    (this.t as { headerExtensions: WExtension[] }).headerExtensions = next;
+  }
+
+  /** Before an answer: what the remote offer had that werift knows, less
+   *  what the page stopped. An extension stopped only because it starts
+   *  so is answered wherever it is offered, as Chrome answers
+   *  abs-capture-time. */
+  forAnswer(): void {
+    const stopped = this._negotiable()
+      .filter((e) => e.direction === 'stopped' && !e.byDefault)
+      .map((e) => e.uri);
+    if (!stopped.length) return;
+    (this.t as { headerExtensions: WExtension[] }).headerExtensions =
+      this.t.headerExtensions.filter((e) => !stopped.includes(e.uri));
+  }
+
+  /** A local description the page changed the `a=extmap` lines of, for
+   *  this transceiver's m-section: what werift sends and reads by. Only an
+   *  extension werift knows is taken. */
+  takeExtensions(ids: Map<number, string>): void {
+    const known = OFFERED_EXTENSIONS[this.kind];
+    const next = [...ids]
+      .filter(([, uri]) => known.some((o) => o.uri === uri))
+      .map(
+        ([id, uri]) => new this._w.RTCRtpHeaderExtensionParameters({ uri, id }),
+      );
+    const now = this.t.headerExtensions;
+    if (
+      next.length === now.length &&
+      next.every((e) => now.some((n) => n.id === e.id && n.uri === e.uri))
+    )
+      return;
+    (this.t as { headerExtensions: WExtension[] }).headerExtensions = next;
+  }
+
   setParameters(): Promise<void> {
     return Promise.resolve();
   }
@@ -712,10 +817,10 @@ function configOf(
     },
     headerExtensions: {
       audio: OFFERED_EXTENSIONS.audio.map(
-        (e) => new w.RTCRtpHeaderExtensionParameters(e),
+        (e) => new w.RTCRtpHeaderExtensionParameters({ uri: e.uri, id: e.id }),
       ),
       video: OFFERED_EXTENSIONS.video.map(
-        (e) => new w.RTCRtpHeaderExtensionParameters(e),
+        (e) => new w.RTCRtpHeaderExtensionParameters({ uri: e.uri, id: e.id }),
       ),
     },
   };
@@ -1046,11 +1151,27 @@ class WeriftConnection implements RTCConnectionLike {
       // page changed: Meet adds simulcast layers and header extensions to
       // each before it sets it. werift is handed its own, so what the page
       // added is neither sent nor in the local description it reads back
-      const created = (
-        this._pc as unknown as { createdOffer?: { sdp: string } }
-      ).createdOffer?.sdp;
-      if (side === 'local' && type === 'offer' && created && text !== created)
-        text = created;
+      // The header extensions it added or took out are taken, though: they
+      // are written into werift's transceivers and the offer made again
+      // from them, which is what an app that turns abs-capture-time on by
+      // hand asks for
+      if (side === 'local' && (type === 'offer' || type === 'answer')) {
+        const pc = this._pc as unknown as {
+          createdOffer?: {
+            sdp: string;
+            transceiverByMid?: Map<string, WTransceiver>;
+          };
+        };
+        const created = pc.createdOffer;
+        if (type === 'offer' && created && text !== created.sdp) {
+          if (this._takeExtensions(text, created.transceiverByMid)) {
+            await this._pc.createOffer();
+          }
+          text = pc.createdOffer?.sdp ?? created.sdp;
+        } else if (type === 'answer') {
+          this._takeExtensions(text, undefined);
+        }
+      }
       const description = type === 'rollback' ? { type } : { type, sdp: text };
       if (side === 'local') {
         this._gatherFromNamed();
@@ -1066,6 +1187,27 @@ class WeriftConnection implements RTCConnectionLike {
       this._noteNegotiated(side, sdp);
     this._offered = false;
     return this._state();
+  }
+
+  /** Each m-section's header extensions of a local description, into the
+   *  transceiver it is: whether any changed. */
+  private _takeExtensions(
+    sdp: string,
+    byMid: Map<string, WTransceiver> | undefined,
+  ): boolean {
+    let changed = false;
+    for (const [mid, ids] of extmapsOf(sdp)) {
+      const t =
+        byMid?.get(mid) ??
+        this._pc.getTransceivers().find((x) => x.mid === mid);
+      const w = t ? this._wrapped.get(t) : undefined;
+      if (!t || !w) continue;
+      const before = t.headerExtensions.map((e) => `${e.id} ${e.uri}`).join();
+      w.takeExtensions(ids);
+      if (t.headerExtensions.map((e) => `${e.id} ${e.uri}`).join() !== before)
+        changed = true;
+    }
+    return changed;
   }
 
   /**
@@ -1113,7 +1255,10 @@ class WeriftConnection implements RTCConnectionLike {
   }
 
   async createOffer(options: { iceRestart: boolean }): Promise<string> {
-    for (const w of this._wrapped.values()) w.flushStop();
+    for (const w of this._wrapped.values()) {
+      w.flushStop();
+      w.forOffer();
+    }
     try {
       const offer = (
         await this._pc.createOffer({ iceRestart: options.iceRestart })
@@ -1126,7 +1271,10 @@ class WeriftConnection implements RTCConnectionLike {
   }
 
   async createAnswer(): Promise<string> {
-    for (const w of this._wrapped.values()) w.flushStop();
+    for (const w of this._wrapped.values()) {
+      w.flushStop();
+      w.forAnswer();
+    }
     try {
       return namingNoStream(
         restoreUnknown((await this._pc.createAnswer()).sdp, this._unknown),
