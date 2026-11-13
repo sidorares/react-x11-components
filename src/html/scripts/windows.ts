@@ -443,9 +443,18 @@ export function installWindows(deps: WindowDeps): WindowInternals {
     ]) {
       const bar = new BarProp();
       BAR_SHOWN.set(bar, shown);
+      // `[Replaceable]`: an accessor whose setter puts what it is set to in
+      // its place (Web IDL 3.7.6)
       Object.defineProperty(win, name, {
-        value: bar,
-        writable: true,
+        get: () => bar,
+        set(value: Any) {
+          Object.defineProperty(win, name, {
+            value,
+            writable: true,
+            configurable: true,
+            enumerable: true,
+          });
+        },
         configurable: true,
         enumerable: true,
       });

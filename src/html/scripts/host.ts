@@ -140,6 +140,7 @@ import {
   NAMESPACE_PSEUDOS,
   compileHoisted,
   highlightKey,
+  matchesLang,
 } from '../css/cascade.js';
 import type { HighlightPseudoStyle } from '../css/cascade.js';
 import { uaStylesheet } from '../css/ua.js';
@@ -1236,6 +1237,10 @@ const NAMED_BY_NAME = new Set([
   'iframe',
   'frame',
 ]);
+
+/** The elements a document is reached by the name of (HTML 3.1.5), and an
+ *  `object` and an `img` by its `id`. */
+const DOCUMENT_NAMED = new Set(['embed', 'form', 'iframe', 'img', 'object']);
 
 /** Whether a node is a `<template>`, whose children are its content's
  *  and no part of the tree a page walks (HTML 4.12.3). */
@@ -2603,6 +2608,9 @@ export class DomHost {
    * (`_noteReferrer`).
    */
   referrerPolicy: ReferrerPolicy = '';
+  /** When the document's response says it was last modified, in ms since
+   *  the epoch, or NaN where it says nothing (`Last-Modified`). */
+  lastModified = NaN;
   /** Whether the document around this one's frame is of another origin:
    *  what the frame's element is, and all it reaches, is refused it. */
   foreignParent = false;
@@ -4698,6 +4706,8 @@ export class DomHost {
         )
           .map((el) => this.idOf(el))
           .join(',');
+      case 'docNames':
+        return this._documentNames(this._node(a) as Document);
       case 'byId':
         return this.idOf(
           elementsIn(
@@ -5519,6 +5529,13 @@ export class DomHost {
         this._wroteFrame(doc as Document);
         return null;
       }
+      case 'lastModified':
+        // HTML 3.1.2: the page's own response's; any other document's, and
+        // one whose response says nothing, is now
+        return Number(a) === this.idOf(this.document) &&
+          Number.isFinite(this.lastModified)
+          ? this.lastModified
+          : -1;
       case 'title': {
         const title = titleOf(
           a ? (this._node(a) as ParentNode) : this.document,
@@ -5534,20 +5551,34 @@ export class DomHost {
       }
       case 'setTitle': {
         const doc = b ? (this._node(b) as ParentNode) : this.document;
+        // HTML 3.1.3: a drawing's own `<title>`, made where it has none; in
+        // a document whose element is HTML's, the title element, or one made
+        // in the head where there is a head; in any other, nothing
+        const root = drawingRootOf(doc);
+        const element = doc.children.find((k) => k instanceof Element) as
+          Element | undefined;
         let title = titleOf(doc);
+        if (!root && (!element || namespaceOf(element) !== HTML_NAMESPACE)) {
+          return null;
+        }
         if (!title) {
-          const root = drawingRootOf(doc);
           const head =
             root ??
-            DomUtils.findOne((el) => el.name === 'head', doc.children) ??
-            (doc.children.find((k) => k instanceof Element) as
-              Element | undefined);
+            (element!.name === 'html'
+              ? (element!.children.find(
+                  (k) =>
+                    k instanceof Element &&
+                    k.name === 'head' &&
+                    namespaceOf(k) === HTML_NAMESPACE,
+                ) as Element | undefined)
+              : undefined);
           if (!head) return null;
           title = new Element('title', {}, []);
           if (root) title.namespace = SVG_NS;
           this._put(head, [title], root ? (root.children[0] ?? null) : null);
         }
-        this._replaceAll(title, [new Text(text(a))]);
+        // the empty string makes no text (DOM's "string replace all")
+        this._replaceAll(title, text(a) ? [new Text(text(a))] : []);
         if (doc === this.document) this._seams.title(text(a) || null);
         return null;
       }
@@ -7746,6 +7777,9 @@ export class DomHost {
       'volume-locked': nothing,
       fullscreen: (el) => isFullscreen(el),
       host: nothing,
+      // the cascade's, which goes up to a shadow tree's host, where
+      // css-select's stops at the top of the tree
+      lang: (el, code) => matchesLang(el, code ?? null),
     };
     return (this._pseudos = { pseudos });
   }
@@ -8061,6 +8095,50 @@ export class DomHost {
     }
     this._names.set(doc, { at, names });
     return names;
+  }
+
+  /** Each document's named properties, as `_documentNames` answers them,
+   *  with where `edits` and the parser were. */
+  private readonly _docNames = new WeakMap<
+    Document,
+    { at: string; answer: string }
+  >();
+
+  /**
+   * A document's supported property names (HTML 3.1.5) and what each
+   * names, in tree order: an `embed`, a `form`, an `iframe`, an `img` or an
+   * `object` by a `name` that is not empty, an `object` by its `id`, and an
+   * `img` by its `id` where it has a `name` as well. Answered as
+   * `name\u0001ids` entries joined by `\u0002`, the ids by commas, and
+   * nothing where it has none, which most documents are. The realm keeps
+   * the answer until a list would read again (`docNamesOf`). "Exposed" is
+   * left out, as the browsers and WPT's `nameditem-names.html` leave it.
+   */
+  private _documentNames(doc: Document): string {
+    const at = `${edits}:${treeGeneration()}`;
+    const kept = this._docNames.get(doc);
+    if (kept?.at === at) return kept.answer;
+    const names = new Map<string, Element[]>();
+    const add = (key: string | undefined, el: Element): void => {
+      if (!key) return;
+      const list = names.get(key);
+      if (!list) names.set(key, [el]);
+      else if (list[list.length - 1] !== el) list.push(el);
+    };
+    for (const el of elementsIn(doc, (el) => DOCUMENT_NAMED.has(el.name))) {
+      if (isForeign(el)) continue;
+      // an element's `id` ahead of its `name`, as the browsers list them
+      const { id, name } = el.attribs;
+      if (el.name === 'object' || (el.name === 'img' && name)) add(id, el);
+      add(name, el);
+    }
+    const parts: string[] = [];
+    for (const [key, els] of names) {
+      parts.push(`${key}\u0001${els.map((el) => this.idOf(el)).join(',')}`);
+    }
+    const answer = parts.join('\u0002');
+    this._docNames.set(doc, { at, answer });
+    return answer;
   }
 
   private _tell(node: AnyNode, change: HtmlChange): void {

@@ -375,6 +375,7 @@ host.workerScope = {
     tell({ kind: 'service', text, ...(bytes ? { bytes } : {}) }),
 };
 const engine = new ScriptEngine(host.bridge, {
+  worker: true,
   timeout: WORKER_TIMEOUT_MS,
   ceiling: WORKER_CEILING_MS,
   onTimeout: () =>

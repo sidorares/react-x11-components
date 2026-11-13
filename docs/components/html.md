@@ -2924,6 +2924,34 @@ element's clock as it plays, and as Chromium has it, nothing is active before
 it has played. Captions are not rendered over the video, `::cue` styles
 nothing, and in-band tracks are none.
 
+**A document has its named properties** (HTML 3.1.5): `document.foo` is the
+`<img>`, `<form>`, `<embed>`, `<object>` or `<iframe>` named `foo`, an
+`<object>` by its `id` too and an `<img>` by its `id` where it has a `name`,
+an `<iframe>` alone its window, and several of one name one live
+`HTMLCollection` in tree order. They follow the tree, a shadow tree's
+elements being none of them, and are in `Object.getOwnPropertyNames` and not
+in `Object.keys`. None shadows a member of the document: `<img name=forms>`
+leaves `document.forms` the forms, as WPT's tentative test and the browsers
+have it, where HTML's `[LegacyOverrideBuiltIns]` would make it the image.
+Whether an `<embed>` or `<object>` is "exposed" is not asked, as the browsers
+do not.
+
+**The window's members are its own, as a `[Global]`'s are** (Web IDL 3.7):
+its operations enumerable data properties, its attributes accessors, with
+`window`, `document`, `location` and `top` not configurable and the
+`[Replaceable]` ones (`self`, `frames`, `parent`, `screen`, the bars,
+`external`, `innerWidth` and the rest) taking what a page sets them to.
+`moveTo` and `moveBy` move nothing. `addEventListener` and its kin are
+`EventTarget.prototype`'s, enumerable there.
+
+**ARIA's element references** (HTML 2.6.1): `ariaActiveDescendantElement`
+and the seven `aria…Elements` read what a page set them to, where that is in
+the element's tree or one a shadow host of it is in, or else the elements
+the attribute's IDs name in the element's own tree; setting one writes the
+empty string to the attribute, and the attribute set any other way takes
+back what was set. A list is one frozen array while it holds the same
+elements. Nothing reads them for an accessibility tree yet.
+
 **A drawing's geometry is worked out from its attributes.** No box stands for
 what an inline `<svg>` holds, so `getBBox`, `getCTM`, `getScreenCTM`,
 `getBoundingClientRect` and a shape's `getTotalLength` and `getPointAtLength`

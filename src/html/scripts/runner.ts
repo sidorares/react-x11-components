@@ -303,6 +303,8 @@ export class ScriptRunner {
       _link?.parent.host.top,
     );
     this.host.arrival = arrival;
+    const modified = headers.find(([k]) => k.toLowerCase() === 'last-modified');
+    if (modified) this.host.lastModified = Date.parse(modified[1]);
     // what the session reads of the document as it is left: its entries'
     // URLs are none of the next document's where this says no path
     if (arrival) {
