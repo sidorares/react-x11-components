@@ -60,7 +60,10 @@ import { HtmlSource } from '../../src/html/dom.js';
 import { webmStream } from '../webm-fixture.js';
 import type { HtmlGLCommand, HtmlWebGL } from '../../src/html/webgl.js';
 import type { ScriptsOptions } from '../../src/html/scripts/runner.js';
-import type { LoadedScript } from '../../src/html/scripts/script-origin.js';
+import type {
+  LoadedScript,
+  ValueModule,
+} from '../../src/html/scripts/script-origin.js';
 import { linkTarget, navigableFor } from '../../src/html/scripts/target.js';
 import { FrameHolder, embeddedMounts } from '../../src/html/scripts/frames.js';
 import type { FrameContext } from '../../src/html/scripts/frames.js';
@@ -157,7 +160,7 @@ async function hosted(
       string,
       | LoadedScript
       | Promise<string>
-      | ((type?: 'json' | 'text') => LoadedScript | null)
+      | ((type?: ValueModule) => LoadedScript | null)
     >;
     answer?: (request: FetchRequest) => FetchResponse | null;
     sheets?: Record<string, string>;
@@ -1010,6 +1013,247 @@ test('a script document.write writes runs before the parse goes on, and what it 
     await rootLog(doc, (t) => t.includes('ids')),
     'outer:true:true w:true:w.js inline:true:true ids:from-w,after-w,later,tail',
   );
+});
+
+test('an inline script document.write writes runs before the write returns, and what it writes goes in just after it', async () => {
+  const doc = await hosted(
+    '<!doctype html><html id="root"><head><script>' +
+      ROOT_NOTE +
+      '</script></head><body><script>' +
+      "note('outer');" +
+      'document.write(\'<script>note("written:" + !!document.getElementById("w")); document.write("<p id=n>n<\\\\/p>")<\\/script><p id="w">w</p>\');' +
+      "note('back:' + !!document.getElementById('n') + ':' + !!document.getElementById('w'));" +
+      '</script><p id="tail">tail</p><script>' +
+      "note('ids:' + Array.prototype.map.call(document.body.querySelectorAll('[id]'), function (e) { return e.id }).join(','));" +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await rootLog(doc, (t) => t.includes('ids')),
+    'outer written:false back:true:true ids:n,w,tail',
+  );
+});
+
+test('a script that starts with nothing to run is not started, and runs once text is put in it', async () => {
+  const doc = await hosted(
+    '<!doctype html><html id="root"><head><script>' +
+      ROOT_NOTE +
+      '</script><script id="empty"></script><script id="blank"> </script>' +
+      '<script id="plain" type="text/plain" src="later.js"></script>' +
+      '</head><body><script>' +
+      "var empty = document.getElementById('empty');" +
+      "note('async:' + empty.async + ':' + document.getElementById('blank').async);" +
+      'empty.appendChild(document.createComment(\'note("comment")\'));' +
+      'empty.appendChild(document.createTextNode(\'note("ran")\'));' +
+      'empty.appendChild(document.createTextNode(\'note("again")\'));' +
+      "document.getElementById('blank').appendChild(document.createTextNode('note(\"blank\")'));" +
+      "var plain = document.getElementById('plain');" +
+      "plain.removeAttribute('type'); document.body.appendChild(plain);" +
+      'var later = document.createElement("script");' +
+      'document.body.appendChild(later);' +
+      'later.src = "set.js";' +
+      "note('end');" +
+      '</script></body></html>',
+    {
+      scripts: {
+        'https://example.test/dir/later.js': "note('later')",
+        'https://example.test/dir/set.js': "note('set')",
+      },
+    },
+  );
+  assert.equal(
+    await rootLog(doc, (t) => t.includes('set') && t.includes('later')),
+    'async:true:false ran end later set',
+  );
+});
+
+test('a script for an event other than the window load runs not at all', async () => {
+  const doc = await hosted(
+    '<!doctype html><html id="root"><head><script>' +
+      ROOT_NOTE +
+      '</script>' +
+      '<script for="window" event="onclick">note("click")</script>' +
+      '<script for=" WINDOW " event=" onload() ">note("load")</script>' +
+      '<script for="w&#x130;ndow" event="onload">note("dotted")</script>' +
+      '<script event="handler">note("event")</script>' +
+      '<script for="object">note("for")</script>' +
+      '<script type="module ">note("spaced module")</script>' +
+      '</head><body><script>note("end")</script></body></html>',
+  );
+  assert.equal(
+    await rootLog(doc, (t) => t.includes('end')),
+    'load event for end',
+  );
+});
+
+test('a script with an empty src fires error a task later, and an async one holds the load', async () => {
+  const doc = await hosted(
+    '<!doctype html><html id="root"><head><script>' +
+      ROOT_NOTE +
+      "window.onload = function () { note('load') };" +
+      '</script></head><body><script>' +
+      'var s = document.createElement("script");' +
+      "s.onerror = function (e) { note('error:' + e.isTrusted) };" +
+      's.setAttribute("src", "");' +
+      'document.body.appendChild(s);' +
+      "note('queued');" +
+      '</script><script src="slow.js" async></script></body></html>',
+    {
+      scripts: {
+        'https://example.test/dir/slow.js': new Promise((ok) =>
+          setTimeout(() => ok("note('slow')"), 60),
+        ),
+      },
+    },
+  );
+  const log = (await rootLog(doc, (t) => t.includes('load'))).split(' ');
+  assert.equal(log[0], 'queued', log.join(' '));
+  assert.ok(log.includes('error:true'), log.join(' '));
+  assert.ok(log.indexOf('slow') >= 0, log.join(' '));
+  assert.ok(log.indexOf('slow') < log.indexOf('load'), log.join(' '));
+});
+
+test('a module imported as CSS is a constructed sheet a page adopts', async () => {
+  const doc = await hosted(
+    '<!doctype html><html id="root"><head><script>' +
+      ROOT_NOTE +
+      '</script></head><body><p id="p">p</p><script type="module">' +
+      "import sheet from './p.css' with { type: 'css' };" +
+      'document.adoptedStyleSheets = [sheet];' +
+      "note(String(sheet instanceof CSSStyleSheet) + ':' + sheet.cssRules.length);" +
+      "setTimeout(function () { note('color:' + getComputedStyle(document.getElementById('p')).color) }, 50);" +
+      "import('./p.css', { with: { type: 'css' } }).then(function (m) { note('same:' + (m.default === sheet)) });" +
+      "import('./p.css').catch(function (e) { note('script:' + e.name) });" +
+      '</script></body></html>',
+    {
+      scripts: {
+        'https://example.test/dir/p.css': (type) =>
+          type === 'css'
+            ? {
+                text: '#p { color: rgb(1, 2, 3) }',
+                headers: [['content-type', 'text/css']],
+              }
+            : {
+                text: '#p { color: red }',
+                headers: [['content-type', 'text/css']],
+              },
+      },
+    },
+  );
+  const log = await rootLog(
+    doc,
+    (t) => t.includes('same') && t.includes('script') && t.includes('color'),
+  );
+  assert.ok(log.startsWith('true:1'), log);
+  assert.ok(log.includes('color:rgb(1, 2, 3)'), log);
+  assert.ok(log.includes('same:true'), log);
+  assert.ok(log.includes('script:TypeError'), log);
+});
+
+test('a script is prepared by its type string: its language read, a type matched exactly and a module only as written', async () => {
+  const doc = await hosted(
+    '<!doctype html><html id="root"><head><script>' +
+      ROOT_NOTE +
+      '</script>' +
+      '<script type="text/javascript;charset=utf-8">note("params")</script>' +
+      '<script language="javascript">note("language")</script>' +
+      '<script language=" javascript">note("spaced-language")</script>' +
+      '<script type=" text/javascript ">note("spaced-type")</script>' +
+      '<script type=" ">note("blank")</script>' +
+      '<script type="" language="vbscript">note("empty-type")</script>' +
+      '<script type=" module">note("spaced-module")</script>' +
+      '<script type="MODULE">note("module")</script>' +
+      '</head><body><script>' +
+      'var s = document.createElement("script");' +
+      's.setAttribute("language", "jscript");' +
+      's.text = "note(\'made\')";' +
+      'document.body.appendChild(s);' +
+      'note("end");' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await rootLog(doc, (t) => t.includes('module')),
+    'language spaced-type empty-type made end module',
+  );
+});
+
+test("a body's window handlers are its window's only in the window's document, a frameset's too, and an attribute is a handler only where there is one", async () => {
+  const doc = await hosted(
+    '<!doctype html><html id="root"><head><script>' +
+      ROOT_NOTE +
+      '</script></head><body><script>' +
+      'var r = [];' +
+      'var focus = function () {};' +
+      'window.onfocus = focus;' +
+      'var d = document.implementation.createHTMLDocument("");' +
+      'var b = d.createElement("body");' +
+      'r.push(b.onfocus === null);' +
+      'b.onfocus = function () {};' +
+      'r.push(window.onfocus === focus, b.onfocus === null);' +
+      'var fs = document.createElement("frameset");' +
+      'fs.onmessage = function () {};' +
+      'r.push(window.onmessage === fs.onmessage);' +
+      'r.push(window.onclose === null, document.createElement("p").oninvalid === null);' +
+      'window.ran = false;' +
+      'var div = document.createElement("div");' +
+      'div.setAttribute("onreadystatechange", "window.ran = true");' +
+      'div.dispatchEvent(new Event("readystatechange"));' +
+      'r.push(window.ran);' +
+      'note(r.join(","));' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await rootLog(doc, (t) => t.length > 0),
+    'true,true,true,true,true,true,false',
+  );
+});
+
+test('document.open erases the listeners and handlers of what the document holds', async () => {
+  const doc = await hosted(
+    '<!doctype html><html id="root"><head><script>' +
+      ROOT_NOTE +
+      '</script></head><body><script>' +
+      'var d = document.implementation.createHTMLDocument("");' +
+      'var div = d.body.appendChild(d.createElement("div"));' +
+      'var heard = [];' +
+      'div.addEventListener("x", function () { heard.push("listener") });' +
+      'div.onclick = function () { heard.push("handler") };' +
+      'div.setAttribute("onfocus", "heard.push(\'attribute\')");' +
+      'd.addEventListener("x", function () { heard.push("document") });' +
+      'd.open();' +
+      'div.dispatchEvent(new Event("x"));' +
+      'd.dispatchEvent(new Event("x"));' +
+      'div.click();' +
+      'note([heard.length, div.onclick, div.onfocus].join(","));' +
+      'd.close();' +
+      '</script></body></html>',
+  );
+  assert.equal(await rootLog(doc, (t) => t.length > 0), '0,,');
+});
+
+test('a module two scripts name runs once, and what it threw is reported for each', async () => {
+  const doc = await hosted(
+    '<!doctype html><html id="root"><head><script>' +
+      ROOT_NOTE +
+      "window.addEventListener('error', function (e) { note('error:' + (e.error && e.error.n)) });" +
+      "window.onload = function () { note('load') };" +
+      '</script>' +
+      '<script type="module" src="throw.js" onload="note(\'loaded\')"></script>' +
+      '<script type="module" src="throw.js" onload="note(\'loaded\')"></script>' +
+      '<script type="module" src="bad-import.js"></script>' +
+      '</head><body></body></html>',
+    {
+      scripts: {
+        'https://example.test/dir/throw.js':
+          "note('ran'); var e = new Error('x'); e.n = 1; throw e;",
+        'https://example.test/dir/bad-import.js':
+          "import { missing } from './throw.js';",
+      },
+    },
+  );
+  const log = await rootLog(doc, (t) => t.includes('load'));
+  assert.equal(log.split(' ').filter((w) => w === 'ran').length, 1, log);
+  assert.equal(log.split(' ').filter((w) => w === 'error:1').length, 2, log);
+  assert.ok(log.includes('error:undefined'), log);
 });
 
 test('a page sees what the parser puts in the document after its first script, as mutation records', async () => {
@@ -3764,8 +4008,10 @@ test('a module is refused what its import’s type, its attributes or its respon
     ],
     doc.logs.join('\n'),
   );
-  // and is asked for nothing
+  // and is asked for nothing; a CSS module is asked for, and refused by
+  // what it is served as
   assert.deepEqual(doc.loads.sort(), [
+    'css https://example.test/dir/lib/data.json',
     'https://example.test/dir/lib/note.txt',
     'json https://example.test/dir/lib/broken.json',
     'json https://example.test/dir/lib/later.json',
@@ -3801,7 +4047,7 @@ test('a module whose import names an attribute or a type no module has is report
           'application/json',
         ),
         'https://example.test/dir/lib/typed.js': typed(
-          "import d from './data.json' with { type: 'css' };",
+          "import d from './data.json' with { type: 'xml' };",
           'text/javascript',
         ),
       },

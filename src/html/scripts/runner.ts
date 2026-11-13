@@ -40,14 +40,20 @@ import type {
   HtmlHandle,
   ScriptRequest,
 } from '../index.js';
-import { blocksParser, isClassicScriptType } from '../dom.js';
+import {
+  blocksParser,
+  isClassicScriptType,
+  parserDocumentOf,
+  scriptForOther,
+  scriptTypeOf,
+} from '../dom.js';
 import { holdAnimationClock, releaseAnimationClock } from '../node.js';
 import type { MediaEventKind } from '../media.js';
 import type { ResourceAsker, ResourceCors } from '../resources.js';
 import { ScriptEngine } from './engine.js';
 import { DomHost, trustworthy, wholeBytes } from './host.js';
 import { corsSetting, judgeScript } from './script-origin.js';
-import type { LoadedScript, ModuleType } from './script-origin.js';
+import type { LoadedScript, ModuleType, ValueModule } from './script-origin.js';
 import { SB_ORIGIN, sandboxOfPolicy } from './sandbox.js';
 import { referrerPolicyOf, referrerPolicyOfHeaders } from '../referrer.js';
 import { PageWorkers } from './workers.js';
@@ -114,7 +120,7 @@ export interface ScriptsOptions extends Omit<
     url: string,
     element: Element | null,
     cors?: ResourceCors,
-    type?: 'json' | 'text',
+    type?: ValueModule,
     asker?: ResourceAsker,
   ): Promise<LoadedScript | null>;
   /** The headers of the response the document came in
@@ -166,6 +172,9 @@ interface Queued {
   /** Whether what it throws is no business of the page's
    *  (`judgeScript`), known once its source is here. */
   muted: boolean;
+  /** The document it was prepared in (HTML's "preparation-time
+   *  document"), which it runs in only while it is still there. */
+  prepared: Document;
 }
 
 /** A script in the in-order list, and its source once it is here. */
@@ -810,10 +819,48 @@ export class ScriptRunner {
    *  while the element reads its props, and from inside an op. */
   add(request: ScriptRequest): void {
     if (this._disposed || this.host.inert.has(request.element)) return;
+    // the parser prepares a script after a microtask checkpoint (HTML
+    // 13.2.6.4.8, "an end tag whose tag name is script"), so the page's
+    // mutation observers hear of it first, and what they set is what it
+    // is prepared with
+    if (parserDocumentOf(request.element) && !this.engine.running) {
+      this._parserInserted();
+      if (this._disposed || this.host.inert.has(request.element)) return;
+      request = {
+        ...request,
+        type: scriptTypeOf(request.element),
+      };
+    }
+    // one with no source to run returns before it is started, and is no
+    // longer the parser's (HTML 4.12.1.1, "prepare the script element",
+    // steps 3 and 6): text put in it later prepares it again
+    // (`DomHost._connected`)
+    if (
+      request.src === null &&
+      request.element.attribs.src === undefined &&
+      !request.text
+    ) {
+      this.host.unstarted(request.element);
+      return;
+    }
+    // `module` and `importmap` as they are written, in any case, and with
+    // nothing around them (HTML 4.12.1.1, step 8)
+    const type = request.type.toLowerCase();
+    const module = type === 'module';
+    // nor one of a type it runs none of (step 8): given a type it runs
+    // later, and moved, it runs then
+    if (type !== 'importmap' && !module && !isClassicScriptType(type)) {
+      this.host.unstarted(request.element);
+      return;
+    }
     // a script runs once (HTML's "already started"): a second view of a
     // frame's document meets the scripts the first one did
     this.host.inert.add(request.element);
-    const type = request.type.split(';')[0].trim().toLowerCase();
+    // one in another document than this realm's by now runs in neither
+    // (step 11): a frame's document is parsed into a tree of its own before
+    // its realm takes it, so the document a parser made it in says nothing
+    const prepared = this.host.nodeDocument(request.element);
+    if (prepared !== this.host.document) return;
     // the specifiers the page's modules import by name, from here on: as
     // the parser meets it, and inline only, as HTML has it
     if (type === 'importmap') {
@@ -825,15 +872,27 @@ export class ScriptRunner {
       }
       return;
     }
-    const module = type === 'module';
-    if (!module && !isClassicScriptType(type)) return;
-    // a browser with modules runs no `nomodule` script (HTML 4.12.1)
+    // a browser with modules runs no `nomodule` script (HTML 4.12.1), nor
+    // one for an event other than the window's `load`
     if (!module && request.element.attribs.nomodule !== undefined) return;
+    if (!module && scriptForOther(request.element)) return;
+    // a `src` that names nothing is the element's `error`, a task later
+    // (step 31.2)
+    if (request.element.attribs.src !== undefined && !request.src) {
+      const element = this.host.idOf(request.element);
+      this._delaying += 1;
+      setTimeout(() => {
+        if (!this._disposed) this.engine.call('__fire', [element, 'error']);
+        this._delayed();
+      }, 0);
+      return;
+    }
     const queued: Queued = {
       request,
       source: Promise.resolve(request.text),
       module,
       muted: false,
+      prepared,
     };
     if (request.src) {
       queued.source = request.src.startsWith('blob:')
@@ -855,6 +914,7 @@ export class ScriptRunner {
     ) {
       const step: InOrder = { queued, code: null, ready: false };
       this._inOrder.push(step);
+      this._delaying += 1;
       void source.then((code) => {
         step.code = code;
         step.ready = true;
@@ -863,7 +923,26 @@ export class ScriptRunner {
       return;
     }
     if (!this._parsed && !this._soon(queued)) this._queue.push(queued);
-    else void source.then((code) => this._run(queued, code));
+    else {
+      this._delaying += 1;
+      void source
+        .then((code) => this._run(queued, code))
+        .finally(() => this._delayed());
+    }
+  }
+
+  /** The scripts fetched or waiting to run outside the parse's own list,
+   *  which delay the document's `load` until they have run (HTML 4.12.1.1,
+   *  "delaying the load event"): an `async` one, and one a page's script
+   *  put in. */
+  private _delaying = 0;
+
+  /** One of them ran: the `load` it held, where it was the last. */
+  private _delayed(): void {
+    this._delaying -= 1;
+    if (this._delaying === 0 && this._loaded && this._ready === 'interactive') {
+      this._complete();
+    }
   }
 
   /** The scripts that run in the order they went in (HTML 4.12.1.1, "the
@@ -881,7 +960,11 @@ export class ScriptRunner {
     try {
       while (!this._disposed && this._inOrder[0]?.ready) {
         const { queued, code } = this._inOrder.shift()!;
-        await this._run(queued, code);
+        try {
+          await this._run(queued, code);
+        } finally {
+          this._delayed();
+        }
       }
     } finally {
       this._ordering = false;
@@ -898,7 +981,13 @@ export class ScriptRunner {
    * in that pass, and it runs after them, in order, as it always did.
    */
   private _soon({ request, module }: Queued): boolean {
-    if (request.element.attribs.async === undefined) return false;
+    // `async`, or a page's script's, whose `async` is forced on
+    if (
+      request.element.attribs.async === undefined &&
+      !this.host.forcedAsync(request.element)
+    ) {
+      return false;
+    }
     if (!module && request.src === null) return false;
     return !this._queue.some((q) => blocksParser(q.request.element, true));
   }
@@ -1009,6 +1098,7 @@ export class ScriptRunner {
    *  page's `load` finds its iframe's document there. */
   private _complete(): void {
     if (this._ready === 'complete' || this._disposed) return;
+    if (this._delaying > 0) return;
     if (this.host.framesLoading) {
       this.host.onFramesLoaded = () => {
         this.host.onFramesLoaded = null;
@@ -1363,6 +1453,9 @@ export class ScriptRunner {
   ): Promise<void> {
     if (this._disposed) return;
     const { request } = queued;
+    // moved to another document since it was prepared, it runs nowhere and
+    // says nothing (HTML's "execute the script element", step 2)
+    if (this.host.nodeDocument(request.element) !== queued.prepared) return;
     const element = this.host.idOf(request.element);
     if (code === null) {
       this._options.log('error', `Failed to load the script ${request.src}.`);

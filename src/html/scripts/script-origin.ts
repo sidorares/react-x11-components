@@ -74,13 +74,24 @@ export function corsSetting(
 /** What a module is (HTML's module type of a module script): a
  *  script, or what an import's `type` attribute names, a JSON document or
  *  text (the Import Text proposal), whose value is its default export. */
-export type ModuleType = 'javascript' | 'json' | 'text';
+export type ModuleType = 'javascript' | 'json' | 'text' | 'css';
+
+/** A module that is no script: its one export is the value its response
+ *  makes. */
+export type ValueModule = Exclude<ModuleType, 'javascript'>;
+
+/** What an import's `type` attribute names a module as, where it names one
+ *  of these. */
+export function isValueModule(type: unknown): type is ValueModule {
+  return type === 'json' || type === 'text' || type === 'css';
+}
 
 /** What a JSON and a text module are asked for with (HTML's "fetch a
  *  single module script"; the Import Text proposal): `Accept`. */
 export const MODULE_ACCEPT = {
   json: 'application/json,*/*;q=0.5',
   text: 'text/plain,*/*;q=0.5',
+  css: 'text/css,*/*;q=0.1',
 } as const;
 
 const JAVASCRIPT =
@@ -100,14 +111,16 @@ function essenceOf(contentType: string): string {
     .toLowerCase();
 }
 
-/** Whether a response is what a JSON or a text module is imported as, by its
- *  `Content-Type`: a JSON module's has to be JSON, and a text module's may
- *  be anything at all. */
+/** Whether a response is what a JSON, a text or a CSS module is imported
+ *  as, by its `Content-Type`: a JSON module's has to be JSON, a CSS
+ *  module's `text/css`, and a text module's may be anything at all. */
 export function moduleTypeAllows(
   contentType: string,
-  type: 'json' | 'text',
+  type: ValueModule,
 ): boolean {
-  return type === 'text' || JSON_TYPE.test(essenceOf(contentType));
+  if (type === 'text') return true;
+  const essence = essenceOf(contentType);
+  return type === 'css' ? essence === 'text/css' : JSON_TYPE.test(essence);
 }
 
 /** Whether a response may not be a script, by what it says it is (Fetch

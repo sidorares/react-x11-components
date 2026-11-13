@@ -23,7 +23,11 @@ import type {
   UrlClass,
 } from './platform.js';
 import { PageWorkers } from './workers.js';
-import { MODULE_ACCEPT, moduleTypeAllows } from './script-origin.js';
+import {
+  MODULE_ACCEPT,
+  moduleTypeAllows,
+  type ValueModule,
+} from './script-origin.js';
 import type { PageWorkersSeams } from './workers.js';
 import type { FetchRequest, FetchResponse } from './host.js';
 import { inScope, keepRegistry, registryKept } from '../service-workers.js';
@@ -920,7 +924,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
   private async _importScript(
     thread: number,
     url: string,
-    type?: 'json' | 'text',
+    type?: ValueModule,
   ): Promise<string | null> {
     const version = this._byThread.get(thread);
     if (!version) return null;
@@ -1138,7 +1142,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
     url: string,
     registration: Registration,
     main: boolean,
-    module?: 'json' | 'text',
+    module?: ValueModule,
   ): Promise<HtmlServiceWorkerScript & { referrerPolicy: string }> {
     let response: FetchResponse;
     try {

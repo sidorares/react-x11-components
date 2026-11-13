@@ -80,7 +80,8 @@ import { installGeometry } from './geometry.js';
 import { installSvgDom } from './svg-dom.js';
 import { FACADE, lockStacks } from './stacks.js';
 import type { Bridge, Primitive } from './dom.js';
-import type { ModuleType } from './script-origin.js';
+import { isValueModule } from './script-origin.js';
+import type { ModuleType, ValueModule } from './script-origin.js';
 
 declare const setTimeout: SetTimeout;
 declare const URL: UrlClass;
@@ -156,6 +157,10 @@ export interface EngineOptions {
   /** Whether `import()` imports anything: false in a service worker, where
    *  each is a `TypeError`. Default: true. */
   dynamicImport?: boolean;
+  /** Whether a module may be a CSS one: false in a worker, which has no
+   *  document to adopt one, where `type: 'css'` is no module type and asks
+   *  for nothing (HTML's "fetch a single module script"). Default: true. */
+  cssModules?: boolean;
   /** The outermost entry begins, and ends: a page's task, which the
    *  animations' clock stands still for. */
   entered?(): void;
@@ -705,6 +710,10 @@ export class ScriptEngine {
   /** And its `JSON.parse`, which a JSON module is parsed with: its objects
    *  are the page's, and what fails to parse is the page's `SyntaxError`. */
   private readonly _parseJson: (text: string) => unknown;
+  /** A constructed sheet of a CSS module's text, made in the page's realm
+   *  with what it had before page code ran: null where it has no
+   *  `CSSStyleSheet`, a worker's. */
+  private readonly _makeSheet: ((text: string) => unknown) | null;
   /** The context's global, the page's window (`global`). */
   private readonly _global: object;
 
@@ -760,6 +769,20 @@ export class ScriptEngine {
     this._TypeError = run('TypeError') as new (message: string) => object;
     this._SyntaxError = run('SyntaxError') as new (message: string) => object;
     this._parseJson = run('JSON.parse') as (text: string) => unknown;
+    this._makeSheet = run(
+      `(() => {
+        const Sheet = globalThis.CSSStyleSheet;
+        if (typeof Sheet !== 'function') return null;
+        const replace = Sheet.prototype.replaceSync;
+        const call = Function.prototype.call.bind(replace);
+        return (text) => {
+          const sheet = new Sheet();
+          call(sheet, text);
+          return sheet;
+        };
+      })()`,
+      FACADE,
+    ) as ((text: string) => unknown) | null;
     ENGINES.set(this._promises, this);
     watchRejections();
   }
@@ -798,13 +821,17 @@ export class ScriptEngine {
       await new Promise<void>((go) => this._held?.push(go));
       if (this._broken || this._disposed) return 'failed';
     }
-    let root: PageModule;
+    let root: PageModule | null = null;
     try {
-      root = this._compile(code, url);
-      // one fetched is the module at its URL for whatever imports it; an
-      // inline one is at the document's, which it is no module of
-      if (external && !this._modules.has(url)) {
-        this._modules.set(url, Promise.resolve(root));
+      // one fetched is the module at its URL for whatever imports it, the
+      // same module for a second `<script>` of it, which runs it no more
+      // and reports what it threw again (HTML's module map); an inline one
+      // is at the document's, which it is no module of
+      const known = external ? this._modules.get(url) : undefined;
+      if (known) root = await known.catch(() => null);
+      if (!root) {
+        root = this._compile(code, url);
+        if (external) this._modules.set(url, Promise.resolve(root));
       }
       await this._link(root);
     } catch (error) {
@@ -813,8 +840,12 @@ export class ScriptEngine {
         return 'unfetched';
       }
       // a module that did not parse or link: the runtime's error, reported
-      // in the page as its own
-      this._fault(error);
+      // in the page as its own, of its kind — a link's is a `SyntaxError`
+      this._fault(
+        isHostError(error) && error.name === 'SyntaxError'
+          ? this._pageError(error.message, 'SyntaxError')
+          : error,
+      );
       return 'failed';
     }
     if (this._disposed) return 'failed';
@@ -886,21 +917,25 @@ export class ScriptEngine {
   }
 
   /**
-   * A JSON or a text module (HTML's "create a JSON module script"; the
-   * Import Text proposal): a module whose one export, `default`, is the
-   * value — what the page's `JSON.parse` makes of the text, or the text. A
-   * JSON module that does not parse is the page's `SyntaxError`, thrown as
-   * it is made, as a script's is.
+   * A JSON, a text or a CSS module (HTML's "create a JSON module script"
+   * and "create a CSS module script"; the Import Text proposal): a module
+   * whose one export, `default`, is the value — what the page's
+   * `JSON.parse` makes of the text, the text, or a constructed
+   * `CSSStyleSheet` of its rules, for the page to adopt. A JSON module that
+   * does not parse is the page's `SyntaxError`, thrown as it is made, as a
+   * script's is; a CSS module where the realm has no sheets — a worker's —
+   * a `TypeError`.
    */
-  private _synthetic(
-    code: string,
-    url: string,
-    type: 'json' | 'text',
-  ): PageModule {
+  private _synthetic(code: string, url: string, type: ValueModule): PageModule {
     if (!SyntheticModule) {
       throw new TypeError(`A ${type} module cannot be made here: ${url}`);
     }
-    const value = type === 'json' ? this._json(code, url) : code;
+    const value =
+      type === 'json'
+        ? this._json(code, url)
+        : type === 'css'
+          ? this._sheet(code, url)
+          : code;
     return new SyntheticModule(
       ['default'],
       function () {
@@ -908,6 +943,19 @@ export class ScriptEngine {
       },
       { context: this._context, identifier: url },
     );
+  }
+
+  /** A CSS module's sheet, made with the page's `CSSStyleSheet` as it was
+   *  before page code ran, its rules replaced as `replaceSync` replaces
+   *  them, which leaves out an `@import`. */
+  private _sheet(code: string, url: string): unknown {
+    if (!this._makeSheet) {
+      throw this._pageError(
+        `Failed to load module script ${url}: CSS modules are not supported here.`,
+        'TypeError',
+      );
+    }
+    return this._makeSheet(code);
   }
 
   /**
@@ -961,11 +1009,16 @@ export class ScriptEngine {
   }
 
   /** What a module type attribute's value makes a module, after its URL is
-   *  resolved: none, a script; `json` or `text`; and anything else — `css`,
+   *  resolved: none, a script; `json`, `text` or `css`; and anything else —
    *  `javascript`, the empty string — a `TypeError`. */
   private _moduleType(type: unknown): ModuleType {
     if (type === undefined) return 'javascript';
-    if (type === 'json' || type === 'text') return type;
+    if (
+      isValueModule(type) &&
+      (type !== 'css' || this._options.cssModules !== false)
+    ) {
+      return type;
+    }
     throw this._pageError(
       `"${String(type)}" is not a valid module type.`,
       'TypeError',
@@ -1121,8 +1174,14 @@ export class ScriptEngine {
    *  the tree's changes handed over once it is done. What it throws is the
    *  page's, read only in the page (`__fault`, over `__thrown`). */
   private _evaluate(module: PageModule): boolean {
-    // one an `import()` has evaluated already ran then
-    if (this._evaluated.has(module)) return true;
+    // one an `import()` or another `<script>` has evaluated already ran
+    // then, and what it threw is reported again (HTML's "run a module
+    // script": its evaluation promise rejects with it each time)
+    const before = this._evaluated.get(module);
+    if (before) {
+      before.then(undefined, (error) => this._fault(error));
+      return true;
+    }
     this.call('__task', null);
     const mark = this._enter();
     let done: Promise<void>;

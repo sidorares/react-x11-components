@@ -940,10 +940,16 @@ charset }` — the `<script>` is the request's `element`, and the root
 { type: 'json' }`, and `type: 'text'` (the Import Text proposal),
   statically or with `import()`, in a window or a worker — is asked for with
   `type: 'json'` or `'text'` as well, which `HtmlNetwork` asks for with the
-  `Accept` a browser sends for one. It is UTF-8 whatever its response names,
-  a JSON module's response has to say it is JSON (`application/json`,
-  `text/json`, or a type ending `+json`) where a text module's may say
-  anything, and its default export is its value, made in the page's realm.
+  `Accept` a browser sends for one. A CSS module, `type: 'css'`, is the same,
+  its value a constructed `CSSStyleSheet` of its rules, which a page adopts
+  with `adoptedStyleSheets`; an `@import` in it is left out, as
+  `replaceSync` leaves one out. A module is UTF-8 whatever its response
+  names, a JSON module's response has to say it is JSON (`application/json`,
+  `text/json`, or a type ending `+json`), a CSS module's `text/css`, where a
+  text module's may say anything, and its default export is its value, made
+  in the page's realm. A module two `<script>`s name is one module, run once,
+  and what it threw is reported for each. A worker has no CSS modules: there
+  `type: 'css'` is a `TypeError`, and nothing is asked for.
   Each is a module of its own beside the script at the same URL. Another
   type, `type: 'javascript'` among them, is a `TypeError`, and an attribute
   but `type` a `SyntaxError` in an `import` and a `TypeError` in an
@@ -1185,7 +1191,7 @@ since this component navigates nowhere by itself:
 | Seam             | Default                   | What it is                                                                                                                                                                       |
 | ---------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `fetch`          | none: every request fails | A page's requests, as above.                                                                                                                                                     |
-| `load`           | through `onResource`      | A script's source by URL, and a JSON or a text module's with its `type`, for a host that keeps scripts apart from its other resources.                                           |
+| `load`           | through `onResource`      | A script's source by URL, and a JSON, a text or a CSS module's with its `type`, for a host that keeps scripts apart from its other resources.                                    |
 | `navigate`       | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or a window with no opener (`'tab'`). See [Windows](#windows).                          |
 | `popups`         | none                      | What a page's `window.open` reaches. See [Windows](#windows).                                                                                                                    |
 | `headers`        | none                      | The headers of the response the document came in, for what it says of itself: its `sandbox`, its `Cross-Origin-Opener-Policy`.                                                   |
@@ -4750,11 +4756,32 @@ A script in what it wrote — the shape an ad, an analytics tag or an old
 widget embed has, `document.write('<script src="…"></script>')` — runs
 before the parse goes on, and what that script writes goes in ahead of what
 the script that wrote it wrote after it, as HTML's insertion point has it.
+An inline script in what it wrote runs inside the `write`, before it
+returns, and what that one writes goes in just after it.
 A page's mutation observers hear what the parser puts in the document once
 its first script has run, a record a node, and its custom elements are
 connected as the parser puts them in. A deferred script and a module run
-once the parse has ended, in order, and an `async` one as soon as its
-source is here. `document.write` from any other — an `async` script, a
+once the parse has ended, in order, and an `async` one, and one a page's
+script put in, as soon as its source is here; each of those holds the
+window's `load` until it has run.
+
+A script is started once, as HTML's "already started" has it, and one with
+nothing to run is not started: an empty one, or one of a type that is no
+script's, is prepared again when text is put in it, when it is given a `src`
+it did not have, or when it is moved, once it is a script's. A `src` that is
+empty is the element's `error`, a task later. A classic script with a `for`
+and an `event` runs only where they say `window` and `onload`, and a script
+moved to another document after it was prepared runs in neither and fires
+nothing. What a script is comes from its type string, as HTML's step 8 has
+it: its `type`, with ASCII white space taken off either end, or `text/` and
+its `language` where it has no `type`, matched against the JavaScript types
+exactly, so a type with parameters, `text/javascript;charset=utf-8`, is no
+script's, and `language=" javascript"` is none either. `module` and
+`importmap` are matched as they are written, in any case, with nothing
+around them, as every browser has it. An SVG script reads no `language`.
+The page's mutation observers hear of a script the parser made before it is
+prepared, so a type one of them sets is the type it is prepared with.
+`document.write` from any other — an `async` script, a
 module, a timer — is ignored with a warning, as Chrome ignores one from an
 `async` script.
 
@@ -4762,15 +4789,30 @@ The parse yields only where `scripts` is on and the document has a script
 that blocks it. A document without one is parsed whole at once, as one with
 scripts off is, and so is the document a frame shows, which the page's realm
 parsed before its scripts ran: a frame's classic scripts run after its parse,
-in order, and what one writes goes in after it, parsed as a fragment. And an
-inline script that `document.write` writes runs once the script that wrote
-it has ended, where a browser runs it inside the `write`.
+in order, and what one writes goes in after it, parsed as a fragment, where
+an inline script it writes runs once the script that wrote it has ended.
+
+An `on…` attribute is a handler only where the element has that handler, so
+`onreadystatechange` on a `<div>` is an attribute like any, and none is
+compiled in a document with no window, one `createHTMLDocument` or
+`DOMParser` made. A handler an attribute makes reads as the function its
+source text says, `function onclick(event) {…}`. A `<body>`'s and a
+`<frameset>`'s window handlers, `onload`, `onmessage` and their kin, are its
+window's for one of the window's document, put in it or not, its attributes
+as much as its properties, and nothing for one of a document with no window.
+`onwebkitanimationend` and its three kin run for the legacy events,
+`webkitAnimationEnd` and the rest.
 
 A frame's document a page writes with `open`, `write` and `close` is parsed at
 `close`, as a document is, and the frame hears `load` a task later. `open` ends
 whatever the frame was loading, so a frame written straight after it goes in
 tells `load` once, and one opened and never closed tells none and holds up no
-`load` of the page's. A frame sent to a `blob:` URL shows what the blob holds,
+`load` of the page's. `open` erases every listener and handler of the
+document, of what it holds and its shadow trees, and of its window, as HTML
+8.4.2 has it, so a dispatch under way calls none of them after it; a handler
+an attribute set is null until it is set again. Such a document reads
+`complete` by the time its frame hears `load`. `Document.parseHTMLUnsafe`
+makes a document as `DOMParser` does, at `about:blank`. A frame sent to a `blob:` URL shows what the blob holds,
 at its type, read from the realm that made it or one of its origin around it as
 the address is set, so a page may revoke the URL straight after. One no realm
 holds is a load that failed, and no network is asked.

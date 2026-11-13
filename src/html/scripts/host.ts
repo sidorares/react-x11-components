@@ -106,6 +106,9 @@ import {
   treeGeneration,
   treesChanged,
   isClassicScriptType,
+  leftByParser,
+  scriptForOther,
+  scriptTypeOf,
   namespaceFor,
   namespaceIn,
   namespaceOf,
@@ -630,7 +633,11 @@ export interface HandleInternals {
   /** `document.write` from the script the parse waits at, into the input
    *  stream after it (`HtmlViewNode.parserWrite`): false where the parse
    *  waits at no such script. */
-  parserWrite(script: Element, markup: string): boolean;
+  parserWrite(
+    script: Element,
+    markup: string,
+    run?: (inline: Element) => void,
+  ): boolean;
   /** The script the parse waits at has run, and the parse goes on
    *  (`HtmlViewNode.parserResume`). */
   parserResume(script: Element): void;
@@ -1402,8 +1409,6 @@ function titleOf(doc: ParentNode): Element | null {
 /** The document an XML parser that met a fatal error makes: Gecko's. */
 /** A script element's types that are JavaScript, the empty one among them
  *  (HTML 4.12.1). */
-const JS_TYPES =
-  /^(?:|text\/javascript|application\/javascript|text\/ecmascript|application\/ecmascript|application\/x-javascript|text\/jscript)$/i;
 const HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
 
 /** Whether an HTML document has a script that runs: a classic one or a
@@ -1413,8 +1418,7 @@ function hasScripts(doc: Document): boolean {
     (el) =>
       tagOf(el) === 'script' &&
       isStyleOrScript(el) &&
-      (JS_TYPES.test((el.attribs.type ?? '').trim()) ||
-        (el.attribs.type ?? '').trim().toLowerCase() === 'module'),
+      (isClassicScriptType(scriptTypeOf(el)) || scriptTypeOf(el) === 'module'),
     doc.children,
   );
 }
@@ -3525,6 +3529,25 @@ export class DomHost {
    *  no `async` attribute. Google's module loader sets it on every module
    *  it puts in, since a module needs the ones put in before it to have
    *  run. */
+  /** A script the parser met with nothing to run, which is not started,
+   *  and is the parser's no longer: `async` is forced on, as in one a
+   *  script made, and text put in it prepares it (`_connected`). */
+  unstarted(el: Element): void {
+    leftByParser(el);
+    if (!this._forceAsync.has(el)) this._forceAsync.set(el, true);
+  }
+
+  /** Whether a script's `async` is forced on: one a page's script made, or
+   *  one the parser met that has started no longer its own. */
+  forcedAsync(el: Element): boolean {
+    return this._forceAsync.get(el) === true;
+  }
+
+  /** The document a node is in (`_ownerOf`). */
+  nodeDocument(node: AnyNode): Document {
+    return this._ownerOf(node);
+  }
+
   inOrder(el: Element): boolean {
     return this._forceAsync.get(el) === false && el.attribs.async === undefined;
   }
@@ -4579,7 +4602,11 @@ export class DomHost {
         if (!script?.parent) return false;
         // where the parse waits at the script, into the input stream at the
         // insertion point, which the parser reads on from, as HTML's does
-        if (this._handle.parserWrite?.(script, text(a))) {
+        if (
+          this._handle.parserWrite?.(script, text(a), (inline) =>
+            this._runWritten(inline),
+          )
+        ) {
           this.parserInserted();
           return true;
         }
@@ -7465,6 +7492,21 @@ export class DomHost {
       ) {
         this._imageDrawn(target)?.askImage?.(target);
       }
+      // a script given a `src` it did not have, connected and not started,
+      // is prepared (HTML 4.12.1, "has a src attribute set where
+      // previously the element had no such attribute")
+      if (
+        oldValue === null &&
+        target instanceof Element &&
+        target.name === 'script' &&
+        (namespaceOf(target) === SVG_NS
+          ? name === 'href' || name === 'xlink:href'
+          : name === 'src') &&
+        target.attribs[name!] !== undefined &&
+        this._forceAsync.has(target)
+      ) {
+        this._prepareScript(target);
+      }
       if (this._custom && this._customCandidate(target)) {
         this._custom.log.push([
           't',
@@ -7512,7 +7554,7 @@ export class DomHost {
     }
     this._ranges.inserted(parent, index, nodes.length);
     this._childList(parent, nodes, [], previous, before);
-    this._connected(nodes);
+    this._connected(nodes, parent);
   }
 
   /** A node taken out of its parent, recorded. */
@@ -7563,7 +7605,7 @@ export class DomHost {
     if (removed.length || nodes.length) {
       this._childList(parent, nodes, removed, null, null);
     }
-    this._connected(nodes);
+    this._connected(nodes, parent);
   }
 
   /** What a pointer is over moves to what held what was taken out, as
@@ -9242,7 +9284,7 @@ export class DomHost {
         el.name === 'script' &&
         (xml ? el.namespace === HTML_NAMESPACE : !el.namespace) &&
         !el.attribs.src &&
-        JS_TYPES.test(el.attribs.type ?? ''),
+        isClassicScriptType(scriptTypeOf(el)),
       doc.children,
     );
     for (const script of scripts) {
@@ -9371,7 +9413,10 @@ export class DomHost {
    *  `replaceChildren` insert as `appendChild` does: a video site's player
    *  written in on a click, an `<iframe>` of YouTube's embed, loaded only
    *  once a page read its `contentWindow`, and was an empty box. */
-  private _connected(nodes: readonly AnyNode[]): void {
+  private _connected(
+    nodes: readonly AnyNode[],
+    parent: ParentNode | null = null,
+  ): void {
     this._noteAutofocus(nodes, true);
     const found = DomUtils.findAll(
       (el) =>
@@ -9383,6 +9428,18 @@ export class DomHost {
       if (el.name === 'script') this._prepareScript(el);
       else if (el.name === 'link') this._preloadLink(el);
       else this._frameIn(el);
+    }
+    // a script a node was put in, connected and not started, is prepared
+    // after the scripts put in with it (HTML 4.12.1, "a node or document
+    // fragment is inserted into el")
+    if (
+      parent instanceof Element &&
+      parent.name === 'script' &&
+      nodes.length &&
+      !this._disposed &&
+      this._forceAsync.has(parent)
+    ) {
+      this._prepareScript(parent);
     }
   }
 
@@ -9548,27 +9605,68 @@ export class DomHost {
     if (!exec || this.inert.has(el) || !isStyleOrScript(el)) return;
     if (!this._inDocument(el)) return;
     const { attribs } = el;
-    const type = attribs.type ?? '';
+    const type = scriptTypeOf(el);
     const classic = isClassicScriptType(type);
-    const module = type.split(';')[0].trim().toLowerCase() === 'module';
+    const module = type === 'module';
     if (!classic && !module) return;
     // its child text content: the text of its children, and not of what
     // they hold
     let code = '';
     for (const kid of el.children) if (kid instanceof Text) code += kid.data;
-    if (attribs.src !== undefined || module) {
-      const src = attribs.src;
+    // an SVG script's source is its `href`, and a `src` is no attribute
+    // of its
+    const src =
+      namespaceOf(el) === SVG_NS
+        ? (attribs.href ?? attribs['xlink:href'])
+        : attribs.src;
+    if (src !== undefined || module) {
       this.scriptConnected?.({
-        type: (type || 'text/javascript').toLowerCase(),
+        type,
         src: src === undefined ? null : src && this._resolve(src),
         text: code,
         element: el,
       });
       return;
     }
-    if (attribs.nomodule !== undefined || !code) return;
+    if (!code) return;
     this.inert.add(el);
+    if (attribs.nomodule !== undefined || scriptForOther(el)) return;
     exec.call(this.entries, code, this.url, this.idOf(el));
+  }
+
+  /**
+   * An inline script a `document.write` wrote, run before the write
+   * returns, as HTML's parser runs one at a script nesting level above one
+   * (`HtmlSource.write`): as a script of its own, started for good, and
+   * writing at the insertion point after it. What the parser made before
+   * it is told to the page first, as at a script the parse waits at.
+   */
+  private _runWritten(el: Element): void {
+    const exec = this.entries?.exec;
+    if (!exec || this.inert.has(el)) return;
+    const { attribs } = el;
+    let code = '';
+    for (const kid of el.children) if (kid instanceof Text) code += kid.data;
+    // one with nothing in it, as one the parser met (`ScriptRunner.add`)
+    if (!code) {
+      this.unstarted(el);
+      return;
+    }
+    if (!isClassicScriptType(scriptTypeOf(el))) {
+      this.unstarted(el);
+      return;
+    }
+    this.inert.add(el);
+    if (attribs.nomodule !== undefined || scriptForOther(el)) return;
+    const made = this.parserInserted();
+    if (made) this.entries?.call('__mutated', made.body);
+    const outer = this.writing;
+    this.writing = el;
+    try {
+      exec.call(this.entries, code, this.url, this.idOf(el));
+    } finally {
+      this.writing = outer;
+    }
   }
 
   /** Whether a node is in the document drawn, or in a shadow tree that is:
