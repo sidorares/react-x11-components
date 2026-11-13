@@ -4676,9 +4676,19 @@ in the order Chromium has it, which is what WPT holds a browser to:
 - `getCoalescedEvents()` is `[SecureContext]`, and answers a `pointermove`
   with a sample for each motion event the frame folded, adding up to it.
   `getPredictedEvents()` answers nothing here: nothing predicts.
-- `pointerType` is always `mouse` and `pressure` is 0.5 or 0, because that is
-  all core tells of a pointer. A pen and a touch have no seam there yet, so
-  Pointer Events' tests of them cannot pass on this path.
+- `pointerType` is `mouse`, or `touch` where core says a press is a
+  finger's (its `nativeEvent.pointerType`, which react-x11's Wayland seat
+  sets on what it emulates of a touch point; X11 and macOS say nothing of
+  one). `pressure` is 0.5 or 0. A pen has no seam yet.
+- A finger is pointer 2, captured by what it pressed (10.6, "implicit
+  pointer capture"). Its press and moves are the pointer's alone. A tap's
+  release is its `pointerup`, its `pointerout` and `pointerleave`, then the
+  mouse's events a tap is compatible with — a move, a press and a release
+  — and the `click`. A finger that goes 15 logical pixels from where it
+  pressed, where `touch-action` lets it pan that way, becomes a pan (see
+  [Scroll containers](#scroll-containers)): the page hears `pointercancel`,
+  then `pointerout` and `pointerleave`, and nothing more of it, no `click`
+  among it. `touchstart` and the rest of Touch Events are not told.
 - No pointer lock is to be had: core has nothing that confines or hides a
   pointer. `requestPointerLock()` is told as a failure, with a
   `pointerlockerror` and a rejected promise, and `exitPointerLock()` does
@@ -8147,7 +8157,31 @@ only properties `::column` takes here are scroll snapping's, and a snap to a
 column names no element to a snap event. An area in a vertical writing
 mode is where the page draws it, through its frame's turn. A
 container's `scrollend` is told a frame after its last `scroll`, at the
-element, and the viewport's at the document, bubbling to the window.
+element, and the viewport's at the document, bubbling to the window, and not
+before the user's scroll of it has come to rest: the wheel's snap, as
+Chrome tells it after the snap has landed. Each container has a gesture of
+its own, so a wheel on a second while the first rests leaves the first to
+snap.
+
+**A finger pans what it presses** (Pointer Events 3, 11). A press core says
+is a finger's that goes 15 logical pixels, Chromium's touch slop, scrolls
+the innermost scroll container under it that can move the way it first
+went, or the pane around the document, the whole way from the press, and
+holds it for the rest of the gesture; what it moves follows the finger.
+`touch-action` on what was pressed and each element out to the nearest
+scroll container decides the axes it may pan, `none` none, so a drawing
+surface keeps its finger; its zooms are nothing here, so `manipulation` is
+`auto`. Let go while it moves — its speed read across the last tenth of a
+second, as a browser's velocity tracker reads it — it flings on in the
+direction it went, the farther the faster, and a snap container comes to
+rest at the place nearest where the fling would end, ahead of where the
+pan began, all of it eased out a frame at a time; a finger that stopped
+before it lifted flings nothing and snaps from where it is. A finger
+pressed on a fling stops it, and its own gesture decides where it comes to
+rest. `scrollsnapchanging` is told as a wheel or a finger moves for the
+areas the container would rest at were it let go of then, and a fling's for
+where it is going, chosen as it began. A finger selects no text, drags
+nothing and follows no link.
 
 **A snap container tells a page what it snaps to** (CSS Scroll Snap 2,
 6.1). `scrollsnapchanging` is told as it scrolls, before its `scroll`,

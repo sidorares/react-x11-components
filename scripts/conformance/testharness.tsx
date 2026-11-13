@@ -989,6 +989,7 @@ const buttonsDown = new Set<number>();
 const keysDown = new Set<number>();
 
 function releaseActions(): void {
+  touching = false;
   const server = harness?.server;
   if (!server) return;
   for (const button of buttonsDown) server.injectButton(button, false);
@@ -1002,6 +1003,54 @@ let pointerY = 0;
 
 type Server = NonNullable<RenderX11Result['server']>;
 
+/**
+ * Whether the pointer events the server is sending now are a finger's.
+ * The in-process X server has no touch device and no smooth scrolling, so a
+ * `touch` source's actions are its pointer's and a scroll is one turn of the
+ * wheel, and the window's events say what they stand for as they are
+ * emitted (`tagInput`): a finger's as react-x11's Wayland seat tags what it
+ * emulates of a touch point (`pointerType: 'touch'` and a `touchId`), which
+ * `<Html>` pans and flings under as a browser's touch scrolling does, and a
+ * turn as the pixels it was asked to scroll.
+ */
+let touching = false;
+const TAGGED = new Set(['mousedown', 'mouseup', 'mousemove']);
+/** The pixels the turn just injected is to say it scrolled, which the
+ *  window's next `wheel` carries in notches of core's 48px
+ *  (`WHEEL_NOTCH_PX`), with `smooth` as XI2's valuators have it. */
+let wheelOwed: { x: number; y: number } | null = null;
+const WHEEL_NOTCH_PX = 48;
+const tagged = new WeakSet<object>();
+
+function tagInput(win: unknown): void {
+  const w = win as {
+    emit?: (name: string, ev: unknown, ...rest: unknown[]) => boolean;
+  } | null;
+  if (!w?.emit || tagged.has(w)) return;
+  tagged.add(w);
+  const emit = w.emit;
+  w.emit = function (name: string, ev: unknown, ...rest: unknown[]) {
+    if (touching && TAGGED.has(name) && ev && typeof ev === 'object') {
+      Object.assign(ev, { pointerType: 'touch', touchId: 1 });
+    }
+    if (name === 'wheel' && wheelOwed && ev && typeof ev === 'object') {
+      Object.assign(ev, {
+        deltaX: wheelOwed.x / WHEEL_NOTCH_PX,
+        deltaY: wheelOwed.y / WHEEL_NOTCH_PX,
+        smooth: true,
+      });
+      wheelOwed = null;
+    }
+    return emit.call(this, name, ev, ...rest);
+  };
+}
+
+/** Whether an action sequence's source is a finger. */
+const isFinger = (source: Record<string, unknown>): boolean =>
+  source.type === 'pointer' &&
+  (source.parameters as { pointerType?: string } | undefined)?.pointerType ===
+    'touch';
+
 async function perform(
   server: Server,
   actions: Array<{ type: string; actions: Array<Record<string, unknown>> }>,
@@ -1012,11 +1061,17 @@ async function perform(
   const ticks = Math.max(0, ...actions.map((s) => s.actions.length));
   let px = pointerX;
   let py = pointerY;
+  tagInput(harness?.window);
   for (let tick = 0; tick < ticks; tick++) {
+    let lifted = false;
     for (const source of actions) {
       const a = source.actions[tick];
       if (!a) continue;
       const type = a.type as string;
+      if (isFinger(source) && type !== 'pause') {
+        touching = true;
+        if (type === 'pointerUp') lifted = true;
+      }
       if (type === 'pause') {
         await wait(Math.min(Number(a.duration ?? 0), 2000));
       } else if (type === 'pointerMove' || type === 'scroll') {
@@ -1046,15 +1101,14 @@ async function perform(
         if (type === 'scroll') {
           const dy = Number(a.deltaY ?? 0);
           const dx = Number(a.deltaX ?? 0);
-          const notches = (d: number) =>
-            Math.max(1, Math.round(Math.abs(d) / 53));
-          for (let i = 0; dy && i < notches(dy); i++) {
-            server.injectButton(dy > 0 ? 5 : 4, true);
-            server.injectButton(dy > 0 ? 5 : 4, false);
-          }
-          for (let i = 0; dx && i < notches(dx); i++) {
-            server.injectButton(dx > 0 ? 7 : 6, true);
-            server.injectButton(dx > 0 ? 7 : 6, false);
+          // one turn, which the window hears as a scroll of the pixels
+          // asked for, as a touchpad's valuators say a fraction of a notch:
+          // whole notches made 100px 96
+          const button = dy ? (dy > 0 ? 5 : 4) : dx > 0 ? 7 : 6;
+          if (dx || dy) {
+            wheelOwed = { x: dx, y: dy };
+            server.injectButton(button, true);
+            server.injectButton(button, false);
           }
         }
       } else if (type === 'pointerDown' || type === 'pointerUp') {
@@ -1092,6 +1146,10 @@ async function perform(
       }
     }
     await pump(16);
+    // the finger's release has been heard as one, and the turn as its
+    // pixels
+    if (lifted) touching = false;
+    wheelOwed = null;
   }
   pointerX = px;
   pointerY = py;

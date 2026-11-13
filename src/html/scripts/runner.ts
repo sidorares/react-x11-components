@@ -1133,14 +1133,19 @@ export class ScriptRunner {
       if (this._disposed) return;
       this.host.snapEvent(null, 'changing');
       this.engine.call('__scrolled', null);
-      // and `scrollend` a frame on, where no scroll came since (CSSOM View
-      // 13.1, "scrollend")
-      this._scrollEndOwed = setTimeout(() => {
+      // and `scrollend` a frame on, where no scroll came since and the
+      // user's scroll has snapped (CSSOM View 13.1, "scrollend")
+      const end = () => {
         this._scrollEndOwed = null;
         if (this._disposed) return;
+        if (this.host.scrollGestureOwed(null)) {
+          this._scrollEndOwed = setTimeout(end, FRAME_MS);
+          return;
+        }
         this.host.snapEvent(null, 'change');
         this.engine.call('__scrollended', null);
-      }, FRAME_MS);
+      };
+      this._scrollEndOwed = setTimeout(end, FRAME_MS);
     }, FRAME_MS);
   }
   private _scrollEndOwed: ReturnType<typeof setTimeout> | null = null;
@@ -1221,13 +1226,17 @@ export class ScriptRunner {
     for (const target of told) {
       const owed = this._elementScrollEnds.get(target);
       if (owed) clearTimeout(owed);
-      this._elementScrollEnds.set(
-        target,
-        setTimeout(() => {
-          this._elementScrollEnds.delete(target);
-          if (!this._disposed) this.host.elementsScrolledEnd([target]);
-        }, FRAME_MS),
-      );
+      // and not before the user's scroll of it has snapped
+      const end = () => {
+        if (this._disposed) return;
+        if (this.host.scrollGestureOwed(target)) {
+          this._elementScrollEnds.set(target, setTimeout(end, FRAME_MS));
+          return;
+        }
+        this._elementScrollEnds.delete(target);
+        this.host.elementsScrolledEnd([target]);
+      };
+      this._elementScrollEnds.set(target, setTimeout(end, FRAME_MS));
     }
   };
 

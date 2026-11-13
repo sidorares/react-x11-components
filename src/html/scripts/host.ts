@@ -842,6 +842,10 @@ export interface HandleInternals {
     element: Element | null,
     kind: 'change' | 'changing',
   ): { block: Element | null; inline: Element | null } | null;
+  /** Whether the user's scroll of a scroll container, the viewport's for
+   *  null, is still under way to where it snaps, which its `scrollend`
+   *  waits for (`HtmlViewNode.scrollGestureOwed`). */
+  scrollGestureOwed?(element: Element | null): boolean;
   /** The CSS events the document owes, in the order a page hears them,
    *  and the ends held for them let go (`HtmlViewNode.takeCssEvents`). */
   takeCssEvents?(): CssEventInfo[];
@@ -2599,6 +2603,7 @@ export class DomHost {
       screenX: event.screenX,
       screenY: event.screenY,
       samples: event.samples,
+      pointerType: event.pointerType,
       locks: event.locks,
       button: event.button,
       buttons: event.buttons,
@@ -3388,6 +3393,23 @@ export class DomHost {
   private _feedsPlay(): boolean {
     const plays = this._seams.canPlayType;
     return !!plays?.('application/vnd.apple.mpegurl') && !!plays('video/mp4');
+  }
+
+  /** Whether a scroll's `scrollend` waits for the user's gesture still
+   *  under way on it: a wheel not yet rested, a finger, a fling, and the
+   *  snap they end in, which Chrome tells it after. The page's document is
+   *  the viewport's; a frame's with no realm of its own waits for none. */
+  scrollGestureOwed(target: Element | Document | null): boolean {
+    if (this._disposed) return false;
+    if (target instanceof Element) {
+      const view = this._drawing(target) as
+        (HtmlHandle & Partial<HandleInternals>) | null;
+      return !!view?.scrollGestureOwed?.(target);
+    }
+    if (target && target !== this.document) return false;
+    const view = this._seams.handle as
+      (HtmlHandle & Partial<HandleInternals>) | null;
+    return !!view?.scrollGestureOwed?.(null);
   }
 
   /** And each one's `scrollend`, a frame after its last `scroll`: a frame's
