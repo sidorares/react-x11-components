@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.45.0](https://github.com/sidorares/react-x11-components/compare/v0.44.0...v0.45.0) (2026-11-13)
+
+
+### Features
+
+* **html:** a transceiver negotiates the header extensions a page asks for, and abs-capture-time carries each frame's capture time to the receiver's sources and frames ([#1480](https://github.com/sidorares/react-x11-components/issues/1480)) ([70c4f12](https://github.com/sidorares/react-x11-components/commit/70c4f12ea3f1e4c15e1760480660f2a21ac576d6))
+* **markdown:** link kinds — a click action and a hover card for what a link points at ([#1479](https://github.com/sidorares/react-x11-components/issues/1479)) ([b36a675](https://github.com/sidorares/react-x11-components/commit/b36a67506729a56e889f5823b4be488a934071f6))
+
+
+### Bug Fixes
+
+* **deps:** accept react-x11 3 beside 2.x ([#1483](https://github.com/sidorares/react-x11-components/issues/1483)) ([3d8fddf](https://github.com/sidorares/react-x11-components/commit/3d8fddf6be1833ce932825fbf611e92e61220877))
+* **html:** a page's WebRTC times are on the clock the page reads ([#1481](https://github.com/sidorares/react-x11-components/issues/1481)) ([c83d927](https://github.com/sidorares/react-x11-components/commit/c83d927baf4eba6b3eb6efdf1fb50e9ed3be3684))
+
+
+### Performance Improvements
+
+* **html:** a page's peer connections encode and decode their media on a thread of their own, where every frame a canvas sent held the page's thread 6 to 10 ms ([#1478](https://github.com/sidorares/react-x11-components/issues/1478)) ([ddfe9f0](https://github.com/sidorares/react-x11-components/commit/ddfe9f0173a10fd644ba07a90c635e6f92025f57))
+
 ## [0.44.0](https://github.com/sidorares/react-x11-components/compare/v0.43.1...v0.44.0) (2026-11-12)
 
 
