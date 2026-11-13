@@ -67,6 +67,7 @@ import { installUIEvents } from './ui-events.js';
 import { installPointers } from './pointers.js';
 import { installEditing } from './editing.js';
 import { installEncodedTransform } from './encoded-transform.js';
+import { installTextTracks } from './text-tracks.js';
 import { installClipboard } from './clipboard.js';
 import { installNotifications } from './notifications.js';
 import { installWindows } from './windows.js';
@@ -337,11 +338,12 @@ const INSTALL = `(function () {
   const pointers = (${installPointers.toString()});
   const editing = (${installEditing.toString()});
   const encoded = (${installEncodedTransform.toString()});
+  const textTracks = (${installTextTracks.toString()});
   const bridge = globalThis.__bridge;
   const named = globalThis.__named === true;
   delete globalThis.__bridge;
   delete globalThis.__named;
-  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, svgDom, webcrypto, transfers, clipboards, notifying, windowing, serviceWorkers, cacheStorage, uiEvents, pointers, editing, encoded, named);
+  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, svgDom, webcrypto, transfers, clipboards, notifying, windowing, serviceWorkers, cacheStorage, uiEvents, pointers, editing, encoded, textTracks, named);
 })()`;
 
 /**

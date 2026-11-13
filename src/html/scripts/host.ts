@@ -653,6 +653,9 @@ export interface HandleInternals {
   /** The document's `medium` font size, in CSS pixels
    *  (`HtmlViewNode.fontMedium`). */
   fontMedium?(): number;
+  /** An element's `innerText`, null where it is not being rendered
+   *  (`HtmlViewNode.innerText`). */
+  innerText?(element: Element): string | null;
   /** The document's `@font-face` faces, as `document.fonts` lists them
    *  (`HtmlViewNode.fontFaces`). */
   fontFaces(): DocumentFontFace[];
@@ -2716,16 +2719,26 @@ export class DomHost {
    *  opened. */
   private _documentBase(doc: Document): string {
     const own = this._handle.base ?? this.creator ?? this.url;
-    if (doc === this.document) return own;
-    const at = this._documentUrl(doc);
+    // the page's: its first `<base href>` as the tree stands now, which a
+    // script may have changed since `<Html>` last read it (HTML 2.4.1,
+    // "dynamic changes to base URLs"), against the address it came from
+    const at =
+      doc === this.document
+        ? (this.creator ?? this.url)
+        : this._documentUrl(doc);
     const fallback =
-      !at || /^about:(?:blank|srcdoc)(?:[?#]|$)/i.test(at) ? own : at;
+      doc === this.document
+        ? at
+        : !at || /^about:(?:blank|srcdoc)(?:[?#]|$)/i.test(at)
+          ? own
+          : at;
+    if (doc === this.document && !this._handle.base) return own;
     const base = DomUtils.findOne(
       (el) =>
         el.name === 'base' && el.attribs.href !== undefined && !isForeign(el),
       doc.children,
     );
-    if (!base) return fallback;
+    if (!base) return doc === this.document ? own : fallback;
     try {
       return new URL(base.attribs.href.trim(), fallback).href;
     } catch {
@@ -3828,6 +3841,17 @@ export class DomHost {
         if (node instanceof Text || node instanceof Comment) return node.data;
         if (node instanceof ProcessingInstruction) return node.data;
         if (node === this.document) return null;
+        // `innerText`: what the document draws of it, where it is drawn
+        if (
+          b === 'rendered' &&
+          node instanceof Element &&
+          this._inDocument(node)
+        ) {
+          this.flush();
+          const handle = this._seams.handle as Partial<HandleInternals>;
+          const shown = handle.innerText?.(node);
+          if (typeof shown === 'string') return shown;
+        }
         return DomUtils.textContent(node);
       }
       case 'setText': {
@@ -5499,9 +5523,14 @@ export class DomHost {
         const title = titleOf(
           a ? (this._node(a) as ParentNode) : this.document,
         );
-        return title
-          ? DomUtils.textContent(title).replace(/\s+/g, ' ').trim()
-          : '';
+        // its child text content, ASCII white space stripped and collapsed
+        // (HTML 3.1.3): a no-break space and the rest are text
+        if (!title) return '';
+        let data = '';
+        for (const kid of title.children) {
+          if (kid instanceof Text) data += kid.data;
+        }
+        return data.replace(/[\t\n\f\r ]+/g, ' ').replace(/^ | $/g, '');
       }
       case 'setTitle': {
         const doc = b ? (this._node(b) as ParentNode) : this.document;
@@ -8037,6 +8066,8 @@ export class DomHost {
   private _tell(node: AnyNode, change: HtmlChange): void {
     // a query after it asks of the tree as it is now, ahead of the flush
     controlsMoved();
+    // and so does the page's base URL, which a `<base>` may have changed
+    if (change.type !== 'characterData') this._pageBase = null;
     // what can change a window's names; a text's change cannot
     if (
       change.type === 'childList' ||
@@ -9687,12 +9718,25 @@ export class DomHost {
     return kids;
   }
 
+  /** The page's base URL as its tree stands, kept until a change to the
+   *  tree (`_tell`). */
+  private _pageBase: string | null = null;
+  private _pageBaseKey = '';
+
   private _resolve(url: string, node: AnyNode | null = null): string {
     try {
       // against the document the node is in: a frame's of this realm's has
       // its own address, and its own `<base>`
       const own = node ? this._frameBase(node) : null;
-      const base = own ?? this._seams.handle.base ?? this.creator ?? this.url;
+      // kept by what it is worked out from besides the tree: the address,
+      // which history moves, and `<Html>`'s own base
+      const key = `${this.url}\n${this._seams.handle.base ?? ''}`;
+      if (this._pageBaseKey !== key) {
+        this._pageBaseKey = key;
+        this._pageBase = null;
+      }
+      const base =
+        own ?? (this._pageBase ??= this._documentBase(this.document));
       // a query is in the document's encoding (URL's "encoding-parse")
       const encoding = outputEncoding(this._encodingOf(this.document));
       return encoding === 'UTF-8'

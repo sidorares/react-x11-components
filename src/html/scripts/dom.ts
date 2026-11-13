@@ -49,6 +49,7 @@ import type { installUIEvents } from './ui-events.js';
 import type { installPointers } from './pointers.js';
 import type { installEditing } from './editing.js';
 import type { installEncodedTransform } from './encoded-transform.js';
+import type { installTextTracks } from './text-tracks.js';
 import type { installClipboard } from './clipboard.js';
 import type { installNotifications } from './notifications.js';
 import type { installWindows, WindowInternals } from './windows.js';
@@ -101,6 +102,7 @@ export function installDom(
   pointersApi: typeof installPointers,
   editingApi: typeof installEditing,
   encodedTransform: typeof installEncodedTransform,
+  textTracksApi: typeof installTextTracks,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -132,6 +134,8 @@ export function installDom(
   // --- the bridge -------------------------------------------------------------
 
   /** An op's answer, or the host's error thrown as a `DOMException`. */
+  /** A media element's text tracks (`text-tracks.ts`), once installed. */
+  let textTracksOf: Any = null;
   const call = (
     op: string,
     a?: Primitive,
@@ -139,6 +143,21 @@ export function installDom(
     c?: Primitive,
     d?: Primitive,
   ): Any => {
+    // a change to the tree may give a media element a `<track>` or take
+    // one away, which its list of text tracks follows after the task
+    if (
+      textTracksOf &&
+      (op === 'insert' ||
+        op === 'remove' ||
+        op === 'setHtml' ||
+        op === 'replaceChildren')
+    ) {
+      // a media element given children is one whose tracks are kept
+      const parent =
+        op !== 'remove' && typeof a === 'number' ? wrappers.get(a) : null;
+      if (parent instanceof HTMLMediaElement) textTracksOf.watch(parent);
+      textTracksOf.dirty();
+    }
     // anything but reading a computed style, a frame's document or a
     // field's selection may change one, and encoding a bitmap, like
     // reading or setting a property in a rule's block, works only on what
@@ -6681,6 +6700,63 @@ export function installDom(
     replaceChildren(...items: Any[]): void {
       call('replaceChildren', this._id, items.length ? nodesFrom(items) : 0);
     }
+    /** DOM 4.2.3, "move": a node moved within its shadow-including root,
+     *  as `insertBefore` puts it, where nothing else may be moved. */
+    moveBefore(node: Any, child: Any): void {
+      if (arguments.length < 2) {
+        throw new TypeError(
+          `Failed to execute 'moveBefore' on '${this.constructor.name}': 2 arguments required, but only ${arguments.length} present.`,
+        );
+      }
+      if (!(node instanceof Node)) {
+        throw new TypeError(
+          `Failed to execute 'moveBefore' on '${this.constructor.name}': parameter 1 is not of type 'Node'.`,
+        );
+      }
+      // a `Node?`: undefined is null
+      if (child === undefined) child = null;
+      if (child !== null && !(child instanceof Node)) {
+        throw new TypeError(
+          `Failed to execute 'moveBefore' on '${this.constructor.name}': parameter 2 is not of type 'Node'.`,
+        );
+      }
+      const fail = (why: string): never => {
+        throw new DOMException(
+          `Failed to execute 'moveBefore' on '${this.constructor.name}': ${why}`,
+          'HierarchyRequestError',
+        );
+      };
+      const root = (n: Any): Any => n.getRootNode({ composed: true });
+      if (root(this) !== root(node)) {
+        fail('The new child does not share the same shadow-including root.');
+      }
+      if (node === this || (node as Any).contains?.(this)) {
+        fail('The new child contains the parent.');
+      }
+      if (child !== null && child.parentNode !== this) {
+        throw new DOMException(
+          `Failed to execute 'moveBefore' on '${this.constructor.name}': The node before which the new node is to be inserted is not a child of this node.`,
+          'NotFoundError',
+        );
+      }
+      const type = node.nodeType;
+      if (type !== 1 && type !== 3 && type !== 4 && type !== 7 && type !== 8) {
+        fail('The node provided is not an element or character data.');
+      }
+      if (type === 3 && this.nodeType === 9) {
+        fail('Text nodes cannot be children of a document.');
+      }
+      if (
+        this.nodeType === 9 &&
+        type === 1 &&
+        (this as Any).documentElement &&
+        (this as Any).documentElement !== node
+      ) {
+        fail('Only one element on document allowed.');
+      }
+      if (child === node) return;
+      this.insertBefore(node, child);
+    }
     querySelector(selector: Any): Any {
       return wrap(Number(call('query', this._id, str(selector), false)));
     }
@@ -7311,42 +7387,71 @@ export function installDom(
   /** `el.dataset`: the `data-*` attributes, by their names in camel case,
    *  over its prototype's members, which a name of an attribute's hides
    *  (`[LegacyOverrideBuiltIns]`). */
+  /** An element's `dataset` (HTML 3.2.6.6): a name for each `data-*`
+   *  attribute with no ASCII capital, each `-` before a lowercase letter
+   *  taken out and the letter capitalized — and only those names. */
+  const datasetNames = (el: Any): Map<string, string> => {
+    const names = new Map<string, string>();
+    for (const attr of el.getAttributeNames() as string[]) {
+      if (!attr.startsWith('data-') || /[A-Z]/.test(attr)) continue;
+      const name = attr
+        .slice(5)
+        .replace(/-([a-z])/g, (_m: string, c: string) => c.toUpperCase());
+      if (!names.has(name)) names.set(name, attr);
+    }
+    return names;
+  };
+  /** The attribute a name sets: a `-` before a lowercase letter is a
+   *  `SyntaxError`, and each capital is a `-` and its letter. */
+  const datasetAttr = (name: string): string => {
+    if (/-[a-z]/.test(name)) {
+      throw new DOMException(
+        `Failed to set a named property '${name}' on 'DOMStringMap': '${name}' is not a valid property name.`,
+        'SyntaxError',
+      );
+    }
+    return `data-${name.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;
+  };
   const datasetOf = (el: Any): Any =>
     new Proxy(Object.create(DOMStringMap.prototype), {
       get(t, key) {
         if (typeof key === 'string') {
-          const value = el.getAttribute(`data-${kebab(key)}`);
-          if (value !== null) return value;
+          const attr = datasetNames(el).get(key);
+          if (attr !== undefined) return el.getAttribute(attr);
         }
         return Reflect.get(t, key);
       },
       set(_t, key, value) {
         if (typeof key !== 'string') return false;
-        el.setAttribute(`data-${kebab(key)}`, str(value));
+        el.setAttribute(datasetAttr(key), str(value));
         return true;
       },
       deleteProperty(_t, key) {
-        if (typeof key === 'string') el.removeAttribute(`data-${kebab(key)}`);
+        if (typeof key === 'string') {
+          const attr = datasetNames(el).get(key);
+          if (attr !== undefined) el.removeAttribute(attr);
+        }
         return true;
       },
       has(t, key) {
         return (
-          (typeof key === 'string' && el.hasAttribute(`data-${kebab(key)}`)) ||
+          (typeof key === 'string' && datasetNames(el).has(key)) ||
           Reflect.has(t, key)
         );
       },
       ownKeys() {
-        return el
-          .getAttributeNames()
-          .filter((n: string) => n.startsWith('data-'))
-          .map((n: string) => camel(n.slice(5)));
+        return [...datasetNames(el).keys()];
       },
       getOwnPropertyDescriptor(_t, key) {
         if (typeof key !== 'string') return undefined;
-        const value = el.getAttribute(`data-${kebab(key)}`);
-        return value === null
-          ? undefined
-          : { value, writable: true, enumerable: true, configurable: true };
+        const attr = datasetNames(el).get(key);
+        if (attr === undefined) return undefined;
+        return {
+          value: el.getAttribute(attr),
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        };
       },
     });
 
@@ -7764,6 +7869,10 @@ export function installDom(
       }
       // the attribute is the nonce again, whatever a script set (HTML 2.6.3)
       if (n === 'nonce') nonces.delete(this);
+      // a `<track>`'s `src` changed loads its cues again (4.8.11.11.3)
+      if (n === 'src' && this instanceof HTMLTrackElement) {
+        textTracksOf?.srcChanged(this);
+      }
       // a media element's `src` set or changed loads it (HTML 4.8.11.2)
       if (
         n === 'src' &&
@@ -8428,13 +8537,35 @@ export function installDom(
         return this.getAttribute(attr);
       },
       set(this: Any, v: Any) {
-        if (v === null) this.removeAttribute(attr);
+        // a `DOMString?`: undefined is null
+        if (v === null || v === undefined) this.removeAttribute(attr);
         else this.setAttribute(attr, v);
       },
       configurable: true,
     });
   }
 
+  /** HTML's rendered text fragment: the text in text nodes, and each line
+   *  break — a CR, an LF or the two — a `<br>`. */
+  const renderedTextFragment = (el: Any, input: string): Any => {
+    const doc = el.ownerDocument ?? document;
+    const fragment = doc.createDocumentFragment();
+    let at = 0;
+    while (at < input.length) {
+      let end = at;
+      while (end < input.length && input[end] !== '\n' && input[end] !== '\r') {
+        end += 1;
+      }
+      if (end > at)
+        fragment.appendChild(doc.createTextNode(input.slice(at, end)));
+      at = end;
+      while (at < input.length && (input[at] === '\n' || input[at] === '\r')) {
+        at += input[at] === '\r' && input[at + 1] === '\n' ? 2 : 1;
+        fragment.appendChild(doc.createElement('br'));
+      }
+    }
+    return fragment;
+  };
   class HTMLElement extends Element {
     /** A custom element's `super()` (HTML 3.2.3, `[HTMLConstructor]`): the
      *  element its upgrade is constructing, or a new one, as its definition
@@ -8456,6 +8587,26 @@ export function installDom(
     }
     get dataset(): Any {
       return (this._dataset ??= datasetOf(this));
+    }
+    /** No access key is assigned (HTML 6.7.2): the empty string. */
+    get accessKeyLabel(): string {
+      return '';
+    }
+    /** HTML 3.2.6.7: an element's own `yes` or `no`, its parent's where it
+     *  says neither, and translated at the root. */
+    get translate(): boolean {
+      for (let at: Any = this; at && at.nodeType === 1; at = at.parentNode) {
+        const value = at.getAttribute('translate');
+        if (value !== null) {
+          const v = asciiLower(value);
+          if (v === '' || v === 'yes') return true;
+          if (v === 'no') return false;
+        }
+      }
+      return true;
+    }
+    set translate(v: Any) {
+      this._setAttr('translate', v ? 'yes' : 'no');
     }
     // HTML 6.1: `until-found` is a state of its own, and every falsy value
     // but `false` itself takes the attribute off as well
@@ -8524,13 +8675,41 @@ export function installDom(
       return String(call('text', this._id, 'rendered'));
     }
     set innerText(v: Any) {
-      this.textContent = v;
+      // HTML's rendered text fragment: a line break of any kind a `<br>`
+      const fragment = renderedTextFragment(this, str(v));
+      this.textContent = '';
+      this.appendChild(fragment);
     }
     get outerText(): string {
       return this.innerText;
     }
     set outerText(v: Any) {
-      this.replaceWith(document.createTextNode(str(v)));
+      const parent = this.parentNode;
+      if (!parent) {
+        throw new DOMException(
+          "Failed to set the 'outerText' property on 'HTMLElement': The element has no parent.",
+          'NoModificationAllowedError',
+        );
+      }
+      const next = this.nextSibling;
+      const previous = this.previousSibling;
+      const fragment = renderedTextFragment(this, str(v));
+      if (!fragment.firstChild) {
+        fragment.appendChild(
+          (this.ownerDocument ?? document).createTextNode(''),
+        );
+      }
+      parent.replaceChild(fragment, this);
+      // a text node either side takes in the text next to it
+      const merge = (node: Any): void => {
+        if (!node || node.nodeType !== 3) return;
+        const after = node.nextSibling;
+        if (!after || after.nodeType !== 3) return;
+        node.appendData(after.data);
+        after.remove();
+      };
+      if (next && next.nodeType === 3) merge(next.previousSibling);
+      if (previous && previous.nodeType === 3) merge(previous);
     }
     // CSSOM View 7: the border box as laid out, which no transform turns
     // or scales, placed from the offset parent's padding edge
@@ -9301,11 +9480,17 @@ export function installDom(
   }
 
   class HTMLScriptElement extends HTMLElement {
+    /** Its child text content: the data of its text children, and none of
+     *  what an element in it holds (HTML 4.12.1). */
     get text(): string {
-      return this.textContent;
+      let text = '';
+      for (const node of Array.from(this.childNodes as ArrayLike<Any>)) {
+        if (node.nodeType === 3) text += node.data;
+      }
+      return text;
     }
     set text(v: Any) {
-      this.textContent = v;
+      this.textContent = str(v);
     }
   }
   // true in a script a script made until it is set, as the attribute's
@@ -12617,6 +12802,29 @@ export function installDom(
   const RASTER = raster(colourOf);
   const IDENTITY = [1, 0, 0, 1, 0, 0];
 
+  /** A colour a page sets on a context as the context reads it back (HTML
+   *  4.12.5.1.6, "serialization of a color"): `#rrggbb` where it is
+   *  opaque, `rgba(r, g, b, a)` where it is not; null where it is none. */
+  const canvasColours = new Map<string, string | null>();
+  const canvasColour = (value: string): string | null => {
+    let text = canvasColours.get(value);
+    if (text === undefined) {
+      text = null;
+      if (colourOf(value)) {
+        const css = String(call('colorText', value) ?? '');
+        const m = /^rgb\((\d+), (\d+), (\d+)\)$/.exec(css);
+        text = m
+          ? '#' +
+            [m[1], m[2], m[3]]
+              .map((n) => Number(n).toString(16).padStart(2, '0'))
+              .join('')
+          : css || null;
+      }
+      canvasColours.set(value, text);
+    }
+    return text;
+  };
+
   /** The state `save` and `restore` keep (HTML 4.12.5.1.2). */
   const CONTEXT_STATE = {
     fillStyle: '#000000',
@@ -12653,6 +12861,39 @@ export function installDom(
 
   /** What each of a context's keywords may be: any other is ignored. */
   const TEXT_KEYWORDS: Record<string, string[]> = {
+    // what a line's ends and joins are, and how what is drawn is put over
+    // what is there: any other value is ignored (HTML 4.12.5.1.5, 4.12.5.1.13)
+    lineCap: ['butt', 'round', 'square'],
+    lineJoin: ['round', 'bevel', 'miter'],
+    globalCompositeOperation: [
+      'clear',
+      'source-over',
+      'source-in',
+      'source-out',
+      'source-atop',
+      'destination-over',
+      'destination-in',
+      'destination-out',
+      'destination-atop',
+      'lighter',
+      'copy',
+      'xor',
+      'multiply',
+      'screen',
+      'overlay',
+      'darken',
+      'lighten',
+      'color-dodge',
+      'color-burn',
+      'hard-light',
+      'soft-light',
+      'difference',
+      'exclusion',
+      'hue',
+      'saturation',
+      'color',
+      'luminosity',
+    ],
     textAlign: ['start', 'end', 'left', 'right', 'center'],
     textBaseline: [
       'top',
@@ -13023,7 +13264,11 @@ export function installDom(
       const rgba = typeof style === 'string' ? colourOf(style) : null;
       const r = this._rect(x, y, w, h);
       const op = this._state.globalCompositeOperation;
-      if (!rgba || !r || this._clip || op !== 'source-over') {
+      // a shadow is the rasterizer's to cast
+      const st = this._state;
+      const shadowed =
+        st.shadowBlur > 0 || st.shadowOffsetX !== 0 || st.shadowOffsetY !== 0;
+      if (!rgba || !r || this._clip || op !== 'source-over' || shadowed) {
         // anything but a colour over what is there in a rectangle of
         // pixels is a path: `copy` among them, which clears what the
         // rectangle leaves
@@ -13334,11 +13579,26 @@ export function installDom(
             })()
           : RASTER.paintOf(style, this._matrix);
       if (!paint) return null;
+      const state = this._state;
+      const shadowed =
+        state.shadowBlur > 0 ||
+        state.shadowOffsetX !== 0 ||
+        state.shadowOffsetY !== 0;
+      const rgba = shadowed ? colourOf(state.shadowColor) : null;
       return {
         paint,
-        alpha: this._state.globalAlpha,
-        op: this._state.globalCompositeOperation,
+        alpha: state.globalAlpha,
+        op: state.globalCompositeOperation,
         clip: this._clip,
+        shadow:
+          rgba && rgba[3] > 0
+            ? {
+                rgba,
+                blur: state.shadowBlur,
+                x: state.shadowOffsetX,
+                y: state.shadowOffsetY,
+              }
+            : null,
       };
     }
     /** Draw into the bitmap and mark what changed. */
@@ -13787,14 +14047,27 @@ export function installDom(
         // colour, nor a gradient or a pattern, is ignored
         if (name === 'fillStyle' || name === 'strokeStyle') {
           if (typeof v === 'string') {
-            if (colourOf(v)) this._state[name] = v;
+            const colour = canvasColour(v);
+            if (colour) this._state[name] = colour;
           } else if (v && typeof v === 'object') this._state[name] = v;
+          return;
+        }
+        if (name === 'shadowColor') {
+          const colour = canvasColour(str(v));
+          if (colour) this._state[name] = colour;
           return;
         }
         // a width and a miter limit of none, or less, are ignored
         if (
           (name === 'lineWidth' || name === 'miterLimit') &&
           !(Number(v) > 0)
+        ) {
+          return;
+        }
+        // and a blur less than none, or none of a number
+        if (
+          name === 'shadowBlur' &&
+          !(Number(v) >= 0 && Number(v) < Infinity)
         ) {
           return;
         }
@@ -14967,6 +15240,10 @@ export function installDom(
     tasks.add(id);
   };
   const fireMedia = (el: Any, type: string): void => {
+    // the cues follow the clock before the page hears it moved (4.8.11.8)
+    if (textTracksOf && (type === 'timeupdate' || type === 'seeked')) {
+      textTracksOf.timeMarchesOn(el, type === 'seeked');
+    }
     const ev = new Event(type);
     ev.isTrusted = true;
     dispatch(el, ev);
@@ -15186,6 +15463,16 @@ export function installDom(
   const mediaReady = (el: Any, ready: number): void => {
     const ask = askOf(el);
     const was = ask.ready;
+    // past its metadata it waits for the text tracks it wants
+    // (4.8.11.11.1, "blocked on its pending text tracks")
+    if (ready > 1 && textTracksOf?.pending(el)) {
+      const load = ask.load;
+      const held = ready;
+      textTracksOf.whenReady(el, () => {
+        if (ask.load === load) mediaReady(el, held);
+      });
+      ready = 1;
+    }
     if (ready <= was) return;
     ask.ready = ready;
     mediaSync(el);
@@ -15585,6 +15872,8 @@ export function installDom(
    *  ends — its fetch, its clock, a seek — it is paused, its pending
    *  `play()`s turned down, and it selects a source again. */
   const mediaLoad = (el: Any): void => {
+    // its `<track>`s are its text tracks before it loads (4.8.11.11.1)
+    textTracksOf?.sync(el);
     const ask = askOf(el);
     const network = ask.network;
     // steps 3 to 5: what was queued for it goes, and a `play()` whose task
@@ -15862,7 +16151,17 @@ export function installDom(
       return noTimeRanges;
     }
     get textTracks(): Any {
-      return trackListOf(this, TextTrackList);
+      return textTracksOf
+        ? textTracksOf.listOf(this)
+        : trackListOf(this, TextTrackList);
+    }
+    addTextTrack(kind: Any, label?: Any, language?: Any): Any {
+      if (arguments.length < 1) {
+        throw new TypeError(
+          "Failed to execute 'addTextTrack' on 'HTMLMediaElement': 1 argument required, but only 0 present.",
+        );
+      }
+      return textTracksOf.add(this, kind, label, language);
     }
     get audioTracks(): Any {
       return trackListOf(this, AudioTrackList);
@@ -16063,7 +16362,29 @@ export function installDom(
     },
   };
   class HTMLSourceElement extends HTMLElement {}
-  class HTMLTrackElement extends HTMLElement {}
+  class HTMLTrackElement extends HTMLElement {
+    static readonly NONE = 0;
+    static readonly LOADING = 1;
+    static readonly LOADED = 2;
+    static readonly ERROR = 3;
+    get readyState(): number {
+      return textTracksOf ? textTracksOf.readyStateOf(this) : 0;
+    }
+    get track(): Any {
+      return textTracksOf ? textTracksOf.trackOf(this) : null;
+    }
+  }
+  for (const [name, value] of [
+    ['NONE', 0],
+    ['LOADING', 1],
+    ['LOADED', 2],
+    ['ERROR', 3],
+  ] as const) {
+    Object.defineProperty(HTMLTrackElement.prototype, name, {
+      value,
+      enumerable: true,
+    });
+  }
   class HTMLPictureElement extends HTMLElement {}
   class HTMLPreElement extends HTMLElement {}
   class HTMLBRElement extends HTMLElement {}
@@ -18753,21 +19074,56 @@ export function installDom(
       // the `<html>`'s first `<body>` or `<frameset>` child, or none (HTML
       // 3.1.3, "the body element"): a script in the head, which runs before
       // the parser has got to the body, finds none
-      if (this._ready === 'loading' && !this._type) {
-        const root = this.documentElement;
-        if (root?.localName === 'html') {
-          for (let kid = root.firstElementChild; kid;) {
-            if (kid.localName === 'body' || kid.localName === 'frameset') {
-              return kid;
-            }
-            kid = kid.nextElementSibling;
+      const root = this.documentElement;
+      if (root?.localName === 'html' && root.namespaceURI === HTML_NS) {
+        for (let kid = root.firstElementChild; kid;) {
+          if (
+            (kid.localName === 'body' || kid.localName === 'frameset') &&
+            kid.namespaceURI === HTML_NS
+          ) {
+            return kid;
           }
-          return null;
+          kid = kid.nextElementSibling;
         }
+        return null;
       }
-      return (
-        this.querySelector('body') ?? (this._type ? null : this.documentElement)
-      );
+      // the page's own tree, read as a body's content, has its root stand
+      // in for the body
+      if (this !== document || this._type) return null;
+      return this.querySelector('body') ?? root;
+    }
+    set body(v: Any) {
+      const isBody =
+        v instanceof HTMLElement &&
+        (v.localName === 'body' || v.localName === 'frameset') &&
+        v.namespaceURI === HTML_NS;
+      if (!(v instanceof HTMLElement)) {
+        throw new TypeError(
+          "Failed to set the 'body' property on 'Document': The provided value is not of type 'HTMLElement'.",
+        );
+      }
+      if (!isBody) {
+        throw new DOMException(
+          "Failed to set the 'body' property on 'Document': The new body element is of type '" +
+            v.localName.toUpperCase() +
+            "'. It must be either a 'BODY' or 'FRAMESET' element.",
+          'HierarchyRequestError',
+        );
+      }
+      const body = this.body;
+      if (body === v) return;
+      if (body) {
+        body.parentNode.replaceChild(v, body);
+        return;
+      }
+      const root = this.documentElement;
+      if (!root) {
+        throw new DOMException(
+          "Failed to set the 'body' property on 'Document': No document element exists.",
+          'HierarchyRequestError',
+        );
+      }
+      root.appendChild(v);
     }
     get title(): string {
       return String(call('title', this._id));
@@ -18930,6 +19286,19 @@ export function installDom(
       return heldList(this, 'images', () =>
         liveCollection(() => wrapAll(call('byTag', this._id, 'img'))),
       );
+    }
+    /** Its `<embed>`s, as `plugins` lists them too (HTML 3.1.4). */
+    get embeds(): Any {
+      return heldList(this, 'embeds', () =>
+        liveCollection(() => wrapAll(call('byTag', this._id, 'embed'))),
+      );
+    }
+    get plugins(): Any {
+      return this.embeds;
+    }
+    /** Always empty (HTML 16, obsolete features). */
+    get applets(): Any {
+      return heldList(this, 'applets', () => liveCollection(() => []));
     }
     get links(): Any {
       return heldList(this, 'links', () =>
@@ -26143,7 +26512,25 @@ export function installDom(
     if (seen.has(value)) return seen.get(value);
     const tag = Object.prototype.toString.call(value).slice(8, -1);
     let out: Any;
-    if (value instanceof Blob) return value;
+    // a blob is serializable: a new one of the same bytes, a file keeping
+    // its name and date (File API 4.3, 3.3.4)
+    if (value instanceof Blob) {
+      out =
+        value instanceof File
+          ? new File([value], value.name, {
+              type: value.type,
+              lastModified: value.lastModified,
+            })
+          : new Blob([value], { type: value.type });
+      seen.set(value, out);
+      return out;
+    }
+    // and a `DOMException`, by its name and message (WebIDL 3.14.1)
+    if (value instanceof DOMException) {
+      out = new DOMException(value.message, value.name);
+      seen.set(value, out);
+      return out;
+    }
     if (CRYPTO.isKey(value)) {
       out = CRYPTO.copy(value);
       seen.set(value, out);
@@ -26234,8 +26621,49 @@ export function installDom(
       for (const v of value) out.add(structuredCopy(v, seen));
       return out;
     } else if (tag === 'Error') {
-      out = new Error(value.message);
-      out.name = value.name;
+      // one of the native errors by its name, else an `Error`, with its own
+      // message, its cause and its stack (HTML 2.7.3, StructuredSerialize)
+      const name = value.name;
+      const Kind: Any =
+        name === 'EvalError'
+          ? EvalError
+          : name === 'RangeError'
+            ? RangeError
+            : name === 'ReferenceError'
+              ? ReferenceError
+              : name === 'SyntaxError'
+                ? SyntaxError
+                : name === 'TypeError'
+                  ? TypeError
+                  : name === 'URIError'
+                    ? URIError
+                    : Error;
+      const message = Object.getOwnPropertyDescriptor(value, 'message');
+      out =
+        message && 'value' in message
+          ? new Kind(String(message.value))
+          : new Kind();
+      seen.set(value, out);
+      if (Object.prototype.hasOwnProperty.call(value, 'cause')) {
+        Object.defineProperty(out, 'cause', {
+          value: structuredCopy(value.cause, seen),
+          writable: true,
+          configurable: true,
+          enumerable: false,
+        });
+      }
+      const stack = Object.prototype.hasOwnProperty.call(value, 'stack')
+        ? value.stack
+        : undefined;
+      if (typeof stack === 'string') {
+        Object.defineProperty(out, 'stack', {
+          value: stack,
+          writable: true,
+          configurable: true,
+          enumerable: false,
+        });
+      }
+      return out;
     } else if (
       tag === 'Boolean' ||
       tag === 'Number' ||
@@ -27306,6 +27734,13 @@ export function installDom(
   /** What a page's window has that a worker's global does not
    *  (`__becomeWorker`). */
   const WINDOW_ONLY = new Set([
+    // a media element's tracks (`text-tracks.ts`)
+    'TextTrack',
+    'TextTrackCue',
+    'TextTrackCueList',
+    'VTTCue',
+    'VTTRegion',
+    'TrackEvent',
     // a window's alone (`[Exposed=Window]`): a worker has no input of its
     // own, no history, no address bar and no document to make
     'UIEvent',
@@ -39918,6 +40353,37 @@ export function installDom(
     define(name, MSE.interfaces[name]);
   }
 
+  // --- text tracks ---------------------------------------------------------------
+  //
+  // A media element's text tracks and their cues (`text-tracks.ts`): state a
+  // page reads, which nothing draws. A window's alone (`WINDOW_ONLY`).
+  {
+    const made = textTracksApi({
+      DOMException,
+      EventTarget,
+      Event,
+      setHandler,
+      fire: (target: Any, event: Any) => {
+        event.isTrusted = true;
+        dispatch(target, event);
+      },
+      later: (fn: () => void, ms: number) => setTimer(fn, ms, [], false),
+      fetch: (url: string, init: Any) => fetch(url, init),
+      document: () => document,
+      isMedia: (node: Any) => node instanceof HTMLMediaElement,
+      isTrack: (node: Any) => node instanceof HTMLTrackElement,
+      clock: (media: Any) => {
+        const ask = askOf(media);
+        return { time: mediaTime(ask), paused: media.paused, ready: ask.ready };
+      },
+      pause: (media: Any) => HTMLMediaElement.prototype.pause.call(media),
+    });
+    textTracksOf = made.internals;
+    for (const name of Object.getOwnPropertyNames(made.interfaces)) {
+      define(name, made.interfaces[name]);
+    }
+  }
+
   // --- WebRTC and media capture -------------------------------------------------
   //
   // WebRTC 1.0 (`webrtc.ts`, `datachannel.ts`) and Media Capture and Streams
@@ -41218,6 +41684,11 @@ export function installDom(
     document._ready = state;
     // the size the first resize steps compare with, where no frame took it
     if (state === 'interactive') watchViewport(ownViewport);
+    // the markup's `<track>`s are its media elements' text tracks, chosen
+    // and loaded as the selection has them
+    if (state === 'interactive' && textTracksOf) {
+      textTracksOf.sweep(document.getElementsByTagName('track'));
+    }
     // the media the markup made select a source, as each would have as
     // the parser put it in (HTML 4.8.11.5), but one that loads nothing
     // until it is played

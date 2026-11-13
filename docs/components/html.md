@@ -2898,6 +2898,32 @@ not know is a `TypeError`. `scheduler.postTask`, `scheduler.yield` and
 `TaskController`
 are the Prioritized Task Scheduling API: one task to a turn, the highest
 priority first, a continuation ahead of a task of the same one.
+**`innerText` is what the document draws as text** (HTML 3.2.7,
+`src/html/inner-text.ts`): each text node's text with its white space
+collapsed and its `text-transform` applied, as the boxes have it, a line feed
+around a block, a blank line around a paragraph, a tab between a row's cells
+and a line feed between its rows, and nothing of what is `display: none`,
+hidden, inside a replaced element or in a closed `<details>`. An
+`<option>`'s text in a `<select>` counts, though a widget draws it, and so
+does a drawing's `<text>`. An element that is not rendered answers its text
+content. What `::first-line` and `::first-letter` transform, and a
+`text-transform` whose casing turns on the language (Turkish), are not in
+it. The `innerText` and `outerText` setters make a `<br>` of every line
+break, and `outerText` joins the text either side of it.
+
+**A media element's text tracks are state a page reads, and nothing draws a
+cue** (`src/html/scripts/text-tracks.ts`). `textTracks`, `addTextTrack()`,
+`TextTrack`, its cues and active cues, `VTTCue`, `VTTRegion` and
+`TrackEvent` are the standard's, and a `<track>` loads its WebVTT file once
+its track is wanted — its `mode` set, or a `default` track chosen a task
+after it came — through the page's own `fetch`, so its CORS is the media
+element's `crossorigin`. A media element waits at its metadata for the tracks
+it wants, as HTML has it, so a page that reads the cues at `canplaythrough`
+finds them. A cue's `enter` and `exit` and a track's `cuechange` follow the
+element's clock as it plays, and as Chromium has it, nothing is active before
+it has played. Captions are not rendered over the video, `::cue` styles
+nothing, and in-band tracks are none.
+
 **A drawing's geometry is worked out from its attributes.** No box stands for
 what an inline `<svg>` holds, so `getBBox`, `getCTM`, `getScreenCTM`,
 `getBoundingClientRect` and a shape's `getTotalLength` and `getPointAtLength`
