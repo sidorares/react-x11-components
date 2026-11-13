@@ -19,15 +19,21 @@
 // (docs/prd-webrtc.md, "Threat model"). One instance of libav.js serves
 // every codec of the process, its calls one after another (`serial`): it is
 // one WebAssembly memory, and each call runs to its end on the thread that
-// made it. That thread is the page's, today: VP8 at 640×480 takes some 4 ms
-// a frame to encode and 1 ms to decode, and Opus a tenth of a millisecond a
-// packet, which a page that sends a call can afford and a page with several
-// tracks at a larger size cannot. A worker for the codecs is the next step
-// (docs/prd-webrtc.md, "A codec's thread"); the interface here is
-// asynchronous so that moving them changes no caller.
+// made it. That thread is a worker of its own (`./media-codec-thread.ts`,
+// "the codecs' thread" below), which holds the codecs by number: VP8 at
+// 640×480 is some 4 to 8 ms a frame to encode, and a canvas's frame 2 ms
+// more to make I420 of, which on the page's thread came out of every frame
+// the page lays out, paints and runs its scripts in. What the page's thread
+// does for a frame now is copy it once and post the copy, a third of a
+// millisecond. Where no worker can be made — no `worker_threads`, or a
+// bundle that left the entry behind — the codecs run on the page's thread,
+// as they did, behind the same asynchronous interfaces (`VideoEncoderLike`
+// and its kin), so where they run changes no caller.
 
 import { toI420 } from './media-devices.js';
 import type { MediaVideoFrame } from './media-devices.js';
+import { nodeModule, threadEntry } from './scripts/platform.js';
+import type { WorkerLike, WorkerThreadsModule } from './scripts/platform.js';
 
 // --- libav.js's shape, the slice read here ----------------------------------
 
@@ -377,10 +383,14 @@ class LibAVVideoDecoder implements VideoDecoderLike {
 
 // --- audio ------------------------------------------------------------------
 
+/** Opus's rate, and a packet's samples at it: 20 ms. */
+const OPUS_RATE = 48000;
+const OPUS_FRAME = 960;
+
 /** Opus as a call sends it: 48 kHz, 20 ms a packet, one channel. */
 class OpusEncoder implements AudioEncoderLike {
-  readonly sampleRate = 48000;
-  readonly frameSize = 960;
+  readonly sampleRate = OPUS_RATE;
+  readonly frameSize = OPUS_FRAME;
   private readonly _open: Promise<[number, number, number] | null>;
   private _closed = false;
   private _pts = 0;
@@ -434,7 +444,7 @@ class OpusEncoder implements AudioEncoderLike {
 }
 
 class OpusDecoder implements AudioDecoderLike {
-  readonly sampleRate = 48000;
+  readonly sampleRate = OPUS_RATE;
   private readonly _open: Promise<[number, number, number] | null>;
   private _closed = false;
 
@@ -577,19 +587,390 @@ class G711Decoder implements AudioDecoderLike {
   close(): void {}
 }
 
+// --- the codecs' thread -----------------------------------------------------
+
+/** What a codec on the thread is. */
+export type CodecKind =
+  'video-encoder' | 'video-decoder' | 'audio-encoder' | 'audio-decoder';
+
+/** Any of the four. */
+export type AnyCodec =
+  VideoEncoderLike | VideoDecoderLike | AudioEncoderLike | AudioDecoderLike;
+
+/** What the page's thread posts to the codecs' thread: a codec opened under
+ *  a number, a call of its `encode` or `decode`, and its end. */
+export type ToCodecThread =
+  | {
+      op: 'open';
+      id: number;
+      kind: CodecKind;
+      codec: VideoCodecName | AudioCodecName;
+    }
+  | {
+      op: 'call';
+      call: number;
+      id: number;
+      method: 'encode' | 'decode';
+      args: unknown[];
+    }
+  | { op: 'close'; id: number };
+
+/** What the codecs' thread posts back: that its modules are in, and whether
+ *  libav.js was among them; and what a call came to, nothing where it
+ *  failed. */
+export type FromCodecThread =
+  { op: 'up'; libav: boolean } | { op: 'done'; call: number; result: unknown };
+
+/** One of libav.js's codecs, made on the thread this runs on. */
+export function codecHere(
+  libav: LibAVInstance,
+  kind: CodecKind,
+  codec: VideoCodecName | AudioCodecName,
+): AnyCodec | null {
+  if (kind === 'video-encoder' || kind === 'video-decoder') {
+    if (codec !== 'VP8' && codec !== 'VP9') return null;
+    return kind === 'video-encoder'
+      ? new LibAVVideoEncoder(libav, codec)
+      : new LibAVVideoDecoder(libav, codec);
+  }
+  if (codec !== 'OPUS') return null;
+  return kind === 'audio-encoder'
+    ? new OpusEncoder(libav)
+    : new OpusDecoder(libav);
+}
+
+/** The buffers under what a codec is handed or hands back, each once, to be
+ *  transferred: frames, packets and samples, in arrays and objects a few
+ *  deep. A shared buffer stays out, since it cannot be. */
+export function buffersOf(value: unknown): ArrayBuffer[] {
+  const found = new Set<ArrayBuffer>();
+  const walk = (v: unknown, depth: number): void => {
+    if (!v || typeof v !== 'object' || depth > 4) return;
+    if (ArrayBuffer.isView(v)) {
+      if (v.buffer instanceof ArrayBuffer) found.add(v.buffer);
+      return;
+    }
+    for (const item of Array.isArray(v) ? v : Object.values(v)) {
+      walk(item, depth + 1);
+    }
+  };
+  walk(value, 0);
+  return [...found];
+}
+
+/**
+ * The thread, for a test: the entry's name beside this module, whether
+ * codecs run on the page's thread from now on, and how many threads were
+ * started and run now. A thread that cannot be made, or that loads no
+ * libav.js, sets `pageThread`, so the next codec does not try again.
+ */
+export const codecThreads = {
+  entry: 'media-codec-thread',
+  pageThread: false,
+  started: 0,
+  running: 0,
+};
+
+/**
+ * The worker the process's codecs run on, one at a time. It is made with the
+ * first codec and ends with the last, and it holds the process open only
+ * while an answer is due: as it starts, and while a call is on it. A
+ * listener for `message` refs a `Worker` again, so its holding is set after
+ * the listeners, each time it changes.
+ *
+ * It ends only once it has said its modules are in: in Node 24.14 to 24.18,
+ * 25.7 to 25.9 and 26.0 to 26.3, a thread terminated in the middle of the
+ * native CommonJS lexer aborts the process (nodejs/node#63323, `PageWorkers`
+ * has the same rule).
+ */
+class CodecThread {
+  /** Whether its modules are in with libav.js among them, once it says; null
+   *  where it could not be made or ended before it said. */
+  readonly up: Promise<boolean | null>;
+  private _say: (up: boolean | null) => void = () => {};
+  private _worker: WorkerLike | null = null;
+  private _isUp = false;
+  private _gone = false;
+  private _codecs = 0;
+  private readonly _calls = new Map<number, (result: unknown) => void>();
+  private _next = 0;
+
+  constructor() {
+    this.up = new Promise((say) => (this._say = say));
+    codecThreads.started += 1;
+    codecThreads.running += 1;
+    void this._start();
+  }
+
+  private async _start(): Promise<void> {
+    let worker: WorkerLike;
+    try {
+      const { Worker } =
+        await nodeModule<WorkerThreadsModule>('worker_threads');
+      const source = threadEntry(
+        (import.meta as { url: string }).url,
+        codecThreads.entry,
+      )();
+      worker = new Worker(source, {
+        name: 'media codecs',
+        eval: typeof source === 'string',
+      });
+    } catch {
+      this._lost();
+      return;
+    }
+    this._worker = worker;
+    worker.on('message', (m: never) => this._heard(m as FromCodecThread));
+    worker.on('error', () => this._lost());
+    worker.on('exit', () => this._lost());
+    this._hold();
+  }
+
+  private _heard(m: FromCodecThread): void {
+    if (m.op === 'up') {
+      this._isUp = true;
+      this._say(m.libav);
+      if (this._codecs === 0) this._end();
+    } else {
+      const answer = this._calls.get(m.call);
+      this._calls.delete(m.call);
+      answer?.(m.result);
+    }
+    this._hold();
+  }
+
+  /** It holds the process open while an answer is due, and not otherwise. */
+  private _hold(): void {
+    const worker = this._worker;
+    if (!worker || this._gone) return;
+    if (!this._isUp || this._calls.size) worker.ref();
+    else worker.unref();
+  }
+
+  /** A codec is to be made on it: it stays until that codec leaves. */
+  enter(): number {
+    this._codecs += 1;
+    return (this._next += 1);
+  }
+
+  /** A codec that entered leaves, closed where it was opened. */
+  leave(id: number, opened: boolean): void {
+    if (opened) this.post({ op: 'close', id });
+    this._codecs -= 1;
+    if (this._codecs === 0) this._end();
+  }
+
+  post(m: ToCodecThread, transfer: ArrayBuffer[] = []): boolean {
+    const worker = this._worker;
+    if (!worker || this._gone) return false;
+    try {
+      worker.postMessage(m, transfer);
+    } catch {
+      // a buffer that cannot be moved — WebAssembly's memory — is copied
+      try {
+        worker.postMessage(m);
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** A codec's `encode` or `decode` on the thread: what it came to, or
+   *  undefined where the thread went before it answered. */
+  call(
+    id: number,
+    method: 'encode' | 'decode',
+    args: unknown[],
+    transfer: ArrayBuffer[],
+  ): Promise<unknown> {
+    const call = (this._next += 1);
+    return new Promise((answer) => {
+      this._calls.set(call, answer);
+      if (!this.post({ op: 'call', call, id, method, args }, transfer)) {
+        this._calls.delete(call);
+        answer(undefined);
+        return;
+      }
+      this._hold();
+    });
+  }
+
+  /** The last codec left: it goes, once it is up. */
+  private _end(): void {
+    if (!this._isUp || this._gone) return;
+    const worker = this._worker;
+    this._lost();
+    void worker?.terminate().catch(() => {});
+  }
+
+  /** It went, or never came: what was asked of it answers nothing, and the
+   *  next codec makes another — or, where none ever came up, runs here. */
+  private _lost(): void {
+    if (this._gone) return;
+    this._gone = true;
+    codecThreads.running -= 1;
+    if (current === this) current = null;
+    if (!this._isUp) {
+      codecThreads.pageThread = true;
+      this._say(null);
+    }
+    for (const answer of this._calls.values()) answer(undefined);
+    this._calls.clear();
+    this._worker = null;
+  }
+}
+
+let current: CodecThread | null = null;
+
+/** A frame's planes copied into one buffer of its own, which is moved to
+ *  the thread: a source's frame is read until its next and not after. */
+function ownFrame(frame: MediaVideoFrame): MediaVideoFrame {
+  let size = 0;
+  for (const plane of frame.planes) size += plane.byteLength;
+  const all = new Uint8Array(size);
+  let at = 0;
+  const planes = frame.planes.map((plane) => {
+    all.set(plane, at);
+    at += plane.byteLength;
+    return all.subarray(at - plane.byteLength, at);
+  });
+  return {
+    format: frame.format,
+    width: frame.width,
+    height: frame.height,
+    planes,
+    strides: frame.strides.slice(),
+    colorSpace: frame.colorSpace,
+    range: frame.range,
+    timestamp: frame.timestamp,
+  };
+}
+
+/** A codec on the thread, by its number. What it is handed is copied once
+ *  and the copy moved there, so a caller keeps what it handed over; what it
+ *  hands back was made there and is moved back. */
+class ThreadCodec {
+  private _closed = false;
+
+  constructor(
+    private readonly _thread: CodecThread,
+    private readonly _id: number,
+  ) {}
+
+  protected async _ask<R>(
+    method: 'encode' | 'decode',
+    args: unknown[],
+    empty: R,
+  ): Promise<R> {
+    if (this._closed) return empty;
+    const result = await this._thread.call(
+      this._id,
+      method,
+      args,
+      buffersOf(args),
+    );
+    return this._closed || result === undefined ? empty : (result as R);
+  }
+
+  close(): void {
+    if (this._closed) return;
+    this._closed = true;
+    this._thread.leave(this._id, true);
+  }
+}
+
+class ThreadVideoEncoder extends ThreadCodec implements VideoEncoderLike {
+  encode(
+    frame: MediaVideoFrame,
+    key: boolean,
+    time: number,
+  ): Promise<EncodedFrame[]> {
+    return this._ask<EncodedFrame[]>(
+      'encode',
+      [ownFrame(frame), key, time],
+      [],
+    );
+  }
+}
+
+class ThreadVideoDecoder extends ThreadCodec implements VideoDecoderLike {
+  decode(data: Uint8Array): Promise<MediaVideoFrame[]> {
+    return this._ask<MediaVideoFrame[]>('decode', [new Uint8Array(data)], []);
+  }
+}
+
+class ThreadAudioEncoder extends ThreadCodec implements AudioEncoderLike {
+  readonly sampleRate = OPUS_RATE;
+  readonly frameSize = OPUS_FRAME;
+  encode(samples: Float32Array): Promise<Uint8Array[]> {
+    return this._ask<Uint8Array[]>('encode', [samples.slice()], []);
+  }
+}
+
+class ThreadAudioDecoder extends ThreadCodec implements AudioDecoderLike {
+  readonly sampleRate = OPUS_RATE;
+  decode(data: Uint8Array): Promise<Float32Array[] | null> {
+    return this._ask<Float32Array[] | null>(
+      'decode',
+      [new Uint8Array(data)],
+      null,
+    );
+  }
+}
+
+/**
+ * A codec opened on the thread: what `make` makes of it, or undefined where
+ * it is to be made on this thread instead. Entered at once, before anything
+ * is awaited, so a codec that replaces another — the pipeline closes the old
+ * one in a microtask — keeps the thread from ending between the two.
+ */
+async function onThread<T>(
+  kind: CodecKind,
+  codec: VideoCodecName | AudioCodecName,
+  make: (thread: CodecThread, id: number) => T,
+): Promise<T | undefined> {
+  if (codecThreads.pageThread) return undefined;
+  const thread = (current ??= new CodecThread());
+  const id = thread.enter();
+  const up = await thread.up;
+  if (up !== true) {
+    // no libav.js there: none here either, most likely, which the page's
+    // thread finds out at the cost of a failed import
+    if (up === false) codecThreads.pageThread = true;
+    thread.leave(id, false);
+    return undefined;
+  }
+  thread.post({ op: 'open', id, kind, codec });
+  return make(thread, id);
+}
+
 // --- what the pipeline is handed --------------------------------------------
 
-/** Each kind's codecs, made where they can be: null for one libav.js, not
+/** Each kind's codecs, made where they can be — on the codecs' thread, or
+ *  on this one where no thread can be made: null for one libav.js, not
  *  installed, would have made. */
 export async function videoEncoder(
   codec: VideoCodecName,
 ): Promise<VideoEncoderLike | null> {
+  const there = await onThread(
+    'video-encoder',
+    codec,
+    (t, id) => new ThreadVideoEncoder(t, id),
+  );
+  if (there) return there;
   const libav = await loadLibAV();
   return libav ? new LibAVVideoEncoder(libav, codec) : null;
 }
 export async function videoDecoder(
   codec: VideoCodecName,
 ): Promise<VideoDecoderLike | null> {
+  const there = await onThread(
+    'video-decoder',
+    codec,
+    (t, id) => new ThreadVideoDecoder(t, id),
+  );
+  if (there) return there;
   const libav = await loadLibAV();
   return libav ? new LibAVVideoDecoder(libav, codec) : null;
 }
@@ -599,6 +980,12 @@ export async function audioEncoder(
   if (codec === 'PCMU' || codec === 'PCMA') {
     return new G711Encoder(codec === 'PCMU');
   }
+  const there = await onThread(
+    'audio-encoder',
+    codec,
+    (t, id) => new ThreadAudioEncoder(t, id),
+  );
+  if (there) return there;
   const libav = await loadLibAV();
   return libav ? new OpusEncoder(libav) : null;
 }
@@ -608,6 +995,12 @@ export async function audioDecoder(
   if (codec === 'PCMU' || codec === 'PCMA') {
     return new G711Decoder(codec === 'PCMU');
   }
+  const there = await onThread(
+    'audio-decoder',
+    codec,
+    (t, id) => new ThreadAudioDecoder(t, id),
+  );
+  if (there) return there;
   const libav = await loadLibAV();
   return libav ? new OpusDecoder(libav) : null;
 }

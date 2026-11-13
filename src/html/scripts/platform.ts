@@ -131,7 +131,7 @@ export interface MessagePortLike {
 }
 
 export interface WorkerLike {
-  postMessage(message: unknown): void;
+  postMessage(message: unknown, transfer?: unknown[]): void;
   on(event: 'message', listener: (message: never) => void): void;
   on(event: 'error', listener: (error: Error) => void): void;
   on(event: 'exit', listener: (code: number) => void): void;

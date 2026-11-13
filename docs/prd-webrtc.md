@@ -499,8 +499,8 @@ where it is werift's to fix, as quico's three behaviours were
   the peer asks (PLI or FIR), drops a frame that comes while the last is
   being encoded rather than fall behind, and sends its last frame again
   where none came for a second. Each Opus packet carries its level (RFC
-  6464). The codecs run on the page's thread for now ("A codec's thread"
-  below).
+  6464). The codecs run on a worker thread of their own ("A codec's
+  thread" below).
 - **Receiving.** werift's receiver hands RTP over, and the receiver's
   source (`MediaReceiver`) unmutes on the first packet, keeps the sources
   `getSynchronizationSources` answers from, with each audio packet's level,
@@ -576,14 +576,14 @@ Each workstream after the first is a loop:
 3. open a PR, and merge it on green;
 4. repeat.
 
-| #   | workstream                                                                                                                                                                                                                             | needs            | tests it targets             | area after, roughly |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | ---------------------------- | ------------------: |
-| 0   | **This document, then the seam's interface** (`HtmlWebRTC`, `HtmlMediaDevices`): its ops and events written down and reviewed, plus the runner's fake devices                                                                          | —                | —                            |                0.2% |
-| 1   | **The facade and the offer/answer layer over werift.** Every class in tier A, the operations chain, the mirror, configuration, SDP as a browser writes it; driven in CI by a fake seam, as WebTransport's fake server drives its tests | 0                | tier A                       |                ~50% |
-| 2   | **`MediaStream`, `MediaStreamTrack`, `mediaDevices`.** Enough for tier A's tests to add tracks, early; `canvas.captureStream` later                                                                                                    | 0                | tier A's track cases, then C |                   — |
-| 3   | **The transport.** Candidates, ICE and DTLS states, data channels end to end, SCTP, ICE errors, transport stats, a channel transferred to a worker                                                                                     | 0; runs beside 1 | tier B                       |                ~80% |
-| 4   | **The media pipeline.** libav.js encode and decode, RTP both ways, `getSynchronizationSources`, receiver stats, `<video srcObject>` (first round built); then a codec worker, a jitter buffer, `jitterBufferTarget`, DTMF's RTP        | 1, 2, 3          | most of tier C               |                ~92% |
-| 5   | **Simulcast encoders, VP9 scalability, encoded transforms in a worker, screen share, `videoDetectorTest`**                                                                                                                             | 4                | the rest of C                |                ~97% |
+| #   | workstream                                                                                                                                                                                                                                      | needs            | tests it targets             | area after, roughly |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | ---------------------------- | ------------------: |
+| 0   | **This document, then the seam's interface** (`HtmlWebRTC`, `HtmlMediaDevices`): its ops and events written down and reviewed, plus the runner's fake devices                                                                                   | —                | —                            |                0.2% |
+| 1   | **The facade and the offer/answer layer over werift.** Every class in tier A, the operations chain, the mirror, configuration, SDP as a browser writes it; driven in CI by a fake seam, as WebTransport's fake server drives its tests          | 0                | tier A                       |                ~50% |
+| 2   | **`MediaStream`, `MediaStreamTrack`, `mediaDevices`.** Enough for tier A's tests to add tracks, early; `canvas.captureStream` later                                                                                                             | 0                | tier A's track cases, then C |                   — |
+| 3   | **The transport.** Candidates, ICE and DTLS states, data channels end to end, SCTP, ICE errors, transport stats, a channel transferred to a worker                                                                                              | 0; runs beside 1 | tier B                       |                ~80% |
+| 4   | **The media pipeline.** libav.js encode and decode, RTP both ways, `getSynchronizationSources`, receiver stats, `<video srcObject>` (first round built), the codecs on a worker (built); then a jitter buffer, `jitterBufferTarget`, DTMF's RTP | 1, 2, 3          | most of tier C               |                ~92% |
+| 5   | **Simulcast encoders, VP9 scalability, encoded transforms in a worker, screen share, `videoDetectorTest`**                                                                                                                                      | 4                | the rest of C                |                ~97% |
 
 Workstreams 1 and 3 can run in parallel once 0 has fixed the seam. 2 is
 small and goes first inside 1. 4 and 5 are serial.
@@ -608,11 +608,24 @@ PRs. This is five to ten times as much work. Most of it is in 1 and 4.
   none. Answering queries for a host candidate's name, as Chrome does, is
   a responder on `multicast-dns`, in the adapter or as a werift change
   filed upstream.
-- **A codec's thread.** libav.js runs on one thread here
-  (`nothreads: true`). VP8 at 640×480 fits in a frame's budget on one core,
-  but a page with several tracks, or a larger resolution, wants an encoder
-  per track on a worker. The worker pool belongs to the media pipeline,
-  not the seam.
+- **A codec's thread.** Settled for one thread: the codecs run on a
+  `worker_threads` worker of their own (`src/html/media-codec-thread.ts`),
+  which holds them by number, is made with the first and ends with the
+  last, and holds no process open. What a codec is handed is copied once
+  and the copy moved there, and what it hands back is moved back. A
+  640×480 canvas sending VP8 cost the page's thread 6 to 10 ms a frame,
+  by what it draws, 1.9 ms of it making I420 of the canvas's BGRA, which
+  the worker does as well; it costs it 0.35 ms, the copy and the post. In
+  a call between two of a page's connections, at 25 frames a second, the
+  page's thread went from 470 ms busy a second to 290 (Node 26 on an M1
+  Pro, the mock backend, so that no frame is painted). Where
+  no worker can be made, a bundle that left the entry behind among them,
+  the codecs run on the page's thread, as the first round had them.
+  What is still open is the one thread: libav.js runs single-threaded
+  there (`nothreads: true`), so every track's codecs take turns on one
+  core, and a page with several tracks, or a larger resolution, wants an
+  encoder per track. The pool belongs to the media pipeline, not the
+  seam.
 - **Audio output** is core's to grow before a received track is heard.
 
 ## Measuring it

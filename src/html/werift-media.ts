@@ -404,6 +404,9 @@ export class MediaSender {
     this._audio?.close();
     this._video = null;
     this._audio = null;
+    // one still being made is closed as it comes (`_chunk`): the codecs'
+    // thread ends with its last codec, and a codec kept here never ends
+    this._audioMaking = null;
   }
 
   private _stopRepeat(): void {

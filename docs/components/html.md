@@ -1717,8 +1717,13 @@ microphone off so. Once the track ended it is nothing, as Chrome has it:
 WebRTC 1.0 has black frames sent, Firefox sends the last frame a second and
 silence, and WebKit goes on sending the source while a clone keeps it
 alive. RTCP's reports are werift's, so the remote-inbound-rtp and remote-outbound-rtp stats come
-with them. The codecs run on the page's thread: VP8 at 640×480 is some
-4 ms a frame to encode and 1 ms to decode. Nothing here encodes H.264.
+with them. The codecs run on a worker thread of their own, made with the
+first codec and ended with the last, which holds no process open
+(`src/html/media-codec-thread.ts`): a 640×480 canvas sending VP8 cost the
+page's thread 6 to 10 ms a frame, the I420 its BGRA is made into and the
+encode, and costs it a third of a millisecond, a copy and a post. Where
+no worker can be made — a bundle that left that file behind — they run
+on the page's thread. Nothing here encodes H.264.
 A stream whose description names no SSRC and whose packets carry no rid
 is not received, since werift routes RTP by nothing else.
 
