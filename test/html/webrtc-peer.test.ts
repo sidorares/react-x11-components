@@ -1030,7 +1030,7 @@ test('decodeAudioData reads a WAV file at the context rate, and says it cannot r
   }
 });
 
-test('a remote answer narrows a sender’s encodings to the rids its a=simulcast receives, and one with none to the first', async () => {
+test('a remote answer narrows a sender’s encodings to the rids its a=simulcast receives, and one with none to the first, which keeps its rid', async () => {
   const logs = await run(`
     function rids(sender) {
       return sender.getParameters().encodings.map(function (e) { return e.rid + ':' + e.scaleResolutionDownBy; }).join(',');
@@ -1056,7 +1056,7 @@ test('a remote answer narrows a sender’s encodings to the rids its a=simulcast
     'offered|foo:2,bar:1',
     'to foo|foo:2',
     'to bar|bar:1',
-    'to none|undefined:2',
+    'to none|foo:2',
   ]) {
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }

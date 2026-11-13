@@ -106,6 +106,9 @@ export interface RTCEncodingLike {
   maxBitrate?: number;
   maxFramerate?: number;
   scaleResolutionDownBy?: number;
+  /** The largest size a frame is sent at, either way round (WebRTC
+   *  Extensions), which takes the place of `scaleResolutionDownBy`. */
+  scaleResolutionDownTo?: { maxWidth: number; maxHeight: number };
   scalabilityMode?: string;
   priority: RTCPriorityLike;
   networkPriority: RTCPriorityLike;
@@ -225,6 +228,9 @@ export interface RTCTransceiverLike {
   setParameters(parameters: {
     encodings: RTCEncodingLike[];
     degradationPreference?: string;
+    /** Which encodings to send a key frame of next (WebRTC Extensions,
+     *  `encodingOptions`). */
+    keyFrames?: boolean[];
   }): Promise<void>;
   /** `stop()`: it is stopped once the next negotiation takes it out. */
   stop(): void;
@@ -253,8 +259,12 @@ export interface RTCTransceiverLike {
   ): void;
   /** A frame a transform handed back: packetized, or decoded. */
   writeFrame?(side: RTCTransformSide, frame: RTCEncodedFrameLike): void;
-  /** `generateKeyFrame()`: the sender's next frame is a key frame. */
-  keyFrame?(): void;
+  /** `generateKeyFrame(rid)`: the next frame of the sender's stream of
+   *  that rid, or of its first where none is named, is a key frame. */
+  keyFrame?(rid?: string | null): void;
+  /** The rids its sender sends, where it sends more than one stream: what
+   *  `generateKeyFrame(rid)` may name. */
+  rids?(): string[];
   /** `sendKeyFrameRequest()`: the receiver asks its peer for a key frame,
    *  and settles once it has. */
   requestKeyFrame?(): Promise<void>;
@@ -672,6 +682,7 @@ class DeferredTransceiver implements RTCTransceiverLike {
   setParameters(parameters: {
     encodings: RTCEncodingLike[];
     degradationPreference?: string;
+    keyFrames?: boolean[];
   }): Promise<void> {
     return new Promise((resolve, reject) =>
       this._do((t) => t.setParameters(parameters).then(resolve, reject)),
@@ -703,8 +714,11 @@ class DeferredTransceiver implements RTCTransceiverLike {
   writeFrame(side: RTCTransformSide, frame: RTCEncodedFrameLike): void {
     this.real?.writeFrame?.(side, frame);
   }
-  keyFrame(): void {
-    this._do((t) => t.keyFrame?.());
+  keyFrame(rid?: string | null): void {
+    this._do((t) => t.keyFrame?.(rid));
+  }
+  rids(): string[] {
+    return this.real?.rids?.() ?? [];
   }
   requestKeyFrame(): Promise<void> {
     return new Promise((resolve, reject) =>
