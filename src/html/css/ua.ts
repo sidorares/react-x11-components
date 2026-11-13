@@ -217,6 +217,8 @@ img:is([sizes="auto" i], [sizes^="auto," i]) {
 iframe { border: 2px inset; }
 /* a poster is drawn within the video's box at its own ratio (HTML 15.4.1) */
 video { object-fit: contain; }
+/* an audio element shows nothing but its controls (HTML 15.3.1) */
+audio:not([controls]) { display: none !important; }
 /* an inline drawing is cut to its box unless the page shows what overflows
    it (SVG 2, 6.14), as every engine's sheet has it */
 svg:not(:root) { overflow: hidden; }

@@ -2944,9 +2944,13 @@ after it came — through the page's own `fetch`, so its CORS is the media
 element's `crossorigin`. A media element waits at its metadata for the tracks
 it wants, as HTML has it, so a page that reads the cues at `canplaythrough`
 finds them. A cue's `enter` and `exit` and a track's `cuechange` follow the
-element's clock as it plays, and as Chromium has it, nothing is active before
-it has played. Captions are not rendered over the video, `::cue` styles
-nothing, and in-band tracks are none.
+element's clock as it plays, and nothing is active while it shows its poster
+(HTML's "show poster flag"): until it is played or sought, and again after a
+load. A cue added where the clock is is active as `addCue` returns, a seek
+misses no cue on the way, and a cue that ends before it starts exits after
+it enters. A `<track>` whose `src` changes while it loads, or goes, is told
+`error`, as Chromium tells it. Captions are not rendered over the video,
+`::cue` styles nothing, and in-band tracks are none.
 
 **A document has its named properties** (HTML 3.1.5): `document.foo` is the
 `<img>`, `<form>`, `<embed>`, `<object>` or `<iframe>` named `foo`, an
@@ -4040,9 +4044,33 @@ things about it are decisions:
   `autoplay` video reads as playing from the first.
 - **Where the page's requests reach a network, the page loads the media
   itself, as far as its metadata** (HTML 4.8.11.5). Setting `src`,
-  `load()`, `play()` on an element that has selected no source, and the
-  markup's media at `DOMContentLoaded` (but for `preload="none"`) fetch the
-  source through `scripts.fetch`. The host reads the container's head, MP4,
+  `load()`, `play()` or `pause()` on an element that has selected no
+  source, a `<source>` put in one, and the media the parser makes select a
+  source as HTML's resource selection algorithm does: `networkState` is
+  `NETWORK_NO_SOURCE` at once, and at the next stable state it fetches its
+  `src`, or else its `<source>`s in turn from the source pointer, each one
+  without a `src`, whose `media` does not hold or whose `type` cannot play,
+  or whose fetch fails, told `error` — but one a page took out or moved
+  while it was fetched, which is let go without one, as browsers have it.
+  With none left it waits, `NETWORK_NO_SOURCE`, for a node put in after the
+  pointer; a `<source>` put in before the pointer is never tried. The
+  document's `load` waits while one is choosing or fetching, until its
+  first frame is in. `preload="none"` suspends before anything is fetched
+  (`NETWORK_IDLE`, `suspend`), until it is played, and `loading="lazy"`
+  holds the whole selection, and no `load`, until the element comes within
+  1250px of the viewport, is played, or is made eager: one with no box, or
+  in no document, never loads. A seek before the metadata, or a `#t=` in
+  the URL (Media Fragments, in Normal Play Time), is where it starts:
+  `currentTime` reads it at once, and it seeks there once its metadata is
+  in. Taken out of the document, it pauses at the next stable state.
+  `played` is the ranges its clock ran over, `seekable` all of a fetched
+  source once its length is known, and `ended` is false while it loops.
+  Where its frame's `allow` sets `media-playback-while-not-visible` to
+  `'none'` (WICG's iframe media pausing, tentative), it pauses, and `play()`
+  is turned down with `NotAllowedError`, while a frame around its document
+  is `display: none`, `visibility: hidden` or of no size; scrolled out of
+  view counts as shown. The source is fetched through
+  `scripts.fetch`. The host reads the container's head, MP4,
   WebM, MP3, WAV or Ogg, for the duration and the video's size, and
   `64 KiB` past it, then lets the rest go: the player fetches what it
   plays. The page hears `loadstart`, `progress`, `loadedmetadata`,

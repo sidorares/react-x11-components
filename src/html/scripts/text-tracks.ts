@@ -30,9 +30,14 @@ export interface TextTrackDeps {
   /** Whether a node is a media element, and a `<track>`. */
   isMedia(node: unknown): boolean;
   isTrack(node: unknown): boolean;
-  /** Where a media element's clock is, whether it plays, and its ready
-   *  state. */
-  clock(media: unknown): { time: number; paused: boolean; ready: number };
+  /** Where a media element's clock is, whether it plays, its ready state,
+   *  and whether it shows its poster, which no cue is current under. */
+  clock(media: unknown): {
+    time: number;
+    paused: boolean;
+    ready: number;
+    poster: boolean;
+  };
   /** A media element paused, as a cue's `pauseOnExit` has it. */
   pause(media: unknown): void;
 }
@@ -448,14 +453,13 @@ export function installTextTracks(D: TextTrackDeps): {
       return x.start - y.start || y.end - x.end || x.order - y.order;
     });
   };
-  /** The cues of a track changed: the time marches on after the task,
-   *  where the element plays. One that has not played holds no cue active
-   *  yet, as Chromium has it: no `cuechange` comes of a track loading. */
+  /** The cues of a track changed: the time marches on at once, so a cue
+   *  added where the clock is is active as `addCue` returns. One that shows
+   *  its poster holds no cue active yet: no `cuechange` comes of a track
+   *  loading before it plays. */
   const cuesChanged = (s: TrackState): void => {
     const media = s.media;
-    if (media && !D.clock(media).paused) {
-      D.later(() => timeMarchesOn(media, false), 0);
-    }
+    if (media) timeMarchesOn(media, false);
   };
   const finite = (v: Any, name: string, of: string): number => {
     const n = Number(v);
@@ -1065,7 +1069,9 @@ export function installTextTracks(D: TextTrackDeps): {
       const tag = text.slice(lt + 1, gt < 0 ? text.length : gt);
       at = gt < 0 ? text.length : gt + 1;
       if (tag.startsWith('/')) {
-        const name = tag.slice(1).trim();
+        // an end tag's name is all of it, as WebVTT's tokenizer reads it:
+        // `</ b>` closes no `<b>`
+        const name = tag.slice(1);
         const where = open.lastIndexOf(name);
         if (where >= 0) {
           open.length = where;
@@ -1136,7 +1142,8 @@ export function installTextTracks(D: TextTrackDeps): {
     s.load = load;
     // a task later, as the track's processing model runs in parallel
     D.later(() => {
-      if (s.load !== load) return;
+      // one taken out of its media element since loads nothing
+      if (s.load !== load || !s.media) return;
       s.ready = 1;
       const url = String(element.src ?? '');
       s.url = url;
@@ -1191,6 +1198,11 @@ export function installTextTracks(D: TextTrackDeps): {
     const s = trackState(track);
     // the same address again loads nothing, as every browser has it
     if (s.ready === 2 && String(element.src ?? '') === s.url) return;
+    // a load under way is let go, and told as a failure, as Chromium tells
+    // it: what it would have brought never comes
+    if (s.ready === 1) {
+      D.later(() => D.fire(element, new Event('error')), 0);
+    }
     s.load = loads += 1;
     for (const c of s.cues) cueState(c).track = null;
     s.cues.length = 0;
@@ -1348,22 +1360,23 @@ export function installTextTracks(D: TextTrackDeps): {
   const timeMarchesOn = (media: Any, seeked: boolean): void => {
     const m = MEDIA.get(media);
     if (!m) return;
-    const { time, paused, ready } = D.clock(media);
-    // nothing is current before the element knows its media
-    if (ready === 0) return;
+    const { time, paused, ready, poster } = D.clock(media);
+    // nothing is current before the element knows its media, or under its
+    // poster (4.8.11.8, step 1): what was current exits
+    const none = poster || ready === 0;
     const last = m.last;
     m.last = time;
     const entering: [Any, Any][] = [];
     const exiting: [Any, Any][] = [];
     const missed: [Any, Any][] = [];
     const touched = new Set<Any>();
-    const normal = !seeked && time >= last;
+    const normal = !seeked && !none && time >= last;
     for (const track of m.tracks) {
       const s = trackState(track);
       if (s.mode === 'disabled') continue;
       for (const cue of s.cues) {
         const c = cueState(cue);
-        const now = c.start <= time && time < c.end;
+        const now = !none && c.start <= time && time < c.end;
         if (now && !c.active) {
           c.active = true;
           entering.push([cue, track]);
@@ -1390,14 +1403,18 @@ export function installTextTracks(D: TextTrackDeps): {
     const byTime = (a: [Any, Any], b: [Any, Any]): number =>
       cueState(a[0]).start - cueState(b[0]).start ||
       cueState(a[0]).order - cueState(b[0]).order;
+    // an exit is at the later of the cue's end and its start, so a cue that
+    // ends before it starts exits after it enters (step 11)
+    const exitAt = (cue: Any): number =>
+      Math.max(cueState(cue).end, cueState(cue).start);
     const events: [Any, string, number][] = [];
     for (const [cue] of missed) {
       events.push([cue, 'enter', cueState(cue).start]);
-      events.push([cue, 'exit', cueState(cue).end]);
+      events.push([cue, 'exit', exitAt(cue)]);
     }
     for (const [cue] of entering)
       events.push([cue, 'enter', cueState(cue).start]);
-    for (const [cue] of exiting) events.push([cue, 'exit', cueState(cue).end]);
+    for (const [cue] of exiting) events.push([cue, 'exit', exitAt(cue)]);
     events.sort(
       (a, b) =>
         a[2] - b[2] ||

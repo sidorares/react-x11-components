@@ -8723,6 +8723,7 @@ export class HtmlViewNode extends Node {
       padding: [box.padTop, box.padRight, box.padBottom, box.padLeft],
       insets: resolvedInsets(box, this._laidOutWidth, this._viewportHeight()),
       inline: box.kind === 'inline',
+      replaced: box.replaced !== 'none',
     };
     // a box laid out in a vertical flow's frame has the frame's sides,
     // which are drawn at the page's others (`layout/writing.ts`)
