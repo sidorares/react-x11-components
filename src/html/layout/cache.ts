@@ -243,6 +243,7 @@ export const RUN_FIELDS = [
   'nowrap',
   'shapeApart',
   'kernAcross',
+  'inline',
   'stretch',
 ] as const satisfies readonly (keyof DocumentRun)[];
 
@@ -282,6 +283,7 @@ function sameRun(a: DocumentRun, b: DocumentRun): boolean {
     a.features === b.features &&
     a.shapeApart === b.shapeApart &&
     a.kernAcross === b.kernAcross &&
+    a.inline === b.inline &&
     a.stretch === b.stretch
   );
 }
@@ -313,6 +315,7 @@ function sameStyle(
     a.nowrap === b.nowrap &&
     a.shapeApart === b.shapeApart &&
     a.kernAcross === b.kernAcross &&
+    a.inline === b.inline &&
     a.stretch === b.stretch
   );
 }
