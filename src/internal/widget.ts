@@ -72,6 +72,10 @@ interface NodeWithRoot {
  * the trigger's `onBlur` never hears that the application went to the
  * background — and a menu or a calendar left floating over another app's
  * window is the bug that follows.
+ *
+ * react-x11 3 does this in core for a `grab` popup (react-x11#1051), so on 3
+ * both may call `onDismiss`, which is harmless for a `setState` to closed.
+ * Delete this hook when 2.x leaves the peer range.
  */
 export function useDismissOnWindowBlur(
   ref: RefObject<unknown>,

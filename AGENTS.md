@@ -429,8 +429,10 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.58.1` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.58.1` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.58.1 || ^3.0.0` — what a consumer must
+  supply.
+- `devDependencies.react-x11` is `^2.58.1 || ^3.0.0` — what the suite runs
+  against, and the lockfile resolves it to the newest major's release.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -901,6 +903,17 @@ it up. **The floor is a running one and moves often** — every move since
   painted by the document from its frames: webrtc.github.io's getUserMedia
   filter sample spent 18 ms of a 33 ms frame in the filter, and spends 3–4.
   The same release takes ntk 8.28.0 (react-x11#1047).
+- `^2.58.1 || ^3.0.0` — react-x11 3.0.0 admitted beside 2.x, with the floor
+  where it was. 3.0.0's one break is `<popup onDismiss>`: it is handed a
+  `DismissEvent` (`reason: 'press' | 'focus'`) where it had a `MouseEvent`,
+  and a grabbing popup is dismissed when its window loses the keyboard
+  (react-x11#1051). Nothing here reads the argument. `useDismissOnWindowBlur`
+  (`src/internal/widget.ts`) closes the same popups on a window blur for 2.x,
+  so on 3 both may call `close`, which is a `setState` to closed and does
+  nothing the second time. **Delete the hook, and its three calls, when 2.x
+  leaves the range.** The same release adds `visibility: 'hidden'`
+  (react-x11#1052), which nothing here uses yet. The suite runs on 3, as the
+  lockfile has it: a 2.x-only fault is no longer one CI finds.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
