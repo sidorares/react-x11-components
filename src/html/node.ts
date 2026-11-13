@@ -53,6 +53,7 @@ import type { DrawnNode, MouseEvent as X11MouseEvent, Rect } from 'react-x11';
 import type { Style } from 'react-x11/style';
 import type { AnyNode, ChildNode, Element, ParentNode } from 'domhandler';
 import { pointOfUnit, unitOfPoint } from './dom-text.js';
+import { renderedText } from './inner-text.js';
 import type { HighlightRanges } from './scripts/host.js';
 import type { ConsoleProperty, ConsoleResult } from './scripts/scripted.js';
 import {
@@ -8254,6 +8255,18 @@ export class HtmlViewNode extends Node {
     this._prepare(this.abs.width || 1);
     const initial = this._cascade?.initial;
     return initial ? initial.fontSize / this._scale : 16;
+  }
+
+  /** An element's `innerText` (`renderedText`), or null where it is not
+   *  being rendered, whose `innerText` is its text content. */
+  innerText(element: Element): string | null {
+    this._settle();
+    const tree = this._tree;
+    if (!tree) return null;
+    return renderedText(element, {
+      tree,
+      styleOf: (el) => tree.styles.get(el)?.style ?? null,
+    });
   }
 
   /** What `svg-geometry.ts` asks of the document: an element's text and

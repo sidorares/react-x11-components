@@ -1871,6 +1871,7 @@ export function makeHtmlHandle(
     computedValues: (element, pseudo) =>
       nodeRef.current?.computedStyle(element, pseudo, false, true) ?? null,
     fontMedium: () => nodeRef.current?.fontMedium() ?? 16,
+    innerText: (element) => nodeRef.current?.innerText(element) ?? null,
     computedStyle: (
       element: Element,
       pseudo?: 'before' | 'after' | HighlightPseudo | null,

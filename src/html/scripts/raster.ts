@@ -93,6 +93,17 @@ export interface Draw {
   alpha: number;
   op: string;
   clip: Float32Array | null;
+  /** The context's shadow, where one is drawn (HTML 4.12.5.1.18). */
+  shadow?: Shadow | null;
+}
+
+/** A shadow: its colour as straight RGBA bytes, its blur, and its offset in
+ *  the bitmap's pixels, which no transform moves. */
+export interface Shadow {
+  rgba: number[];
+  blur: number;
+  x: number;
+  y: number;
 }
 
 export interface StrokeStyle {
@@ -1623,6 +1634,10 @@ export function installRaster(
         fs = 1;
         fd = 1;
         break;
+      case 'clear':
+        fs = 0;
+        fd = 0;
+        break;
       default:
         fs = 1;
         fd = 1 - sa;
@@ -1724,9 +1739,140 @@ export function installRaster(
     return { x0, y0, x1, y1, cov };
   };
 
+  /** A box blur's widths that three passes of make a Gaussian of `sigma`
+   *  (Wells, "Efficient synthesis of Gaussian filters"). */
+  const boxWidths = (sigma: number): number[] => {
+    const ideal = Math.sqrt((12 * sigma * sigma) / 3 + 1);
+    let low = Math.floor(ideal);
+    if (low % 2 === 0) low -= 1;
+    const high = low + 2;
+    const m = Math.round(
+      (12 * sigma * sigma - 3 * low * low - 12 * low - 9) / (-4 * low - 4),
+    );
+    return [0, 1, 2].map((i) => (i < m ? low : high));
+  };
+  /** One pass of a box blur across or down a grid. */
+  const boxPass = (
+    from: Float32Array,
+    to: Float32Array,
+    w: number,
+    h: number,
+    r: number,
+    across: boolean,
+  ): void => {
+    const lines = across ? h : w;
+    const length = across ? w : h;
+    const step = across ? 1 : w;
+    const scale = 1 / (2 * r + 1);
+    for (let line = 0; line < lines; line += 1) {
+      const start = across ? line * w : line;
+      let sum = 0;
+      for (let k = -r; k <= r; k += 1) {
+        if (k >= 0 && k < length) sum += from[start + k * step];
+      }
+      for (let k = 0; k < length; k += 1) {
+        to[start + k * step] = sum * scale;
+        const out = k - r;
+        const into = k + r + 1;
+        if (out >= 0) sum -= from[start + out * step];
+        if (into < length) sum += from[start + into * step];
+      }
+    }
+  };
+  /** Where a shape's shadow falls, and how much of it there is at each
+   *  pixel: the shape's alpha — its coverage times its paint's — moved by
+   *  the offset and blurred by a Gaussian of half the blur (HTML
+   *  4.12.5.1.18). Null where there is no shadow to draw. */
+  const shadowOf = (
+    target: Bitmap,
+    shape: Coverage,
+    draw: Draw,
+  ): Coverage | null => {
+    const sh = draw.shadow;
+    if (!sh || sh.rgba[3] <= 0) return null;
+    if (sh.blur <= 0 && sh.x === 0 && sh.y === 0) return null;
+    const sigma = sh.blur / 2;
+    const pad = sigma > 0 ? Math.ceil(sigma * 3) : 0;
+    const w = shape.x1 - shape.x0;
+    const h = shape.y1 - shape.y0;
+    const W = w + 2 * pad;
+    const H = h + 2 * pad;
+    if (W * H > 16777216) return null;
+    const a = new Float32Array(W * H);
+    const src = new Float64Array(4);
+    if (draw.paint.solid) draw.paint.at(0, 0, src);
+    for (let y = 0; y < h; y += 1) {
+      for (let x = 0; x < w; x += 1) {
+        const c = shape.cov[y * w + x];
+        if (c <= 0) continue;
+        if (!draw.paint.solid) {
+          draw.paint.at(shape.x0 + x + 0.5, shape.y0 + y + 0.5, src);
+        }
+        a[(y + pad) * W + x + pad] = c * src[3];
+      }
+    }
+    if (sigma > 0) {
+      const b = new Float32Array(W * H);
+      for (const width of boxWidths(sigma)) {
+        const r = (width - 1) / 2;
+        boxPass(a, b, W, H, r, true);
+        boxPass(b, a, W, H, r, false);
+      }
+    }
+    const ox = Math.round(sh.x);
+    const oy = Math.round(sh.y);
+    const x0 = Math.max(0, shape.x0 - pad + ox);
+    const y0 = Math.max(0, shape.y0 - pad + oy);
+    const x1 = Math.min(target.width, shape.x1 + pad + ox);
+    const y1 = Math.min(target.height, shape.y1 + pad + oy);
+    if (x1 <= x0 || y1 <= y0) return null;
+    const cw = x1 - x0;
+    const cov = new Float32Array(cw * (y1 - y0));
+    for (let y = y0; y < y1; y += 1) {
+      const sy = y - (shape.y0 - pad + oy);
+      for (let x = x0; x < x1; x += 1) {
+        const sx = x - (shape.x0 - pad + ox);
+        cov[(y - y0) * cw + x - x0] = a[sy * W + sx];
+      }
+    }
+    return { x0, y0, x1, y1, cov };
+  };
+
+  /** A shape's coverage painted into a bitmap, its shadow first where the
+   *  context draws one: answers the rectangle it changed. */
+  const paintCoverage = (
+    target: Bitmap,
+    shape: Coverage | null,
+    draw: Draw,
+  ): number[] | null => {
+    const shadow = shape && draw.shadow ? shadowOf(target, shape, draw) : null;
+    if (!shadow) return paintShape(target, shape, draw);
+    const [r, g, b, a] = draw.shadow!.rgba;
+    const alpha = a / 255;
+    const colour = {
+      solid: true,
+      at(_x: number, _y: number, out: Float64Array) {
+        out[0] = (r / 255) * alpha;
+        out[1] = (g / 255) * alpha;
+        out[2] = (b / 255) * alpha;
+        out[3] = alpha;
+      },
+    };
+    const under = paintShape(target, shadow, { ...draw, paint: colour });
+    const over = paintShape(target, shape, draw);
+    if (!under) return over;
+    if (!over) return under;
+    return [
+      Math.min(under[0], over[0]),
+      Math.min(under[1], over[1]),
+      Math.max(under[2], over[2]),
+      Math.max(under[3], over[3]),
+    ];
+  };
+
   /** A shape's coverage painted into a bitmap: answers the rectangle it
    *  changed. */
-  const paintCoverage = (
+  const paintShape = (
     target: Bitmap,
     shape: Coverage | null,
     draw: Draw,
