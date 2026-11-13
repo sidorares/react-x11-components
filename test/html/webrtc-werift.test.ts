@@ -1291,6 +1291,10 @@ test('VP8 flows from a canvas into a remote <video>, which loads its metadata at
     var out = [...sent.values()].find(function (x) { return x.type === 'outbound-rtp'; });
     var source = sent.get(out.mediaSourceId);
     log('encoded', out.framesEncoded > 0, out.framesSent > 0, out.keyFramesEncoded > 0, out.frameWidth, source.width, source.frames > 0);
+    // a canvas is no camera: what codes it is not said, and nor is the
+    // PSNR, which says as much; the quantizer and the target are
+    log('hardware', 'encoderImplementation' in out, 'powerEfficientEncoder' in out, 'psnrSum' in out, 'decoderImplementation' in inbound, 'powerEfficientDecoder' in inbound);
+    log('quality', out.qpSum > 0, out.targetBitrate > 0);
     clearInterval(timer);
     pc1.close(); pc2.close();
     log('done');
@@ -1301,8 +1305,10 @@ test('VP8 flows from a canvas into a remote <video>, which loads its metadata at
     'metadata|320|240|4',
     'playing|true',
     'inbound|video|true',
-    'decoded|true|true|320|240|libvpx',
+    'decoded|true|true|320|240|',
     'encoded|true|true|true|320|320|true',
+    'hardware|false|false|false|false|false',
+    'quality|true|true',
     'done',
   ]) {
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
@@ -1573,6 +1579,70 @@ test('abs-capture-time an app adds to its offer is answered and sent, and a rece
     'answered|false|0',
     'negotiated|false|stopped',
     'without|false',
+    'done',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
+test('a stopped transceiver keeps its RTP streams’ stats until the description that stops it, a connection has no transport stats before a description, and audio plays out on one media-playout', async () => {
+  const logs = await run(`
+    ${CALL}
+    var ctx = new AudioContext();
+    var osc = ctx.createOscillator();
+    var dst = ctx.createMediaStreamDestination();
+    osc.connect(dst); osc.start();
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.createDataChannel('x');
+    function types(report) {
+      return [...new Set([...report.values()].map(function (s) { return s.type; }))].sort().join(',');
+    }
+    log('before', types(await pc1.getStats()));
+    pc1.addTrack(dst.stream.getAudioTracks()[0]);
+    await call(pc1, pc2);
+    var t1 = pc1.getTransceivers()[0];
+    var r2 = pc2.getReceivers()[0];
+    async function has(get, type) {
+      return [...(await get()).values()].some(function (s) { return s.type === type; });
+    }
+    async function inbound() {
+      return [...(await pc2.getStats()).values()].find(function (s) { return s.type === 'inbound-rtp'; });
+    }
+    // what is decoded is counted a round trip after its packet, on the
+    // codecs' thread
+    var got = null;
+    for (var i = 0; i < 300 && !got; i++) {
+      var s = await inbound();
+      if (s && s.totalSamplesReceived > 0) got = s;
+      else await new Promise(function (r) { setTimeout(r, 20); });
+    }
+    var all = await pc2.getStats();
+    var playout = all.get(got && got.playoutId);
+    log('playout', [...all.values()].filter(function (s) { return s.type === 'media-playout'; }).length,
+      playout && playout.kind, playout && playout.totalSamplesCount > 0, playout && playout.synthesizedSamplesEvents);
+    log('received', await has(function () { return r2.getStats(); }, 'media-playout'));
+    var t2 = pc2.getTransceivers()[0];
+    t1.stop();
+    log('stopped', t1.direction, t1.currentDirection,
+      await has(function () { return t1.sender.getStats(); }, 'outbound-rtp'),
+      await has(function () { return pc1.getStats(); }, 'outbound-rtp'));
+    await call(pc1, pc2);
+    log('negotiated', t1.currentDirection,
+      await has(function () { return t1.sender.getStats(); }, 'outbound-rtp'),
+      await has(function () { return pc1.getStats(); }, 'outbound-rtp'));
+    log('far', t2.currentDirection, await has(function () { return r2.getStats(); }, 'inbound-rtp'));
+    pc1.close(); pc2.close();
+    ctx.close();
+    log('done');
+  `);
+  if (process.env.WERIFT_LOGS) console.log(logs.join('\n'));
+  for (const line of [
+    'before|data-channel,peer-connection',
+    'playout|1|audio|true|0',
+    'received|true',
+    'stopped|stopped|sendonly|true|true',
+    'negotiated|stopped|false|false',
+    'far|stopped|false',
     'done',
   ]) {
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);

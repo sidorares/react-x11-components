@@ -58,6 +58,7 @@ interface LibAVPacket {
   data: Uint8Array;
   pts?: number;
   flags?: number;
+  side_data?: { type: number; data: Uint8Array }[] | null;
 }
 
 interface LibAVInstance {
@@ -150,6 +151,11 @@ export type AudioCodecName = 'OPUS' | 'PCMU' | 'PCMA';
 export interface EncodedFrame {
   data: Uint8Array;
   key: boolean;
+  /** The frame's PSNR in decibels, plane by plane, as the encoder measured
+   *  what it reconstructs against what it was handed: where it measured. */
+  psnr?: { y: number; u: number; v: number };
+  /** The quantizer it was coded with, in the codec's own scale. */
+  qp?: number;
 }
 
 export interface VideoEncoderLike {
@@ -208,11 +214,49 @@ const VPX_OPTIONS: Record<string, string> = {
   'cpu-used': '8',
   'lag-in-frames': '0',
   'error-resilient': '1',
+  // each packet carries the squared error of each plane
+  // (`AV_PKT_DATA_QUALITY_STATS`), which a sender's stats read their PSNR
+  // from; libvpx works it out as it reconstructs the frame anyway
+  flags: '+psnr',
 };
+
+/** FFmpeg's `AV_PKT_DATA_QUALITY_STATS`, and what its quality is a
+ *  quantizer times (`FF_QP2LAMBDA`). */
+const QUALITY_STATS = 8;
+const QP2LAMBDA = 118;
+
+/**
+ * What a packet's quality stats say of the frame in it: a 32-bit quality,
+ * which is the quantizer times `QP2LAMBDA`, the picture type, how many
+ * errors follow, two bytes of nothing, then each plane's sum of squared
+ * errors as a 64-bit integer, from which its PSNR is worked out.
+ */
+export function qualityOf(
+  packet: Pick<LibAVPacket, 'side_data'>,
+  width: number,
+  height: number,
+): Pick<EncodedFrame, 'psnr' | 'qp'> {
+  const stats = packet.side_data?.find((d) => d.type === QUALITY_STATS);
+  if (!stats || stats.data.byteLength < 8) return {};
+  const d = stats.data;
+  const view = new DataView(d.buffer, d.byteOffset, d.byteLength);
+  const qp = Math.round(view.getUint32(0, true) / QP2LAMBDA);
+  const count = view.getUint8(5);
+  if (count < 3 || d.byteLength < 8 + 24) return { qp };
+  const chroma = Math.ceil(width / 2) * Math.ceil(height / 2);
+  const planes = [width * height, chroma, chroma];
+  const db = (i: number): number => {
+    const sse = Number(view.getBigUint64(8 + 8 * i, true));
+    // a plane the encoder made exactly is as good as 8-bit samples measure
+    if (sse <= 0) return 10 * Math.log10(255 * 255 * planes[i]);
+    return 10 * Math.log10((255 * 255 * planes[i]) / sse);
+  };
+  return { qp, psnr: { y: db(0), u: db(1), v: db(2) } };
+}
 
 /** A bit rate for a size: about Chrome's start for a call, which it then
  *  adapts; nothing here adapts. */
-const bitRateFor = (width: number, height: number): number =>
+export const bitRateFor = (width: number, height: number): number =>
   Math.max(150_000, Math.min(2_500_000, Math.round(width * height * 3)));
 
 /** An I420 frame as one array libav.js takes, with the layout it reads. */
@@ -294,10 +338,13 @@ class LibAVVideoEncoder implements VideoEncoderLike {
     const packets = await serial(() =>
       this._libav.ff_encode_multi(c, f, p, [input]),
     );
-    return packets.map((packet) => ({
-      data: packet.data,
-      key: ((packet.flags ?? 0) & 1) === 1,
-    }));
+    return packets.map((packet) => {
+      return {
+        data: packet.data,
+        key: ((packet.flags ?? 0) & 1) === 1,
+        ...qualityOf(packet, input.width!, input.height!),
+      };
+    });
   }
 
   private _release(): void {

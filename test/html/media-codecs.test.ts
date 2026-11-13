@@ -18,6 +18,7 @@ import {
   audioEncoder,
   codecThreads,
   loadLibAV,
+  qualityOf,
   videoDecoder,
   videoEncoder,
 } from '../../src/html/media-codecs.js';
@@ -214,4 +215,43 @@ test('the codecs’ thread holds no process open, with a codec open on it', asyn
   });
   assert.equal(code, 0, `it should end by itself: ${out}`);
   assert.match(out, /^encoded 1 1$/m);
+});
+
+test('a VP8 or VP9 frame comes with its quantizer and its PSNR, on the thread and off it, and a packet with no quality stats with neither', async () => {
+  for (const codec of ['VP8', 'VP9'] as const) {
+    for (const pageThread of [false, true]) {
+      codecThreads.pageThread = pageThread;
+      const encoder = await videoEncoder(codec);
+      assert.ok(encoder, `a ${codec} encoder`);
+      const out = await encoder.encode(canvasFrame(64, 48), true, 0);
+      encoder.close();
+      assert.equal(out.length, 1);
+      const [frame] = out;
+      assert.ok(frame.qp !== undefined && frame.qp >= 0, `${codec} qp`);
+      const psnr = frame.psnr!;
+      for (const plane of [psnr.y, psnr.u, psnr.v]) {
+        // a flat ground and a square, coded at a call's bit rate: well
+        // above noise, and finite
+        assert.ok(Number.isFinite(plane) && plane > 25, `${codec} ${plane}`);
+      }
+    }
+  }
+  assert.deepEqual(qualityOf({ side_data: null }, 64, 48), {});
+  // a quality of 4 · 118, and the three planes' squared errors
+  const stats = new Uint8Array(8 + 24);
+  const view = new DataView(stats.buffer);
+  view.setUint32(0, 4 * 118, true);
+  view.setUint8(5, 3);
+  view.setBigUint64(8, 64n * 48n, true);
+  view.setBigUint64(16, 0n, true);
+  view.setBigUint64(24, 32n * 24n * 100n, true);
+  const q = qualityOf({ side_data: [{ type: 8, data: stats }] }, 64, 48);
+  assert.equal(q.qp, 4);
+  // an error of 1 a sample, none, and 10 a sample
+  assert.equal(q.psnr!.y.toFixed(2), (20 * Math.log10(255)).toFixed(2));
+  assert.equal(
+    q.psnr!.u.toFixed(2),
+    (10 * Math.log10(255 * 255 * 32 * 24)).toFixed(2),
+  );
+  assert.equal(q.psnr!.v.toFixed(2), (20 * Math.log10(25.5)).toFixed(2));
 });

@@ -41,6 +41,7 @@ import type {
   RTCDataChannelLike,
   RTCEncodedFrameLike,
   RTCSessionState,
+  RTCStatsLike,
   RTCTransceiverLike,
   RTCTransformSide,
   RTCTransportStateLike,
@@ -52,6 +53,16 @@ declare const Buffer: BufferClass;
 declare const queueMicrotask: (fn: () => void) => void;
 declare const setTimeout: (fn: () => void, ms: number) => unknown;
 declare const performance: { readonly timeOrigin: number; now(): number };
+
+/** An RTP stream's stats that name the hardware coding it. */
+const HARDWARE_FIELDS = [
+  'encoderImplementation',
+  'powerEfficientEncoder',
+  'decoderImplementation',
+  'powerEfficientDecoder',
+  'psnrSum',
+  'psnrMeasurements',
+];
 
 /** A value a task later. */
 const later = <T>(value: T): Promise<T> =>
@@ -434,7 +445,10 @@ export class PagePeers {
         // settled in a task of its own, as a browser settles it: a page
         // that asks again as each report comes, in a loop, would otherwise
         // never let the network in, and nothing it waits for would arrive
-        this._settle(Number(b), work.then(later));
+        this._settle(
+          Number(b),
+          work.then((list) => later(this._hardwareHidden(list))),
+        );
         return null;
       }
       case 'rtcCertificate': {
@@ -647,6 +661,23 @@ export class PagePeers {
     this._peers.clear();
     this._transceivers.clear();
     this._channels.clear();
+  }
+
+  /**
+   * What an RTP stream's stats say of the hardware that codes it is said
+   * only while the document captures from a camera or a microphone
+   * (WebRTC Statistics, 14.1, "limiting exposure of hardware
+   * capabilities"), as every browser has it: what a fingerprinter learns
+   * from the encoder's name it learns only from a page the user let see
+   * them.
+   */
+  private _hardwareHidden(list: RTCStatsLike[]): RTCStatsLike[] {
+    if (this._seams.sources().capturing()) return list;
+    for (const s of list) {
+      if (s.type !== 'outbound-rtp' && s.type !== 'inbound-rtp') continue;
+      for (const field of HARDWARE_FIELDS) delete s[field];
+    }
+    return list;
   }
 
   private _gone(): Promise<never> {

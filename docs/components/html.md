@@ -1479,6 +1479,17 @@ its first packet and again once none has come for two seconds, plays in a
 its level; `getStats` has a sender's outbound-rtp from the answer that
 first negotiated it to send and a receiver's inbound-rtp from its first
 packet, as WebRTC Statistics has them live, a closed connection's too.
+A transceiver the page stops keeps both until the description that stops
+it is applied, and a connection has no transport, certificate or candidate
+stats before its first description. Audio a connection receives plays out
+on one `media-playout`, which its inbound-rtp names. A video sender's
+outbound-rtp has the quantizer and the PSNR libvpx measured as it
+encoded (`qpSum`, `psnrSum`). What names the hardware that codes a
+stream — `encoderImplementation`, `decoderImplementation`, the two
+`powerEfficient` fields and the PSNR — is said only while the document
+captures from a camera or a microphone (WebRTC Statistics, 14.1): a
+canvas or a synth is no device, so a page made of them alone learns none
+of it.
 Two of the page's connections connect to each other, as WPT's tests make
 them, and to another peer the host can reach.
 
