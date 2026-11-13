@@ -1091,6 +1091,24 @@ test('Opus flows both ways: a remote track unmutes on its first packet, and its 
     log('ssrc', typeof s.source, s.timestamp >= start && s.timestamp <= now,
       s.rtpTimestamp >= 0 && s.rtpTimestamp <= 0xffffffff,
       s.audioLevel > 0 && s.audioLevel <= 1, r2.getContributingSources().length);
+    // the host stamps a source as its packet comes, and werift a report as it
+    // is gathered, on the clock the page reads, so neither is ever read as
+    // after the page's own time. Read a few hundred times between the
+    // packets, a source stamped on a clock a millisecond ahead of the
+    // page's was after it at some one read in twenty
+    var later = 0, laterStats = 0;
+    for (var i = 0; i < 300; i++) {
+      await new Promise(function (r) { setTimeout(r, 0); });
+      var list = r2.getSynchronizationSources();
+      var at = performance.timeOrigin + performance.now();
+      list.forEach(function (x) { if (x.timestamp > at) later++; });
+      if (i % 30 === 0) {
+        var report = await r2.getStats();
+        at = performance.timeOrigin + performance.now();
+        report.forEach(function (x) { if (x.timestamp > at) laterStats++; });
+      }
+    }
+    log('later', later, laterStats);
     await wait('back', function () { return !t1.receiver.track.muted; });
     var sent = await t1.sender.getStats();
     var out = [...sent.values()].find(function (x) { return x.type === 'outbound-rtp'; });
@@ -1141,6 +1159,7 @@ test('Opus flows both ways: a remote track unmutes on its first packet, and its 
     'track|true',
     'unmuted|false',
     'ssrc|number|true|true|true|0',
+    'later|0|0',
     'outbound|true|audio|0|true',
     'inbound|true|true|false',
     'pc|inbound-rtp,outbound-rtp',

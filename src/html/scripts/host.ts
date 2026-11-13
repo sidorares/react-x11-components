@@ -338,7 +338,7 @@ declare const crypto: {
   getRandomValues(array: Uint8Array): Uint8Array;
   randomUUID(): string;
 };
-declare const performance: { now(): number };
+declare const performance: { now(): number; timeOrigin: number };
 
 /** ntk's CSS colour parser, straight RGBA from 0 to 1: on the module, and
  *  not in `ntk.d.ts`'s named list (AGENTS.md, "Affordance glyphs"). */
@@ -6511,6 +6511,11 @@ export class DomHost {
         return null;
       case 'now':
         return performance.now();
+      // where `now` counts from, which the realm's `performance.timeOrigin`
+      // is: so that `timeOrigin + now()` there is this thread's clock, which
+      // werift's stats and a synchronization source are stamped with
+      case 'timeOrigin':
+        return performance.timeOrigin;
       case 'navigator':
         return `${this._seams.userAgent}\u0000${this._seams.language}`;
       // whether the page's requests reach a network, which a media element

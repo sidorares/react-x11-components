@@ -314,6 +314,7 @@ export function installDom(
     'active',
     'log',
     'now',
+    'timeOrigin',
     'navigator',
     'hasNetwork',
     'image',
@@ -39225,7 +39226,14 @@ export function installDom(
   };
   define('CSS', cssNamespace);
   define('customElements', customElements);
-  const timeOrigin = Date.now() - now();
+  // the host's clock's origin, which `now()` counts from, so that what the
+  // host stamps a time with — a synchronization source, werift's stats, an
+  // encoded frame's `receiveTime` — is on the clock a page reads. One of
+  // `Date.now() - now()` was the wall clock's, in whole milliseconds and
+  // drifting from the monotonic one, and came to a millisecond or so
+  // before the host's: a source stamped as a packet came was read as after
+  // the `performance.now()` the page read straight after asking for it.
+  const timeOrigin = Number(bridge('timeOrigin'));
   /** How the page's document came to be shown, for its navigation entry. */
   const pageArrival = (): string | null =>
     pageSession.session.arrived?.type ?? null;
@@ -39312,7 +39320,9 @@ export function installDom(
     get navigation() {
       return legacyNavigation(pageArrival());
     },
-    toJSON: () => ({ timeOrigin }),
+    toJSON() {
+      return { timeOrigin: this.timeOrigin };
+    },
   });
   define('screen', {
     get width() {
@@ -40785,9 +40795,12 @@ export function installDom(
     const { url, name, shared, service } = input();
     // a worker's time starts with it (HR Time 3, the time origin), where one
     // read off the process's clock came to its page's, and which of the two
-    // was first was a coin toss
+    // was first was a coin toss. Its origin is its thread's clock at that
+    // start, so that `timeOrigin + now()` is the same instant in the worker
+    // and in its page, which an encoded frame's times cross between
     clockFrom = Number(bridge('now'));
-    (G as Any).performance.timeOrigin = Date.now();
+    (G as Any).performance.timeOrigin =
+      Number(bridge('timeOrigin')) + clockFrom;
     // a worker's navigator has no container of the page's
     delete (navigator as Any).serviceWorker;
     GEOMETRY.worker();
