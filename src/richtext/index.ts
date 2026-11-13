@@ -27,11 +27,36 @@ export {
   registerRichText,
   RichTextNode,
 } from './node.js';
-export type { NtkApp, RichTextProps, TextLayoutLike, TextRun } from './node.js';
+export type {
+  InlineBox,
+  InlineDrawing,
+  LinkAt,
+  NtkApp,
+  RichTextProps,
+  TextLayoutLike,
+  TextRun,
+} from './node.js';
 export { useSelectionMenu } from './menu.js';
 export type { SelectionMenuHandlers } from './menu.js';
-export { useLinkClicks } from './links.js';
-export type { LinkHandlers } from './links.js';
+export {
+  CARD_CLOSE_DELAY,
+  CARD_OPEN_DELAY,
+  cardClock,
+  linkKind,
+  matchLink,
+  useLinkClicks,
+  useLinks,
+} from './links.js';
+export type {
+  LinkCardContext,
+  LinkHandlers,
+  LinkInfo,
+  LinkKind,
+  LinkKinds,
+  LinkLook,
+  LinksResult,
+  UseLinksOptions,
+} from './links.js';
 
 declare module 'react-x11/jsx-runtime' {
   namespace JSX {

@@ -119,7 +119,8 @@ finds out from a blank window has been failed by the page.
   `<Markdown>`, `<Code>` and `<TerminalOutput>` — it paints per-run
   decoration and answers
   core's four text accessors, so a document selects across it — plus the
-  edit menu a read-only surface offers and the link-click hook), `src/codeblock/` (the look of a
+  edit menu a read-only surface offers, and links: the click hook and the
+  link kinds whose hover cards show what a link points at), `src/codeblock/` (the look of a
   block of code: the palette, the runs and the chrome `<Code>` and
   `<Markdown>`'s fences share), `src/code-language/` (the tokenizer
   seam, the built-in languages, the token palettes — under `<CodeEditor>`,
@@ -5351,6 +5352,17 @@ list.
   both clone walkers with its data walked as any buffer is, so two frames
   over one buffer share it again; it refuses storage, which is what
   `serializeClone` with no transfer is.
+- **A transceiver's header extensions are werift's transceiver's
+  `headerExtensions`, written before each offer and answer** (`forOffer`,
+  `forAnswer` in `werift.ts`): werift offers all it is configured with and
+  answers all an offer has that it knows, so what a page stopped or
+  started, and what it changed in an `a=extmap` line of its own
+  description (`_takeExtensions`), is put there first. **Anything new that
+  writes an extension into a packet hands werift a `Buffer`**: its
+  serializer calls the payload's `copy`, and a `Uint8Array` threw and
+  dropped every packet carrying it. And **a time crossing to a worker goes
+  as an age** (`FrameWire.t`): a worker's thread has a clock origin of its
+  own, which no origin both sides read converts into the page's.
 - **A track's constraints are fitted on the host, in one place**
   (`constraints.ts`, Media Capture's SelectSettings): `getUserMedia` and
   `applyConstraints` hand over the page's constraints as JSON, and what comes

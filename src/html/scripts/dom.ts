@@ -40010,7 +40010,7 @@ export function installDom(
         ReadableStream: G.ReadableStream,
         WritableStream: G.WritableStream,
       }),
-      timeOrigin: () => Number(G.performance?.timeOrigin ?? 0),
+      now: () => now(),
       workerOf: (w: Any) => (w instanceof Worker && w._id ? w._id : null),
       post: postTransform,
       global: () => windowTarget,
@@ -40792,15 +40792,20 @@ export function installDom(
    * its location and its name.
    */
   entry('__becomeWorker', () => {
-    const { url, name, shared, service } = input();
+    const { url, name, shared, service, born } = input();
     // a worker's time starts with it (HR Time 3, the time origin), where one
     // read off the process's clock came to its page's, and which of the two
-    // was first was a coin toss. Its origin is its thread's clock at that
-    // start, so that `timeOrigin + now()` is the same instant in the worker
-    // and in its page, which an encoded frame's times cross between
-    clockFrom = Number(bridge('now'));
-    (G as Any).performance.timeOrigin =
-      Number(bridge('timeOrigin')) + clockFrom;
+    // was first was a coin toss. It starts as the page made it, and not as
+    // its thread came up, which can be a few hundred milliseconds later: a
+    // frame captured after `new Worker()` had a negative `captureTime`. Both
+    // are read on the host's clock, its origin and its `now`, so that
+    // `timeOrigin + now()` is the same instant here and in the page: on the
+    // wall clock, in whole milliseconds and drifting, it was not
+    const threadNow = Number(bridge('now'));
+    const at = Number(bridge('timeOrigin')) + threadNow;
+    const origin = typeof born === 'number' && born <= at ? born : at;
+    clockFrom = threadNow - (at - origin);
+    (G as Any).performance.timeOrigin = origin;
     // a worker's navigator has no container of the page's
     delete (navigator as Any).serviceWorker;
     GEOMETRY.worker();

@@ -8542,13 +8542,13 @@ test("a worker's time starts with it, after its page's, where both read the proc
   const doc = await hosted(
     `<p id="out"></p><script>
        const before = performance.now();
-       const made = Date.now();
+       const made = performance.timeOrigin + performance.now();
        const src = 'postMessage([performance.timeOrigin, performance.now()]);';
        const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'application/javascript' })));
        w.onmessage = (e) => {
          const [origin, now] = e.data;
          document.getElementById('out').textContent = JSON.stringify({
-           after: origin >= made - 1 && origin > performance.timeOrigin,
+           after: origin >= made && origin > performance.timeOrigin,
            own: now < performance.now(),
            ordered: performance.timeOrigin + before < origin + now,
          });
