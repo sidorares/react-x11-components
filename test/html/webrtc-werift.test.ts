@@ -1097,8 +1097,15 @@ test('Opus flows both ways: a remote track unmutes on its first packet, and its 
     var out = [...sent.values()].find(function (x) { return x.type === 'outbound-rtp'; });
     log('outbound', !!out && out.packetsSent > 0, out && out.kind, out && out.mid,
       [...sent.values()].some(function (x) { return x.type === 'transport'; }));
-    var got = await r2.getStats();
-    var inb = [...got.values()].find(function (x) { return x.type === 'inbound-rtp'; });
+    // what is decoded is counted as it is decoded, which on the codecs'
+    // thread is a round trip after the packet arrived
+    var got, inb;
+    for (var tries = 0; ; tries++) {
+      got = await r2.getStats();
+      inb = [...got.values()].find(function (x) { return x.type === 'inbound-rtp'; });
+      if ((inb && inb.totalSamplesReceived > 0) || tries >= 100) break;
+      await new Promise(function (r) { setTimeout(r, 20); });
+    }
     log('inbound', !!inb && inb.packetsReceived > 0, inb && inb.trackIdentifier === remote.id,
       [...got.values()].some(function (x) { return x.type === 'outbound-rtp'; }));
     var all = await pc2.getStats();
