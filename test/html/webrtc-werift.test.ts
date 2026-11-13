@@ -1119,7 +1119,9 @@ test('Opus flows both ways: a remote track unmutes on its first packet, and its 
     log('inbound', !!inb && inb.packetsReceived > 0, inb && inb.trackIdentifier === remote.id,
       [...got.values()].some(function (x) { return x.type === 'outbound-rtp'; }));
     var all = await pc2.getStats();
-    log('pc', [...all.values()].filter(function (x) { return /bound-rtp$/.test(x.type); }).map(function (x) { return x.type; }).sort().join(','));
+    // the connection's own RTP streams: a remote-inbound-rtp is there too
+    // once the far side's first RTCP report is in, which a slow runner has
+    log('pc', [...all.values()].filter(function (x) { return /^(in|out)bound-rtp$/.test(x.type); }).map(function (x) { return x.type; }).sort().join(','));
     log('energy', inb.totalAudioEnergy > 0, inb.totalSamplesReceived > 0, inb.nackCount, inb.packetsDiscarded);
     var source = sent.get(out.mediaSourceId);
     log('source', source.kind, source.totalAudioEnergy > 0, source.totalSamplesDuration > 0);
