@@ -157,7 +157,29 @@ export interface RichTextProps {
   runs: TextRun[];
   /** False lays the text out at its natural width, unwrapped — code. */
   wrap?: boolean;
+  /** The cursor to show over a run whose `href` is a string — `'pointer'`
+   *  where a click on a link does something. Unset, a link shows the
+   *  element's own cursor, as text that goes nowhere should. */
+  linkCursor?: string;
   style?: Style | Style[];
+}
+
+/**
+ * The link under a point, whole — what `linkAtPoint` answers, and what a
+ * hover card is placed against. Its rects are **logical** pixels from the
+ * element's top-left corner, the unit a `<popup anchor>`'s `at` takes.
+ */
+export interface LinkAt {
+  href: string;
+  /** The link's whole label, across every run and line it spans. */
+  text: string;
+  /** Its extent in the element's text, in code units. */
+  start: number;
+  end: number;
+  /** The piece of it on the line under the point. */
+  rect: Rect;
+  /** Every piece of it, a line each, in reading order. */
+  rects: Rect[];
 }
 
 // --- the slices of ntk this node speaks to ---------------------------------
@@ -638,17 +660,106 @@ export class RichTextNode extends Node {
    *  selection seam: core deliberately left hover and `cursorAt` out of
    *  #291, so following a link stays this package's. */
   hrefAtPoint(x: number, y: number): string | null {
+    const s = this._scale;
+    return (
+      this._linkRunAt(x * s - this.abs.x, y * s - this.abs.y)?.href ?? null
+    );
+  }
+
+  /**
+   * The link under a **logical** window point, whole: its label, its extent
+   * and where each piece of it is drawn — what a hover card needs and
+   * `hrefAtPoint` does not say. A link is the runs either side of the one
+   * under the point that carry the same `href`, which is how `<Markdown>`
+   * writes one: a bold word in a link is a run of its own with the link's
+   * href. Two links to one address written side by side read as one.
+   */
+  linkAtPoint(x: number, y: number): LinkAt | null {
+    const s = this._scale;
+    const hit = this._linkRunAt(x * s - this.abs.x, y * s - this.abs.y);
+    if (!hit) return null;
+    const { href, layout, line: hitLine, run: hitRun } = hit;
+    // the extent, from the runs the props hold: a laid run's `start` is a
+    // code unit of the text they make, and the label is the whole of it
+    const runs = this._runs();
+    let at = 0;
+    let index = -1;
+    const starts: number[] = [];
+    for (let i = 0; i < runs.length; i += 1) {
+      starts.push(at);
+      if (
+        index < 0 &&
+        hitRun.start >= at &&
+        hitRun.start < at + runs[i].text.length
+      ) {
+        index = i;
+      }
+      at += runs[i].text.length;
+    }
+    starts.push(at);
+    if (index < 0) return null;
+    let first = index;
+    while (first > 0 && runs[first - 1].href === href) first -= 1;
+    let last = index;
+    while (last < runs.length - 1 && runs[last + 1].href === href) last += 1;
+    const start = starts[first];
+    const end = starts[last + 1];
+    const text = this.textContent().slice(start, end);
+    // a piece a line: the laid runs of the link on each line, joined
+    const rects: Rect[] = [];
+    let rect: Rect | null = null;
+    for (const line of layout.lines) {
+      let left = Infinity;
+      let right = -Infinity;
+      for (const r of line.runs) {
+        if (r.end <= start || r.start >= end || r.span?.href !== href) continue;
+        left = Math.min(left, line.x + r.x);
+        right = Math.max(right, line.x + r.x + r.width);
+      }
+      if (left > right) continue;
+      const piece = {
+        x: left / s,
+        y: line.y / s,
+        width: (right - left) / s,
+        height: line.height / s,
+      };
+      rects.push(piece);
+      if (line === hitLine) rect = piece;
+    }
+    if (!rect) return null;
+    return { href, text, start, end, rect, rects };
+  }
+
+  /** The cursor over a link, where `linkCursor` names one — asked by core
+   *  with the pointer in device pixels, the unit `abs` is in. */
+  override cursorAt(x: number, y: number): string | null {
+    const cursor = (this.props as unknown as RichTextProps).linkCursor;
+    if (!cursor) return null;
+    return this._linkRunAt(x - this.abs.x, y - this.abs.y) ? cursor : null;
+  }
+
+  /** The laid run of a link under a point in device pixels from the
+   *  element's corner, and the line it is on. A run whose `href` is null —
+   *  a link still streaming in — is no link yet. */
+  private _linkRunAt(
+    lx: number,
+    ly: number,
+  ): {
+    href: string;
+    layout: TextLayoutLike;
+    line: LineLike;
+    run: LaidRunLike;
+  } | null {
     const layout = this.paintLayout();
     if (!layout) return null;
-    const s = this._scale;
-    const lx = x * s - this.abs.x;
-    const ly = y * s - this.abs.y;
     for (const line of layout.lines) {
       if (ly < line.y || ly >= line.y + line.height) continue;
       for (const r of line.runs) {
         const href = r.span?.href;
         if (href == null) continue;
-        if (lx >= line.x + r.x && lx <= line.x + r.x + r.width) return href;
+        if (lx >= line.x + r.x && lx <= line.x + r.x + r.width) {
+          return { href, layout, line, run: r };
+        }
       }
     }
     return null;

@@ -29,25 +29,26 @@ no `<html>` successor.
 
 ## Props
 
-| Prop              | Type                                          | Notes                                                                                                                                                                       |
-| ----------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `source`          | `string`                                      | The markdown text. Append to it as chunks stream in. Required.                                                                                                              |
-| `partial`         | `boolean`                                     | Whether more source may still arrive. Default **true** — set it false when the stream ends.                                                                                 |
-| `selectable`      | `boolean`                                     | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                    |
-| `onLink`          | `(href: string, ev: X11MouseEvent) => void`   | A link was activated. Absent means clicks do nothing — this component never navigates by itself.                                                                            |
-| `fontSize`        | `number`                                      | Base text size. Default: the theme's (14).                                                                                                                                  |
-| `fontFamily`      | `string`                                      | Default: the theme's `fontFamily`.                                                                                                                                          |
-| `lineHeight`      | `number`                                      | Body text's line height — paragraphs, list items, quotes, table cells — as a multiple of the font's own line. Default **1.4**; 1 is the font's own. See "Type and spacing". |
-| `codeFontSize`    | `number`                                      | Fenced code's size. Default: 0.9 × `fontSize`.                                                                                                                              |
-| `codeLineHeight`  | `number`                                      | Fenced code's line height, a multiple of the mono font's own line. Default 1.4, as `<Code>`'s.                                                                              |
-| `monoFamily`      | `string`                                      | Code font, inline and fenced. Default: the theme's `monoFamily`.                                                                                                            |
-| `selectionColor`  | `string`                                      | Selection band fill. Default: the theme accent at 35% opacity.                                                                                                              |
-| `highlight`       | `boolean`                                     | Syntax colouring in fenced code. Default true.                                                                                                                              |
-| `resolveLanguage` | `(tag) => Language \| null`                   | A `Language` for a fence tag the built-ins do not cover — [`hljsLanguage`](code-language.md#highlightjs-for-breadth) goes here. Needs a stable identity, like `fences`.     |
-| `fences`          | `Record<string, (f: FenceInfo) => ReactNode>` | Custom renderers for fenced blocks, by language — see "Custom fences" below.                                                                                                |
-| `styles`          | `MarkdownStyles`                              | Style over the parts of the document — `paragraph`, `heading`, `quote`, `code` — merged over each part's own. Needs a stable identity, like `fences`.                       |
-| `style`           | `Style \| Style[]`                            | The root box — width, padding, margins, `overflow`.                                                                                                                         |
-| `data-testname`   | `string`                                      | For `react-x11/test` queries.                                                                                                                                               |
+| Prop              | Type                                          | Notes                                                                                                                                                                          |
+| ----------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `source`          | `string`                                      | The markdown text. Append to it as chunks stream in. Required.                                                                                                                 |
+| `partial`         | `boolean`                                     | Whether more source may still arrive. Default **true** — set it false when the stream ends.                                                                                    |
+| `selectable`      | `boolean`                                     | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                       |
+| `onLink`          | `(href: string, ev: X11MouseEvent) => void`   | A link was activated. Absent means clicks do nothing — this component never navigates by itself.                                                                               |
+| `links`           | `LinkKinds`                                   | Kinds of link the document knows — what a click on one does and the card a resting pointer opens over it. See "Links to things" below. Needs a stable identity, like `fences`. |
+| `fontSize`        | `number`                                      | Base text size. Default: the theme's (14).                                                                                                                                     |
+| `fontFamily`      | `string`                                      | Default: the theme's `fontFamily`.                                                                                                                                             |
+| `lineHeight`      | `number`                                      | Body text's line height — paragraphs, list items, quotes, table cells — as a multiple of the font's own line. Default **1.4**; 1 is the font's own. See "Type and spacing".    |
+| `codeFontSize`    | `number`                                      | Fenced code's size. Default: 0.9 × `fontSize`.                                                                                                                                 |
+| `codeLineHeight`  | `number`                                      | Fenced code's line height, a multiple of the mono font's own line. Default 1.4, as `<Code>`'s.                                                                                 |
+| `monoFamily`      | `string`                                      | Code font, inline and fenced. Default: the theme's `monoFamily`.                                                                                                               |
+| `selectionColor`  | `string`                                      | Selection band fill. Default: the theme accent at 35% opacity.                                                                                                                 |
+| `highlight`       | `boolean`                                     | Syntax colouring in fenced code. Default true.                                                                                                                                 |
+| `resolveLanguage` | `(tag) => Language \| null`                   | A `Language` for a fence tag the built-ins do not cover — [`hljsLanguage`](code-language.md#highlightjs-for-breadth) goes here. Needs a stable identity, like `fences`.        |
+| `fences`          | `Record<string, (f: FenceInfo) => ReactNode>` | Custom renderers for fenced blocks, by language — see "Custom fences" below.                                                                                                   |
+| `styles`          | `MarkdownStyles`                              | Style over the parts of the document — `paragraph`, `heading`, `quote`, `code`, a link's hover `card` — merged over each part's own. Needs a stable identity, like `fences`.   |
+| `style`           | `Style \| Style[]`                            | The root box — width, padding, margins, `overflow`.                                                                                                                            |
+| `data-testname`   | `string`                                      | For `react-x11/test` queries.                                                                                                                                                  |
 
 ## Type and spacing
 
@@ -138,6 +139,72 @@ All of that is core's `selectable` (react-x11#291). What this component adds
 is **which parts are chrome**, so copied text is clean: list markers stay
 behind, and the separators come from the layout — which for a table is
 exactly cells joined with tabs and rows with newlines.
+
+## Links to things
+
+A link in a reply often names a _thing_ — a pull request, another agent
+session, a ticket — whose state matters more than its address: are the
+checks green, is the session still running. `links` is a list of kinds that
+recognise such hrefs, and each says what a click does and what card opens
+when the pointer rests on the link.
+
+```tsx
+import { Markdown, linkKind } from '@react-x11/components/markdown';
+
+const pullRequest = linkKind({
+  match: (href) =>
+    /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/.exec(href),
+  card: (m) => <PullRequestCard repo={m[1]} number={Number(m[2])} />,
+});
+const session = linkKind({
+  match: (href) => sessionIdOf(href), // null for an href that is not one
+  activate: (id) => openSession(id),
+  card: (id, { text }) => <SessionCard id={id} title={text} />,
+});
+const LINKS = [pullRequest, session]; // module scope: a stable identity
+
+<Markdown source={reply} links={LINKS} onLink={openInBrowser} />;
+```
+
+**The document holds which thing, never its state.** A link stays an
+ordinary markdown link — `[#1476](https://github.com/o/r/pull/1476)` — so
+the text reads and works in any other renderer, copies as markdown, and is
+something a model writes without being taught a syntax. Write the href as
+the thing's real address where it has one: a pull request's URL, the deep
+link an app opens a session with. A kind then recognises links nobody marked
+as special, a bare PR URL a model pasted among them. State changes after the
+document was written, so it is the card's to read: the card is the
+application's own component, mounted while the card is up and subscribed to
+the application's own stores, and a change re-renders the card and nothing
+in the document.
+
+How the parts behave:
+
+- **`match(href)`** reads a reference out of an href, or answers `null`.
+  The kinds are tried in order and the first that matches has the link.
+  `linkKind` infers the reference's type from `match`, so `activate` and
+  `card` are checked against it.
+- **`activate(ref, link, ev)`** takes the click. A kind without one leaves
+  the click to `onLink`, so a kind can add a card to links the application
+  already follows. A link no kind activates and no `onLink` takes is inert,
+  as before.
+- **`card(ref, ctx)`** is drawn in a `<popup>` hung below the piece of the
+  link under the pointer, after `cardDelay` (default 400 ms) of rest. It
+  stays up while the pointer is on the link or on the card, and goes 250 ms
+  after it is on neither, at a press anywhere in the document, or at Escape
+  while the document has the focus. `ctx.text` is the link's whole label,
+  across its runs and lines; `ctx.close()` takes the card down. A press is
+  never a hover: a drag that selects across a link opens nothing.
+- The frame — fill, border, radius, padding — is the theme's surface, and
+  `styles.card` goes over it.
+- The pointer cursor shows over a link where a click on it does something:
+  with `onLink`, or with a kind that activates. With cards alone a link keeps
+  the text's cursor.
+
+The card's `text` is everything the document draws for the link, so a link
+written `[the **parser** fix](…)` hands over `the parser fix`. Two links to
+one address written side by side read as one link: the element knows runs
+by their `href` and nothing else.
 
 ## Custom fences
 

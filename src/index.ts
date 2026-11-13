@@ -472,11 +472,18 @@ export {
   RICHTEXT_ELEMENT,
   registerRichText,
   RichTextNode,
+  linkKind,
   useLinkClicks,
+  useLinks,
   useSelectionMenu,
 } from './richtext/index.js';
 export type {
+  LinkAt,
+  LinkCardContext,
   LinkHandlers,
+  LinkInfo,
+  LinkKind,
+  LinkKinds,
   RichTextProps,
   SelectionMenuHandlers,
   TextRun,

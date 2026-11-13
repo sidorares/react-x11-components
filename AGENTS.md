@@ -119,7 +119,8 @@ finds out from a blank window has been failed by the page.
   `<Markdown>`, `<Code>` and `<TerminalOutput>` — it paints per-run
   decoration and answers
   core's four text accessors, so a document selects across it — plus the
-  edit menu a read-only surface offers and the link-click hook), `src/codeblock/` (the look of a
+  edit menu a read-only surface offers, and links: the click hook and the
+  link kinds whose hover cards show what a link points at), `src/codeblock/` (the look of a
   block of code: the palette, the runs and the chrome `<Code>` and
   `<Markdown>`'s fences share), `src/code-language/` (the tokenizer
   seam, the built-in languages, the token palettes — under `<CodeEditor>`,

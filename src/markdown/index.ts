@@ -57,9 +57,10 @@ import type {
 import {
   registerRichText,
   RICHTEXT_ELEMENT,
+  useLinks,
   useSelectionMenu,
 } from '../richtext/index.js';
-import type { RichTextProps, TextRun } from '../richtext/index.js';
+import type { LinkKinds, RichTextProps, TextRun } from '../richtext/index.js';
 import {
   codeBlockLook,
   CodeBlockRunCache,
@@ -75,7 +76,6 @@ import type { Evaluate } from './expressions.js';
 import { SPREAD_PREFIX } from '../internal/markdown/ast.js';
 import { runsOf, plainTextOf } from './spans.js';
 import type { InlineStyles } from './spans.js';
-import { useLinkClicks } from '../richtext/index.js';
 import { hx } from './hx.js';
 import { CodeLines } from '../internal/codelines.js';
 import { useFontPrewarm } from '../internal/prewarm.js';
@@ -91,6 +91,13 @@ export type {
   ParseOptions,
 } from '../internal/markdown/ast.js';
 export { SPREAD_PREFIX } from '../internal/markdown/ast.js';
+export { CARD_OPEN_DELAY, linkKind } from '../richtext/index.js';
+export type {
+  LinkCardContext,
+  LinkInfo,
+  LinkKind,
+  LinkKinds,
+} from '../richtext/index.js';
 export { scanTag } from '../internal/markdown/tags.js';
 export type { ScannedTag, ScanResult } from '../internal/markdown/tags.js';
 export { parse, parseInline } from '../internal/markdown/parse.js';
@@ -131,6 +138,9 @@ export interface MarkdownStyles {
   quote?: Style;
   /** A fence's box: its fill, padding, radius, border. */
   code?: Style;
+  /** A link's hover card: its fill, border, padding, width — see
+   *  `MarkdownProps.links`. */
+  card?: Style;
 }
 
 export interface MarkdownProps {
@@ -151,6 +161,26 @@ export interface MarkdownProps {
    * the image source, so they arrive here too.
    */
   onLink?: (href: string, ev: X11MouseEvent<DrawnNode>) => void;
+  /**
+   * Kinds of link this document knows: hrefs that name a thing — a pull
+   * request, another session — and what a click on one does and what card
+   * a resting pointer opens over it, showing the thing as it is now.
+   *
+   * ```tsx
+   * const pullRequest = linkKind({
+   *   match: (href) => PR_URL.exec(href),
+   *   card: (m) => <PullRequestCard repo={m[1]} number={Number(m[2])} />,
+   * });
+   * <Markdown source={reply} links={[pullRequest]} onLink={openUrl} />
+   * ```
+   *
+   * A link stays an ordinary markdown link — `[#1476](https://…/pull/1476)`
+   * — so the document reads and works anywhere else, and holds which thing
+   * it means and never its state. The kinds are tried in order and the
+   * first that matches has the link; one without `activate` leaves the
+   * click to `onLink`. Give the list a stable identity.
+   */
+  links?: LinkKinds;
   /** Base text style. Defaults: the theme's `fontSize` (14) and
    *  `fontFamily`. */
   fontSize?: number;
@@ -280,6 +310,9 @@ interface Look {
   body: Style;
   styles: MarkdownStyles;
   highlight: boolean;
+  /** The cursor over a link that a click follows; undefined where none
+   *  does. */
+  linkCursor: string | undefined;
   /** Cache epoch: two equal keys derive identical elements. */
   key: string;
 }
@@ -287,6 +320,7 @@ interface Look {
 function deriveLook(
   theme: Record<string, unknown>,
   props: MarkdownProps,
+  follows: boolean,
 ): Look {
   const text = String(theme.text ?? '#2d3436');
   const dim = String(theme.textMuted ?? '#7f8c8d');
@@ -324,7 +358,9 @@ function deriveLook(
     body: { lineHeight: props.lineHeight ?? BODY_LINE_HEIGHT },
     styles: props.styles ?? {},
     highlight,
+    linkCursor: follows ? 'pointer' : undefined,
     key: [
+      follows ? 'p' : '-',
       text,
       dim,
       accent,
@@ -399,11 +435,13 @@ function richtext(
   key: string | number,
   runs: TextRun[],
   style?: Style,
+  linkCursor?: string,
   wrap = true,
 ): ReactElement {
   const props: RichTextProps & { key?: string | number } = { runs };
   if (!wrap) props.wrap = false;
   if (style) props.style = style;
+  if (linkCursor) props.linkCursor = linkCursor;
   return h(RICHTEXT_ELEMENT, { ...props, key } as Record<string, unknown>);
 }
 
@@ -430,10 +468,12 @@ function renderBlock(
   const look = ctx.look;
   switch (block.type) {
     case 'paragraph':
-      return richtext(key, runsOf(block.children, look.inline), {
-        ...look.body,
-        ...look.styles.paragraph,
-      });
+      return richtext(
+        key,
+        runsOf(block.children, look.inline),
+        { ...look.body, ...look.styles.paragraph },
+        look.linkCursor,
+      );
 
     case 'heading': {
       const scale = look.headingScales[block.depth - 1] ?? 1;
@@ -441,10 +481,15 @@ function renderBlock(
         size: Math.round(look.inline.size * scale),
         weight: 700,
       });
-      return richtext(key, runsOf(block.children, s), {
-        marginTop: first ? 0 : Math.round(look.blockGap * 0.6),
-        ...look.styles.heading,
-      });
+      return richtext(
+        key,
+        runsOf(block.children, s),
+        {
+          marginTop: first ? 0 : Math.round(look.blockGap * 0.6),
+          ...look.styles.heading,
+        },
+        look.linkCursor,
+      );
     }
 
     case 'code':
@@ -728,10 +773,12 @@ function renderList(list: ListBlock, ctx: RenderCtx, key: number): ReactNode {
       // paragraph, taking the rest of the row; the column is for an item of
       // several blocks, which needs the gap between them.
       only?.type === 'paragraph'
-        ? richtext(0, runsOf(only.children, look.inline), {
-            ...STYLES.itemText,
-            ...look.body,
-          })
+        ? richtext(
+            0,
+            runsOf(only.children, look.inline),
+            { ...STYLES.itemText, ...look.body },
+            look.linkCursor,
+          )
         : hx(
             'box',
             {
@@ -875,15 +922,20 @@ function MarkdownTable(props: MarkdownTableProps): ReactElement {
       // space around the text looks the same either way, and there is no
       // box per cell for yoga to lay out.
       ...cells.map((cell, c) =>
-        richtext(c, runsOf(cell, s), {
-          textAlign: table.align[c] ?? undefined,
-          width: widths[c] - padX * 2,
-          marginLeft: padX,
-          marginRight: padX,
-          marginTop: padY,
-          marginBottom: padY,
-          ...look.body,
-        }),
+        richtext(
+          c,
+          runsOf(cell, s),
+          {
+            textAlign: table.align[c] ?? undefined,
+            width: widths[c] - padX * 2,
+            marginLeft: padX,
+            marginRight: padX,
+            marginTop: padY,
+            marginBottom: padY,
+            ...look.body,
+          },
+          look.linkCursor,
+        ),
       ),
     );
 
@@ -981,9 +1033,15 @@ export function Markdown(props: MarkdownProps): ReactElement {
   const theme = useTheme() as unknown as Record<string, unknown>;
   const app = useApp() as { fonts?: FontsMeasureLike } | null;
 
+  // Whether a click on a link does something, which is what shows the
+  // pointer over one. `links` asks only whether a kind activates.
+  const kinds = props.links;
+  const follows =
+    !!onLink || !!kinds?.some((k) => typeof k.activate === 'function');
   const look = React.useMemo(
-    () => deriveLook(theme, props),
+    () => deriveLook(theme, props, follows),
     [
+      follows,
       theme,
       props.fontSize,
       props.fontFamily,
@@ -1004,7 +1062,11 @@ export function Markdown(props: MarkdownProps): ReactElement {
       : null,
   );
 
-  const links = useLinkClicks(onLink);
+  const links = useLinks({
+    ...(onLink ? { onLink } : null),
+    ...(kinds ? { kinds } : null),
+    ...(props.styles?.card ? { cardStyle: props.styles.card } : null),
+  });
   const menu = useSelectionMenu(selectable);
 
   // The gate the parser asks. Memoised on the map's identity so that a
@@ -1187,10 +1249,13 @@ export function Markdown(props: MarkdownProps): ReactElement {
       // an I-beam because it said this.
       selectable,
       selectionColor: props.selectionColor,
-      ...links,
+      ...links.handlers,
       ...menu,
       'data-testname': props['data-testname'],
     } as Record<string, unknown>,
     ...children,
+    // the open card hangs off the link in a window of its own; the slot is
+    // after every block, so opening it moves no block's key
+    links.card,
   );
 }

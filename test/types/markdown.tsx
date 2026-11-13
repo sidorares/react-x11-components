@@ -1,8 +1,8 @@
 // Type-level test: the declarations compile against react-x11's JSX
 // namespace, both as a component and as the raw `<richtext>` element the
 // shared module's augmentation adds.
-import { Markdown, parseMarkdown } from '../../src/index.js';
-import type { MarkdownProps, TextRun } from '../../src/index.js';
+import { linkKind, Markdown, parseMarkdown } from '../../src/index.js';
+import type { LinkKinds, MarkdownProps, TextRun } from '../../src/index.js';
 
 export const asComponent = (
   <box style={{ overflow: 'scroll', flexGrow: 1 }}>
@@ -46,3 +46,40 @@ export const missingSource = <Markdown partial />;
 
 // @ts-expect-error a richtext takes runs, not children
 export const withChildren = <richtext>nope</richtext>;
+
+// A link kind: its reference type comes from `match`, and the other
+// callbacks are checked against it.
+const pullRequest = linkKind({
+  match: (href) => /\/pull\/(\d+)$/.exec(href),
+  activate: (m, link, ev) => {
+    void m[1];
+    void link.text;
+    void ev.x;
+  },
+  card: (m, ctx) => <text>{`#${m[1]} ${ctx.text}`}</text>,
+  cardDelay: 300,
+});
+const session = linkKind({
+  match: (href) =>
+    href.startsWith('claude://session/') ? href.slice(17) : null,
+  card: (id: string, ctx) => {
+    ctx.close();
+    return <text>{id}</text>;
+  },
+});
+// kinds of different references sit in one list
+const kinds: LinkKinds = [pullRequest, session];
+export const withLinks = (
+  <Markdown
+    source="[#12](https://github.com/o/r/pull/12)"
+    links={kinds}
+    styles={{ card: { padding: 12, width: 320 } }}
+  />
+);
+
+// the reference `match` reads and the one `card` takes have to agree
+linkKind({
+  // @ts-expect-error a number is no string
+  match: (href) => href.length,
+  card: (n: string) => <text>{n}</text>,
+});

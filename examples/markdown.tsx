@@ -11,7 +11,8 @@ import type { ReactElement } from 'react';
 import { createRoot } from 'react-x11';
 
 import { Formula } from '../src/formula/index.js';
-import { Markdown } from '../src/markdown/index.js';
+import { linkKind, Markdown } from '../src/markdown/index.js';
+import type { LinkKinds } from '../src/markdown/index.js';
 import { Mermaid } from '../src/mermaid/index.js';
 import type { FenceInfo } from '../src/markdown/index.js';
 
@@ -59,6 +60,13 @@ flowchart LR
   B -->|not yet| D[last good]
 \`\`\`
 
+## Links that know what they point at
+
+Rest the pointer on [the parser fix](https://github.com/sidorares/react-x11-components/pull/1476)
+or on [the docs session](agent-session://docs-pass): each is an ordinary
+link, and a \`links\` kind opens a card with the thing's state as it is now —
+which the document never holds.
+
 ## And a table
 
 | feature | status | notes |
@@ -86,6 +94,58 @@ const FENCES = {
   ),
 };
 
+// A stand-in for the application's own state: what a pull request's checks
+// and an agent session are doing right now. The cards read it while they are
+// up, so it moves under a card that is open.
+function useTicking(states: readonly string[], ms: number): string {
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setI((n) => (n + 1) % states.length), ms);
+    return () => clearInterval(id);
+  }, [states, ms]);
+  return states[i];
+}
+
+const CHECKS = ['checks running', 'checks passed', 'merged'] as const;
+const SESSION = ['in progress', 'waiting on you', 'stopped'] as const;
+
+function PullRequestCard(props: { repo: string; n: number }): ReactElement {
+  const state = useTicking(CHECKS, 1500);
+  return (
+    <box style={{ flexDirection: 'column', gap: 4, width: 260 }}>
+      <text style={{ fontWeight: 'bold' }}>{`${props.repo} #${props.n}`}</text>
+      <text>{state}</text>
+    </box>
+  );
+}
+
+function SessionCard(props: { id: string; title: string }): ReactElement {
+  const state = useTicking(SESSION, 1200);
+  return (
+    <box style={{ flexDirection: 'column', gap: 4, width: 220 }}>
+      <text style={{ fontWeight: 'bold' }}>{props.title}</text>
+      <text>{`session ${props.id} · ${state}`}</text>
+    </box>
+  );
+}
+
+// Module scope too: a stable list.
+const LINKS: LinkKinds = [
+  linkKind({
+    match: (href) =>
+      /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/.exec(href),
+    card: (m) => <PullRequestCard repo={m[1]} n={Number(m[2])} />,
+  }),
+  linkKind({
+    match: (href) =>
+      href.startsWith('agent-session://')
+        ? href.slice('agent-session://'.length)
+        : null,
+    activate: (id) => console.log('open session:', id),
+    card: (id, { text }) => <SessionCard id={id} title={text} />,
+  }),
+];
+
 function App(): ReactElement {
   const [length, setLength] = useState(0);
   const done = length >= DOCUMENT.length;
@@ -106,6 +166,7 @@ function App(): ReactElement {
           source={DOCUMENT.slice(0, length)}
           partial={!done}
           fences={FENCES}
+          links={LINKS}
           onLink={(href) => console.log('link:', href)}
           style={{ padding: 16 }}
         />
