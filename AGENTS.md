@@ -3975,6 +3975,23 @@ host's, from `onResource`: the store asks for a URL once, so a `<link>` put
 in for a sheet already in — a switcher going back to a theme it showed —
 asks for nothing, and was never told. Each is told once an `href`.
 
+**What blocks a page's rendering is a set the host keeps, not a scan**
+(`scripts/render-blocking.ts`, HTML's render-blocking element set). An
+element goes in only while the document has no `<body>`, and once out it
+stays out: worked out again at every frame from what was in the tree, an
+expect link in the body blocked, and one renamed after it was found blocked
+again. The parser's elements are decided by where they stand, everything
+before the body being what the parser made before there was one; a
+script's are decided as they go in. Three things are load-bearing.
+**Anything new that puts elements into the document goes through
+`_connected`**, or the set never sees it. **Anything new that settles what
+a render-blocking element waits for tells the host** (`renderUnblock`), as
+a `load`, an `error` and an inline module's run do, or the page waits out
+the timeout. And **the timeout is counted from the page's first frame**:
+`now()` reads the process's clock, whose origin is no document's, and
+counted from that origin, every page a long-lived process ran after its
+first ten seconds blocked nothing.
+
 **A script the parser met waits for the sheets before it, and `<Html>`
 knows which those are** (`scriptsUnblocked`, `_blocksScripts`): HTML's
 "style sheet that is blocking scripts". The host's runner waits on the

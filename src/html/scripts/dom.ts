@@ -386,6 +386,8 @@ export function installDom(
     'fontMatch',
     'sheets',
     'importedCss',
+    'renderBlocked',
+    'renderUnblock',
   ]);
   /** The attributes some list goes by (`readsAttributes` in `liveList`). */
   const LIST_ATTRIBUTES = new Set([
@@ -4043,9 +4045,6 @@ export function installDom(
    *  transition: its old state captured and its update not yet done. */
   const renderingSuppressed = (): boolean =>
     activeTransition?._suppressed === true;
-  /** Whether an element's `blocking` attribute names `render`. */
-  const blocksRender = (el: Any): boolean =>
-    /(?:^|\s)render(?:\s|$)/i.test(str(el?.getAttribute?.('blocking') ?? ''));
   /** Whether a linked resource's media matches, or is absent. */
   const mediaMatches = (el: Any): boolean => {
     const media = str(el?.getAttribute?.('media') ?? '').trim();
@@ -4056,105 +4055,42 @@ export function installDom(
       return false;
     }
   };
+  /** How long a document's rendering may be held for what blocks it, in
+   *  milliseconds from the first frame that asks: the clock `now` reads is
+   *  the process's, whose origin is no document's. */
+  const RENDER_BLOCKING_TIMEOUT = 10_000;
+  let renderBlockingFrom = -1;
   /**
-   * Whether this document's rendering opportunities are blocked (HTML,
-   * "render-blocking"): a connected `<link rel=expect blocking=render>`
-   * whose media matches, until the element its href names is in the tree
-   * — or until the parse finishes, where that id never appears or the
-   * href is not this document; a `<script>`, `<style>` or stylesheet
-   * `<link>` with `blocking=render` whose resource has not settled; or a
-   * head stylesheet the host is still waiting on (`renderBlocked`).
-   * Animation frame callbacks wait on any of those.
+   * Whether this document's rendering opportunities are blocked (HTML
+   * 3.1.6, "render-blocked"): its render-blocking element set, which the
+   * host keeps as elements go in, change and settle, holds something, or
+   * its body is not there yet — or a head stylesheet the host is still
+   * waiting on holds its first paint (`renderBlocked`). Animation frame
+   * callbacks, and the first paint timing, wait on any of those, but
+   * never past RENDER_BLOCKING_TIMEOUT from the time origin, which is
+   * HTML's implementation-defined timeout.
    */
   const renderOpportunitiesBlocked = (): boolean => {
     if (document._unloaded) return false;
-    // a head stylesheet still pending holds the first paint in `<Html>`
-    // (`_renderBlocked`); ask the same so its rAF waits too
+    const at = now();
+    if (renderBlockingFrom < 0) renderBlockingFrom = at;
+    if (at - renderBlockingFrom > RENDER_BLOCKING_TIMEOUT) return false;
     try {
-      if (call('renderBlocked') === true) return true;
+      return call('renderBlocked', document._ready === 'loading') === true;
+    } catch {
+      // no view yet
+      return false;
+    }
+  };
+  /** What an element fetches settled: it holds the document's rendering
+   *  no more (HTML 3.1.6, "unblock rendering"). */
+  const unblockRendering = (el: Any): void => {
+    if (typeof el?._id !== 'number') return;
+    try {
+      call('renderUnblock', el._id);
     } catch {
       // no view yet
     }
-    let nodes: Any;
-    try {
-      nodes = document.querySelectorAll('link, script, style');
-    } catch {
-      return false;
-    }
-    const loading = document._ready === 'loading';
-    for (let i = 0; i < nodes.length; i++) {
-      const el = nodes[i];
-      if (!el?.isConnected) continue;
-      const tag = str(el.localName ?? '').toLowerCase();
-      if (tag === 'link') {
-        const rel = str(el.getAttribute?.('rel') ?? '');
-        if (/(?:^|\s)expect(?:\s|$)/i.test(rel)) {
-          if (!blocksRender(el) || !mediaMatches(el)) continue;
-          const href = str(el.getAttribute?.('href') ?? '');
-          let url: URL;
-          let docUrl: URL;
-          try {
-            url = new URL(href, location.href);
-            docUrl = new URL(location.href);
-          } catch {
-            if (loading) return true;
-            continue;
-          }
-          const sameDoc =
-            url.origin === docUrl.origin &&
-            url.pathname === docUrl.pathname &&
-            url.search === docUrl.search;
-          const id = sameDoc ? decodeURIComponent(url.hash.slice(1)) : '';
-          if (!id) {
-            // not this document, or no fragment: blocks until the parse ends
-            if (loading) return true;
-            continue;
-          }
-          // the document's indicated part for that fragment: an `id`, or an
-          // `<a name>` (element-render-blocking-041)
-          const byId = document.getElementById(id);
-          const byName =
-            !byId && typeof document.getElementsByName === 'function'
-              ? document.getElementsByName(id)[0]
-              : null;
-          const found = byId ?? byName;
-          if (found?.isConnected) continue;
-          // missing: hold while parsing; once interactive, the expectation
-          // is over (element-render-blocking-024)
-          if (loading) return true;
-          continue;
-        }
-        // stylesheet `<link blocking=render>`: until its load or error
-        if (
-          /(?:^|\s)stylesheet(?:\s|$)/i.test(rel) &&
-          blocksRender(el) &&
-          mediaMatches(el) &&
-          !el._resourceSettled
-        ) {
-          return true;
-        }
-        continue;
-      }
-      // `<script blocking=render>`: until its load or error. A `<style
-      // blocking=render>`'s `@import`s hold through the host's
-      // `renderBlocked` above once the sheet is read; with none it is
-      // already applied.
-      if (tag !== 'script' || !blocksRender(el) || el._resourceSettled) {
-        continue;
-      }
-      // an external script, or a module (inline ones fetch imports): an
-      // empty classic inline has already run by the time a frame asks
-      const src = str(el.getAttribute?.('src') ?? '').trim();
-      const type = str(el.getAttribute?.('type') ?? '')
-        .trim()
-        .toLowerCase();
-      const module =
-        type === 'module' ||
-        type === 'importmap' ||
-        type === 'speculationrules';
-      if (src || module) return true;
-    }
-    return false;
   };
   /** First paint timing entries, once a rendering opportunity runs. */
   let paintsNoted = false;
@@ -42670,7 +42606,7 @@ export function installDom(
       case 'load':
       case 'error':
         if (target && typeof target === 'object') {
-          target._resourceSettled = true;
+          unblockRendering(target);
           if (frameCallbacks.size || renderingOwed) wantFrame();
         }
         return dispatch(target, trusted(new Event(e.type)));
@@ -43973,7 +43909,7 @@ export function installDom(
     // a render-blocking script or sheet that settles unblocks animation
     // frames (`renderOpportunitiesBlocked`)
     if (type === 'load' || type === 'error') {
-      target._resourceSettled = true;
+      unblockRendering(target);
       if (frameCallbacks.size || renderingOwed) wantFrame();
     }
     // a frame's document of this realm's is complete by the time its frame

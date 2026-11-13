@@ -195,6 +195,7 @@ import { matchesSyntax, validSyntax } from '../css/syntax.js';
 import { focusableElement, isInert } from '../focus.js';
 import { CONTROL_PSEUDOS } from '../control-state.js';
 import { serializeXml } from './xml.js';
+import { RenderBlocking } from './render-blocking.js';
 import { XAttr, compileXPath, evaluateXPath, prefixesIn } from './xpath.js';
 import type { CompiledXPath, XNode } from './xpath.js';
 import {
@@ -2874,6 +2875,8 @@ export class DomHost {
    * (4.8.11.5), as a list of ids.
    */
   parserInserted(): { body: boolean; media: string } | null {
+    // what the parser put before the body holds the document's rendering
+    this._renderBlocking.parsed();
     const made = this._seams.handle.parserMade?.();
     this._noteAutofocus(made ?? [], false);
     if (this._disposed) return null;
@@ -2943,6 +2946,30 @@ export class DomHost {
   /** Whether the media the parser made before the scripts began have been
    *  told to the page (`parserInserted`). */
   private _mediaSwept = false;
+
+  /** The document's render-blocking element set (HTML 3.1.6), which the
+   *  page's frames ask about (`renderBlocked`). */
+  private readonly _renderBlocking = new RenderBlocking({
+    document: () => this.document,
+    url: () => this.url,
+    xml: () => this._xml.has(this.document),
+    resolve: (href, el) => this._resolve(href, el),
+    mediaMatches: (query) => {
+      try {
+        return this._handle.matchMedia(query) === true;
+      } catch {
+        return false;
+      }
+    },
+    scriptMade: (el) => this._forceAsync.has(el),
+    connected: (el) => documentHolding(el) === this.document,
+  });
+
+  /** What an element fetches settled, or the script ran: it holds the
+   *  document's rendering no more (HTML 3.1.6, "unblock rendering"). */
+  renderUnblock(el: Element): void {
+    this._renderBlocking.unblock(el);
+  }
 
   /** Load the frames the document has, as a browser loads a frame as the
    *  parser meets it: those its markup has, where the browser draws frames
@@ -6147,8 +6174,19 @@ export class DomHost {
       // a head stylesheet still on its way holds the page's first paint
       // (`HtmlViewNode.renderBlocked`), which the animation-frame loop
       // asks so rAF waits as it does for `blocking=render`
+      // and so does the document's render-blocking element set, and the
+      // end of its head (HTML 3.1.6): `a` is whether the parse goes on
       case 'renderBlocked':
-        return this._handle.renderBlocked() === true;
+        return (
+          this._renderBlocking.blocked(a === true) ||
+          this._handle.renderBlocked() === true
+        );
+      // what a render-blocking element fetches settled
+      case 'renderUnblock': {
+        const node = this._nodes.get(Number(a));
+        if (node instanceof Element) this._renderBlocking.unblock(node);
+        return null;
+      }
 
       // a document's `@font-face` faces, `document.fonts`'s (CSS Font
       // Loading 3), asked of the view that draws it: the page's, or a
@@ -7579,6 +7617,8 @@ export class DomHost {
         attributeName: name!,
         oldValue,
       });
+      if (target instanceof Element)
+        this._renderBlocking.changed(target, name!);
       if (
         isImage(target) &&
         IMAGE_ATTRIBUTES.has(name!) &&
@@ -7742,7 +7782,10 @@ export class DomHost {
       previousSibling: previous,
       nextSibling: next,
     });
-    if (removed.length) this._pointerLost(parent, removed);
+    if (removed.length) {
+      this._pointerLost(parent, removed);
+      this._renderBlocking.removed();
+    }
     // a policy a `<meta>` brings is the document's once the element is in
     // its head, and stays when it goes (HTML, the `http-equiv` "Content
     // security policy" state)
@@ -9509,10 +9552,17 @@ export class DomHost {
     this._noteAutofocus(nodes, true);
     const found = DomUtils.findAll(
       (el) =>
-        el.name === 'script' || el.name === 'link' || FRAME_TAGS.has(el.name),
+        el.name === 'script' ||
+        el.name === 'link' ||
+        el.name === 'style' ||
+        FRAME_TAGS.has(el.name),
       nodes as AnyNode[],
     );
+    // each blocks the document's rendering where it may still be added to
+    // what does (HTML 3.1.6), whatever its preparing does next
+    if (found.length) this._renderBlocking.connected(found);
     for (const el of found) {
+      if (el.name === 'style') continue;
       if (this._disposed) return;
       if (el.name === 'script') this._prepareScript(el);
       else if (el.name === 'link') this._preloadLink(el);

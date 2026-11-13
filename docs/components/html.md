@@ -196,15 +196,36 @@ when:
   late sheet restyles the document. A host that never answers a head sheet
   leaves the document undrawn, as a browser that never hears back does; a
   host that cannot fetch one returns `null`.
-- **Render-blocking holds animation frames** until the blocker settles: a
-  `<link rel=expect blocking=render>` until the element its href names is
-  in the tree (by `id`, or an `<a name>`), or until the parse ends where
-  that name never appears; a `<script>` or stylesheet `<link>` with
-  `blocking=render` until its `load` or `error`; and a head stylesheet the
-  host is still fetching, as `<Html>` already holds the first paint for.
-  Its `media` must match. The first unblocked frame records
+- **Render-blocking holds animation frames**, as HTML's render-blocking
+  element set has it. A page's animation frames, and the first
   `PerformancePaintTiming` entries (`first-paint`,
-  `first-contentful-paint`).
+  `first-contentful-paint`), wait while the document's `<body>` is not
+  there yet and while the set holds anything. An element goes into the set
+  only while there is no body, which is the rule the rest of this follows:
+  - **What goes in:** a `<link rel=expect>`, a `<script>`, a `<style>` or
+    a stylesheet `<link>` with `blocking=render`, and a classic script the
+    parser met with a `src` and neither `async` nor `defer`, which is
+    render-blocking without saying so. A link's `media` must match, and an
+    expect link must name a part of this document, its `href` resolved
+    against the base: under `<base href="other.html">`, `#x` names nothing
+    here and blocks nothing.
+  - **What takes it out:** an expect link leaves when the element its
+    `href` names is in the tree (by `id`, or an `<a name>`), or when the
+    parse ends without it, and stays out if that element is renamed. A
+    script, a sheet or a `<style>` leaves at its `load` or `error`. An inline
+    module leaves once its imports have run. Any of them leaves when it is
+    taken out of the document, or when a change to its `href`, `rel`,
+    `media` or `blocking` makes it no longer blocking.
+  - **What does nothing:** an element put in, or changed to block, once the
+    body is there, as a browser has it. A head stylesheet the host is still
+    fetching holds the frames as well, as `<Html>` already holds the first
+    paint for it.
+  - **The timeout:** nothing holds the frames for longer than 10 seconds
+    from the first frame a page asked for, which is HTML's timeout and
+    keeps a page whose element never settles from waiting for good.
+  - **A `<style>` hears `load`** once the cascade has read it and what it
+    imports has come in, and again for each new text, which is what a page
+    waiting on a `<style>` it put in listens for.
 - **A document has its navigation entry** (Navigation Timing 2):
   `performance.getEntriesByType("navigation")` is its one
   `PerformanceNavigationTiming`, and `performance.navigation` its legacy

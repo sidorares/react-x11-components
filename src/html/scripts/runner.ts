@@ -1485,6 +1485,9 @@ export class ScriptRunner {
       // `load`
       if (ran === 'unfetched') this.engine.call('__fire', [element, 'error']);
       else if (request.src) this.engine.call('__fire', [element, 'load']);
+      // an inline one, which hears neither, holds the document's rendering
+      // until its graph has run (HTML 3.1.6)
+      else this.host.renderUnblock(request.element);
       return;
     }
     // an inline script's file is its document, as a browser names it in a
