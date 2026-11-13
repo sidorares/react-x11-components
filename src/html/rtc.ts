@@ -148,6 +148,12 @@ export interface RTCRtpSourceLike {
   timestamp: number;
   rtpTimestamp: number;
   audioLevel?: number;
+  /** Where abs-capture-time is negotiated: when its last frame was
+   *  captured, in milliseconds of the capture system's NTP clock, and the
+   *  sender's estimate of how far its own clock is from that one
+   *  (WebRTC Extensions, 7). */
+  captureTimestamp?: number;
+  senderCaptureTimeOffset?: number;
 }
 
 /** One stats object, as an `RTCStatsReport` holds it: its fields are the

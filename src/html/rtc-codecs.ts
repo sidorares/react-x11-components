@@ -24,6 +24,11 @@ export interface OfferedCodec extends RTCCodecLike {
 export interface OfferedExtension {
   uri: string;
   id: number;
+  /** Not offered until a page asks for it, with
+   *  `setHeaderExtensionsToNegotiate` or in an offer it changed: what
+   *  `getHeaderExtensionsToNegotiate` lists as `stopped`. It is answered
+   *  wherever an offer has it, as Chrome answers it. */
+  stoppedByDefault?: boolean;
 }
 
 const VIDEO_FEEDBACK = [
@@ -94,6 +99,12 @@ const TRANSPORT_CC =
 const MID = 'urn:ietf:params:rtp-hdrext:sdes:mid';
 const RID = 'urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id';
 const REPAIRED_RID = 'urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id';
+/** When a frame was captured, in the sender's NTP clock, and how far the
+ *  sender's clock is from the capture system's: what a receiver's
+ *  `captureTimestamp` and `senderCaptureTimeOffset` are read from. */
+const ABS_CAPTURE_TIME =
+  'http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time';
+const VIDEO_ORIENTATION = 'urn:3gpp:video-orientation';
 
 /** The header extensions of each kind, at Chrome's ids. */
 export const OFFERED_EXTENSIONS: Record<'audio' | 'video', OfferedExtension[]> =
@@ -103,6 +114,7 @@ export const OFFERED_EXTENSIONS: Record<'audio' | 'video', OfferedExtension[]> =
       { uri: ABS_SEND_TIME, id: 2 },
       { uri: TRANSPORT_CC, id: 3 },
       { uri: MID, id: 4 },
+      { uri: ABS_CAPTURE_TIME, id: 6, stoppedByDefault: true },
     ],
     video: [
       { uri: ABS_SEND_TIME, id: 2 },
@@ -110,6 +122,8 @@ export const OFFERED_EXTENSIONS: Record<'audio' | 'video', OfferedExtension[]> =
       { uri: MID, id: 4 },
       { uri: RID, id: 10 },
       { uri: REPAIRED_RID, id: 11 },
+      { uri: ABS_CAPTURE_TIME, id: 6, stoppedByDefault: true },
+      { uri: VIDEO_ORIENTATION, id: 13 },
     ],
   };
 

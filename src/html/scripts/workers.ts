@@ -124,6 +124,10 @@ export interface WorkerThreadData {
   permissions: Record<string, string>;
   /** Whether the page has anything to show a notification with. */
   notifies: boolean;
+  /** When the page made it, on the wall clock, which every thread reads
+   *  alike: where the worker's time starts (HR Time 3, the time origin),
+   *  however long its thread takes to come up. */
+  born: number;
 }
 
 /** What the thread tells this side. */
@@ -279,6 +283,7 @@ export class PageWorkers implements PageWorkersLike {
       stopped: this._stopped,
       permissions: this._seams.permissions?.() ?? {},
       notifies: !!this._seams.notifications,
+      born: Date.now(),
     };
     const source = threadSource();
     const thread = new Thread(source, {
