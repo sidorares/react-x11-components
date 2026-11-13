@@ -5681,11 +5681,15 @@ test("a MediaSource's duration is its element's while it is attached, and the el
     'closed',
     null,
     null,
-    'abort:3',
+    // the load's resource selection finds nothing at its stable state,
+    // before the queued `abort` and `emptied`, so both read EMPTY (HTML
+    // 4.8.11.5); Chrome's stable state is a task after them, and reads
+    // NO_SOURCE
+    'abort:0',
     'active',
     'buffers',
     'sourceclose:closed',
-    'emptied:3',
+    'emptied:0',
     0,
     null,
   ]);

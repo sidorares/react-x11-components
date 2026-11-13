@@ -16386,9 +16386,11 @@ export function installDom(
     ask.abort?.();
     ask.abort = null;
     mediaUnwatch(ask);
-    mediaDetach(ask);
+    // what a detached `MediaSource` tells, `sourceclose`, is queued after
+    // the failure's `error`, as Chrome has it
     if (ask.selection) {
       mediaCandidateFailed(el, ask.selection, load);
+      mediaDetach(ask);
       return;
     }
     // the state at once and the event in a task, as browsers have it
@@ -16411,6 +16413,7 @@ export function installDom(
       }
       mediaDelay(el, false);
     }, el);
+    mediaDetach(ask);
   };
   /** Three seconds from now, `stalled`, where nothing comes before
    *  (HTML 4.8.11.5, "is currently stalled"). */
@@ -16969,12 +16972,14 @@ export function installDom(
    *  go, one that waits woken by a node put in after it, and a `<source>`
    *  put in an empty media element with no `src` starts its selection. */
   const mediaTreeOps = (op: string, a: Primitive, b: Primitive) => {
-    const inserts = INSERTING_OPS.has(op);
+    // asked of every op that changes the tree, so through `Set.prototype`
+    // as it was before page code ran (`mutatesHas`, `setSize`)
+    const inserts = mutatesHas.call(INSERTING_OPS, op);
     const parent = inserts && typeof a === 'number' ? wrappers.get(a) : null;
     const adjacent = op === 'adjacent';
     const removals = mediaRemovals();
     if (
-      !selectingMedia.size &&
+      !setSize.call(selectingMedia) &&
       !(parent instanceof HTMLMediaElement) &&
       !adjacent
     ) {
@@ -17090,7 +17095,9 @@ export function installDom(
    *  internal pause steps. Asked of the media that play or may autoplay,
    *  which a change to the tree can take out. */
   const mediaRemovals = (): (() => void) | null => {
-    if (!playingMedia.size && !autoplayMedia.size) return null;
+    if (!setSize.call(playingMedia) && !setSize.call(autoplayMedia)) {
+      return null;
+    }
     const watched = [...playingMedia, ...autoplayMedia].filter(
       (el) => !!bridge('connected', el._id),
     );
