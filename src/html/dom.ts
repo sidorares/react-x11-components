@@ -60,7 +60,6 @@ const NON_RENDERED_SCRIPTING = new Set(['template', 'noscript']);
 /** The MIME types a classic script is (HTML 4.12.1.1, "JavaScript MIME
  *  type essence match"), and no type at all. */
 const CLASSIC_TYPES = new Set([
-  '',
   'text/javascript',
   'application/javascript',
   'application/ecmascript',
@@ -79,10 +78,37 @@ const CLASSIC_TYPES = new Set([
   'text/x-javascript',
 ]);
 
-/** Whether a `<script>`'s `type`, lower-cased, its parameters left out,
- *  is a classic script's. */
+/** Whether a script block's type string (`scriptTypeOf`) is a classic
+ *  script's: one of the types, in any case, and nothing else, parameters
+ *  included (HTML 4.12.1.1, "JavaScript MIME type essence match"). */
 export function isClassicScriptType(type: string): boolean {
-  return CLASSIC_TYPES.has(type.split(';')[0].trim().toLowerCase());
+  return CLASSIC_TYPES.has(type.toLowerCase());
+}
+
+/**
+ * A `<script>`'s type string, lower-cased (HTML 4.12.1.1, "prepare the
+ * script element", step 8): `text/javascript` where its `type` is empty or
+ * it has neither a `type` nor a `language`, or a `language` that is empty;
+ * else its `type` with ASCII white space taken off either end — but for
+ * `module`, which is one only as written — or `text/`
+ * and its `language` as written. An SVG script reads no `language`, as no
+ * browser has one read there.
+ */
+export function scriptTypeOf(el: Element): string {
+  const { type, language } = el.attribs;
+  if (type !== undefined) {
+    if (type === '') return 'text/javascript';
+    const trimmed = type
+      .replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '')
+      .toLowerCase();
+    // `module` as it is written and with nothing around it, as every
+    // browser has it and WPT holds them to: ` module` is no type at all
+    return trimmed === 'module' && type.length !== 6
+      ? type.toLowerCase()
+      : trimmed;
+  }
+  if (!language || namespaceOf(el) === SVG_NS) return 'text/javascript';
+  return `text/${language}`.toLowerCase();
 }
 
 /**
@@ -98,7 +124,7 @@ export function isClassicScriptType(type: string): boolean {
 export function blocksParser(el: Element, scripting: boolean): boolean {
   if (tagOf(el) !== 'script' || !isStyleOrScript(el)) return false;
   const { attribs } = el;
-  if (!isClassicScriptType(attribs.type ?? 'text/javascript')) return false;
+  if (!isClassicScriptType(scriptTypeOf(el))) return false;
   if (attribs.nomodule !== undefined) return false;
   if (
     attribs.src !== undefined &&
@@ -137,6 +163,38 @@ export function scriptUrlOf(el: Element): string | null {
  *  parser") — one written by a parser-blocking script's `document.write`
  *  among them, and none a script put in with the DOM. */
 const PARSER_SHEETS = new WeakSet<Element>();
+
+/** The `<script>`s a document's parser made, by that document: its parser
+ *  document (HTML 4.12.1), which a script that bails before it starts has
+ *  no longer (`leftByParser`). */
+const PARSER_SCRIPTS = new WeakMap<Element, Document>();
+
+/** Whether a classic script's `for` and `event` say it is for something
+ *  other than the window's `load`, which it then is not run for (HTML
+ *  4.12.1.1, "prepare the script element", step 14): both attributes, and
+ *  not `window` and `onload` or `onload()`, trimmed of ASCII white space and
+ *  in any ASCII case. */
+export function scriptForOther(el: Element): boolean {
+  const { for: target, event } = el.attribs;
+  if (target === undefined || event === undefined) return false;
+  const trim = (s: string): string =>
+    s
+      .replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '')
+      .replace(/[A-Z]+/g, (c) => c.toLowerCase());
+  if (trim(target) !== 'window') return true;
+  const name = trim(event);
+  return name !== 'onload' && name !== 'onload()';
+}
+
+/** The document whose parser made a script, while it is that parser's. */
+export function parserDocumentOf(el: Element): Document | null {
+  return PARSER_SCRIPTS.get(el) ?? null;
+}
+
+/** A script that is its parser's no longer. */
+export function leftByParser(el: Element): void {
+  PARSER_SCRIPTS.delete(el);
+}
 
 /** Whether a document's parser made a `<link>` or a `<style>`. */
 export function madeByParser(el: Element): boolean {
@@ -1886,11 +1944,21 @@ export class HtmlSource {
    * (HTML 8.4.3, "document write steps"), unless a script that blocks the
    * parser was written before it — and that stops the parse here too,
    * held next (`_pending`), before what was written after it, which waits.
-   * False where the parse does not wait at `script`, and the caller writes
+   * An inline script it writes is run there and then, by `run`, as HTML's
+   * parser runs one at a script nesting level above one (13.2.6.4.8, and
+   * "prepare the script element"'s "immediately execute"), and may write
+   * in its turn, at the insertion point just after it (`_nested`). False
+   * where the parse does not wait at `script`, and the caller writes
    * another way.
    */
-  write(script: Element, markup: string): boolean {
-    if (!this.yields || this.held !== script || this.complete) return false;
+  write(
+    script: Element,
+    markup: string,
+    run?: (inline: Element) => void,
+  ): boolean {
+    if (!this.yields || this.complete) return false;
+    const nested = this._nested[this._nested.length - 1];
+    if (this.held !== script && nested !== script) return false;
     this._record = null;
     this._taken = null;
     const ahead = this._ahead;
@@ -1898,20 +1966,42 @@ export class HtmlSource {
       ahead.slice(0, this._insertion) + markup + ahead.slice(this._insertion);
     this._insertion += markup.length;
     if (this._pending) return true;
-    const at = this._recorded(() =>
-      this._feed(this._ahead, 0, this._insertion, true),
-    );
-    if (this._stopped) {
-      this._pending = this._stopped;
+    for (;;) {
+      const at = this._recorded(() =>
+        this._feed(this._ahead, 0, this._insertion, true),
+      );
+      if (at > 0) {
+        this._ahead = this._ahead.slice(at);
+        this._insertion -= at;
+        this._changed();
+      }
+      const stopped = this._stopped;
+      if (!stopped) break;
       this._stopped = null;
-    }
-    if (at > 0) {
-      this._ahead = this._ahead.slice(at);
-      this._insertion -= at;
-      this._changed();
+      if (!run || scriptUrlOf(stopped) !== null) {
+        this._pending = stopped;
+        break;
+      }
+      // the insertion point just before the next input character while it
+      // runs, and where it was once it has: after what this write put in
+      const rest = this._ahead.length - this._insertion;
+      this._insertion = 0;
+      this._nested.push(stopped);
+      try {
+        run(stopped);
+      } finally {
+        this._nested.pop();
+        this._insertion = this._ahead.length - rest;
+      }
+      // a script it wrote that blocks the parser stops this write too
+      if (this._pending || !this.yields || this.complete) break;
     }
     return true;
   }
+
+  /** The inline scripts a `document.write` wrote that are running, the
+   *  innermost last: what they write goes in at the insertion point too. */
+  private _nested: Element[] = [];
 
   /**
    * The script the parse waits at has run: the parse goes on, to the next
@@ -2591,6 +2681,9 @@ class Handler extends TreeHandler {
     if (this.marksSheets && (name === 'link' || name === 'style')) {
       PARSER_SHEETS.add(opened);
     }
+    if (this.marksSheets && name === 'script') {
+      PARSER_SCRIPTS.set(opened, this.root);
+    }
     if (MARKED.has(name)) {
       const namespace = namespaceIn(opened.parent);
       if (
@@ -2988,6 +3081,7 @@ class XmlHandler extends TreeHandler {
     if (this.marksSheets) {
       const tag = tagOf(opened);
       if (tag === 'link' || tag === 'style') PARSER_SHEETS.add(opened);
+      if (tag === 'script') PARSER_SCRIPTS.set(opened, this.root);
     }
     scopes.push(own);
   }

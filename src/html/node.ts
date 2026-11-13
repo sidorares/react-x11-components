@@ -91,6 +91,7 @@ import {
   isXmlDocument,
   isXmlType,
   namespaceOf,
+  scriptTypeOf,
   scriptUrlOf,
 } from './dom.js';
 import type { Document, HtmlChange, SheetRef } from './dom.js';
@@ -2478,10 +2479,23 @@ export class HtmlViewNode extends Node {
    * and the resources in it. False where the parse does not wait at
    * `script`.
    */
-  parserWrite(script: Element, markup: string): boolean {
+  parserWrite(
+    script: Element,
+    markup: string,
+    run?: (inline: Element) => void,
+  ): boolean {
     if (this.destroyed) return false;
-    const before = this._source.revision;
-    if (!this._source.write(script, markup)) return false;
+    let before = this._source.revision;
+    // an inline script it wrote runs before the write returns, on the tree
+    // as the parse has it: what was parsed before it restyled first
+    const nested =
+      run &&
+      ((inline: Element) => {
+        if (this._source.revision !== before) this._parsedOnTo();
+        run(inline);
+        before = this._source.revision;
+      });
+    if (!this._source.write(script, markup, nested)) return false;
     if (this._source.revision !== before) this._parsedOnTo();
     return true;
   }
@@ -2634,7 +2648,7 @@ export class HtmlViewNode extends Node {
         this._scriptsSeen.add(el);
         const src = scriptUrlOf(el);
         props.onScript({
-          type: (attr(el, 'type') ?? 'text/javascript').toLowerCase(),
+          type: scriptTypeOf(el),
           src: src ? this._urls.resolve(src) : src,
           text: textOf(el),
           element: el,

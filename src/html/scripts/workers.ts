@@ -12,6 +12,7 @@
 // on a shared word (`Atomics.wait`) while this side fetches, then reads the
 // answer off the port (`receiveMessageOnPort`). The thread blocks; the page
 // does not.
+import type { ValueModule } from './script-origin.js';
 import { readDataUrl } from '../network.js';
 import { referrerPolicyOfHeaders } from '../referrer.js';
 import type { FetchMode } from '../fetch-metadata.js';
@@ -99,11 +100,7 @@ export interface PageWorkersSeams {
   /** A script a worker imports, where it does not come from the network: a
    *  service worker's, from those it was installed with, and `type` where it
    *  imports a JSON or a text module. */
-  script?(
-    id: number,
-    url: string,
-    type?: 'json' | 'text',
-  ): Promise<string | null>;
+  script?(id: number, url: string, type?: ValueModule): Promise<string | null>;
   /** A worker's thread started, or ended, whoever ended it. */
   started?(id: number, init: WorkerInit): void;
   exited?(id: number): void;
@@ -205,7 +202,7 @@ function closeNotification(shown: HtmlShownNotification | null | undefined) {
 type SyncAsk =
   | {
       url: string;
-      type?: 'json' | 'text';
+      type?: ValueModule;
       /** What it is to Fetch: the worker's own script, or one it imports
        *  (`Sec-Fetch-Dest`, `-Mode`). */
       destination?: string;

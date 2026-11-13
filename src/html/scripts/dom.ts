@@ -1355,14 +1355,35 @@ export function installDom(
     'unhandledrejection',
     'unload',
   ]);
+  /** The events a handler named in lower case runs for, by their legacy
+   *  names (HTML 8.1.8.2): its attribute is `onwebkitanimationend`. */
+  const LEGACY_HANDLER_EVENTS: Record<string, string> = {
+    webkitanimationend: 'webkitAnimationEnd',
+    webkitanimationiteration: 'webkitAnimationIteration',
+    webkitanimationstart: 'webkitAnimationStart',
+    webkittransitionend: 'webkitTransitionEnd',
+  };
+  /** The `<body>` or `<frameset>` of the window's document whose
+   *  attribute last set one of the window's handlers, put in or not. */
+  const windowAttributes = new Map<string, Any>();
   /** The element whose `on<type>` attribute is a target's handler where no
    *  property set one: the target, or the `<body>` for the window's. */
   const handlerElement = (target: Any, type: string): Any => {
     if (target === windowTarget && WINDOW_REFLECTING.has(type)) {
+      const set = windowAttributes.get(type);
+      if (set) return set;
       const body = document.body;
-      return body instanceof HTMLBodyElement ? body : null;
+      return body instanceof HTMLBodyElement ||
+        body instanceof HTMLFrameSetElement
+        ? body
+        : null;
     }
-    return target instanceof Element ? target : null;
+    // an attribute is a handler only where the element has the handler
+    // (HTML 8.1.8.1): `onreadystatechange` is a document's alone, and on a
+    // `<div>` it is an attribute like any
+    return target instanceof Element && `on${type.toLowerCase()}` in target
+      ? target
+      : null;
   };
   /** The `on<type>` handler of a target, a property's or its attribute's. */
   const handlerOf = (target: Any, type: string): Any => {
@@ -1381,20 +1402,32 @@ export function installDom(
     type: string,
     globalError = false,
   ): Any => {
-    const text = target.getAttribute(`on${type}`);
+    const text = target.getAttribute(`on${type.toLowerCase()}`);
     if (text === null) return null;
+    // nothing is compiled where scripting is disabled for the element: in
+    // a document with no window, as one a page made of its own (HTML
+    // 8.1.8.1, step 3.1; WPT's event-handler-no-browsing-context)
+    const doc = target.ownerDocument;
+    if (doc && doc !== document && !windowOfDocument(doc)) return null;
     const cache = globalError ? compiledGlobalErrors : compiled;
-    let fn = cache.get(text);
+    const name = `on${type.toLowerCase()}`;
+    const key = `${name}\u0000${text}`;
+    let fn = cache.get(key);
     if (!fn) {
+      const params = globalError
+        ? 'event, source, lineno, colno, error'
+        : 'event';
       try {
-        fn = globalError
-          ? new Function('event', 'source', 'lineno', 'colno', 'error', text)
-          : new Function('event', text);
+        // the body alone first, so that nothing in it reaches past it,
+        // and then the function its source text says it is (HTML 8.1.8.1,
+        // "getting the current value of the event handler", step 3.10)
+        void new Function(...params.split(', '), text);
+        fn = new Function(`return function ${name}(${params}) {\n${text}\n}`)();
       } catch (error) {
         report(error);
         fn = () => {};
       }
-      cache.set(text, fn);
+      cache.set(key, fn);
     }
     return fn;
   };
@@ -1446,7 +1479,8 @@ export function installDom(
     if (
       !now &&
       target._handlers?.[type] === undefined &&
-      handlerElement(target, type)?.getAttribute(`on${type}`) != null
+      handlerElement(target, type)?.getAttribute(`on${type.toLowerCase()}`) !=
+        null
     ) {
       list.unshift(slot);
     } else list.push(slot);
@@ -1471,16 +1505,24 @@ export function installDom(
    *  `<body>`'s window-reflecting one is the window's. */
   const handlerAttributeChanged = (
     el: Any,
-    type: string,
+    named: string,
     set: boolean,
     now = false,
   ): void => {
+    const type = LEGACY_HANDLER_EVENTS[named] ?? named;
+    // the window's, for a `<body>` or a `<frameset>` of its document
+    // wherever it is (HTML 8.1.8.1, "determining the target of an event
+    // handler")
     const target =
       WINDOW_REFLECTING.has(type) &&
-      el instanceof HTMLBodyElement &&
-      el === document.body
+      (el instanceof HTMLBodyElement || el instanceof HTMLFrameSetElement) &&
+      el.ownerDocument === document
         ? windowTarget
         : el;
+    if (target === windowTarget) {
+      if (set) windowAttributes.set(type, el);
+      else if (windowAttributes.get(type) === el) windowAttributes.delete(type);
+    }
     if (set) {
       activateHandler(target, type, now);
       target._handlers[type] = undefined;
@@ -6642,6 +6684,19 @@ export function installDom(
     // page's (HTML 2.4.1)
     get baseURI(): string {
       const doc = this.ownerDocument ?? this;
+      // a document at a URL of its own, `parseHTMLUnsafe`'s: its `<base>`
+      // against it, or it (HTML 2.4.1, "document base URL")
+      if (doc._ownUrl !== undefined) {
+        const href = doc.querySelector?.('base[href]')?.getAttribute('href');
+        if (href != null) {
+          try {
+            return new URL(href, doc._ownUrl).href;
+          } catch {
+            // no URL, and the fallback
+          }
+        }
+        return doc._ownUrl;
+      }
       return String(call('base', doc === document ? 0 : doc._id));
     }
     hasChildNodes(): boolean {
@@ -12224,7 +12279,7 @@ export function installDom(
     // every handler the page's window has: `onhashchange` and `onpopstate`
     // among them, which a page sets on a frame's window to hear its history
     for (const type of windowHandlerTypes) {
-      Object.defineProperty(win, `on${type}`, {
+      Object.defineProperty(win, `on${type.toLowerCase()}`, {
         get: () => target._handlers[type] ?? null,
         set: (fn: Any) => {
           setHandler(target, type, typeof fn === 'function' ? fn : null);
@@ -17134,16 +17189,28 @@ export function installDom(
     });
   }
   class HTMLBodyElement extends HTMLElement {}
-  // `document.body.onload` is the window's `onload`, and so are its kin
-  for (const type of WINDOW_REFLECTING) {
-    Object.defineProperty(HTMLBodyElement.prototype, `on${type}`, {
-      get: () => handlerOf(windowTarget, type),
-      set: (fn: Any) => {
-        setHandler(windowTarget, type, typeof fn === 'function' ? fn : null);
-      },
-      configurable: true,
-    });
-  }
+  /** `document.body.onload` is the window's `onload`, and so are its kin,
+   *  on a `<body>` and a `<frameset>` of the window's document, put in it
+   *  or not; on one of a document with no window they are nothing (HTML
+   *  8.1.8.1, "determining the target of an event handler"). */
+  const reflectWindowHandlers = (proto: Any): void => {
+    for (const type of WINDOW_REFLECTING) {
+      Object.defineProperty(proto, `on${type}`, {
+        get(this: Any) {
+          return this.ownerDocument === document
+            ? handlerOf(windowTarget, type)
+            : null;
+        },
+        set(this: Any, fn: Any) {
+          if (this.ownerDocument !== document) return;
+          setHandler(windowTarget, type, typeof fn === 'function' ? fn : null);
+        },
+        configurable: true,
+        enumerable: true,
+      });
+    }
+  };
+  reflectWindowHandlers(HTMLBodyElement.prototype);
   class HTMLHeadElement extends HTMLElement {}
   class HTMLHtmlElement extends HTMLElement {}
   class HTMLDivElement extends HTMLElement {}
@@ -18887,6 +18954,7 @@ export function installDom(
   class HTMLDirectoryElement extends HTMLElement {}
   class HTMLFontElement extends HTMLElement {}
   class HTMLFrameSetElement extends HTMLElement {}
+  reflectWindowHandlers(HTMLFrameSetElement.prototype);
   class HTMLFrameElement extends HTMLElement {}
   class HTMLMarqueeElement extends HTMLElement {
     start(): void {}
@@ -19689,6 +19757,8 @@ export function installDom(
   // --- the document --------------------------------------------------------------
 
   class Document extends ParentNode {
+    /** The URL a document made at one of its own has (`parseHTMLUnsafe`). */
+    declare _ownUrl?: string;
     _ready = 'loading';
     _current: Any = null;
     /** An XML document's content type; null for an HTML one. */
@@ -19821,7 +19891,15 @@ export function installDom(
       return this._current;
     }
     get URL(): string {
-      return String(call('location'));
+      return this._ownUrl ?? String(call('location'));
+    }
+    /** `Document.parseHTMLUnsafe` (HTML 8.5.1): markup made a document at
+     *  `about:blank`, in UTF-8, as `DOMParser` makes one, but whose
+     *  declarative shadow roots are attached. */
+    static parseHTMLUnsafe(html: Any): Any {
+      const doc = wrap(Number(call('parseDocument', str(html))));
+      doc._ownUrl = 'about:blank';
+      return doc;
     }
     get documentURI(): string {
       return this.URL;
@@ -20355,6 +20433,7 @@ export function installDom(
         this._written = '';
         // what its frame was on its way to goes no further (HTML 8.4.2)
         call('openDocument', this._id);
+        eraseListeners(this);
         // it starts again from nothing (HTML 8.4.2): a loader tldraw uses
         // builds an `<html>` of its own in a frame's document after `open`
         this.replaceChildren();
@@ -20377,6 +20456,40 @@ export function installDom(
       }
     }
   }
+  /**
+   * `open`'s "erase all event listeners and handlers" (HTML 8.4.2): of the
+   * document, everything in it, its shadow trees with it, and its window's
+   * where it is the window's document. A list is emptied where it is, so a
+   * dispatch under way calls none of it after, and every handler is null,
+   * one an attribute set as much as a property, until it is set again.
+   */
+  const eraseListeners = (doc: Any): void => {
+    const erase = (target: Any): void => {
+      for (const type in target._listeners) target._listeners[type].length = 0;
+      const handlers = (target._handlers ??= Object.create(null));
+      for (const type in handlers) handlers[type] = null;
+      if (target instanceof Element) {
+        for (const name of target.getAttributeNames()) {
+          if (name.startsWith('on')) {
+            handlers[LEGACY_HANDLER_EVENTS[name.slice(2)] ?? name.slice(2)] =
+              null;
+          }
+        }
+      }
+    };
+    for (const node of wrappers.values()) {
+      if (node === doc) erase(node);
+      else if (
+        node &&
+        node.ownerDocument === doc &&
+        node.getRootNode({ composed: true }) === doc
+      ) {
+        erase(node);
+      }
+    }
+    const win = frameTargets.get(doc);
+    if (win) erase(win);
+  };
   /** What refuses `document.write` and its kin in an XML document, which
    *  has no parser to write into (HTML 8.4.1 to 8.4.3). */
   const notXml = (doc: Any, name: string): void => {
@@ -22946,6 +23059,19 @@ export function installDom(
     'animationiteration',
     'animationend',
     'animationcancel',
+    'beforematch',
+    'close',
+    'command',
+    'contextlost',
+    'contextrestored',
+    'formdata',
+    'invalid',
+    'securitypolicyviolation',
+    'slotchange',
+    'webkitAnimationEnd',
+    'webkitAnimationIteration',
+    'webkitAnimationStart',
+    'webkitTransitionEnd',
   ]) {
     const property = {
       get(this: Any): Any {
@@ -22957,10 +23083,12 @@ export function installDom(
       configurable: true,
       enumerable: true,
     };
-    Object.defineProperty(HTMLElement.prototype, `on${type}`, property);
-    Object.defineProperty(SVGElement.prototype, `on${type}`, property);
-    Object.defineProperty(Document.prototype, `on${type}`, property);
-    Object.defineProperty(G, `on${type}`, windowHandler(type));
+    // `onwebkitanimationend` runs for `webkitAnimationEnd` (HTML 8.1.8.2)
+    const name = `on${type.toLowerCase()}`;
+    Object.defineProperty(HTMLElement.prototype, name, property);
+    Object.defineProperty(SVGElement.prototype, name, property);
+    Object.defineProperty(Document.prototype, name, property);
+    Object.defineProperty(G, name, windowHandler(type));
     windowHandlerTypes.add(type);
   }
   for (const name of ['pointerLockElement', 'exitPointerLock']) {
@@ -40928,6 +41056,7 @@ export function installDom(
     'storage',
     'close',
     'invalid',
+    'languagechange',
   ]) {
     Object.defineProperty(G, `on${type}`, windowHandler(type));
     windowHandlerTypes.add(type);
@@ -43204,6 +43333,19 @@ export function installDom(
     if (type === 'load' || type === 'error') {
       target._resourceSettled = true;
       if (frameCallbacks.size || renderingOwed) wantFrame();
+    }
+    // a frame's document of this realm's is complete by the time its frame
+    // hears `load` (HTML 13.2.7, "the end"), which nothing else tells it
+    if (
+      type === 'load' &&
+      (target instanceof HTMLIFrameElement ||
+        target instanceof HTMLFrameElement) &&
+      !linkedFrames.get(target._id)
+    ) {
+      const doc = frameDocumentOf(target);
+      if (doc && doc._ready === 'loading' && doc._written == null) {
+        doc._ready = 'complete';
+      }
     }
     const ev = new Event(String(type), { bubbles: bubbles === true });
     ev.isTrusted = true;

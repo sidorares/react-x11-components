@@ -15,7 +15,11 @@ import type { FromWorker, ToWorker, WorkerThreadData } from './workers.js';
 import { TransportProxy } from './transport-relay.js';
 import { SocketProxy } from './socket-relay.js';
 import { addKeySecret } from './subtle.js';
-import { MODULE_ACCEPT, judgeScript } from './script-origin.js';
+import {
+  MODULE_ACCEPT,
+  judgeScript,
+  type ValueModule,
+} from './script-origin.js';
 import { nodeModule } from './platform.js';
 import type {
   AbortControllerClass,
@@ -346,7 +350,7 @@ const OWN_SCRIPT = {
 } as const;
 const importScript = (
   url: string,
-  type?: 'json' | 'text',
+  type?: ValueModule,
   own = false,
 ): string | null => {
   sync.postMessage({
@@ -378,6 +382,7 @@ const engine = new ScriptEngine(host.bridge, {
   worker: true,
   timeout: WORKER_TIMEOUT_MS,
   ceiling: WORKER_CEILING_MS,
+  cssModules: false,
   onTimeout: () =>
     log('error', 'A script in a worker ran too long, and was stopped.'),
   log,

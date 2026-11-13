@@ -41,8 +41,10 @@ import type {
   ScriptRequest,
 } from '../index.js';
 import type { ResourceAsker, ResourceCors } from '../resources.js';
+import type { ValueModule } from './script-origin.js';
 import { decodeInEncoding, readyFor } from '../encoding.js';
 import { fireDomEvent } from '../dom-events.js';
+import { scriptTypeOf } from '../dom.js';
 import { HTML_USER_AGENT } from '../network.js';
 import type { HtmlServiceWorkers } from '../service-workers.js';
 import { NO_MEDIA_DEVICES } from '../media-devices.js';
@@ -172,7 +174,7 @@ export interface HtmlScripts {
     url: string,
     element: Element | null,
     cors?: ResourceCors,
-    type?: 'json' | 'text',
+    type?: ValueModule,
     /** Who asked, where that is a frame's document or one of no origin
      *  (`ResourceRequest.client`, `opaqueOrigin`). */
     asker?: ResourceAsker,
@@ -671,6 +673,12 @@ export function useScriptedHtml(
         const ask = latest.current.props.onResource;
         const owner = element ?? rootElement(handle.document);
         if (!ask || !owner) return null;
+        // the encoding its element names as it is fetched, not as it lands
+        // (HTML 4.12.1.1, "prepare the script element", step 21)
+        const charset = owner.attribs.charset || latest.current.props.charset;
+        // a module, imported or not, is UTF-8, whatever the response names
+        // (HTML's "fetch a single module script")
+        const utf8 = !!type || !element || scriptTypeOf(element) === 'module';
         return loadedScript(
           await ask({
             url,
@@ -680,9 +688,8 @@ export function useScriptedHtml(
             ...(type ? { type } : {}),
             ...asker,
           }),
-          owner.attribs.charset || latest.current.props.charset,
-          // a JSON or a text module is UTF-8, whatever the response names
-          !!type,
+          charset,
+          utf8,
         );
       }),
     onTimeout: config.onTimeout ?? nothing,

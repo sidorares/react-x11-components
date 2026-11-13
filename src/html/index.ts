@@ -1910,8 +1910,11 @@ export function makeHtmlHandle(
     matchedRules: (element: Element) =>
       nodeRef.current?.matchedRules(element) ?? [],
     styleSheets: () => nodeRef.current?.styleSheets() ?? [],
-    parserWrite: (script: Element, markup: string) =>
-      nodeRef.current?.parserWrite(script, markup) ?? false,
+    parserWrite: (
+      script: Element,
+      markup: string,
+      run?: (inline: Element) => void,
+    ) => nodeRef.current?.parserWrite(script, markup, run) ?? false,
     parserResume: (script: Element) => nodeRef.current?.parserResume(script),
     parserMade: () => nodeRef.current?.parserMade() ?? [],
     controlValue: (element: Element) =>

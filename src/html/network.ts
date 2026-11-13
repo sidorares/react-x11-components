@@ -102,7 +102,11 @@ import type { FetchRequest, FetchResponse } from './scripts/host.js';
 import { corsCheck, redirectTainted } from './scripts/fetch-hops.js';
 import { nodeModule } from './scripts/platform.js';
 import { fetchIsRuntimes, loadHttp2Fetch } from './undici.js';
-import { MODULE_ACCEPT } from './scripts/script-origin.js';
+import {
+  MODULE_ACCEPT,
+  isValueModule,
+  type ValueModule,
+} from './scripts/script-origin.js';
 import {
   determineReferrer,
   referrerPolicyOf,
@@ -1387,7 +1391,7 @@ export class HtmlNetwork {
     page: string,
     signal?: AbortSignalLike,
     cors?: ResourceCors,
-    module?: 'json' | 'text',
+    module?: ValueModule,
     asker: ResourceAsker = {},
   ): Promise<Fetched | null> {
     return this.load(url, kind, page, signal, cors, module, asker).then(
@@ -1402,7 +1406,7 @@ export class HtmlNetwork {
     page: string,
     signal?: AbortSignalLike,
     cors?: ResourceCors,
-    module?: 'json' | 'text',
+    module?: ValueModule,
     /** Who asked, where that is a frame's document, or one of no origin:
      *  what its `Referer` says, and whether it is same-site with anything. */
     asker: ResourceAsker = {},
@@ -1564,7 +1568,7 @@ export class HtmlNetwork {
     url: string,
     page: string,
     cors?: ResourceCors,
-    module?: 'json' | 'text',
+    module?: ValueModule,
     policy: ReferrerPolicy = '',
   ): Record<string, string> {
     const headers: Record<string, string> = {
@@ -2314,8 +2318,7 @@ export class HtmlNetwork {
       }
       const kind = request.kind;
       const module =
-        kind === 'script' &&
-        (request.type === 'json' || request.type === 'text')
+        kind === 'script' && isValueModule(request.type)
           ? request.type
           : undefined;
       return this.resource(
