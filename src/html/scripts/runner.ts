@@ -46,6 +46,7 @@ import {
   parserDocumentOf,
   scriptForOther,
   scriptTypeOf,
+  sourcePositionOf,
 } from '../dom.js';
 import { holdAnimationClock, releaseAnimationClock } from '../node.js';
 import type { MediaEventKind } from '../media.js';
@@ -1594,7 +1595,16 @@ export class ScriptRunner {
     const outer = this._executing;
     this._executing = request.element;
     try {
-      this.engine.exec(code, url, element, queued.muted);
+      // an inline one the parser met at its place in the document, as a
+      // browser numbers its lines and columns
+      const at = request.src ? null : sourcePositionOf(request.element);
+      this.engine.exec(
+        code,
+        url,
+        element,
+        queued.muted,
+        at && { line: at.contentLine, column: at.contentColumn },
+      );
     } finally {
       this.host.writing = null;
       this._executing = outer;

@@ -1338,10 +1338,19 @@ export class ScriptEngine {
    * the microtasks it queued, which run as it ends. Whether it ran to its
    * end; what it threw, or why it did not parse, is reported in the page.
    */
-  exec(code: string, url: string, script: number, muted = false): boolean {
+  exec(
+    code: string,
+    url: string,
+    script: number,
+    muted = false,
+    /** Where its text starts in the document that holds it, a line and a
+     *  column from 1 each: an inline script's, whose frames are numbered
+     *  from there. */
+    at: { line: number; column: number } | null = null,
+  ): boolean {
     if (this._broken || this._disposed) return false;
     if (this._held) {
-      this._held.push(() => void this.exec(code, url, script, muted));
+      this._held.push(() => void this.exec(code, url, script, muted, at));
       return false;
     }
     // inside another script, which put this one in (`_prepareScript`)
@@ -1351,6 +1360,7 @@ export class ScriptEngine {
       compiled = new vm.Script(code, {
         // as the facade's stack reader finds a frame's file
         filename: String(url).replace(/\s/g, '%20'),
+        ...(at && { lineOffset: at.line - 1, columnOffset: at.column - 1 }),
         importModuleDynamically: this._importer as never,
       });
     } catch (error) {

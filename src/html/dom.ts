@@ -196,6 +196,35 @@ export function leftByParser(el: Element): void {
   PARSER_SCRIPTS.delete(el);
 }
 
+/** Where in what its parser read an element was, as a line and a column
+ *  from 1 each: its start tag's `<`, and its content, just after the start
+ *  tag's `>`. Kept for a `<script>`, a `<style>` and an element with a
+ *  `style` attribute, which a script's errors and a Content Security Policy's
+ *  violations name a place in the document by (HTML, "the script's source
+ *  text" starts there; CSP 3, 5.3, the violation's line and column). Not for
+ *  an `on…` attribute: one the markup set is refused with no script running,
+ *  and its violation names no place, line 0, as browsers report it
+ *  (`targeting-for-inline-handler-in-markup`). */
+export interface SourcePosition {
+  line: number;
+  column: number;
+  contentLine: number;
+  contentColumn: number;
+}
+const SOURCE_AT = new WeakMap<Element, SourcePosition>();
+
+/** Where a parser read an element, or null where none did or it is none
+ *  whose place is kept (`SourcePosition`). */
+export function sourcePositionOf(el: Element): SourcePosition | null {
+  return SOURCE_AT.get(el) ?? null;
+}
+
+/** Whether an element's place in the source is one to keep. */
+function positioned(name: string, attribs: Record<string, string>): boolean {
+  if (name === 'script' || name === 'style') return true;
+  return 'style' in attribs;
+}
+
 /** Whether a document's parser made a `<link>` or a `<style>`. */
 export function madeByParser(el: Element): boolean {
   return PARSER_SHEETS.has(el);
@@ -4055,6 +4084,10 @@ class DocumentParser extends Parser {
   /** Whether a `<plaintext>` has started, after which the tokenizer reads
    *  everything as text, a NULL as U+FFFD among it. */
   private _plaintext = false;
+  /** Where each line of what was read starts, and how much was read: what
+   *  an index the tokenizer gives is found on a line by (`_at`). */
+  private _lineStarts: number[] = [0];
+  private _read = 0;
 
   override isInForeignContext(): boolean {
     return (
@@ -4112,6 +4145,8 @@ class DocumentParser extends Parser {
     this._quirks = false;
     this._carriage = false;
     this._plaintext = false;
+    this._lineStarts = [0];
+    this._read = 0;
   }
 
   /** A chunk with its line breaks as HTML's input stream has them (13.2.3.5):
@@ -4121,7 +4156,41 @@ class DocumentParser extends Parser {
     if (this._carriage && chunk.charCodeAt(0) === 10) chunk = chunk.slice(1);
     this._carriage = chunk.charCodeAt(chunk.length - 1) === 13;
     if (chunk.includes('\r')) chunk = chunk.replace(/\r\n?/g, '\n');
+    for (
+      let at = chunk.indexOf('\n');
+      at >= 0;
+      at = chunk.indexOf('\n', at + 1)
+    ) {
+      this._lineStarts.push(this._read + at + 1);
+    }
+    this._read += chunk.length;
     super.write(chunk);
+  }
+
+  /** Where the element just made was read (`SourcePosition`). */
+  private _place(): void {
+    const self = this as unknown as ParserInternals;
+    const [line, column] = this._at(self.openTagStart);
+    const [contentLine, contentColumn] = this._at(self.endIndex + 1);
+    SOURCE_AT.set(this._current(), {
+      line,
+      column,
+      contentLine,
+      contentColumn,
+    });
+  }
+
+  /** An index into what was read, as a line and a column from 1 each. */
+  private _at(index: number): [number, number] {
+    const starts = this._lineStarts;
+    let low = 0;
+    let high = starts.length - 1;
+    while (low < high) {
+      const mid = (low + high + 1) >> 1;
+      if (starts[mid] <= index) low = mid;
+      else high = mid - 1;
+    }
+    return [low + 1, index - starts[low] + 1];
   }
 
   // --- tokens -----------------------------------------------------------------
@@ -5814,6 +5883,7 @@ class DocumentParser extends Parser {
     this._made = name;
     cbs.onopentag(name, attribs);
     cbs.place = null;
+    if (positioned(name, attribs)) this._place();
     // at the top of a fragment read in SVG or MathML, which says nothing
     // of an element the parser made HTML's there
     if (stack.length === 1 && this._context !== NOT_FOREIGN) {
@@ -5846,6 +5916,7 @@ class DocumentParser extends Parser {
     this._made = name;
     cbs.onopentag(name, attribs);
     cbs.place = null;
+    if (positioned(name, attribs)) this._place();
     if (selfClosing) this._pop();
   }
 

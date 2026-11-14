@@ -3426,6 +3426,19 @@ against the document's address and not its base, as CSP 2's
 `application/csp-report`. A report is the browser's own request, credentialed
 for the document's own origin alone, and held to no policy.
 
+**A violation says where it was caused** (CSP 3, 5.3): where the page's code
+is running, by its innermost frame of its own — its script's address, and the
+line and column the runtime has for it, read off the host's stack under the
+facade's frames — and otherwise, for a script, a style or a `style`
+attribute the parser met, by the place in the document just after its start
+tag's `>`. An `on…` attribute the markup set names no place, line 0, as
+browsers report one. An inline script the parser met is
+compiled at its place in the document, so its frames are numbered as the
+document's lines are, in a violation and in an `error` event alike. A runtime
+that hands no call sites over, Bun's, leaves a running script's place out.
+The same violation at the same place is reported once a document, as browsers
+send them; its event is fired each time.
+
 **A guard on string compilation is put on only once a policy speaks of it.**
 `eval` stays the realm's own until a policy has a `script-src` or a
 `default-src` without `'unsafe-eval'`, so a direct `eval` reads the scope it
@@ -3437,7 +3450,7 @@ scope. The guard is asked by the page's realm, which a page can talk round
 it holds the page's own code to its policy and is no boundary against it.
 
 Not here yet: `trusted-types` and `require-trusted-types-for`,
-`upgrade-insecure-requests`, a violation's line and column, a navigation's
+`upgrade-insecure-requests`, a navigation's
 redirects held to `form-action`, `navigate-to`, and a policy for an `<object>`
 or an `<embed>`'s plug-in, which no document here has.
 

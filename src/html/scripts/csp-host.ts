@@ -106,6 +106,71 @@ export interface CspSeams<T> {
    *  a policy, `e` once one speaks of string compilation, `w` of
    *  WebAssembly. */
   changed?(said: string): void;
+  /** Where a violation was caused, where the caller said nothing: the
+   *  page's code that is running, or the place of what it is about in the
+   *  document (CSP 3, 5.3, "create a violation object"). */
+  where?(target: T | null): CspWhere;
+}
+
+/** A frame of a stack as V8 hands it to `Error.prepareStackTrace`. */
+interface CallSite {
+  getFileName(): string | null | undefined;
+  getLineNumber(): number | null;
+  getColumnNumber(): number | null;
+  isNative(): boolean;
+}
+
+/** The name the facade's code is compiled under (`stacks.ts`'s `FACADE`),
+ *  and the one the runtime gives what it evaluates with no name. */
+const FACADE_FILES = new Set(['engine:facade', 'evalmachine.<anonymous>']);
+
+/**
+ * Where the page's code that is running is, where it is: the innermost frame
+ * of its own under the facade it called into (CSP 3, 5.3: "if the user agent
+ * is currently executing script"), read off the host's stack, whose frames
+ * cross into the context. Null where no page code is under the call, and on a
+ * runtime whose `captureStackTrace` hands no call sites over (Bun).
+ */
+export function runningScriptAt(): CspWhere | null {
+  const E = Error as unknown as {
+    prepareStackTrace?: unknown;
+    stackTraceLimit?: number;
+    captureStackTrace?: (target: object) => void;
+  };
+  if (typeof E.captureStackTrace !== 'function') return null;
+  const format = E.prepareStackTrace;
+  const limit = E.stackTraceLimit;
+  let sites: unknown = null;
+  try {
+    E.prepareStackTrace = (_error: unknown, given: unknown) => given;
+    E.stackTraceLimit = 200;
+    const held: { stack?: unknown } = {};
+    E.captureStackTrace(held);
+    sites = held.stack;
+  } finally {
+    E.prepareStackTrace = format;
+    E.stackTraceLimit = limit;
+  }
+  if (!Array.isArray(sites)) return null;
+  let inFacade = false;
+  for (const site of sites as CallSite[]) {
+    const file = site.getFileName();
+    if (typeof file === 'string' && FACADE_FILES.has(file)) {
+      inFacade = true;
+      continue;
+    }
+    // the host's own frames, above the facade the page called
+    if (!inFacade) continue;
+    if (site.isNative() || typeof file !== 'string' || file === '') continue;
+    // the host, under which nothing is the page's
+    if (file.startsWith('node:') || file.startsWith('engine:')) return null;
+    return {
+      sourceFile: file,
+      lineNumber: site.getLineNumber() ?? 0,
+      columnNumber: site.getColumnNumber() ?? 0,
+    };
+  }
+  return null;
 }
 
 /** The first characters of what a violation is about, which a policy that
@@ -119,6 +184,8 @@ export class PageCsp<T = unknown> {
   private readonly _metas = new WeakSet<object>();
   /** Which of `e`, `w` the guards have been told of. */
   private _said = '';
+  /** The violations already reported (`_report`). */
+  private readonly _reported = new Set<string>();
 
   constructor(private readonly _seams: CspSeams<T>) {}
 
@@ -291,8 +358,16 @@ export class PageCsp<T = unknown> {
     blockedURI: string,
     sample: string,
     target: T | null,
-    where: CspWhere,
+    said: CspWhere,
   ): void {
+    // a place in the document is an inline violation's: one of a URL is
+    // where the running script asked for it, or nowhere, line 0, as a
+    // `<script src>` the parser met is reported by its URL alone (WPT's
+    // `nonce-enforce-blocked`)
+    const where =
+      said.lineNumber === undefined
+        ? (this._seams.where?.(blockedURI === 'inline' ? target : null) ?? said)
+        : said;
     const documentURI = reportedUrl(this._seams.url());
     const violation: CspViolation = {
       documentURI,
@@ -316,6 +391,12 @@ export class PageCsp<T = unknown> {
    *  `report-to` group's endpoint, as the Reporting API's, where the
    *  response names one, else to each `report-uri`, as CSP 2's. */
   private _report(policy: CspPolicyEntry, v: CspViolation): void {
+    // one report for each distinct violation of a document's, as browsers
+    // send them: the same refusal at the same place, five times in a loop,
+    // is one (WPT's `report-multiple-violations-02`)
+    const key = JSON.stringify([policy.text, policy.disposition, v]);
+    if (this._reported.has(key)) return;
+    this._reported.add(key);
     const group = policy.directives.get('report-to')?.[0];
     const endpoint = group ? (this._seams.endpoint?.(group) ?? null) : null;
     if (endpoint) {
