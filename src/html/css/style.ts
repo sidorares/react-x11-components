@@ -8197,7 +8197,10 @@ function applyFlexShorthand(
 const AUTO_TRACK: GridTrack = { min: 'auto', max: 'auto' };
 
 /** One track's sizing, or null for what is not one. */
-function parseGridTrack(token: string, ctx: UnitContext): GridTrack | null {
+export function parseGridTrack(
+  token: string,
+  ctx: UnitContext,
+): GridTrack | null {
   const t = token.trim().toLowerCase();
   if (!t) return null;
   if (t === 'auto') return AUTO_TRACK;
@@ -8207,13 +8210,20 @@ function parseGridTrack(token: string, ctx: UnitContext): GridTrack | null {
   const fn = /^(minmax|fit-content)\((.*)\)$/s.exec(t);
   if (fn) {
     if (fn[1] === 'fit-content') {
-      const fit = parseLength(fn[2].trim(), ctx);
-      if (fit === null || fit === AUTO) return null;
-      if (typeof fit === 'number' && fit < 0) return null;
+      const fit = trackLength(fn[2].trim(), ctx);
+      if (fit === null) return null;
       return { min: AUTO, max: { fit } };
     }
-    const [a, b] = splitCommas(fn[2]).map((p) => p.trim());
-    if (a === undefined || b === undefined) return null;
+    const args = splitCommas(fn[2]).map((p) => p.trim());
+    if (args.length !== 2) return null;
+    const [a, b] = args;
+    // a breadth, never a function of the two (CSS Grid 1, 7.2)
+    if (
+      /^(minmax|fit-content)\(/i.test(a) ||
+      /^(minmax|fit-content)\(/i.test(b)
+    ) {
+      return null;
+    }
     const min = parseGridTrack(a, ctx);
     const max = parseGridTrack(b, ctx);
     // an `fr` is no minimum
@@ -8225,9 +8235,20 @@ function parseGridTrack(token: string, ctx: UnitContext): GridTrack | null {
       return null;
     return { min: min.min, max: max.max };
   }
-  const len = parseLength(token.trim(), ctx);
-  if (len === null || len === AUTO) return null;
+  const len = trackLength(token.trim(), ctx);
+  if (len === null) return null;
   return { min: len, max: len };
+}
+
+/** A track's length or percentage: none below nought as written, where a
+ *  calculation that comes to less is nought when it computes (CSS Values
+ *  4, 10.12). */
+function trackLength(text: string, ctx: UnitContext): Len | null {
+  const len = parseLength(text, ctx);
+  if (len === null || len === AUTO) return null;
+  if (isMathFunction(text)) return len;
+  if (typeof len === 'number') return len < 0 ? null : len;
+  return len.pct < 0 ? null : len;
 }
 
 /**
@@ -8238,7 +8259,7 @@ function parseGridTrack(token: string, ctx: UnitContext): GridTrack | null {
  * `minmax(0,1.25fr)minmax(0,1fr)`, which was one part and no track list.
  * Undefined where a bracket or a quote is not closed.
  */
-function trackParts(value: string): string[] | undefined {
+export function trackParts(value: string): string[] | undefined {
   const out: string[] = [];
   const text = value.trim();
   let i = 0;
@@ -8274,16 +8295,16 @@ function trackParts(value: string): string[] | undefined {
 
 /** The names in a bracketed group of line names, or undefined for a part
  *  that is not one or names what no line may be called. */
-function lineNames(part: string): string[] | undefined {
+export function lineNames(part: string): string[] | undefined {
   if (!part.startsWith('[') || !part.endsWith(']')) return undefined;
   const names = part.slice(1, -1).trim().split(/\s+/).filter(Boolean);
   return names.every(isLineName) ? names : undefined;
 }
 
 /** A `<custom-ident>` a grid line may take: not `span` nor `auto`. */
-function isLineName(word: string): boolean {
+export function isLineName(word: string): boolean {
   return (
-    /^-?[a-zA-Z_\u0080-\uffff][\w\u0080-\uffff-]*$/.test(word) &&
+    /^(?:--|-?[a-zA-Z_\u0080-\uffff])[\w\u0080-\uffff-]*$/.test(word) &&
     !/^(span|auto|inherit|initial|unset|default)$/i.test(word)
   );
 }
@@ -8294,7 +8315,7 @@ function isLineName(word: string): boolean {
  * whose count the width decides, and the names of the lines between them.
  * Undefined for a list that is none.
  */
-function parseGridTemplate(
+export function parseGridTemplate(
   value: string,
   ctx: UnitContext,
 ): GridTemplate | undefined {
@@ -8318,14 +8339,19 @@ function parseGridTemplate(
     top: boolean,
     written: WrittenPart[],
   ): boolean => {
+    let named = false;
     for (const part of parts) {
       if (part.startsWith('[')) {
+        // two groups side by side are one group written wrongly
+        if (named) return false;
+        named = true;
         const group = lineNames(part);
         if (!group) return false;
         (top && pending ? pending : names[names.length - 1]).push(...group);
         written.push({ names: group });
         continue;
       }
+      named = false;
       const repeat = /^repeat\((.*)\)$/is.exec(part);
       if (repeat) {
         const [count, ...rest] = splitCommas(repeat[1]);
@@ -8423,7 +8449,7 @@ function fixedTrack(track: GridTrack): boolean {
  * `repeat()`s of them, by a count or one by `auto-fill`. Undefined for
  * anything else.
  */
-function parseSubgrid(value: string): SubgridNames | undefined {
+export function parseSubgrid(value: string): SubgridNames | undefined {
   const out: SubgridNames = { names: [], fill: null };
   const parts = value.trim() ? trackParts(value) : [];
   if (!parts) return undefined;
@@ -8463,7 +8489,7 @@ function parseSubgrid(value: string): SubgridNames | undefined {
  * or `column` first and then `fill-reverse` and `track-reverse`, each at
  * most once, in either order. Null for anything else.
  */
-function lanesDirection(value: string): string | null {
+export function lanesDirection(value: string): string | null {
   const words = value.trim().toLowerCase().split(/\s+/);
   if (words.length === 1 && words[0] === 'normal') return 'normal';
   const [axis, ...rest] = words;
@@ -8493,7 +8519,7 @@ const LANE_WORDS = new Set([
  * The other axis's template, and every template where it is `none`, is
  * none. Null for anything else.
  */
-function lanesShorthand(
+export function lanesShorthand(
   value: string,
   ctx: UnitContext,
 ): {
@@ -8559,7 +8585,7 @@ function lanesShorthand(
  * word or a run of dots, every row as wide as the first and every name a
  * rectangle. Undefined where they are not.
  */
-function parseAreas(strings: string[]): GridAreas | undefined {
+export function parseAreas(strings: string[]): GridAreas | undefined {
   const grid: (string | null)[][] = [];
   for (const quoted of strings) {
     const cells: (string | null)[] = [];
@@ -8683,7 +8709,7 @@ function parseTemplateShorthand(
  * name, in either order; or `span` with a number, a name or both.
  * Undefined for a value that is none of them.
  */
-function parseGridLine(value: string | undefined): GridLine | undefined {
+export function parseGridLine(value: string | undefined): GridLine | undefined {
   if (value === undefined) return null;
   const words = value.trim().split(/\s+/).filter(Boolean);
   if (words.length === 1 && words[0].toLowerCase() === 'auto') return null;

@@ -26,6 +26,12 @@ import {
   shapeThresholdSpecified,
 } from './shape-outside.js';
 import { parseZoom, splitValue } from './values.js';
+import {
+  GRID_SPECIFIED,
+  gridLonghands,
+  gridShorthand,
+  gridSpecified,
+} from './grid-specified.js';
 import { closingParen } from './vars.js';
 import { MARKER_LONGHANDS, SVG_PROPERTIES } from './svg-properties.js';
 import type { UnitContext } from './values.js';
@@ -61,6 +67,22 @@ export function specifiedValue(
     return undefined;
   }
   const name = prop.toLowerCase();
+  // the grid's, refused and kept as the cascade reads them
+  // (`grid-specified.ts`)
+  if (GRID_SPECIFIED.has(name) || name === 'grid-lanes') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    if (name === 'grid-lanes') {
+      const longhands = gridLonghands(name, word);
+      return longhands
+        ? gridShorthand(
+            name,
+            (part) => longhands.find(([n]) => n === part)?.[1] ?? null,
+          )
+        : null;
+    }
+    return gridSpecified(name, word);
+  }
   // SVG's properties (`svg-properties.ts`), and `marker`, which is one
   // value for all three of its longhands
   const svg = SVG_PROPERTIES[name === 'marker' ? 'marker-start' : name];
@@ -838,6 +860,8 @@ export function expandShorthand(
   const name = prop.toLowerCase();
   const snap = snapLonghands(name, value);
   if (snap) return snap;
+  const grid = gridLonghands(name, value);
+  if (grid) return grid;
   if (name === 'animation') return animationLonghandsOf(value);
   if (name === 'marker') return MARKER_LONGHANDS.map((side) => [side, value]);
   if (name === 'position-try') {
@@ -896,6 +920,8 @@ export function composeShorthand(
   const name = prop.toLowerCase();
   const snap = snapComposed(name, longhand);
   if (snap !== null) return snap;
+  const grid = gridShorthand(name, longhand);
+  if (grid !== null) return grid;
   if (name === 'marker') {
     const sides = MARKER_LONGHANDS.map(longhand);
     if (sides.some((v) => v === null)) return '';
