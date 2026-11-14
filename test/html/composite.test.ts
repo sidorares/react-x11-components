@@ -131,3 +131,39 @@ test('transforms accumulate function by function, and through their matrices whe
     'matrix(0, 1, -1, 0, 0, 100)',
   ]);
 });
+
+test('an easing that overshoots runs an effect past its keyframes, along the curve', async () => {
+  // Web Animations 1 extrapolates the keyframe interval, and CSS Easing 1 a
+  // cubic Bézier along its tangent: y = 2 and y = -1 at the half-way point,
+  // as WPT's interpolation tests reach them
+  const out = await inPage(
+    `var at2 = function (y) {
+       var b = (8 * y - 1) / 6;
+       var a = e.animate({ width: ['10px', '20px'] }, {
+         duration: 100, fill: 'forwards',
+         easing: 'cubic-bezier(0, ' + b + ', 1, ' + b + ')',
+       });
+       at(a, 50);
+       var w = getComputedStyle(e).width;
+       a.cancel();
+       return w;
+     };
+     // a share past its range stops at its end, and a curve that is the
+     // straight line goes on as one before the start
+     var grey = e.animate({ filter: ['grayscale(0)', 'grayscale(1)'] }, {
+       duration: 100, fill: 'forwards', easing: 'cubic-bezier(0, 2.5, 1, 2.5)',
+     });
+     at(grey, 50);
+     var filter = getComputedStyle(e).filter;
+     grey.cancel();
+     var line = e.animate([
+       { marginLeft: '0px', easing: 'cubic-bezier(0, 0, 0, 0)' },
+       { marginLeft: '100px' },
+     ], { duration: 100, fill: 'forwards', easing: 'cubic-bezier(0, -1.5, 1, -1.5)' });
+     at(line, 50);
+     var before = getComputedStyle(e).marginLeft;
+     line.cancel();
+     return [at2(2), at2(-1), filter, before];`,
+  );
+  assert.deepEqual(out, ['30px', '0px', 'grayscale(1)', '-100px']);
+});

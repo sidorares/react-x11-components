@@ -744,12 +744,31 @@ const STEEPEST = new WeakMap<Easing, number>();
 
 /** A cubic Bézier from (0, 0) to (1, 1): the y where its x is `t`, the
  *  curve's parameter found by Newton's method, and by halving where that
- *  does not settle. */
+ *  does not settle. Before 0 and past 1 it goes on along its tangent at the
+ *  nearer end (CSS Easing 1, cubic Bézier easing functions), which an
+ *  iteration's progress past an end of its keyframes is eased by. */
 function bezier(
   { x1, y1, x2, y2 }: { x1: number; y1: number; x2: number; y2: number },
   t: number,
 ): number {
-  if (t <= 0 || t >= 1) return t <= 0 ? 0 : 1;
+  if (t <= 0) {
+    if (t === 0) return 0;
+    // the line through the start and the first control point with an x
+    // past it; where both are at the start, the curve is the line from it
+    // to the end; and level where it rises with no x to rise over, as
+    // Blink and Gecko have it
+    if (x1 > 0) return (y1 / x1) * t;
+    if (y1 === 0 && x2 > 0) return (y2 / x2) * t;
+    if (y1 === 0 && y2 === 0) return t;
+    return 0;
+  }
+  if (t >= 1) {
+    if (t === 1) return 1;
+    if (x2 < 1) return 1 + ((y2 - 1) / (x2 - 1)) * (t - 1);
+    if (y2 === 1 && x1 < 1) return 1 + ((y1 - 1) / (x1 - 1)) * (t - 1);
+    if (y2 === 1 && y1 === 1) return t;
+    return 1;
+  }
   const cx = 3 * x1;
   const bx = 3 * (x2 - x1) - cx;
   const ax = 1 - cx - bx;
@@ -1139,8 +1158,11 @@ export function spanAt(
   const a = points[at];
   const b = points[at + 1];
   const width = b.offset - a.offset;
-  const local = width > 0 ? (progress - a.offset) / width : 1;
-  const t = local < 0 ? 0 : local > 1 ? 1 : local;
+  // a progress before the first frame or past the last is a distance out
+  // of the span between the two nearest, which its easing extrapolates
+  // (Web Animations 1, the effect value of a keyframe effect): an effect's
+  // easing that overshoots runs its values past their ends
+  const t = width > 0 ? (progress - a.offset) / width : 1;
   const eases = a.frame?.easing ?? easing;
   return {
     from: a.frame,
