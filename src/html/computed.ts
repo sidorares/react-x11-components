@@ -14,6 +14,7 @@ import type { BasicShape } from './css/basic-shape.js';
 import type { ObjectViewBox } from './css/object-view-box.js';
 import { pathSegments, pathText } from './css/shape-outside.js';
 import { isAutoInset } from './css/decoration-inset.js';
+import { textBoxText } from './css/text-box.js';
 import type { Coord, ShapeFunction } from './css/shape-function.js';
 import { positionAreaComputed } from './css/anchor.js';
 import {
@@ -1413,6 +1414,8 @@ function cssomAt(
     style.textDecorationInset,
     scale,
   );
+  out['text-box-trim'] = style.textBoxTrim;
+  out['text-box-edge'] = style.textBoxEdge;
   // each shadow as Chrome writes it, its colour first and `inset` last
   out['box-shadow'] = style.boxShadow
     ? style.boxShadow
@@ -2395,6 +2398,7 @@ const SHORTHANDS: Record<string, Composer> = {
     all['container-type'] === 'normal'
       ? all['container-name']
       : `${all['container-name']} / ${all['container-type']}`,
+  'text-box': (_, style) => textBoxText(style.textBoxTrim, style.textBoxEdge),
   'text-wrap': (_, style) => {
     const nowrap = style.whiteSpace === 'nowrap' || style.whiteSpace === 'pre';
     const kind = style.textWrapStyle;

@@ -82,6 +82,12 @@ import { parseBasicShape } from './basic-shape.js';
 import { parseObjectViewBox } from './object-view-box.js';
 import { parseTextTransform } from './text-transform.js';
 import {
+  parseTextBox,
+  parseTextBoxEdge,
+  parseTextBoxTrim,
+} from './text-box.js';
+import type { TextBoxTrim } from './text-box.js';
+import {
   isShapeImage,
   namesShapeBox,
   saysWhere,
@@ -1571,6 +1577,14 @@ export interface ComputedStyle {
    *  little in, as the user agent chooses (`insetOf`, in `paint.ts`). Not
    *  inherited: it is read off the decorating box itself. */
   textDecorationInset: readonly [Len, Len] | AutoInset;
+  /** `text-box-trim` (CSS Inline 3, 5.1): which of a block container's
+   *  first and last formatted lines are trimmed to their root inline box's
+   *  `text-box-edge`. Not inherited. */
+  textBoxTrim: TextBoxTrim;
+  /** `text-box-edge` (CSS Inline 3, 5.2) as it computes (`parseTextBoxEdge`):
+   *  `auto`, or the metric a trimmed line's over side is trimmed to and its
+   *  under side's, one keyword where one says both. Inherited. */
+  textBoxEdge: string;
   /** `text-underline-offset`, from the alphabetic baseline down, or null
    *  for `auto`. Inherited. */
   textUnderlineOffset: number | null;
@@ -1758,6 +1772,7 @@ export const INHERITED = [
   'alignBlocks',
   'textIndent',
   'textTransform',
+  'textBoxEdge',
   'textUnderlineOffset',
   'letterSpacing',
   'wordSpacing',
@@ -2216,6 +2231,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     textDecorationStyle: 'solid',
     textDecorationThickness: null,
     textDecorationInset: NO_DECORATION_INSET,
+    textBoxTrim: 'none',
+    textBoxEdge: 'auto',
     textUnderlineOffset: null,
     underline: null,
     underlineStyle: 'solid',
@@ -2349,6 +2366,7 @@ export function inherit(
   out.alignBlocks = parent.alignBlocks;
   out.textIndent = parent.textIndent;
   out.textTransform = parent.textTransform;
+  out.textBoxEdge = parent.textBoxEdge;
   out.letterSpacing = parent.letterSpacing;
   out.wordSpacing = parent.wordSpacing;
   out.textShadow = parent.textShadow;
@@ -4846,6 +4864,24 @@ export function applyDeclaration(
       } else if (inset !== undefined) style.textDecorationInset = inset;
       return;
     }
+    case 'text-box-trim': {
+      const trim = parseTextBoxTrim(value);
+      if (trim !== undefined) style.textBoxTrim = trim;
+      return;
+    }
+    case 'text-box-edge': {
+      const edge = parseTextBoxEdge(value);
+      if (edge !== undefined) style.textBoxEdge = edge;
+      return;
+    }
+    case 'text-box': {
+      const box = parseTextBox(value);
+      if (box !== undefined) {
+        style.textBoxTrim = box.trim;
+        style.textBoxEdge = box.edge;
+      }
+      return;
+    }
     case 'text-underline-offset': {
       const offset = decorationLength(value, ctx);
       if (offset !== undefined) style.textUnderlineOffset = offset;
@@ -6264,15 +6300,19 @@ function alignKeyword(value: string): string | null {
   }
 }
 
+const MATH_FUNCTION = /^(?:calc|min|max|clamp|round|mod|rem|abs|sign)\(/i;
 function borderWidth(value: string, ctx: UnitContext): number | null {
   const kw = BORDER_WIDTH_KEYWORDS[value.trim().toLowerCase()];
   // The keywords are CSS pixels that never pass through `parseLength`, so
   // they take the display scale here.
   if (kw !== undefined) return snapBorderWidth(kw * ctx.scale);
   const len = parseLength(value, ctx);
+  if (typeof len !== 'number') return null;
   // a negative width is not a width: the declaration is dropped, and the
-  // one before it stands (CSS 2.1 8.5.1)
-  return typeof len === 'number' && len >= 0 ? snapBorderWidth(len) : null;
+  // one before it stands (CSS 2.1 8.5.1); but a math function is clamped
+  // to the range the property takes (CSS Values 4, 10.12)
+  if (len < 0) return MATH_FUNCTION.test(value.trim()) ? 0 : null;
+  return snapBorderWidth(len);
 }
 
 /**
@@ -9544,6 +9584,7 @@ const INHERITED_NAMES = new Set<string>([
   'block-ellipsis',
   'text-indent',
   'text-transform',
+  'text-box-edge',
   'letter-spacing',
   'word-spacing',
   'white-space',
@@ -10572,6 +10613,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'text-decoration-style': ['textDecorationStyle'],
   'text-decoration-thickness': ['textDecorationThickness'],
   'text-decoration-inset': ['textDecorationInset'],
+  'text-box-trim': ['textBoxTrim'],
+  'text-box-edge': ['textBoxEdge'],
+  'text-box': ['textBoxTrim', 'textBoxEdge'],
   'text-underline-offset': ['textUnderlineOffset'],
   'table-layout': ['tableLayout'],
 };

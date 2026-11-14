@@ -53,6 +53,7 @@ import type { installEditing } from './editing.js';
 import type { installEncodedTransform } from './encoded-transform.js';
 import type { installTextTracks } from './text-tracks.js';
 import type { installStorageManager } from './storage-manager.js';
+import type { installResourceTiming } from './resource-timing.js';
 import type { installCsp } from './csp-page.js';
 import type { installWorklets } from './worklets.js';
 import type { installTrustedTypes } from './trusted-types.js';
@@ -115,6 +116,7 @@ export function installDom(
   pathDataApi: typeof installPathData,
   workletsApi: typeof installWorklets,
   trustedTypesApi: typeof installTrustedTypes,
+  resourceTimingApi: typeof installResourceTiming,
   namedAccess: boolean,
   inWorker: boolean,
 ): void {
@@ -3518,13 +3520,40 @@ export function installDom(
   /** A dimension of another kind of quantity than a length. */
   const OTHER_DIMENSION =
     /(?:^|[\s(,])[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:deg|grad|rad|turn|s|ms|hz|khz|dpi|dpcm|dppx|x|fr)(?![\w-])/i;
+  /** Whether a value is one function call, its first bracket closed at
+   *  its end. */
+  const oneCall = (v: string): boolean => {
+    let depth = 0;
+    for (let i = 0; i < v.length; i += 1) {
+      if (v[i] === '(') depth += 1;
+      else if (v[i] === ')') {
+        depth -= 1;
+        if (!depth) return i === v.length - 1;
+      }
+    }
+    return false;
+  };
   /** One value of a property reified (CSS Typed OM 1, 5.5): a number, a
    *  dimension or a math function a numeric value, a name a keyword, a
    *  transform list its components, and anything else a value as
    *  written. */
   const reifyValue = (name: string, text: string): Any => {
     const v = text.trim();
-    if (/var\(/i.test(v)) return styleValueOf(v);
+    if (/var\(/i.test(v)) {
+      try {
+        return unparsedOf(v);
+      } catch {
+        return styleValueOf(v);
+      }
+    }
+    if (
+      IMAGE_PROPERTY.test(name) &&
+      IMAGE_VALUE.test(v) &&
+      commaParts(v).length === 1 &&
+      oneCall(v)
+    ) {
+      return new (CSSImageValue as Any)(MADE, v);
+    }
     if (name === 'transform') {
       const transform = reifyTransform(v);
       if (transform) return transform;
@@ -3623,6 +3652,20 @@ export function installDom(
     if (/^-?[a-z_][\w-]*$/i.test(v)) return new CSSKeywordValue(v);
     return styleValueOf(v);
   };
+  /** A property's computed value reified: a shorthand's as written, a
+   *  list-valued property's each item, and one value as it is declared,
+   *  where that is a number or a name, or one Typed OM has a class for. */
+  const reifyComputedOf = (name: string, text: string): Any[] => {
+    if (
+      SHORTHAND.test(name) ||
+      LIST_VALUED.test(name) ||
+      name === 'transform' ||
+      IMAGE_PROPERTY.test(name)
+    ) {
+      return reifyDeclared(name, text);
+    }
+    return [reifyComputed(text)];
+  };
   /** An element's computed values from the host, by kebab-case name, or
    *  null where it answers none — an element in no document. */
   const computedValuesOf = (el: Any): Record<string, string> | null => {
@@ -3635,10 +3678,11 @@ export function installDom(
    *  value reified as it is asked for. */
   class StylePropertyMapReadOnly {
     _el: Any;
-    constructor(el: Any) {
-      this._el = el;
+    constructor(...args: Any[]) {
+      if (args[0] !== MADE) throw new TypeError('Illegal constructor');
+      this._el = args[1];
     }
-    _name(property: Any): string {
+    _name(property: Any, _op = 'get'): string {
       const raw = String(property);
       const name = raw.startsWith('--') ? raw : raw.toLowerCase();
       if (!name.startsWith('--') && !isStyleProperty(name)) {
@@ -3650,20 +3694,24 @@ export function installDom(
     }
     get(property: Any): Any {
       const name = this._name(property);
+      return this._values(name)?.[0];
+    }
+    /** A property's computed value reified, or undefined for a custom
+     *  property it has none of. */
+    _values(name: string): Any[] | undefined {
       if (name.startsWith('--')) {
         const text = getComputedStyle(this._el).getPropertyValue(name);
-        return text === '' ? undefined : reifyComputed(text);
+        return text === '' ? undefined : [unparsedOf(text.trim())];
       }
       // the computed value, where `getComputedStyle` has the resolved one:
       // an inset of `auto` on a positioned box is `auto` here
       const values = computedValuesOf(this._el);
       const text =
         values?.[name] ?? getComputedStyle(this._el).getPropertyValue(name);
-      return reifyComputed(text);
+      return reifyComputedOf(name, text);
     }
     getAll(property: Any): Any[] {
-      const one = this.get(property);
-      return one === undefined ? [] : [one];
+      return this._values(this._name(property, 'getAll')) ?? [];
     }
     has(property: Any): boolean {
       return this.get(property) !== undefined;
@@ -3675,7 +3723,7 @@ export function installDom(
       const style = getComputedStyle(this._el);
       for (let i = 0; i < style.length; i += 1) {
         const name = style[i];
-        yield [name, [reifyComputed(style.getPropertyValue(name))]];
+        yield [name, reifyComputedOf(name, style.getPropertyValue(name))];
       }
     }
     *keys(): IterableIterator<string> {
@@ -3693,6 +3741,372 @@ export function installDom(
       return this.entries();
     }
   }
+
+  // --- CSS Typed OM: unparsed values and the style maps (4.1, 4.2) -------------
+
+  /** A custom property's name, `--` and more. */
+  const isCustomName = (v: string): boolean => /^--./.test(v);
+  /** A value with a `var()` in it (CSS Typed OM 1, 4.2.2): strings, and the
+   *  references between them, indexed as a list a page can set one past
+   *  its end of. */
+  class CSSUnparsedValue extends CSSStyleValue {
+    _list: Any[];
+    constructor(members: Any) {
+      super();
+      const what = "Failed to construct 'CSSUnparsedValue'";
+      if (
+        members === undefined ||
+        members === null ||
+        typeof members === 'string' ||
+        typeof members[Symbol.iterator] !== 'function'
+      ) {
+        throw new TypeError(
+          `${what}: The provided value cannot be converted to a sequence.`,
+        );
+      }
+      this._list = [...members].map((m) =>
+        m instanceof CSSVariableReferenceValue ? m : String(m),
+      );
+      return new Proxy(this, UNPARSED_LIST);
+    }
+    get length(): number {
+      return this._list.length;
+    }
+    /** Its fragments as CSS writes them (CSS Typed OM 1, 6.1): two strings
+     *  that meet are kept apart by an empty comment, which tokenizes them
+     *  as they were. */
+    override toString(): string {
+      let out = '';
+      let last: Any = null;
+      for (const m of this._list) {
+        if (typeof m === 'string' && typeof last === 'string' && m && last) {
+          out += '/**/';
+        }
+        out += String(m);
+        last = m;
+      }
+      return out;
+    }
+  }
+  /** A `var()` (4.2.3): the custom property it names, and what stands for
+   *  it where that has no value. */
+  class CSSVariableReferenceValue {
+    _variable: string;
+    _fallback: Any;
+    constructor(variable: Any, fallback: Any = null) {
+      const name = String(variable);
+      if (!isCustomName(name)) {
+        throw new TypeError(
+          "Failed to construct 'CSSVariableReferenceValue': Invalid custom property name.",
+        );
+      }
+      if (fallback !== null && !(fallback instanceof CSSUnparsedValue)) {
+        throw new TypeError(
+          "Failed to construct 'CSSVariableReferenceValue': parameter 2 is not of type 'CSSUnparsedValue'.",
+        );
+      }
+      this._variable = name;
+      this._fallback = fallback;
+    }
+    get variable(): string {
+      return this._variable;
+    }
+    set variable(v: Any) {
+      const name = String(v);
+      if (!isCustomName(name)) {
+        throw new TypeError(
+          "Failed to set the 'variable' property on 'CSSVariableReferenceValue': Invalid custom property name.",
+        );
+      }
+      this._variable = name;
+    }
+    get fallback(): Any {
+      return this._fallback;
+    }
+    toString(): string {
+      return this._fallback === null
+        ? `var(${this._variable})`
+        : `var(${this._variable},${this._fallback})`;
+    }
+  }
+  const UNPARSED_LIST: ProxyHandler<Any> = {
+    ...TRANSFORM_LIST,
+    set(target, key, value) {
+      const i = indexOf(key);
+      if (i === null) return Reflect.set(target, key, value, target);
+      if (i > target._list.length) {
+        throw new RangeError(
+          "Failed to set an indexed property on 'CSSUnparsedValue': Index is out of range.",
+        );
+      }
+      target._list[i] =
+        value instanceof CSSVariableReferenceValue ? value : String(value);
+      return true;
+    },
+  };
+  /** A value with references in it as an unparsed value: the text between
+   *  them its strings, and each `var()` with its fallback the same. */
+  const unparsedOf = (text: string): Any => {
+    const items: Any[] = [];
+    let buf = '';
+    let i = 0;
+    while (i < text.length) {
+      if (
+        /^var\(/i.test(text.slice(i, i + 4)) &&
+        !/[\w-]/.test(text[i - 1] ?? '')
+      ) {
+        let depth = 1;
+        let j = i + 4;
+        for (; j < text.length && depth; j += 1) {
+          if (text[j] === '(') depth += 1;
+          else if (text[j] === ')') depth -= 1;
+        }
+        const inner = text.slice(i + 4, depth ? j : j - 1);
+        const parts = commaParts(inner);
+        const fallback =
+          parts.length > 1
+            ? unparsedOf(inner.slice(parts[0].length + 1))
+            : null;
+        if (buf) items.push(buf);
+        buf = '';
+        items.push(new CSSVariableReferenceValue(parts[0].trim(), fallback));
+        i = j;
+        continue;
+      }
+      buf += text[i];
+      i += 1;
+    }
+    if (buf) items.push(buf);
+    return new CSSUnparsedValue(items);
+  };
+  /** An image a property holds (4.6): opaque, read back as written. */
+  class CSSImageValue extends CSSStyleValue {
+    constructor(...args: Any[]) {
+      if (args[0] !== MADE) throw new TypeError('Illegal constructor');
+      super(MADE, args[1]);
+    }
+  }
+  /** The properties an image is a value of. */
+  const IMAGE_PROPERTY =
+    /^(?:background-image|mask-image|-webkit-mask-image|list-style-image|border-image-source|mask-border-source|shape-outside|content)$/;
+  const IMAGE_VALUE =
+    /^(?:url\(|(?:repeating-)?(?:linear|radial|conic)-gradient\(|image-set\(|cross-fade\()/i;
+  /** The shorthands, whose value Typed OM reifies as a value as written
+   *  (5.5). */
+  const SHORTHAND =
+    /^(?:margin|padding|inset|inset-(?:block|inline)|border(?:-(?:top|right|bottom|left|block|inline|block-start|block-end|inline-start|inline-end))?|border-(?:color|style|width|radius|image)|border-(?:block|inline)-(?:color|style|width)|background|background-position|font|font-variant|font-synthesis|flex|flex-flow|grid|grid-template|grid-area|grid-row|grid-column|gap|grid-gap|place-(?:content|items|self)|transition|animation|list-style|outline|overflow|text-decoration|text-emphasis|text-wrap|white-space|columns|column-rule|mask|mask-border|offset|marker|container|contain-intrinsic-size|overscroll-behavior|scroll-(?:margin|padding)(?:-(?:block|inline))?|scroll-timeline|view-timeline|position-try|text-box|anchor-scope)$/;
+  /** A declared or specified value of a property as Typed OM reifies it:
+   *  one value, or each of a list-valued property's. */
+  const reifyDeclared = (name: string, text: string): Any[] => {
+    const v = text.trim();
+    if (name.startsWith('--')) return [unparsedOf(v)];
+    if (SHORTHAND.test(name)) {
+      return [/var\(/i.test(v) ? unparsedOf(v) : styleValueOf(v)];
+    }
+    if (LIST_VALUED.test(name) && !/var\(/i.test(v)) {
+      return commaParts(v).map((part) => reifyValue(name, part));
+    }
+    return [reifyValue(name, v)];
+  };
+  /** A style map over a declaration block (4.1): an element's `style`,
+   *  which its `attributeStyleMap` is, or a rule's, its `styleMap`. Every
+   *  change goes through the block, so what a page reads of either is the
+   *  other. */
+  class StylePropertyMap extends StylePropertyMapReadOnly {
+    _decl: Any;
+    constructor(...args: Any[]) {
+      if (args[0] !== MADE) throw new TypeError('Illegal constructor');
+      super(MADE, null);
+      this._decl = args[1];
+    }
+    override _name(property: Any, op = 'get'): string {
+      const raw = String(property);
+      const name = raw.startsWith('--') ? raw : raw.toLowerCase();
+      if (!isCustomName(name) && !isStyleProperty(name)) {
+        throw new TypeError(
+          `Failed to execute '${op}' on 'StylePropertyMap': Invalid propertyName: ${raw}`,
+        );
+      }
+      return name;
+    }
+    override get(property: Any): Any {
+      const name = this._name(property);
+      const text = str(this._decl.getPropertyValue(name));
+      return text === '' ? undefined : reifyDeclared(name, text)[0];
+    }
+    override getAll(property: Any): Any[] {
+      const name = this._name(property, 'getAll');
+      const text = str(this._decl.getPropertyValue(name));
+      return text === '' ? [] : reifyDeclared(name, text);
+    }
+    override has(property: Any): boolean {
+      const name = this._name(property, 'has');
+      return str(this._decl.getPropertyValue(name)) !== '';
+    }
+    override get size(): number {
+      return this._decl.length;
+    }
+    override *entries(): IterableIterator<[string, Any[]]> {
+      const names: string[] = [];
+      for (let i = 0; i < this._decl.length; i += 1) {
+        names.push(this._decl.item(i));
+      }
+      for (const name of names) {
+        yield [
+          name,
+          reifyDeclared(name, str(this._decl.getPropertyValue(name))),
+        ];
+      }
+    }
+    override *keys(): IterableIterator<string> {
+      for (const [name] of this.entries()) yield name;
+    }
+    override *values(): IterableIterator<Any[]> {
+      for (const [, value] of this.entries()) yield value;
+    }
+    override forEach(callback: Any, thisArg?: Any): void {
+      for (const [name, value] of this.entries()) {
+        callback.call(thisArg, value, name, this);
+      }
+    }
+    override [Symbol.iterator](): IterableIterator<[string, Any[]]> {
+      return this.entries();
+    }
+    /** What each value is as the property's text, or a TypeError where
+     *  the property does not take it (4.1.2, "set"). */
+    _texts(op: string, name: string, values: Any[]): string[] {
+      const fail = (why: string): never => {
+        throw new TypeError(
+          `Failed to execute '${op}' on 'StylePropertyMap': ${why}`,
+        );
+      };
+      const list = LIST_VALUED.test(name);
+      if (values.length > 1 && !list) {
+        fail(`The property ${name} is not list-valued.`);
+      }
+      const referring = (v: Any) =>
+        v instanceof CSSUnparsedValue ||
+        (!(v instanceof CSSStyleValue) && /var\(/i.test(String(v)));
+      if (values.length > 1 && values.some(referring)) {
+        fail('A value with a var() cannot be one of a list.');
+      }
+      const takes = (text: string) => {
+        try {
+          parseStyle(op, name, text, list);
+        } catch {
+          fail(`The value ${text} is not one ${name} takes.`);
+        }
+      };
+      return values.map((v) => {
+        if (!(v instanceof CSSStyleValue)) {
+          const text = String(v);
+          if (!list && commaParts(text).length > 1) {
+            fail(`The property ${name} is not list-valued.`);
+          }
+          takes(text);
+          return text;
+        }
+        if (v instanceof CSSUnparsedValue) {
+          const text = String(v);
+          if (!text.trim()) fail('An empty value is no value.');
+          return text;
+        }
+        if (v instanceof CSSTransformValue && name !== 'transform') {
+          fail(`The property ${name} takes no transform.`);
+        }
+        if (v instanceof CSSNumericValue) {
+          // its type held to the property's, through a calc() of it, which
+          // a range does not refuse; and where the value is out of the
+          // property's range, a calc() is what holds it (5.4)
+          const text = String(v);
+          const calc = v instanceof CSSUnitValue ? `calc(${text})` : text;
+          if (
+            call('blockSet', '', name, calc, '') === null ||
+            // a length's property, a shorthand of lengths among them, takes
+            // a length or a percentage and nothing else
+            (ZERO_IS_LENGTH.test(name) && !typeMatches(v, 'length', true))
+          ) {
+            fail(`The value ${text} is not one ${name} takes.`);
+          }
+          try {
+            parseStyle(op, name, text, list);
+            return text;
+          } catch {
+            return calc;
+          }
+        }
+        const text = String(v);
+        takes(text);
+        return text;
+      });
+    }
+    set(property: Any, ...values: Any[]): void {
+      const name = this._name(property, 'set');
+      if (name.startsWith('--')) {
+        const v = values[0];
+        if (
+          values.length !== 1 ||
+          (v instanceof CSSStyleValue && !(v instanceof CSSUnparsedValue))
+        ) {
+          throw new TypeError(
+            "Failed to execute 'set' on 'StylePropertyMap': A custom property takes one unparsed value.",
+          );
+        }
+        this._decl.setProperty(name, String(v));
+        return;
+      }
+      const texts = this._texts('set', name, values);
+      this._decl.setProperty(name, texts.join(', '));
+    }
+    append(property: Any, ...values: Any[]): void {
+      const name = this._name(property, 'append');
+      const fail = (why: string): never => {
+        throw new TypeError(
+          `Failed to execute 'append' on 'StylePropertyMap': ${why}`,
+        );
+      };
+      if (name.startsWith('--') || !LIST_VALUED.test(name)) {
+        fail(`The property ${name} is not list-valued.`);
+      }
+      if (!values.length) return;
+      const wide = /^(?:inherit|initial|unset|revert|revert-layer)$/i;
+      for (const v of values) {
+        if (
+          v instanceof CSSUnparsedValue ||
+          (!(v instanceof CSSStyleValue) && /var\(/i.test(String(v))) ||
+          wide.test(String(v).trim())
+        ) {
+          fail('A var() or a CSS-wide keyword cannot be appended.');
+        }
+      }
+      const current = str(this._decl.getPropertyValue(name)).trim();
+      if (wide.test(current) || /var\(/i.test(current)) {
+        fail('There is no list to append to.');
+      }
+      const texts = this._texts('append', name, values);
+      this._decl.setProperty(
+        name,
+        current ? `${current}, ${texts.join(', ')}` : texts.join(', '),
+      );
+    }
+    delete(property: Any): void {
+      const name = this._name(property, 'delete');
+      this._decl.removeProperty(name);
+    }
+    clear(): void {
+      this._decl.cssText = '';
+    }
+  }
+  /** Each declaration block's style map, made once. */
+  const STYLE_MAPS = new WeakMap<object, Any>();
+  const styleMapOf = (decl: Any): Any => {
+    let map = STYLE_MAPS.get(decl);
+    if (!map) {
+      map = new (StylePropertyMap as Any)(MADE, decl);
+      STYLE_MAPS.set(decl, map);
+    }
+    return map;
+  };
 
   // --- easing functions (CSS Easing 2) ------------------------------------------
 
@@ -9887,7 +10301,7 @@ export function installDom(
     // the flat tree and is visible itself. HubSpot's forms hand their
     // `onFormReady` the form, and cultureamp.com's asks it this.
     computedStyleMap(): Any {
-      return new StylePropertyMapReadOnly(this);
+      return new (StylePropertyMapReadOnly as Any)(MADE, this);
     }
     checkVisibility(options?: Any): boolean {
       const o = options ?? {};
@@ -10646,6 +11060,9 @@ export function installDom(
     set style(v: Any) {
       this.setAttribute('style', v);
     }
+    get attributeStyleMap(): Any {
+      return styleMapOf(this.style);
+    }
     get dataset(): Any {
       return (this._dataset ??= datasetOf(this));
     }
@@ -10862,6 +11279,9 @@ export function installDom(
     // `[PutForwards=cssText]`, as an HTML element's is
     set style(v: Any) {
       this.style.cssText = v;
+    }
+    get attributeStyleMap(): Any {
+      return styleMapOf(this.style);
     }
     get dataset(): Any {
       return (this._dataset ??= datasetOf(this));
@@ -20335,6 +20755,9 @@ export function installDom(
     get style(): Any {
       return (this._style ??= ruleStyleOf(this));
     }
+    get styleMap(): Any {
+      return styleMapOf(this.style);
+    }
     set style(v: Any) {
       this.style.cssText = v;
     }
@@ -21620,6 +22043,12 @@ export function installDom(
     appendRule: 1,
     findRule: 1,
     to: 1,
+    get: 1,
+    getAll: 1,
+    has: 1,
+    set: 1,
+    append: 1,
+    delete: 1,
   };
   for (const key of [
     'type',
@@ -21724,6 +22153,11 @@ export function installDom(
     CSSSkewY,
     CSSPerspective,
     CSSMatrixComponent,
+    CSSUnparsedValue,
+    CSSVariableReferenceValue,
+    CSSImageValue,
+    StylePropertyMapReadOnly,
+    StylePropertyMap,
   ]) {
     cssomInterface(Interface);
     for (const key of Object.getOwnPropertyNames(Interface)) {
@@ -21755,7 +22189,7 @@ export function installDom(
   }
   // a list of values is iterable as an array is (Web IDL 3.7.9, an
   // indexed getter's value iterator)
-  for (const List of [CSSNumericArray, CSSTransformValue]) {
+  for (const List of [CSSNumericArray, CSSTransformValue, CSSUnparsedValue]) {
     for (const key of ['entries', 'keys', 'values', 'forEach']) {
       Object.defineProperty(List.prototype, key, {
         value: (Array.prototype as Any)[key],
@@ -28245,6 +28679,9 @@ export function installDom(
    *  has no say in, so CORS asks nothing of them (`EventSource`). No page
    *  has the key. */
   const UA_HEADERS = Symbol('uaHeaders');
+  /** What made a request, which its resource timing entry says
+   *  (`initiatorType`): `fetch` where nothing says other. No page has it. */
+  const INITIATOR = Symbol('initiator');
   /** The errors of requests CORS turned down, which say so to no page but
    *  tell an `EventSource` that asking again would come to the same. */
   const CORS_REFUSED = new WeakSet<object>();
@@ -28432,6 +28869,7 @@ export function installDom(
             // the body is taken as it arrives
             stream: true,
             ...(init[UA_HEADERS] ? { uaHeaders: init[UA_HEADERS] } : null),
+            initiator: init[INITIATOR] ?? 'fetch',
             // what the host checks another origin's answer against
             mode,
             credentials: str(
@@ -29053,6 +29491,7 @@ export function installDom(
         body: bodyless ? null : body,
         signal: controller.signal,
         credentials: this.withCredentials ? 'include' : 'same-origin',
+        [INITIATOR]: 'xmlhttprequest',
       }).then(
         (response: Any) => {
           if (attempt !== this._attempt) return undefined;
@@ -29808,6 +30247,12 @@ export function installDom(
   const observers = new Set<Any>();
   const noteEntry = (entry: Any): Any => {
     entries.push(entry);
+    queueEntry(entry);
+    return entry;
+  };
+  /** Performance Timeline 2's "queue a PerformanceEntry": to the observers
+   *  that watch its type, whatever buffer it is kept in. */
+  const queueEntry = (entry: Any): void => {
     for (const observer of observers) {
       if (!observer._types.has(entry.entryType)) continue;
       observer._queue.push(entry);
@@ -29815,8 +30260,28 @@ export function installDom(
         Promise.resolve().then(() => observer._deliver());
       }
     }
-    return entry;
   };
+  // Resource Timing 2 (`resource-timing.ts`): `PerformanceResourceTiming`,
+  // the `Performance` interface `performance` is, and the buffer of the
+  // entries the host makes of what the document fetched (`__resourceTiming`)
+  const resourceTiming = resourceTimingApi({
+    EventTarget,
+    Event,
+    setHandler,
+    getHandler: handlerOf,
+    fire: (target: Any, event: Any) => {
+      event.isTrusted = true;
+      dispatch(target, event);
+    },
+    later: (fn: () => void, ms: number) => setTimer(fn, ms, [], false),
+    queue: queueEntry,
+  });
+  /** Entries in the order a timeline lists them: by when each started. */
+  const byStartTime = (list: Any[]): Any[] =>
+    list
+      .map((entry, i) => [entry, i])
+      .sort((a: Any, b: Any) => a[0].startTime - b[0].startTime || a[1] - b[1])
+      .map((pair: Any) => pair[0]);
   const entryList = (list: Any[]) => ({
     getEntries: () => list.slice(),
     getEntriesByType: (type: Any) =>
@@ -29973,7 +30438,12 @@ export function installDom(
     }
   }
   class PerformanceObserver {
-    static readonly supportedEntryTypes = ['mark', 'measure', 'paint'];
+    static readonly supportedEntryTypes = [
+      'mark',
+      'measure',
+      'paint',
+      'resource',
+    ];
     _fn: Any;
     _types = new Set<string>();
     _queue: Any[] = [];
@@ -29991,7 +30461,10 @@ export function installDom(
       }
       observers.add(this);
       if (options.buffered) {
-        for (const entry of entries) {
+        for (const entry of [
+          ...entries,
+          ...resourceTiming.internals.buffer(),
+        ]) {
           if (this._types.has(entry.entryType)) this._queue.push(entry);
         }
         if (this._queue.length) Promise.resolve().then(() => this._deliver());
@@ -33117,8 +33590,14 @@ export function installDom(
     _result: Any = undefined;
     _error: Any = null;
     _done = false;
-    source: Any = null;
-    transaction: Any = null;
+    _source: Any = null;
+    _transaction: Any = null;
+    get source(): Any {
+      return this._source;
+    }
+    get transaction(): Any {
+      return this._transaction;
+    }
     get readyState(): string {
       return this._done ? 'done' : 'pending';
     }
@@ -33645,8 +34124,8 @@ export function installDom(
         );
       }
       const request = into ?? new IDBRequest();
-      request.source = source;
-      request.transaction = this;
+      request._source = source;
+      request._transaction = this;
       request._done = false;
       this._queue.push({ request, op });
       this._settling = false;
@@ -34428,12 +34907,12 @@ export function installDom(
           const tx = new IDBTransaction(db, [], 'versionchange');
           data.version = target;
           db._upgrade = tx;
-          request.transaction = tx;
+          request._transaction = tx;
           request._done = true;
           request._result = db;
           tx._onDone = (ok: boolean) => {
             db._upgrade = null;
-            request.transaction = null;
+            request._transaction = null;
             if (ok) {
               fireAt([request], new Event('success'));
               return;
@@ -36505,6 +36984,7 @@ export function installDom(
         keepalive: true,
         credentials: 'include',
         mode: plain ? 'no-cors' : 'cors',
+        [INITIATOR]: 'beacon',
       }).catch(() => {});
       return true;
     },
@@ -36607,6 +37087,7 @@ export function installDom(
         signal: controller.signal,
         cache: 'no-store',
         [UA_HEADERS]: ['cache-control', 'last-event-id'],
+        [INITIATOR]: 'other',
       }).then(
         (response: Any) => this._opened(response, controller),
         (error: Any) => {
@@ -43551,6 +44032,10 @@ export function installDom(
     CSSUnitValue,
     CSSKeywordValue,
     StylePropertyMapReadOnly,
+    StylePropertyMap,
+    CSSUnparsedValue,
+    CSSVariableReferenceValue,
+    CSSImageValue,
     CSSMathValue,
     CSSMathSum,
     CSSMathProduct,
@@ -43852,6 +44337,184 @@ export function installDom(
     CSSNamespaceRule,
     CSSStyleProperties,
   };
+  // IndexedDB's interfaces in Web IDL's shape (IndexedDB 3, 4): each one's
+  // members enumerable, an attribute read off its prototype or any other
+  // object a TypeError, an operation called with fewer arguments than it
+  // requires a TypeError and its `length` that count, and an interface with
+  // no constructor one a page cannot call or construct. The classes stay as
+  // they are for this realm's own `new`, and the page is handed interface
+  // objects over the same prototypes, so `instanceof` holds.
+  {
+    const IDB_OPERATIONS: Record<string, [string, number][]> = {
+      IDBFactory: [
+        ['open', 1],
+        ['deleteDatabase', 1],
+        ['databases', 0],
+        ['cmp', 2],
+      ],
+      IDBDatabase: [
+        ['transaction', 1],
+        ['close', 0],
+        ['createObjectStore', 1],
+        ['deleteObjectStore', 1],
+      ],
+      IDBTransaction: [
+        ['objectStore', 1],
+        ['commit', 0],
+        ['abort', 0],
+      ],
+      IDBObjectStore: [
+        ['put', 1],
+        ['add', 1],
+        ['delete', 1],
+        ['clear', 0],
+        ['get', 1],
+        ['getKey', 1],
+        ['getAll', 0],
+        ['getAllKeys', 0],
+        ['getAllRecords', 0],
+        ['count', 0],
+        ['openCursor', 0],
+        ['openKeyCursor', 0],
+        ['index', 1],
+        ['createIndex', 2],
+        ['deleteIndex', 1],
+      ],
+      IDBIndex: [
+        ['get', 1],
+        ['getKey', 1],
+        ['getAll', 0],
+        ['getAllKeys', 0],
+        ['getAllRecords', 0],
+        ['count', 0],
+        ['openCursor', 0],
+        ['openKeyCursor', 0],
+      ],
+      IDBCursor: [
+        ['advance', 1],
+        ['continue', 0],
+        ['continuePrimaryKey', 2],
+        ['update', 1],
+        ['delete', 0],
+      ],
+      IDBKeyRange: [['includes', 1]],
+      IDBRequest: [],
+      IDBOpenDBRequest: [],
+      IDBCursorWithValue: [],
+      IDBRecord: [],
+    };
+    const IDB_STATICS: Record<string, [string, number][]> = {
+      IDBKeyRange: [
+        ['only', 1],
+        ['lowerBound', 1],
+        ['upperBound', 1],
+        ['bound', 2],
+      ],
+    };
+    const isPrototypeOf = Object.prototype.isPrototypeOf;
+    const illegal = (): never => {
+      throw new TypeError('Illegal invocation');
+    };
+    const exposed = new Map<Any, Any>();
+    const parentOf = (Kind: Any): Any => {
+      const up = Object.getPrototypeOf(Kind);
+      return exposed.get(up) ?? up;
+    };
+    for (const [name, ops] of Object.entries(IDB_OPERATIONS)) {
+      const Kind = classes[name as keyof typeof classes] as Any;
+      const proto = Kind.prototype;
+      const required = new Map(ops);
+      for (const key of Object.getOwnPropertyNames(proto)) {
+        if (key === 'constructor' || key.startsWith('_')) continue;
+        const d = Object.getOwnPropertyDescriptor(proto, key)!;
+        if (d.get || d.set) {
+          const { get, set } = d;
+          Object.defineProperty(proto, key, {
+            get: get
+              ? {
+                  [key](this: Any) {
+                    if (!reflectApply(isPrototypeOf, proto, [this])) illegal();
+                    return reflectApply(get, this, []);
+                  },
+                }[key]
+              : undefined,
+            set: set
+              ? {
+                  [key](this: Any, v: Any) {
+                    if (!reflectApply(isPrototypeOf, proto, [this])) illegal();
+                    reflectApply(set, this, [v]);
+                  },
+                }[key]
+              : undefined,
+            enumerable: true,
+            configurable: true,
+          });
+        } else if (typeof d.value === 'function' && required.has(key)) {
+          const fn = d.value;
+          const n = required.get(key)!;
+          const op = {
+            [key](this: Any, ...args: Any[]) {
+              if (!reflectApply(isPrototypeOf, proto, [this])) illegal();
+              if (args.length < n) {
+                throw new TypeError(
+                  `Failed to execute '${key}' on '${name}': ${n} argument${n === 1 ? '' : 's'} required, but only ${args.length} present.`,
+                );
+              }
+              return reflectApply(fn, this, args);
+            },
+          }[key];
+          Object.defineProperty(op, 'length', { value: n });
+          Object.defineProperty(proto, key, {
+            ...d,
+            value: op,
+            enumerable: true,
+          });
+        } else {
+          Object.defineProperty(proto, key, { ...d, enumerable: true });
+        }
+      }
+      // the interface object a page has: no constructor, so neither called
+      // nor constructed (Web IDL 3.7.1), its statics its own
+      const Interface = {
+        [name]: function () {
+          throw new TypeError('Illegal constructor');
+        },
+      }[name] as Any;
+      Object.defineProperty(Interface, 'prototype', {
+        value: proto,
+        writable: false,
+      });
+      Object.defineProperty(proto, 'constructor', {
+        value: Interface,
+        writable: true,
+        configurable: true,
+        enumerable: false,
+      });
+      Object.setPrototypeOf(Interface, parentOf(Kind));
+      for (const [key, n] of IDB_STATICS[name] ?? []) {
+        const fn = Kind[key];
+        const op = {
+          [key](...args: Any[]) {
+            if (args.length < n) {
+              throw new TypeError(
+                `Failed to execute '${key}' on '${name}': ${n} argument${n === 1 ? '' : 's'} required, but only ${args.length} present.`,
+              );
+            }
+            return reflectApply(fn, Kind, args);
+          },
+        }[key];
+        Object.defineProperty(op, 'length', { value: n });
+        Object.defineProperty(Interface, key, {
+          value: op,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+      exposed.set(Kind, Interface);
+      (classes as Any)[name] = Interface;
+    }
+  }
   // and their interfaces with it, which a page tells a service worker by
   if (serviceWorkersOn) Object.assign(classes, SW.interfaces);
   for (const [name, value] of Object.entries(classes)) {
@@ -44211,9 +44874,13 @@ export function installDom(
    *  entry first, then its marks and measures. */
   const pageEntries = (): Any[] => [
     navigationTimingOf(document, String(call('location')), pageArrival()),
-    ...entries,
+    ...byStartTime([...entries, ...resourceTiming.internals.buffer()]),
   ];
-  define('performance', {
+  for (const [name, value] of Object.entries(resourceTiming.interfaces)) {
+    define(name, value);
+  }
+  /** `performance`, the one `Performance` there is, and its members. */
+  const performanceMembers = {
     now,
     timeOrigin,
     mark(name: Any, options: Any = {}) {
@@ -44265,8 +44932,6 @@ export function installDom(
         }
       }
     },
-    clearResourceTimings() {},
-    setResourceTimingBufferSize() {},
     getEntries: () => pageEntries(),
     getEntriesByType: (type: Any) =>
       entryList(pageEntries()).getEntriesByType(type),
@@ -44293,7 +44958,14 @@ export function installDom(
     toJSON() {
       return { timeOrigin: this.timeOrigin };
     },
-  });
+  };
+  define(
+    'performance',
+    Object.defineProperties(
+      resourceTiming.internals.makePerformance(),
+      Object.getOwnPropertyDescriptors(performanceMembers),
+    ),
+  );
   const screenObject = {
     get width() {
       return viewport().width;
@@ -46344,6 +47016,12 @@ export function installDom(
   entry('__lockStolen', () => {
     const [id] = input();
     lockRequests.get(id)?.stolen();
+    return true;
+  });
+  // an entry the host made of a fetch the document made (`resource-timing.ts`)
+  entry('__resourceTiming', () => {
+    const [record] = input();
+    resourceTiming.internals.add(record);
     return true;
   });
   // what came of a `fetch`

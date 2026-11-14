@@ -173,6 +173,10 @@ export interface FaceMetrics {
   lineHeight?: number;
   lineGap?: number;
   leading?: number;
+  /** The heights of a capital and of an x above the baseline, where the
+   *  face says (`text-box-edge`'s `cap` and `ex`). */
+  capHeight?: number | null;
+  xHeight?: number | null;
 }
 
 /**

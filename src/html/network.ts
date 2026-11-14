@@ -79,6 +79,11 @@ import type {
   ResourceRequest,
   ResourceResult,
 } from './resources.js';
+import type { ResourceClock, ResourceHop } from './resource-timing.js';
+
+declare const performance: { now(): number };
+/** The clock a page reads, which a resource's timing is stamped on. */
+const timingNow = (): number => performance.now();
 import { NO_WEBRTC, deferredConnection } from './rtc.js';
 import type { HtmlWebRTC } from './rtc.js';
 import { offeredCapabilities } from './rtc-codecs.js';
@@ -834,6 +839,21 @@ export class HtmlNetwork {
    *  `fetch`, Node's told how long a connection may take first. */
   private async _send(
     url: string,
+    timed: Parameters<HtmlTransport>[1] & { clock?: ResourceClock },
+  ): Promise<ResponseLike> {
+    const { clock, ...init } = timed;
+    if (!clock) return this._sendNow(url, init);
+    const hop: ResourceHop = { url, sent: timingNow() };
+    clock.hops.push(hop);
+    const response = await this._sendNow(url, init);
+    hop.answered = timingNow();
+    hop.status = response.status;
+    hop.headers = [...response.headers.entries()];
+    return response;
+  }
+
+  private async _sendNow(
+    url: string,
     init: Parameters<HtmlTransport>[1],
   ): Promise<ResponseLike> {
     if (this._transport) return this._transport(url, init);
@@ -918,7 +938,9 @@ export class HtmlNetwork {
    */
   private async _exchange(
     url: string,
-    init: Omit<Parameters<HtmlTransport>[1], 'redirect'>,
+    init: Omit<Parameters<HtmlTransport>[1], 'redirect'> & {
+      clock?: ResourceClock;
+    },
     cookies: CookieRequest | null,
     /** Whether a redirect is answered as it is, for whoever takes the next
      *  hop to take it (`FetchRequest.redirect`). */
@@ -1451,7 +1473,9 @@ export class HtmlNetwork {
       : null;
     const id = this._begin(kind, url, 'GET', headers ?? {}, null, page);
     const kept = this._cache.get(key);
+    const clock = asker.timing;
     if (kept && this._answers(kept, headers)) {
+      if (clock) clock.cache = 'memory';
       // most recently used goes to the end, oldest is evicted first
       this._cache.delete(key);
       this._cache.set(key, kept);
@@ -1497,6 +1521,7 @@ export class HtmlNetwork {
                 referrerPolicy: policy,
               },
               asker.nextHop,
+              clock,
             );
     // what the memory holds of it until it is here, and after if it is
     // kept: what a later answer is checked against, so that one made after
@@ -1640,6 +1665,8 @@ export class HtmlNetwork {
     metadata?: FetchMetadata,
     /** Where a redirect is followed to (`ResourceRequest.nextHop`). */
     nextHop?: (url: string) => string | null,
+    /** What it is timed on (`ResourceRequest.timing`). */
+    clock?: ResourceClock,
   ): Promise<Obtained> {
     const had = candidate ?? (await this._stored(key));
     // asked for before a hard reload: neither used nor asked about, and
@@ -1648,6 +1675,10 @@ export class HtmlNetwork {
     const stored = had && !reload && varyMatches(had, headers) ? had : null;
     if (stored && isFresh(stored, Date.now())) {
       const fetched = fetchedOf(url, stored);
+      if (clock) {
+        clock.cache = 'disk';
+        clock.bytes = fetched.bytes.length;
+      }
       this._whole(id, fetched, stored.headers, 'disk');
       return { fetched, response: stored, via: 'cached' };
     }
@@ -1662,9 +1693,14 @@ export class HtmlNetwork {
         opaque,
         metadata,
         nextHop,
+        clock,
       }),
     );
     if (answer.fetched.status === 304 && stored && validators) {
+      if (clock) {
+        clock.revalidated = true;
+        clock.bytes = stored.bytes.length;
+      }
       const head = freshened(
         stored,
         answer.headers,
@@ -2498,6 +2534,7 @@ export class HtmlNetwork {
       opaque?: boolean;
       metadata?: FetchMetadata;
       nextHop?: (url: string) => string | null;
+      clock?: ResourceClock;
     },
   ): Promise<Answer> {
     try {
@@ -2521,6 +2558,7 @@ export class HtmlNetwork {
       opaque?: boolean;
       metadata?: FetchMetadata;
       nextHop?: (url: string) => string | null;
+      clock?: ResourceClock;
     },
   ): Promise<Answer> {
     const stall = stallTimer(this._timeout);
@@ -2537,7 +2575,12 @@ export class HtmlNetwork {
       const hops: HtmlDocumentHop[] = [];
       const response = await this._exchange(
         url,
-        { method: 'GET', headers: options.headers, signal: stall.signal },
+        {
+          method: 'GET',
+          headers: options.headers,
+          signal: stall.signal,
+          ...(options.clock ? { clock: options.clock } : {}),
+        },
         {
           credentials,
           // a document of no origin is same-site with nothing
@@ -2567,13 +2610,18 @@ export class HtmlNetwork {
         if (id) this._tell({ type: 'data', id, chunk, time: Date.now() });
       }
       if (id) this._tell({ type: 'end', id, time: Date.now() });
+      const bytes = concat(chunks);
+      if (options.clock) {
+        options.clock.end = timingNow();
+        options.clock.bytes = bytes.length;
+      }
       return {
         fetched: {
           url: response.url || url,
           status: response.status,
           type,
           charset,
-          bytes: concat(chunks),
+          bytes,
           headers: [...response.headers.entries()],
           ...(hops.length && { through: hops.map((hop) => hop.url) }),
         },

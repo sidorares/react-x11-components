@@ -162,6 +162,7 @@ export type {
   ResourceResult,
   VideoSource,
 } from './resources.js';
+export type { ResourceClock, ResourceHop } from './resource-timing.js';
 export type { BareField, ControlRect } from './controls.js';
 export type {
   EmbeddedKind,

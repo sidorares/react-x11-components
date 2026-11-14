@@ -240,6 +240,42 @@ when:
   frame whose document has no realm of its own has a `performance` of its
   own, whose navigation entry is its document's and whose marks and
   measures are the page's.
+- **What a document fetches over HTTP is a resource timing entry**
+  (Resource Timing 2): a `PerformanceResourceTiming` for each `fetch`,
+  `XMLHttpRequest`, beacon and `EventSource` of the page's, and for each
+  image, stylesheet, font and script its host fetched for it, in
+  `performance.getEntriesByType("resource")` and to a `PerformanceObserver`
+  of `resource`. The buffer is 250 entries until
+  `setResourceTimingBufferSize` says other, and `resourcetimingbufferfull`
+  fires at `performance` as it fills. A `data:` or a `blob:` URL makes none.
+  - **The times are what the host stamped** (`ResourceRequest.timing`):
+    `HtmlNetwork` stamps when each request on the way was sent and
+    answered, and when the body ended. A host that stamps nothing makes an
+    entry of when the fetch began and ended. The lookup and the connection
+    are the runtime's, which keeps its connections and says nothing of
+    them, so they read as one reused: `domainLookup…` and `connect…` are
+    `fetchStart`, and `nextHopProtocol` is `http/1.1`, whatever undici
+    spoke.
+  - **Another origin shows what it lets the page see.** Its times, its
+    `transferSize` and its `serverTiming` need its `Timing-Allow-Origin`, at
+    every hop, and `null` is what it names once a redirect has left the
+    page's origin. Its status, its type and its sizes need a response the
+    page may read: an element's request of another origin, answered opaque,
+    says 0 and nothing.
+  - **The type is minimized** as Fetch has it: any JavaScript type is
+    `text/javascript`, a JSON one `application/json`, an XML one
+    `application/xml`, and one this does nothing with is empty.
+  - **`renderBlockingStatus` is `blocking`** where the element was
+    potentially render-blocking in the head as its fetch began — its
+    `blocking=render`, or a classic script or a stylesheet the parser put
+    there — whether or not the document still took elements into its
+    render-blocking set, and for a `<style>` the parser made anywhere, as
+    Chromium has it. What it imports is its fetch's, and a preload a
+    blocking sheet or script took up is theirs.
+  - **What a stylesheet of another origin asks for makes no entry** — its
+    imports, its fonts and its images (`ResourceRequest.opaqueSheet`).
+  - **Not yet:** a frame's document, and an `<object>`'s or an `<embed>`'s
+    that holds one, make no entry.
 - **An image moves the boxes only where its size lays something out.** An
   `<img>` built before its image arrived is the size its `width` and
   `height` attributes say, and takes its image's size where it lands, in
@@ -1936,7 +1972,12 @@ the connection `gathering` until the last candidate in the new credentials
 and `complete` after it, where werift stays `complete` and gathers again as
 the answer commits the restart; and `restartIce()` holds until an answer
 leaves no old credentials, so a restart's offer rolled back leaves one to
-make. A transport's state and the connection's are both set before either's
+make. A connected transport that hears nothing on its pair for seven
+seconds is `disconnected`, and so is the connection, and it is connected
+again as anything comes: werift never says `disconnected`, and checks
+consent every four to six seconds, so an idle connection hears its peer
+more often than that. It fails only as consent expires, 30 seconds on. A
+transport's state and the connection's are both set before either's
 event fires, as WebRTC 1.0 has them. A transceiver no
 m-section has has no transport. `setLocalDescription()` with no description
 sets the last offer or answer made while nothing has changed since (WebRTC
@@ -2696,7 +2737,14 @@ where it comes to one term. The transform components are there as well,
 `CSSTranslate` to `CSSMatrixComponent` in a `CSSTransformValue`, each
 argument held to the type its function takes and each component its
 matrix; and `CSSStyleValue.parse()` reifies a value for a property it
-takes, a transform list its components. So is an element's
+takes, a transform list its components. A value with a `var()` in it is a
+`CSSUnparsedValue` of strings and `CSSVariableReferenceValue`s, an image a
+`CSSImageValue` and a shorthand a `CSSStyleValue` as written. An element's
+`attributeStyleMap` and a rule's `styleMap` are its `style` as a map, which
+set a value only where the property takes it — a numeric value's type held
+to the property's through a `calc()` of it, which is also what keeps one out
+of the property's range — and append only to a list-valued property. So is an
+element's
 `computedStyleMap()`, which reifies its computed values: a number, a
 dimension or a percentage a `CSSUnitValue`, a name a `CSSKeywordValue`, and
 anything else a `CSSStyleValue` that reads as written. They are computed
@@ -6344,6 +6392,24 @@ is a ring of two shades that change on the same line. A dotted, dashed,
 double, groove or ridge side on a rounded box has its border drawn
 straight.
 
+A script's `el.style` takes the borders' properties only as their grammars
+have them, as Chromium keeps them (`borders-specified.ts`): a width, a
+style or a colour of each side, `thin`, `medium`, `thick`, `hairline` or a
+length not below nought, `0` as `0px`; a colour in lower case, a hex, an
+`rgb()` or an `hsl()` as the `rgb()` it is, its alpha to the eighth bit;
+a corner's radius of one or two values, the second left out where it is
+the first. `border`, a side's, `border-width`, `border-style`,
+`border-color` and `border-radius` are set as their longhands — `border`
+sets `border-image`'s back to their initial values as well — and read
+back from them as short as they go, the initial ones left out, so
+`border: green double thin` reads `thin double green`. `cssText`, and the
+`style` attribute a script's change writes, have the shorthand where the
+block declares all its longhands, as CSSOM serializes a declaration block,
+those of more longhands first: `border: 1px solid` with `border-top-width`
+changed after it is `border-width: 2px 1px 1px; border-style: solid;
+border-color: currentcolor; border-image: none`. `background-color` is a
+colour as a border's is.
+
 **`corner-shape`** (CSS Borders 4) draws a corner's radii in another curve:
 `round`, `squircle`, `bevel`, `scoop`, `notch`, `square`, or
 `superellipse()` of a number or an infinity — 1 for round, 2 for a
@@ -7647,6 +7713,17 @@ in a script written without spaces is cut regardless, as the engine finds
 no words in it — CoreText, on macOS, cuts a word too long whatever the
 style says), `direction`,
 `unicode-bidi`, `vertical-align`,
+`text-box-trim`, `text-box-edge` and `text-box` (CSS Inline 3, 5: a block
+container's first formatted line trimmed at its top, and its last at its
+bottom, to its root inline box's `text`, `cap` or `ex` over edge and its
+`text` or `alphabetic` under edge, the content moving up and the box and
+the blocks between it and the line coming out shorter; border or padding
+between the box and its line, a height of its own on a block between, or
+a flex box or a table on the way holds a side, and the innermost trim wins; a
+face that says no capital or x height has one of 0.7em or 0.5em; the
+ideographic edges are an em box centred on the text, as no face here says
+where its ideographic baselines are; trimming an inline box's content
+area, and a multicol container's columns, are not done),
 `text-decoration` in all five rule styles, with `text-decoration-thickness`
 and `text-underline-offset`. Left at `auto`, an underline is a tenth of the
 font size thick and half of that under the baseline, a pixel each at the
@@ -8192,7 +8269,7 @@ flow has, `border` and its eight edges, `outline`, `overflow`, `gap`,
 `place-items`, `place-self`, `grid-row`, `grid-column`, `grid-area`,
 `list-style`, `background`, `columns`, `column-rule`, `row-rule`, `rule`,
 `transition`, `animation`, `animation-range`, `scroll-timeline`,
-`view-timeline`, `position-try`, `container`, `text-wrap`,
+`view-timeline`, `position-try`, `container`, `text-wrap`, `text-box`,
 `text-decoration`, `font-variant` and `font`. `animation` and `transition`
 take their lists in turn as far as their names go, so
 `animation-name: a, b; animation-duration: 1s` reads `1s a, 1s b`.
@@ -8201,7 +8278,7 @@ Two limits. `grid` and `grid-template` read as nothing,
 since a grid's tracks resolve to what a layout came to and a box does not
 say. So do `mask` and `border-image`, whose images a style keeps in no form
 a page can read, and what a style holds nothing of: `overscroll-behavior`,
-`offset`, `marker`, `text-emphasis`, `text-box` and `font-synthesis`, the
+`offset`, `marker`, `text-emphasis` and `font-synthesis`, the
 `corner-*-shape` pairs, and the `-webkit-` spellings.
 
 What `getComputedStyle` reads back for `color`, `background-color`, the
