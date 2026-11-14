@@ -9544,12 +9544,79 @@ export function installDom(
   class SVGForeignObjectElement extends SVGGraphicsElement {}
   class SVGAElement extends SVGGraphicsElement {}
   /** Text's: its length is its font's, in a run as it is written. */
+  /** A text element's characters as the host lays them out
+   *  (`svg-geometry.ts`, `placedChars`): where each starts, how far it goes,
+   *  how far it reaches up and down, its turn and whether it runs down. */
+  const svgChars = (el: Any): number[][] => {
+    const n = svgNumbers(el, 'chars') ?? [];
+    const out: number[][] = [];
+    for (let i = 0; i + 6 < n.length; i += 7) out.push(n.slice(i, i + 7));
+    return out;
+  };
+  /** A character's index, an `unsigned long`, that is one of the element's
+   *  (SVG 2, 11.13.1), or an `IndexSizeError`. */
+  const svgCharAt = (el: Any, what: string, n: Any): number[] => {
+    const chars = svgChars(el);
+    const i = Number(n) >>> 0;
+    if (i >= chars.length) {
+      throw new DOMException(
+        `Failed to execute '${what}' on 'SVGTextContentElement': The charnum provided (${i}) is greater than or equal to the maximum bound (${chars.length}).`,
+        'IndexSizeError',
+      );
+    }
+    return chars[i];
+  };
+  /** A character's cell: across its advance and down its line's height, or
+   *  the other way where it runs down. */
+  const svgCharBox = (c: number[]): number[] =>
+    c[6]
+      ? [c[0] - (c[3] + c[4]) / 2, c[1], c[3] + c[4], c[2]]
+      : [c[0], c[1] - c[3], c[2], c[3] + c[4]];
   class SVGTextContentElement extends SVGGraphicsElement {
     getNumberOfChars(): number {
-      return this.textContent.length;
+      return svgChars(this).length;
     }
     getComputedTextLength(): number {
       return svgNumbers(this, 'textLength')?.[0] ?? 0;
+    }
+    getSubStringLength(charnum: Any, nchars: Any): number {
+      const chars = svgChars(this);
+      const from = Number(charnum) >>> 0;
+      if (from >= chars.length) svgCharAt(this, 'getSubStringLength', from);
+      const to = Math.min(chars.length, from + (Number(nchars) >>> 0));
+      let sum = 0;
+      for (let i = from; i < to; i += 1) sum += chars[i][2];
+      return Math.fround(sum);
+    }
+    getStartPositionOfChar(charnum: Any): Any {
+      const c = svgCharAt(this, 'getStartPositionOfChar', charnum);
+      return SVG.point(c[0], c[1]);
+    }
+    getEndPositionOfChar(charnum: Any): Any {
+      const c = svgCharAt(this, 'getEndPositionOfChar', charnum);
+      return c[6] ? SVG.point(c[0], c[1] + c[2]) : SVG.point(c[0] + c[2], c[1]);
+    }
+    getExtentOfChar(charnum: Any): Any {
+      const b = svgCharBox(svgCharAt(this, 'getExtentOfChar', charnum));
+      return SVG.rect(b[0], b[1], b[2], b[3]);
+    }
+    getRotationOfChar(charnum: Any): number {
+      return Math.fround(svgCharAt(this, 'getRotationOfChar', charnum)[5]);
+    }
+    getCharNumAtPosition(point: Any = undefined): number {
+      const x = +(point?.x ?? 0);
+      const y = +(point?.y ?? 0);
+      const chars = svgChars(this);
+      for (let i = chars.length - 1; i >= 0; i -= 1) {
+        const b = svgCharBox(chars[i]);
+        if (x >= b[0] && x < b[0] + b[2] && y >= b[1] && y < b[1] + b[3]) {
+          return i;
+        }
+      }
+      return -1;
+    }
+    selectSubString(charnum: Any, _nchars: Any): void {
+      svgCharAt(this, 'selectSubString', charnum);
     }
   }
   class SVGTextPositioningElement extends SVGTextContentElement {}

@@ -8409,6 +8409,10 @@ export class HtmlViewNode extends Node {
           ? px / (this._scale * style.effectiveZoom)
           : null;
       },
+      vertical: (el) => {
+        const mode = this._styleOf(el)?.writingMode;
+        return !!mode && mode !== 'horizontal-tb';
+      },
       hidden: (el) => {
         for (let at: AnyNode | null = el; at; at = at.parent) {
           if (!isElement(at)) break;

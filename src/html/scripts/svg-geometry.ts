@@ -32,6 +32,9 @@ export interface SvgMeasure {
   /** What one of a relative unit comes to in an element's style, or the
    *  initial style's for none, in CSS pixels; null where there is none. */
   unit(el: Element | null, unit: string): number | null;
+  /** Whether an element's text runs down rather than across, by its
+   *  `writing-mode`; across where nothing says. */
+  vertical?(el: Element): boolean;
 }
 
 /** What a drawing holds and does not draw: it is drawn by what names it. */
@@ -928,6 +931,170 @@ export function svgElementAt(
   return hit;
 }
 
+/** A character of a text element as it is laid out (SVG 2, 11.8), in the
+ *  text's user units: where it starts on its baseline, how far it goes, how
+ *  far above and below it reaches, and how far it is turned. */
+export interface PlacedChar {
+  /** The deepest element whose text it is. */
+  owner: Element;
+  x: number;
+  y: number;
+  advance: number;
+  ascent: number;
+  descent: number;
+  rotate: number;
+  /** Whether it runs down. */
+  vertical: boolean;
+}
+/** The text element an element of text is in. */
+function textRootOf(el: Element): Element | null {
+  for (let at: AnyNode | null = el; at instanceof Element; at = at.parent) {
+    if (tag(at) === 'text') return at;
+    if (isSvg(at)) break;
+  }
+  return null;
+}
+/**
+ * A text element's characters as SVG 2 lays them out (11.8): its white
+ * space collapsed as `xml:space` has it by default, each character at the
+ * `x` and `y` an element's lists give it or where the one before ended,
+ * moved by `dx` and `dy`, turned by `rotate`, and each chunk that starts
+ * at an absolute position anchored by `text-anchor`. Each character is a
+ * UTF-16 code unit, as the DOM counts them; a `textPath` is laid out as a
+ * line.
+ */
+export function placedChars(el: Element, measure: SvgMeasure): PlacedChar[] {
+  const root = textRootOf(el);
+  if (!root) return [];
+  // the characters, each with the elements around it and its index in each
+  const chars: Array<{ ch: string; chain: Element[] }> = [];
+  let space = true;
+  const collect = (at: Element, chain: Element[]): void => {
+    for (const kid of at.children) {
+      if (kid instanceof Text) {
+        for (const ch of kid.data.replace(/[\n\r]/g, '').replace(/\t/g, ' ')) {
+          if (ch === ' ' && space) continue;
+          space = ch === ' ';
+          chars.push({ ch, chain });
+        }
+      } else if (kid instanceof Element && !measure.hidden(kid)) {
+        collect(kid, [...chain, kid]);
+      }
+    }
+  };
+  collect(root, [root]);
+  while (chars.length && chars[chars.length - 1].ch === ' ') chars.pop();
+  // each element's first character, which its lists count from
+  const firsts = new Map<Element, number>();
+  chars.forEach((c, i) => {
+    for (const e of c.chain) if (!firsts.has(e)) firsts.set(e, i);
+  });
+  /** An element's list of lengths, `x` or `dx`, read once a layout. */
+  const lists = new Map<Element, Map<string, number[]>>();
+  const list = (e: Element, name: string): number[] => {
+    let own = lists.get(e);
+    if (!own) lists.set(e, (own = new Map()));
+    let v = own.get(name);
+    if (!v) {
+      const em = measure.fontSize(e);
+      const raw = attr(e, name);
+      v =
+        raw === undefined
+          ? []
+          : raw
+              .trim()
+              .split(/[\s,]+/)
+              .filter(Boolean)
+              .map((t) => length(t, em, 0));
+      own.set(name, v);
+    }
+    return v;
+  };
+  /** A list's value for a character from the nearest element that has one. */
+  const valueFor = (
+    i: number,
+    chain: Element[],
+    name: string,
+  ): number | undefined => {
+    for (let k = chain.length - 1; k >= 0; k -= 1) {
+      const e = chain[k];
+      const v = list(e, name);
+      const at = i - firsts.get(e)!;
+      if (at < v.length) return v[at];
+    }
+    return undefined;
+  };
+  /** `rotate`: an element's last value holds for the rest of its text. */
+  const rotateFor = (i: number, chain: Element[]): number => {
+    for (let k = chain.length - 1; k >= 0; k -= 1) {
+      const raw = attr(chain[k], 'rotate');
+      if (raw === undefined) continue;
+      const v = numbers(raw);
+      if (!v.length) continue;
+      const at = i - firsts.get(chain[k])!;
+      return v[Math.min(at, v.length - 1)];
+    }
+    return 0;
+  };
+  const out: PlacedChar[] = [];
+  const pen = { x: 0, y: 0 };
+  const chunks: number[] = [];
+  chars.forEach((c, i) => {
+    const owner = c.chain[c.chain.length - 1];
+    const vertical = measure.vertical?.(owner) ?? false;
+    const x = valueFor(i, c.chain, 'x');
+    const y = valueFor(i, c.chain, 'y');
+    if (x !== undefined || y !== undefined || i === 0) chunks.push(i);
+    if (x !== undefined) pen.x = x;
+    if (y !== undefined) pen.y = y;
+    pen.x += valueFor(i, c.chain, 'dx') ?? 0;
+    pen.y += valueFor(i, c.chain, 'dy') ?? 0;
+    const run = measure.text(owner, c.ch);
+    // down a line every character takes an em, as a sideways glyph does
+    const advance = vertical ? measure.fontSize(owner) : run.width;
+    out.push({
+      owner,
+      x: pen.x,
+      y: pen.y,
+      advance,
+      ascent: run.ascent,
+      descent: run.descent,
+      rotate: rotateFor(i, c.chain),
+      vertical,
+    });
+    if (vertical) pen.y += advance;
+    else pen.x += advance;
+  });
+  // each chunk anchored as its first character's element says
+  chunks.forEach((start, k) => {
+    const end = k + 1 < chunks.length ? chunks[k + 1] : out.length;
+    if (end <= start) return;
+    let anchor = 'start';
+    for (
+      let up: AnyNode | null = out[start].owner;
+      up instanceof Element;
+      up = up.parent
+    ) {
+      const a = inheritedProperty(up, 'text-anchor');
+      if (a) {
+        anchor = a;
+        break;
+      }
+    }
+    if (anchor !== 'middle' && anchor !== 'end') return;
+    let length = 0;
+    for (let i = start; i < end; i += 1) length += out[i].advance;
+    const shift = anchor === 'middle' ? length / 2 : length;
+    for (let i = start; i < end; i += 1) {
+      if (out[i].vertical) out[i].y -= shift;
+      else out[i].x -= shift;
+    }
+  });
+  if (root === el) return out;
+  // an element's own: the characters it holds, those of what is in it too
+  return out.filter((_, i) => chars[i].chain.includes(el));
+}
+
 /** `getBBox` (SVG 2, 8.10): what an element takes up in its own user units,
  *  a child's through its transform, and no stroke. */
 export function bboxOf(el: Element, measure: SvgMeasure): Box | null {
@@ -1063,6 +1230,24 @@ export function svgAnswer(
     }
     case 'textLength':
       return [measure.text(el, el.children.map(textOf).join('')).width];
+    // an element of text's characters as they are laid out, seven numbers
+    // a character: where it starts, how far it goes, how far it reaches up
+    // and down, its turn and whether it runs down (`placedChars`)
+    case 'chars': {
+      const out: number[] = [];
+      for (const c of placedChars(el, measure)) {
+        out.push(
+          c.x,
+          c.y,
+          c.advance,
+          c.ascent,
+          c.descent,
+          c.rotate,
+          c.vertical ? 1 : 0,
+        );
+      }
+      return out;
+    }
     default:
       return null;
   }
