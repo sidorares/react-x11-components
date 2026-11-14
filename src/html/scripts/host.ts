@@ -1885,6 +1885,12 @@ function shadowIncludingRoot(node: AnyNode): AnyNode {
 
 export { trustworthy };
 
+/** Whether a URL is one Mixed Content holds back from a secure document:
+ *  `http:` or `ws:` to a host that is not this machine's. */
+function insecureUrl(url: string): boolean {
+  return /^(http|ws):/i.test(url) && !trustworthy(url);
+}
+
 /** What a frame's document is to Fetch (Fetch, "request destination"): the
  *  element that holds it. */
 function frameDestination(frame: Element): string {
@@ -11159,6 +11165,18 @@ export class DomHost {
     return keySecrets(this._keySecret());
   }
 
+  /** Whether a request of this document's to an insecure URL is mixed
+   *  content (Mixed Content, 4.4, "Does settings prohibit mixed security
+   *  contexts?"): where it, or the document it is framed in, came over a
+   *  secure scheme. A page at `http://localhost` is trustworthy and still
+   *  asks what it likes, as browsers have it. */
+  prohibitsMixedContent(): boolean {
+    for (let host: DomHost | null = this; host; host = host.frameParent) {
+      if (/^(https|wss):/i.test(host.creator ?? host.url)) return true;
+    }
+    return /^(https|wss):/i.test(this.top);
+  }
+
   private _secureContext(): boolean {
     if (this._seams.secureContext !== undefined) {
       return this._seams.secureContext;
@@ -12238,6 +12256,14 @@ export class DomHost {
       // sent securely where the document's policies upgrade its insecure
       // requests, at each hop (Fetch 4.1, "main fetch", step 4)
       if (this.csp.upgrades) hop = { ...hop, url: this.csp.upgrade(hop.url) };
+      // an insecure URL a secure document may not ask for, at any hop
+      // (Mixed Content, 4.3, "Should fetching request be blocked as mixed
+      // content?": a page's `fetch` and `XMLHttpRequest` are blockable)
+      if (this.prohibitsMixedContent() && insecureUrl(hop.url)) {
+        throw new TypeError(
+          `Mixed Content: The page at '${this.url}' was loaded over HTTPS, but requested an insecure resource '${hop.url}'. This request has been blocked; the content must be served over HTTPS.`,
+        );
+      }
       // held to the document's policies at each hop, and reported by the URL
       // it was first asked for (CSP 3, 4.1.2; Fetch 4.4, step 15)
       if (
