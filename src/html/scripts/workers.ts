@@ -159,6 +159,11 @@ export type FromWorker =
   | { kind: 'service'; text: string; bytes?: Uint8Array }
   /** What a worker's `caches` ask. */
   | { kind: 'caches'; id: number; origin: string; ask: HtmlCacheAsk }
+  /** A worker's own `Worker` (HTML 10.2.6.3): started, posted to and ended
+   *  by this process, which is where its thread runs. */
+  | { kind: 'nested'; op: 'start'; child: number; init: WorkerInit }
+  | { kind: 'nested'; op: 'post'; child: number; data: string }
+  | { kind: 'nested'; op: 'end'; child: number }
   | TransportAsk
   | SocketAsk
   | ChannelRelay;
@@ -184,6 +189,18 @@ export type ToWorker =
   | { kind: 'fetchEnd'; id: number; error: string | null }
   /** The word that says whether the page's document is frozen changed. */
   | { kind: 'suspended' }
+  /** What a worker's own `Worker` said: a message, or an error, by the
+   *  number the worker knows it by. */
+  | { kind: 'nested'; op: 'message'; child: number; data: string }
+  | {
+      kind: 'nested';
+      op: 'error';
+      child: number;
+      message: string;
+      filename: string;
+      line: number;
+      column: number;
+    }
   | TransportTell
   | SocketTell
   | ChannelRelay;
@@ -234,6 +251,14 @@ interface Running {
   sockets: SocketRelay | null;
   /** Its notifications that are showing. */
   shown: Map<number, HtmlShownNotification | null>;
+  /** The workers it started itself, run from here, made the first time it
+   *  starts one: what each is known by there, and here. */
+  nested: {
+    workers: PageWorkers;
+    ids: Map<number, number>;
+    /** And the other way round. */
+    byChild: Map<number, number>;
+  } | null;
 }
 
 /** How many workers one page may have running at once. A page that spawns
@@ -264,8 +289,10 @@ export class PageWorkers implements PageWorkersLike {
   /** This set of workers' own, apart from every other page's. */
   private readonly _uid = ++pageWorkersMade;
   private _disposed = false;
-  private readonly _frozen = new SharedArrayBuffer(4);
-  private readonly _stopped = new SharedArrayBuffer(4);
+  /** The word that says the document is frozen, and the count of threads
+   *  stopped for it: the page's, which its workers' own workers share. */
+  private readonly _frozen: SharedArrayBuffer;
+  private readonly _stopped: SharedArrayBuffer;
   /** Threads ended before they were up, which go on loading until they are
    *  (`end`) and hold what a running thread holds, so they count against the
    *  limit: a page that starts and ends workers in a loop has no other. */
@@ -278,7 +305,23 @@ export class PageWorkers implements PageWorkersLike {
      *  on it (`hold`): a service worker's stays with no page to answer for
      *  it, and held the process 30 seconds past its last client. */
     private readonly _background: boolean = false,
-  ) {}
+    /** The page's set, where this is a worker's own: its threads count
+     *  against the page's limit, which nesting would otherwise multiply
+     *  without end, and stop with the page's document. */
+    private readonly _root: PageWorkers | null = null,
+  ) {
+    this._frozen = _root?._frozen ?? new SharedArrayBuffer(4);
+    this._stopped = _root?._stopped ?? new SharedArrayBuffer(4);
+  }
+
+  /** The threads this set holds, its workers' own among them. */
+  private _live(): number {
+    let live = this._running.size + this._ending.size;
+    for (const running of this._running.values()) {
+      if (running.nested) live += running.nested.workers._live();
+    }
+    return live;
+  }
 
   /** A worker's number, for one that is never started: refused before its
    *  script was asked for. */
@@ -289,7 +332,7 @@ export class PageWorkers implements PageWorkersLike {
   start(init: WorkerInit): number {
     const id = ++this._seq;
     if (this._disposed) return id;
-    if (this._running.size + this._ending.size >= this._limit) {
+    if ((this._root ?? this)._live() >= this._limit) {
       this._seams.log(
         'warn',
         `A page tried to start more than ${this._limit} workers at once; ${init.url} was not started.`,
@@ -330,6 +373,7 @@ export class PageWorkers implements PageWorkersLike {
       shown: new Map(),
       transports: null,
       sockets: null,
+      nested: null,
     };
     this._running.set(id, running);
     this._seams.started?.(id, init);
@@ -338,6 +382,11 @@ export class PageWorkers implements PageWorkersLike {
       this._seams.error(id, String(error?.message ?? error), init.url, 0, 0);
     });
     thread.on('exit', () => {
+      // its own workers go with it (HTML 10.2.4: a worker none of whose
+      // owners is left is closed)
+      for (const sub of running.nested?.ids.values() ?? []) {
+        running.nested!.workers.end(sub);
+      }
       releaseOwner(owner);
       this._seams.exited?.(id);
       this._running.delete(id);
@@ -533,6 +582,7 @@ export class PageWorkers implements PageWorkersLike {
     this._suspend(1);
     for (const running of this._running.values()) {
       running.transports?.contextCleanup();
+      running.nested?.workers.freeze();
     }
   }
 
@@ -546,6 +596,7 @@ export class PageWorkers implements PageWorkersLike {
     const message: ToWorker = { kind: 'suspended' };
     for (const running of this._running.values()) {
       running.thread.postMessage(message);
+      running.nested?.workers._suspend(frozen);
     }
   }
 
@@ -579,7 +630,9 @@ export class PageWorkers implements PageWorkersLike {
    *  cannot make, and a data channel it is handed stays the page's. */
   get connected(): boolean {
     for (const running of this._running.values()) {
-      if (running.sockets?.open) return true;
+      if (running.sockets?.open || running.nested?.workers.connected) {
+        return true;
+      }
     }
     return false;
   }
@@ -658,6 +711,70 @@ export class PageWorkers implements PageWorkersLike {
     }
   }
 
+  /**
+   * A worker's own `Worker`: a thread of this process's like any, owned by
+   * the worker, whose messages and errors go to the worker's thread and not
+   * to the page, and its requests to the page's network as the worker's do.
+   */
+  private _nested(
+    id: number,
+    running: Running,
+    m: Extract<FromWorker, { kind: 'nested' }>,
+  ): void {
+    const told = (message: ToWorker): void => {
+      if (this._running.get(id) === running)
+        running.thread.postMessage(message);
+    };
+    if (m.op === 'start') {
+      if (!running.nested) {
+        const byChild = new Map<number, number>();
+        const childOf = (sub: number): number | undefined => byChild.get(sub);
+        const workers = new PageWorkers(
+          {
+            ...this._seams,
+            message: (sub, data) => {
+              const child = childOf(sub);
+              if (child) told({ kind: 'nested', op: 'message', child, data });
+            },
+            error: (sub, message, filename, line, column) => {
+              const child = childOf(sub);
+              if (child) {
+                told({
+                  kind: 'nested',
+                  op: 'error',
+                  child,
+                  message,
+                  filename,
+                  line,
+                  column,
+                });
+              }
+            },
+            // a worker's own workers are no worker the page lists
+            started: undefined,
+            exited: undefined,
+          },
+          this._limit,
+          false,
+          this._root ?? this,
+        );
+        running.nested = { workers, ids: new Map(), byChild };
+      }
+      const nested = running.nested;
+      const sub = nested.workers.start(m.init);
+      nested.ids.set(m.child, sub);
+      nested.byChild.set(sub, m.child);
+      return;
+    }
+    const sub = running.nested?.ids.get(m.child);
+    if (sub === undefined) return;
+    if (m.op === 'post') running.nested!.workers.post(sub, m.data);
+    else {
+      running.nested!.workers.end(sub);
+      running.nested!.ids.delete(m.child);
+    }
+  }
+
   /** A worker's `caches`, in the page's store. */
   private _caches(
     id: number,
@@ -730,6 +847,9 @@ export class PageWorkers implements PageWorkersLike {
         return;
       case 'close':
         this.end(id);
+        return;
+      case 'nested':
+        this._nested(id, running, m);
         return;
       case 'service':
         this._seams.service?.(id, m.text, m.bytes);

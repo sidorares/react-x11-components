@@ -47140,6 +47140,9 @@ export function installDom(
     (G as Any).performance.timeOrigin = origin;
     // a worker's navigator has no container of the page's
     delete (navigator as Any).serviceWorker;
+    // and a service worker starts no workers of its own (`Worker` is
+    // `[Exposed=(Window,DedicatedWorker,SharedWorker)]`)
+    if (service) delete (G as Any).Worker;
     GEOMETRY.worker();
     // nor an `RTCCertificate`, which a message to it is a `messageerror` for
     certificatesOf = null;
