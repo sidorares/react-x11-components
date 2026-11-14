@@ -15,8 +15,8 @@
 // `g.transform.baseVal.consolidate()` — and set it through them, so an
 // attribute and the object reflecting it are one value: a write through
 // `baseVal` sets the attribute, and an attribute set any other way shows in
-// a `baseVal` a page holds. Nothing animates one here (SMIL is not run), so
-// an `animVal` reads what its `baseVal` reads, and is read-only.
+// a `baseVal` a page holds. An `animVal` reads what SMIL animation sets
+// (`smil.ts`, through `animAttr`), and is read-only.
 //
 // What each object holds is in a `WeakMap` by the object, as Web IDL keeps
 // an interface's internal slots, so its attributes are accessors on its
@@ -43,6 +43,11 @@ export interface SvgDomDeps {
   /** An attribute's value as the tree keeps it, by the name it is kept
    *  under, or null. */
   getAttr(el: unknown, name: string): string | null;
+  /** An attribute as animation has it now (`smil.ts`), or undefined where
+   *  nothing animates it: what an `animVal` reads. */
+  animAttr?(el: unknown, name: string): string | undefined;
+  /** What moves wherever an animated value may have. */
+  animEpoch?(): number;
   /** An attribute set by the name it is kept under, as `setAttribute`. */
   setAttr(el: unknown, name: string, value: string): void;
   /** What moves wherever an attribute may have changed since. */
@@ -85,8 +90,32 @@ export function installSvgDom(deps: SvgDomDeps): SvgDomInstall {
   'use strict';
   type Any = any;
   const DOMException: Any = deps.DOMException;
-  const { getAttr, setAttr, epoch, unitSize, listOf, listState, values2D } =
-    deps;
+  const { setAttr, epoch, unitSize, listOf, listState, values2D } = deps;
+  /** Whether what reads an attribute now is an `animVal`, which reads it as
+   *  animation has it. */
+  let animReading = false;
+  const getAttr = (el: Any, name: string): string | null => {
+    if (animReading && deps.animAttr) {
+      const v = deps.animAttr(el, name);
+      if (v !== undefined) return v;
+    }
+    return deps.getAttr(el, name);
+  };
+  /** Reads as an `animVal` does. */
+  const asAnimated = <T>(anim: boolean, read: () => T): T => {
+    if (!deps.animAttr) return read();
+    const was = animReading;
+    animReading = anim;
+    try {
+      return read();
+    } finally {
+      animReading = was;
+    }
+  };
+  /** The count an object reflecting an attribute is fresh for: an
+   *  `animVal`'s moves with animation too. */
+  const epochFor = (anim: boolean): number | string =>
+    anim && deps.animEpoch ? `${epoch()}|${deps.animEpoch()}` : epoch();
   const E: Any = deps.elements;
   const create = Object.create;
   const defineProperty = Object.defineProperty;
@@ -352,10 +381,11 @@ export function installSvgDom(deps: SvgDomDeps): SvgDomInstall {
     else if (s.list) syncList(s.list);
     else if (s.ref) {
       const r = s.ref;
-      const now = epoch();
+      const anim = !!s.ro;
+      const now = epochFor(anim);
       if (r.at === now) return;
       r.at = now;
-      const raw = getAttr(r.el, r.attr);
+      const raw = asAnimated(anim, () => getAttr(r.el, r.attr));
       if (raw === r.raw) return;
       r.raw = raw;
       s.load(s, raw);
@@ -1327,10 +1357,11 @@ export function installSvgDom(deps: SvgDomDeps): SvgDomInstall {
     return list;
   };
   const syncList = (state: Any): void => {
-    const now = epoch();
+    const anim = !!state.ro;
+    const now = epochFor(anim);
     if (state.at === now) return;
     state.at = now;
-    const raw = getAttr(state.el, state.attr);
+    const raw = asAnimated(anim, () => getAttr(state.el, state.attr));
     if (raw === state.raw) return;
     state.raw = raw;
     const kind: ListKind | null = state.of;
@@ -1710,7 +1741,7 @@ export function installSvgDom(deps: SvgDomDeps): SvgDomInstall {
       }
       get animVal(): Any {
         const s = slotOf(this, name);
-        return s.read(s);
+        return asAnimated(true, () => s.read(s));
       }
     };
     defineProperty(Kind, 'name', { value: name });
@@ -1826,10 +1857,12 @@ export function installSvgDom(deps: SvgDomDeps): SvgDomInstall {
 
   /** A marker's `orient` (SVG 2, 11.6.2): `auto`, `auto-start-reverse` or an
    *  angle, which its `orientType` and `orientAngle` both reflect. */
-  const markerOf = (el: Any): Any =>
-    animatedOf(el, '\u0000orient', () => ({
+  const markerOf = (el: Any, anim = false): Any =>
+    animatedOf(el, anim ? '\u0000orientAnim' : '\u0000orient', () => ({
       kind: 'orient',
       type: 2,
+      // the animVal's reads what animation sets (`smil.ts`)
+      ro: anim,
       ref: reflecting(el, 'orient'),
       angles: [] as Any[],
       load: (m: Any, raw: string | null) => {
@@ -1864,8 +1897,8 @@ export function installSvgDom(deps: SvgDomDeps): SvgDomInstall {
       },
     }));
   const orientAngle = (el: Any): Any => {
-    const m = markerOf(el);
     return pairMade(SVGAnimatedAngle, (ro) => {
+      const m = markerOf(el, ro);
       const o = angleMade();
       const s = apply(wmGet, SLOTS, [o]);
       s.ro = ro;
@@ -2209,7 +2242,7 @@ export function installSvgDom(deps: SvgDomDeps): SvgDomInstall {
       primitive(
         SVGAnimatedEnumeration,
         (s: Any) => {
-          const m = markerOf(s.el);
+          const m = markerOf(s.el, animReading);
           fresh(m);
           return m.type;
         },
@@ -2610,9 +2643,8 @@ export function installSvgDom(deps: SvgDomDeps): SvgDomInstall {
 
   // --- what animates, which is drawn as it is at rest --------------------------
 
-  /** SMIL's elements (SVG Animations 2, 6.1) are here as interfaces, so a
-   *  page finds what it looks for: nothing runs them, and what one sets
-   *  stays as it was before it. */
+  /** SMIL's elements (SVG Animations 2, 6.1): what runs them, and their
+   *  methods, are `smil.ts`'s, laid over these. */
   const SVGAnimationElement = element('SVGAnimationElement', SVGElement, null);
   interfaces.SVGAnimationElement = SVGAnimationElement;
   tests(SVGAnimationElement);

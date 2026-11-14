@@ -189,7 +189,7 @@ import {
   requestLock,
 } from './page-channels.js';
 import type { ChannelEnd } from './page-channels.js';
-import { drawnWithin, svgAnswer, unitSize } from './svg-geometry.js';
+import { ANIMATED, drawnWithin, svgAnswer, unitSize } from './svg-geometry.js';
 import { SVG_PROPERTIES } from '../css/svg-properties.js';
 import type { SvgMeasure } from './svg-geometry.js';
 import { matchesSyntax, validSyntax } from '../css/syntax.js';
@@ -6456,6 +6456,29 @@ export class DomHost {
         const { data, ...head } = raster;
         const bytes = Buffer.from(data.buffer, data.byteOffset, data.length);
         return `${JSON.stringify(head)}\n${bytes.toString('latin1')}`;
+      }
+      // what a page's SMIL animations set now (`smil.ts`), by element: a
+      // value, or null where an attribute is no longer animated
+      case 'smil': {
+        for (const [id, attrs] of JSON.parse(text(a)) as Array<
+          [number, Record<string, string | null>]
+        >) {
+          let el: Element;
+          try {
+            el = this._element(id);
+          } catch {
+            continue;
+          }
+          let own = ANIMATED.get(el);
+          for (const name in attrs) {
+            const v = attrs[name];
+            if (v === null) own?.delete(name);
+            else (own ??= new Map()).set(name, v);
+          }
+          if (own?.size) ANIMATED.set(el, own);
+          else ANIMATED.delete(el);
+        }
+        return null;
       }
       // where what an inline drawing holds is (`svg-geometry.ts`)
       case 'svg': {

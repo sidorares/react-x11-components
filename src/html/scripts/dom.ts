@@ -42,6 +42,7 @@ import type { installWebRTC } from './webrtc.js';
 import type { installRtcTransports } from './rtc-transports.js';
 import type { installWebGL } from './webgl.js';
 import type { installGeometry } from './geometry.js';
+import type { installSmil } from './smil.js';
 import type { installSvgDom } from './svg-dom.js';
 import type { installWebCrypto } from './webcrypto.js';
 import type { installDataTransfer } from './datatransfer.js';
@@ -105,6 +106,7 @@ export function installDom(
   encodedTransform: typeof installEncodedTransform,
   textTracksApi: typeof installTextTracks,
   cspApi: typeof installCsp,
+  smilApi: typeof installSmil,
   namedAccess: boolean,
   inWorker: boolean,
 ): void {
@@ -194,6 +196,7 @@ export function installDom(
       op !== 'colorText' &&
       op !== 'color' &&
       op !== 'canvasColor' &&
+      op !== 'smil' &&
       op !== 'fontMedium' &&
       op !== 'customProperty' &&
       op !== 'frameDocument' &&
@@ -279,6 +282,11 @@ export function installDom(
    *  at every attribute set besides, which no list's count does, since d3
    *  sets an `x` or a `transform` on every element it draws. */
   let svgEpoch = 0;
+  /** SMIL's timeline (`smil.ts`), made with the SVG types. */
+  let SMIL: Any = null;
+  /** Whether a script has met an SVG element, before which nothing
+   *  animating is looked for. */
+  let svgSeen = false;
   /** The ops that change nothing a list holds. Anything else, an op added
    *  later among them, reads the lists again, which costs a read and is
    *  never wrong. Setting a style is here because a page's loop over a list
@@ -350,6 +358,7 @@ export function installDom(
     'rect',
     'svg',
     'svgLength',
+    'smil',
     'atViewport',
     'scrollMoves',
     'scrollInsets',
@@ -1415,6 +1424,9 @@ export function installDom(
     // an attribute is a handler only where the element has the handler
     // (HTML 8.1.8.1): `onreadystatechange` is a document's alone, and on a
     // `<div>` it is an attribute like any
+    // a SMIL element's `onbegin` is `beginEvent`'s, which `smil.ts` runs,
+    // and no handler of an event named `begin`
+    if (SMIL?.ownsHandler(target, type)) return null;
     return target instanceof Element && `on${type.toLowerCase()}` in target
       ? target
       : null;
@@ -6216,6 +6228,7 @@ export function installDom(
                         : DocumentFragment;
     if (type === 1 && name === 'canvas' && (ns === undefined || ns === HTML_NS))
       noteCanvas();
+    if (!svgSeen && Kind.prototype instanceof SVGElement) svgSeen = true;
     node = Object.create(Kind.prototype);
     Object.assign(node, new EventTarget());
     node._id = id;
@@ -9143,6 +9156,7 @@ export function installDom(
     at = 0,
     second = 0,
   ): number[] | null => {
+    SMIL?.flush();
     const raw = call('svg', el._id, question, at, second);
     return typeof raw === 'string' && raw ? raw.split(',').map(Number) : null;
   };
@@ -9248,15 +9262,6 @@ export function installDom(
     unsuspendRedraw(_id: Any): void {}
     unsuspendRedrawAll(): void {}
     forceRedraw(): void {}
-    pauseAnimations(): void {}
-    unpauseAnimations(): void {}
-    animationsPaused(): boolean {
-      return false;
-    }
-    getCurrentTime(): number {
-      return 0;
-    }
-    setCurrentTime(_t: Any): void {}
   }
   class SVGRectElement extends SVGGeometryElement {}
   class SVGCircleElement extends SVGGeometryElement {}
@@ -32880,11 +32885,19 @@ export function installDom(
       }
       return svg.get(name) ?? '';
     };
+    /** What animation lays over a property (`smil.ts`). */
+    const animated = (name: string, v: Any): Any => {
+      if (which !== '' || !SMIL?.active()) return v;
+      const o = SMIL.styleOf(el, name, v ?? '');
+      return o === undefined ? v : o;
+    };
     read();
     const block = computedBlock(
       (n) => {
         readProperty(n);
-        if (!n.startsWith('--')) return values[n] ?? shorthand(n) ?? '';
+        if (!n.startsWith('--')) {
+          return animated(n, values[n] ?? shorthand(n) ?? '');
+        }
         if (!json) return '';
         return String(call('customProperty', id, which, n) ?? '');
       },
@@ -32898,7 +32911,8 @@ export function installDom(
       (key) => {
         if (/^\d+$/.test(key)) return items()[Number(key)];
         readProperty(key);
-        return values[computedName(key)] ?? shorthand(key);
+        const name = computedName(key);
+        return animated(name, values[name] ?? shorthand(key));
       },
       read,
       () => {
@@ -40482,18 +40496,103 @@ export function installDom(
   // of them, and the element interfaces the facade did not have.
   const setAttrOwn = Element.prototype._setAttr;
   const attrNameOwn = Element.prototype._attrName;
+  /** An attribute as the tree keeps it, by SVG's spelling, which HTML's
+   *  parser leaves in lower case in a drawing. */
+  const svgAttr = (el: Any, name: string): string | null => {
+    const kept = reflectApply(attrNameOwn, el, [name]);
+    let v = call('attr', el._id, kept);
+    if (typeof v !== 'string' && kept !== kept.toLowerCase()) {
+      v = call('attr', el._id, kept.toLowerCase());
+    }
+    return typeof v === 'string' ? v : null;
+  };
+  // --- SMIL (`smil.ts`) --------------------------------------------------------
+  let smilAt = -1;
+  let smilEls: Any[] = [];
+  SMIL = smilApi({
+    DOMException,
+    Event,
+    fire: (target: Any, event: Any) => {
+      event.isTrusted = true;
+      dispatch(target, event);
+    },
+    later: (fn: () => void, ms: number) => setTimer(fn, ms, [], false),
+    cancel: (timer: Any) => clearTimer(timer),
+    document: () => document,
+    now: () => now(),
+    getAttr: svgAttr,
+    computed: (el: Any, property: string) => {
+      const id = el?._id;
+      if (!id) return '';
+      const r = call('computed', id, '');
+      const all =
+        typeof r === 'string' && r
+          ? JSON.parse(r[0] === '~' ? r.slice(1) : r)
+          : {};
+      if (property in all) return String(all[property]);
+      const s = call('computed', id, '', undefined, 'svg');
+      const svg = typeof s === 'string' && s ? JSON.parse(s) : {};
+      return property in svg ? String(svg[property]) : '';
+    },
+    epoch: () => svgEpoch,
+    animations: () => {
+      if (!svgSeen) return [];
+      if (smilAt !== treeEpoch) {
+        smilAt = treeEpoch;
+        smilEls = [
+          ...document.querySelectorAll(
+            'animate, set, animateMotion, animateTransform',
+          ),
+        ].filter((el: Any) => el instanceof SVGElement);
+      }
+      return smilEls;
+    },
+    unitSize: (el: Any, unit: string, axis: string) => {
+      const v = call('svgLength', el ? el._id : 0, unit, axis);
+      return typeof v === 'number' && Number.isFinite(v) ? v : null;
+    },
+    color: (text: string) => {
+      const v = call('color', text);
+      return typeof v === 'string' && v ? v.split(',').map(Number) : null;
+    },
+    push: (changes: Array<[Any, Record<string, string | null>]>) => {
+      call(
+        'smil',
+        JSON.stringify(changes.map(([el, attrs]) => [el._id, attrs])),
+      );
+    },
+    isSvg: (el: Any) => el instanceof SVGElement,
+    onLoad: (fn: () => void) => {
+      if (document.readyState === 'complete') fn();
+      else {
+        reflectApply(listen, windowTarget, [
+          'load',
+          () => fn(),
+          { once: true },
+        ]);
+      }
+    },
+    languages: () => {
+      const n = G.navigator;
+      return n?.languages?.length ? [...n.languages] : [n?.language ?? 'en'];
+    },
+    attributeHandler: (el: Any, type: string) => attributeHandler(el, type),
+    report: (error: Any) => report(error),
+  });
+  for (const [key, d] of Object.entries(SMIL.svgMembers)) {
+    Object.defineProperty(
+      SVGSVGElement.prototype,
+      key,
+      d as PropertyDescriptor,
+    );
+  }
   const SVG = svgDom({
     DOMException,
     // by the name the tree keeps it under, which HTML's parser leaves in
     // lower case in a drawing, where SVG's own spelling is camel case
-    getAttr: (el: Any, name: string) => {
-      const kept = reflectApply(attrNameOwn, el, [name]);
-      let v = call('attr', el._id, kept);
-      if (typeof v !== 'string' && kept !== kept.toLowerCase()) {
-        v = call('attr', el._id, kept.toLowerCase());
-      }
-      return typeof v === 'string' ? v : null;
-    },
+    getAttr: svgAttr,
+    animAttr: (el: Any, name: string) => SMIL.animAttr(el, name),
+    animEpoch: () => SMIL.generation(),
     setAttr: (el: Any, name: string, value: string) => {
       let kept = reflectApply(attrNameOwn, el, [name]);
       const lower = kept.toLowerCase();
@@ -40553,6 +40652,14 @@ export function installDom(
     Document,
   });
   Object.assign(SVG_CLASSES, SVG.tags);
+  for (const [key, d] of Object.entries(SMIL.animationMembers)) {
+    Object.defineProperty(
+      (SVG.interfaces as Any).SVGAnimationElement.prototype,
+      key,
+      d as PropertyDescriptor,
+    );
+  }
+  define('TimeEvent', SMIL.interfaces.TimeEvent);
   // an SVG link's `HyperlinkElementUtils` (SVG 2, 16.3.1): the parts of the
   // address its `href` resolves to, each but the origin settable, where its
   // `href` is the animated string an `href` is in a drawing

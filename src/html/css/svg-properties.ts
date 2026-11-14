@@ -511,7 +511,90 @@ export const SVG_PROPERTIES: Readonly<Record<string, SvgProperty>> = {
   r: lengthProperty('0px', false, { positive: true }),
   rx: lengthProperty('auto', false, { positive: true, auto: true }),
   ry: lengthProperty('auto', false, { positive: true, auto: true }),
+  // a path's geometry (SVG 2, 9.3.2): `path()` of the data, as Chromium
+  // writes it, a command and each of its numbers apart by a space
+  d: {
+    inherited: false,
+    initial: 'none',
+    specified(value) {
+      const v = value.trim();
+      if (/^none$/i.test(v)) return 'none';
+      const m = /^path\(\s*(["'])([^]*)\1\s*\)$/i.exec(v);
+      if (!m) return null;
+      const text = pathDataText(m[2], false);
+      return text === null ? null : text ? `path("${text}")` : 'none';
+    },
+    computed: (specified) => specified,
+    attribute(value) {
+      // what is path data up to its first error is drawn (SVG 2, 9.5.4)
+      const text = pathDataText(value, true);
+      return text ? `path("${text}")` : 'none';
+    },
+  },
 };
+
+/** How many numbers each path command takes. */
+const PATH_ARGS: Record<string, number> = {
+  M: 2,
+  L: 2,
+  H: 1,
+  V: 1,
+  C: 6,
+  S: 4,
+  Q: 4,
+  T: 2,
+  A: 7,
+  Z: 0,
+};
+const PATH_NUMBER = /[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/y;
+/** Path data written as Chromium writes a computed `d`: every command
+ *  spelled out, a repeated one too, `Z` for either close, and numbers to six
+ *  figures. Null where it is not path data, or, with `prefix`, the data up
+ *  to the first error. */
+export function pathDataText(text: string, prefix: boolean): string | null {
+  const out: string[] = [];
+  let i = 0;
+  const n = text.length;
+  const space = (): void => {
+    while (i < n && /[\s,]/.test(text[i])) i++;
+  };
+  const read = (flag: boolean): number | null => {
+    space();
+    if (flag) {
+      if (text[i] === '0' || text[i] === '1') return +text[i++];
+      return null;
+    }
+    PATH_NUMBER.lastIndex = i;
+    const m = PATH_NUMBER.exec(text);
+    if (!m) return null;
+    i += m[0].length;
+    return +m[0];
+  };
+  const fail = (): string | null => (prefix ? out.join(' ') : null);
+  space();
+  let cmd = '';
+  while (i < n) {
+    const ch = text[i];
+    if (/[A-Za-z]/.test(ch)) {
+      if (!(ch.toUpperCase() in PATH_ARGS)) return fail();
+      if (!out.length && ch !== 'M' && ch !== 'm') return fail();
+      cmd = ch;
+      i++;
+    } else if (!cmd || cmd === 'Z' || cmd === 'z') return fail();
+    const up = cmd.toUpperCase();
+    const args: string[] = [];
+    for (let k = 0; k < PATH_ARGS[up]; k++) {
+      const v = read(up === 'A' && (k === 3 || k === 4));
+      if (v === null) return fail();
+      args.push(numberText(v));
+    }
+    out.push(up === 'Z' ? 'Z' : [cmd, ...args].join(' '));
+    if (cmd === 'M') cmd = 'L';
+    else if (cmd === 'm') cmd = 'l';
+    space();
+  }
+  return out.join(' ');
+}
 
 /** Which of the geometry properties an element's attribute stands for
  *  (SVG 2, 9.4): `cx` on a circle or an ellipse, `x` on a rectangle, an
@@ -524,6 +607,7 @@ const GEOMETRY_ON: Record<string, ReadonlySet<string>> = {
   ry: new Set(['rect', 'ellipse']),
   x: new Set(['rect', 'image', 'foreignobject', 'svg', 'use', 'symbol']),
   y: new Set(['rect', 'image', 'foreignobject', 'svg', 'use', 'symbol']),
+  d: new Set(['path']),
 };
 
 /** Whether an SVG element's attribute of a property's name is a

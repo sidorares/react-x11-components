@@ -48,8 +48,14 @@ function unrendered(el: Element, measure: SvgMeasure): boolean {
 
 const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
 const tag = (el: Element): string => el.name.toLowerCase();
+/** What a page's SMIL animations set on an element now (`smil.ts`), by the
+ *  attribute's name: what the attributes are read as here. `\u0000motion`
+ *  is `<animateMotion>`'s matrix, applied after the element's transform. */
+export const ANIMATED = new WeakMap<Element, Map<string, string>>();
 const attr = (el: Element, name: string): string | undefined =>
-  el.attribs[name] ?? el.attribs[name.toLowerCase()];
+  ANIMATED.get(el)?.get(name) ??
+  el.attribs[name] ??
+  el.attribs[name.toLowerCase()];
 const NUMBER = /[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g;
 const numbers = (text: string | undefined): number[] =>
   (text?.match(NUMBER) ?? []).map(Number);
@@ -86,8 +92,14 @@ function length(
 /** A `transform` attribute's matrix (SVG 2's transform list). */
 export function ownTransform(el: Element): Matrix {
   const text = attr(el, 'transform');
-  if (!text) return IDENTITY;
+  const motion = ANIMATED.get(el)?.get('\u0000motion');
+  if (!text && !motion) return IDENTITY;
   let out = IDENTITY;
+  if (motion) {
+    const n = numbers(motion);
+    if (n.length === 6) out = [n[0], n[1], n[2], n[3], n[4], n[5]];
+  }
+  if (!text) return out;
   for (const [, name, args] of text.matchAll(/([a-zA-Z]+)\s*\(([^)]*)\)/g)) {
     const n = numbers(args);
     const rad = ((n[0] ?? 0) * Math.PI) / 180;
