@@ -32,7 +32,7 @@ import type {
 } from '../index.js';
 import { hx } from '../hx.js';
 import { throughWorker, useScripts } from './hook.js';
-import type { FramePost } from './host.js';
+import type { DomHost, FramePost } from './host.js';
 import type { ScriptRunner, ScriptsOptions } from './runner.js';
 import {
   SB_FORMS,
@@ -203,6 +203,18 @@ function FramePage({
   });
 }
 
+/** The document a frame is in, as far as the host that loaded it knows it:
+ *  its address and its referrer policy, where it is the host's own. */
+function parentOf(
+  frame: Element,
+  host: DomHost,
+): { url: string; policy: string } | null {
+  let at: { parent: unknown } = frame;
+  while (at.parent) at = at.parent as { parent: unknown };
+  if (at !== (host.document as unknown)) return null;
+  return { url: host.url, policy: host.documentReferrerPolicy() };
+}
+
 function FrameDocument({
   frame,
   document,
@@ -345,6 +357,31 @@ function FrameDocument({
     return realm ? null : { ...context, seams };
   };
   const holder = scripts.runner?.() ? inner() : null;
+  // What the frame's document asks for is asked as its own, under its
+  // referrer policy where its element names none. An `about:blank` or a
+  // `srcdoc` document has its parent's policy and is referred from its
+  // parent's address (Referrer Policy 8.3, step 3; HTML's policy container),
+  // which `HtmlNetwork` makes the `Referer` of: as itself it would send none
+  // whatever the parent's policy said, or an origin it does not have.
+  const asked = (request: ResourceRequest): ResourceRequest => {
+    // a `srcdoc` document is shown at its parent's address, its base
+    // (`DomHost.frames`), so it is told by its element
+    const local =
+      /^about:(blank|srcdoc)\b/i.test(url) ||
+      (frame.name === 'iframe' && frame.attribs.srcdoc !== undefined);
+    const parent = local ? parentOf(frame, host) : null;
+    const policy =
+      request.referrerPolicy ||
+      (realm
+        ? scripts.runner?.()?.host.documentReferrerPolicy()
+        : host.referrerPolicyOfDocument(document)) ||
+      (parent?.policy ?? '');
+    return {
+      ...request,
+      client: parent?.url ?? url,
+      ...(policy ? { referrerPolicy: policy } : {}),
+    };
+  };
   // Where a link or a form in the frame sends what it asks for: the frame,
   // a frame its target names in the frame's document, a new tab, or the
   // page — `_top`, and `_parent`, which in a frame in a frame is the frame
@@ -416,7 +453,7 @@ function FrameDocument({
       onResource: (request: ResourceRequest) =>
         throughWorker(
           scripts,
-          { ...request, client: url },
+          asked(request),
           look.onResource,
           // a local document of no realm of its own has the policies of the
           // one it is in (CSP 3, 4.2.1)

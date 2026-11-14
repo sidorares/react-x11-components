@@ -1074,7 +1074,7 @@ them. A document's policy is the last `<meta name="referrer">` in its head
 that says one, its old words (`never`, `always`, `default`,
 `origin-when-crossorigin`) among them, and otherwise what its response said
 in `Referrer-Policy` (`headers`); a frame's `about:blank` or `srcdoc`
-document has its parent's, a worker its script's response's, a blob URL's
+document has its parent's, and is referred from its parent's address, a worker its script's response's, a blob URL's
 worker its owner's, and a service worker its main script's. An `<img>`, a
 `<script>`, a `<link>` and an `<iframe>` with `referrerpolicy` say their
 own. A page's `fetch` takes the `referrer` and `referrerPolicy` it is
