@@ -1064,6 +1064,49 @@ const CALL = `
   }
 `;
 
+test('a connection that always negotiates data offers its m-section first of those it adds, and hears a channel the far side makes with no new negotiation', async () => {
+  const logs = await run(`
+    ${CALL}
+    function kinds(sdp) {
+      return sdp.split('\\r\\nm=').slice(1).map(function (m) { return m.split(' ')[0]; }).join(',');
+    }
+    function bundle(sdp) {
+      var line = sdp.split('\\r\\n').find(function (l) { return l.indexOf('a=group:BUNDLE') === 0; });
+      var mids = sdp.split('\\r\\n').filter(function (l) { return l.indexOf('a=mid:') === 0; })
+        .map(function (l) { return l.slice(6); });
+      return line && line.slice(15) === mids.join(' ');
+    }
+    var pc1 = new RTCPeerConnection({ alwaysNegotiateDataChannels: true });
+    var pc2 = new RTCPeerConnection();
+    var needed = 0;
+    pc1.onnegotiationneeded = function () { needed++; };
+    log('config', pc1.getConfiguration().alwaysNegotiateDataChannels,
+      pc2.getConfiguration().alwaysNegotiateDataChannels);
+    pc1.addTransceiver('audio');
+    var offer = await pc1.createOffer();
+    log('offer', kinds(offer.sdp), bundle(offer.sdp));
+    await call(pc1, pc2);
+    pc1.addTransceiver('video');
+    var reoffer = await pc1.createOffer();
+    log('reoffer', kinds(reoffer.sdp), bundle(reoffer.sdp));
+    await call(pc1, pc2);
+    var heard = new Promise(function (r) { pc1.ondatachannel = function (e) { e.channel.onmessage = function (m) { r(m.data); }; }; });
+    var before = needed;
+    var dc = pc2.createDataChannel('late');
+    dc.onopen = function () { dc.send('meow'); };
+    log('heard', await Promise.race([heard, new Promise(function (r) { setTimeout(function () { r('nothing'); }, 8000); })]),
+      needed - before);
+    pc1.close(); pc2.close();
+  `);
+  const line = (prefix: string) =>
+    logs.find((l) => l.startsWith(`${prefix}|`)) ?? `${prefix}: missing`;
+  assert.equal(line('config'), 'config|true|false');
+  assert.equal(line('offer'), 'offer|application,audio|true');
+  // the data is first of what the first offer added, and stays where it was
+  assert.equal(line('reoffer'), 'reoffer|application,audio,video|true');
+  assert.equal(line('heard'), 'heard|meow|0');
+});
+
 test('Opus flows both ways: a remote track unmutes on its first packet, and its sources and stats are the packets’', async () => {
   const logs = await run(`
     ${CALL}

@@ -1897,6 +1897,11 @@ Two of WebRTC Extensions' members are held and change nothing: a
 connection's `targetLatency`, `lowest` unless the page made it `none` and
 fixed for the connection's life, and an encoding's `adaptivePtime`, false
 unless the page sets it, since Opus is sent at 20 ms whatever it says.
+A third does something: a connection made with `alwaysNegotiateDataChannels`
+offers an m-section for data whether or not it has a data channel, first of
+the m-sections an offer adds, so a channel either side makes later needs no
+new negotiation. Like the bundle policy, it cannot be changed once the
+connection is made.
 
 A description is checked as a browser checks it before werift reads it. A
 remote one is refused where an ICE credential has a character ICE does not

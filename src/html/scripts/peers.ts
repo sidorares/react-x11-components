@@ -748,6 +748,8 @@ export class PagePeers {
       bundlePolicy: request?.bundlePolicy ?? 'balanced',
       rtcpMuxPolicy: 'require',
       iceCandidatePoolSize: request?.iceCandidatePoolSize ?? 0,
+      alwaysNegotiateDataChannels:
+        request?.alwaysNegotiateDataChannels === true,
       // a certificate this origin made, and no other's
       certificates: (request?.certificates ?? []).filter((id) => {
         const made = CERTIFICATE_ORIGINS.get(seam)?.get(id);
