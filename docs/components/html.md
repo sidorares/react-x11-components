@@ -3785,6 +3785,17 @@ view is laid out — asks for the pass after it, or the frame stayed drawn
 where it was. And its viewport shows no scroll bars where its root has
 `scrollbar-width: none`, or is `overflow: hidden` both ways.
 
+A document that runs its own scripts, a frame's or the page's, is scrolled
+to its fragment as its parse ends, after `DOMContentLoaded`, so its
+`onload` reads it there, as Chromium has it (WPT's
+`fetch/redirect-navigate/preserve-fragment`): only where it was navigated
+to the fragment and nothing has scrolled it, since a reload or a step
+through the history puts back where it was. The fragment it lands at is
+its redirects' (Fetch 4.4): a `Location` with one says where, and one with
+none keeps the fragment the request had, which `HtmlNetwork` carries for a
+navigation, its answer's URL with the fragment on, as a response's URL
+never has for a page's `fetch`.
+
 A link in such a document resolves against the document's own address and
 `<base>`, not the page's, so a link to one of its fragments is a fragment
 navigation of the frame's own session: it adds an entry the frame's
