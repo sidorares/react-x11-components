@@ -3424,6 +3424,16 @@ before that hop's request is sent (Fetch 4.1, "main fetch", step 7), through
 where the resource landed, so the policy holds either way, but its server hears
 of a request the policy refused.
 
+**`upgrade-insecure-requests` sends a document's insecure requests securely**
+(Upgrade Insecure Requests): where an enforced policy says it, an `http:` URL
+is asked for as `https:`, and a `ws:` one as `wss:`, port 80 as 443 and any
+other as it was — a page's `fetch` and `XMLHttpRequest`, a script, a module,
+a worker's script and its imports, an image, a sheet, a font, a media source,
+a WebSocket and a frame's document, at each hop a redirect makes, before
+anything else is asked of the request. A frame's document and a worker keep
+the policy of the document that made them, whatever their own response says,
+and a report-only policy upgrades nothing.
+
 **A nonce is hidden from its attribute where a response's header brought a
 policy** (HTML 2.6.3): as an element goes into the document its `nonce` content
 attribute is emptied, and its nonce kept where no selector reads it, which
@@ -3471,8 +3481,8 @@ scope. The guard is asked by the page's realm, which a page can talk round
 (`Object.getPrototypeOf(async function () {}).constructor` is not guarded), so
 it holds the page's own code to its policy and is no boundary against it.
 
-Not here yet: `trusted-types` and `require-trusted-types-for`,
-`upgrade-insecure-requests`, a navigation's
+Not here yet: `trusted-types` and `require-trusted-types-for`, a top-level
+navigation upgraded by `upgrade-insecure-requests`, a navigation's
 redirects held to `form-action`, `navigate-to`, and a policy for an `<object>`
 or an `<embed>`'s plug-in, which no document here has.
 
