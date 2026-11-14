@@ -9197,12 +9197,18 @@ export class Cascade {
           unknown
         >;
         // a size between a length and a keyword, as a `calc-size()` of the
-        // keyword, where `interpolate-size` lets it run (`keywordSizes`)
+        // keyword, where `interpolate-size` lets it run (`keywordSizes`) —
+        // between frames that replace: nothing adds a length to a keyword,
+        // so a frame that adds onto one goes over at the half-way point
+        const replacing = (frame: Keyframe | null | undefined): boolean =>
+          (frame?.composite ?? sample.composite ?? 'replace') === 'replace';
         if (
           /^(?:min-|max-)?(?:width|height|inline-size|block-size)$/.test(
             prop,
           ) &&
-          base.interpolateSize === 'allow-keywords'
+          base.interpolateSize === 'allow-keywords' &&
+          replacing(from?.frame) &&
+          replacing(to?.frame)
         ) {
           const pair = keywordSizes(
             a as unknown as ComputedStyle,
