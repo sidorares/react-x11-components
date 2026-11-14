@@ -1626,6 +1626,41 @@ test('a connection whose peer goes away is disconnected once it has heard nothin
   }
 });
 
+test('a checking transport whose every pair failed is disconnected while the peer may send more candidates, and connects when it does', async () => {
+  const logs = await run(`
+    ${CALL}
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.createDataChannel('x');
+    var held1 = [], held2 = [];
+    pc1.onicecandidate = function (e) { if (e.candidate) held1.push(e.candidate); };
+    pc2.onicecandidate = function (e) { if (e.candidate) held2.push(e.candidate); };
+    var states = [];
+    pc2.oniceconnectionstatechange = function () { states.push(pc2.iceConnectionState); };
+    await pc1.setLocalDescription();
+    await pc2.setRemoteDescription(pc1.localDescription);
+    await pc2.setLocalDescription();
+    await pc1.setRemoteDescription(pc2.localDescription);
+    var mid = /a=mid:(\\S+)/.exec(pc1.localDescription.sdp)[1];
+    // TEST-NET-3, which answers nothing (RFC 5737)
+    await pc2.addIceCandidate({ candidate: 'candidate:1 1 udp 2113929471 203.0.113.100 10100 typ host', sdpMid: mid });
+    await wait('disconnected', function () { return pc2.iceConnectionState === 'disconnected'; }, 60000);
+    log('out of pairs', states.join(','));
+    held1.forEach(function (c) { pc2.addIceCandidate(c); });
+    held2.forEach(function (c) { pc1.addIceCandidate(c); });
+    pc1.onicecandidate = function (e) { pc2.addIceCandidate(e.candidate); };
+    pc2.onicecandidate = function (e) { pc1.addIceCandidate(e.candidate); };
+    await wait('connected', function () { return pc2.iceConnectionState === 'connected'; }, 20000);
+    log('connected', states.indexOf('failed'), states[states.length - 1]);
+    pc1.close(); pc2.close();
+  `);
+  for (const line of [
+    'out of pairs|checking,disconnected',
+    'connected|-1|connected',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
 test('abs-capture-time an app adds to its offer is answered and sent, and a receiver’s sources carry the capture time; offered by default it is not', async () => {
   const logs = await run(`
     ${CALL}

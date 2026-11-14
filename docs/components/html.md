@@ -1970,6 +1970,9 @@ seconds is `disconnected`, and so is the connection, and it is connected
 again as anything comes: werift never says `disconnected`, and checks
 consent every four to six seconds, so an idle connection hears its peer
 more often than that. It fails only as consent expires, 30 seconds on. A
+checking transport whose every candidate pair failed is `disconnected` too,
+while the peer has not said it has no more candidates, since `failed` waits
+for that, and checks again as one comes; werift stays `checking`. A
 transport's state and the connection's are both set before either's
 event fires, as WebRTC 1.0 has them. A transceiver no
 m-section has has no transport. `setLocalDescription()` with no description
