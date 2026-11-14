@@ -32569,6 +32569,9 @@ export function installDom(
    *  (the native-code block, below): what an interface defined after the
    *  facade's install, a worker's, is marked with. */
   let markNative: (fn: Any) => void = () => {};
+  /** Moves a worker's `location` to where its script came from, after its
+   *  redirects (`__workerUrl`). */
+  let relocate: (url: string) => void = () => {};
 
   /** What a page's window has that a worker's global does not
    *  (`__becomeWorker`). */
@@ -47234,6 +47237,14 @@ export function installDom(
     return true;
   });
 
+  // a worker's script came from another URL than it was asked for, which is
+  // the worker's (HTML 10.2.4, "run a worker", step 12.4)
+  entry('__workerUrl', () => {
+    const [url] = input();
+    relocate(str(url));
+    return true;
+  });
+
   // what a worker's script threw that nothing there caught, to its `Worker`
   entry('__workerError', () => {
     const [id, message, filename, lineno, colno, failed] = input();
@@ -47392,6 +47403,7 @@ export function installDom(
     });
     workerLocation = Object.create(WorkerLocation.prototype);
     LOCATION.set(workerLocation, here);
+    relocate = (url: string) => LOCATION.set(workerLocation, new URL(url));
     define('WorkerLocation', WorkerLocation);
     markNative(WorkerLocation);
     // `self` is the worker's global and no page's to replace, where a

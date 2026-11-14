@@ -2095,7 +2095,10 @@ redirect to where the script came from.
 
 **A worker's global has a worker's interfaces.** `location` is a
 `WorkerLocation` and `navigator` a `WorkerNavigator`, each an interface of its
-own, and `self` is the global and stays so: an assignment to it changes
+own. The worker is at the URL its script came from, after its redirects, with
+the fragment it was asked for where that URL has none: its `location` says
+so, and its relative `importScripts`, requests and imports resolve against it.
+`self` is the global and stays so: an assignment to it changes
 nothing, where a window's `self` is `[Replaceable]`. A secure worker has
 `ServiceWorker`, `ServiceWorkerRegistration`, `ServiceWorkerContainer` and
 `NavigationPreloadManager` among its interfaces, as Web IDL's

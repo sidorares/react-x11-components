@@ -624,6 +624,24 @@ port.on('message', (m: ToWorker) => {
 // the worker's script: handed over where it is a blob URL's, and fetched
 // where it is not
 const source = init.source ?? importScript(init.url, undefined, true);
+// the worker is at the URL its script came from, after its redirects (HTML
+// 10.2.4, "run a worker", step 12.4): its `location`, and what its
+// requests and imports resolve against
+// A response's URL has no fragment, and the request's goes with it to where
+// it landed, as Fetch carries it across a redirect (4.4, "HTTP-redirect
+// fetch", step 12)
+const withFragment = (url: string): string => {
+  const hash = init.url.indexOf('#');
+  return hash < 0 || url.includes('#') ? url : url + init.url.slice(hash);
+};
+const at =
+  init.source === null && source !== null && importedFrom
+    ? withFragment(importedFrom)
+    : init.url;
+if (at && at !== init.url) {
+  host.url = at;
+  engine.call('__workerUrl', [at]);
+}
 script = () => {
   // a script that did not come, or did not parse, is a plain `error` at the
   // `Worker`, and nothing at this global (HTML 10.2.4, "run a worker")
@@ -635,7 +653,7 @@ script = () => {
     hearHeld();
   } else if (init.type === 'module') {
     void engine
-      .module(source, init.url, init.source === null, true)
+      .module(source, at || init.url, init.source === null, true)
       .then((ran) => {
         // one whose graph did not all come, or did not parse or link, is its
         // worker's `error`, as one whose script did not
@@ -648,7 +666,7 @@ script = () => {
         hearHeld();
       });
   } else {
-    const ran = engine.exec(source, init.url, 0, false, null, () =>
+    const ran = engine.exec(source, at || init.url, 0, false, null, () =>
       failed(`The worker's script at ${init.url} did not parse.`),
     );
     // its registry goes on from here (Service Workers 1, "Run Service Worker")
