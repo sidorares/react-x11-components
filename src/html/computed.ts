@@ -1267,6 +1267,9 @@ function cssomAt(
   out.translate = translateText(style.translate, scale);
   out.rotate = rotateText(style.rotate);
   out.scale = scaleText(style.scale);
+  // `auto` for what is in the top layer, and `none` for all else: the user
+  // agent's own, which no page sets (CSS Position 4, 3.2)
+  out.overlay = style.overlay;
   const widths = [
     style.borderTopWidth,
     style.borderRightWidth,

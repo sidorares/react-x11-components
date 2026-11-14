@@ -38,6 +38,12 @@ const GEOMETRY_BOXES =
  * null for a value the property does not take — which leaves the
  * declaration as it was — and undefined where this has no grammar for it.
  */
+/** Properties whose every value is one of a few keywords. */
+const KEYWORD_ONLY: Record<string, ReadonlySet<string>> = {
+  overlay: new Set(['none', 'auto']),
+  isolation: new Set(['auto', 'isolate']),
+};
+
 export function specifiedValue(
   prop: string,
   value: string,
@@ -57,6 +63,14 @@ export function specifiedValue(
     return svg.specified(word);
   }
   // one keyword (CSS UI 4, 6.1)
+  // keywords a property takes and nothing else (CSS Position 4, 3.2; CSS
+  // Compositing 1, 3.2)
+  const words = KEYWORD_ONLY[name];
+  if (words) {
+    const word = value.trim().toLowerCase();
+    if (CSS_WIDE.test(word)) return undefined;
+    return words.has(word) ? word : null;
+  }
   if (name === 'user-select' || name === '-webkit-user-select') {
     const word = value.trim().toLowerCase();
     if (CSS_WIDE.test(word)) return undefined;

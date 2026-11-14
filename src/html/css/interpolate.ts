@@ -319,11 +319,12 @@ export function discreteField(
   b: unknown,
   q: number,
 ): unknown {
-  // and `display`, the end that is not `none` (CSS Display 4, 2.8)
+  // and `display`, the end that is not `none` (CSS Display 4, 2.8), and
+  // `overlay`, the end that is `auto` (CSS Position 4, 3.2)
   const off =
     field === 'contentVisibility'
       ? 'hidden'
-      : field === 'display'
+      : field === 'display' || field === 'overlay'
         ? 'none'
         : undefined;
   if (off !== undefined && (a === off) !== (b === off)) {
