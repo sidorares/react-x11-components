@@ -2339,6 +2339,29 @@ test('a shared worker is one thread for a script and a name, which each SharedWo
   );
 });
 
+test('a SharedWorker that names a shared worker with other options connects to nothing and hears error', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var src = "onconnect = function (e) { e.ports[0].postMessage(\'connected\'); };";' +
+      'var url = URL.createObjectURL(new Blob([src], { type: "application/javascript" }));' +
+      'var r = [];' +
+      'function seen(t) { r.push(t); if (r.length === 3) setTimeout(function () {' +
+      '  document.getElementById("out").textContent = r.sort().join("|"); }, 100); }' +
+      'var first = new SharedWorker(url, { name: "w" });' +
+      'first.port.onmessage = function (e) { seen("first " + e.data); };' +
+      'var other = new SharedWorker(url, { name: "w", credentials: "omit" });' +
+      'other.onerror = function (e) { seen("other " + e.type); };' +
+      'other.port.onmessage = function (e) { seen("other " + e.data); };' +
+      'try { new SharedWorker(url, { name: "x", type: "wasm" }); } catch (e) { seen(e.name); }' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    'TypeError|first connected|other error',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a module worker hears what was posted to it, and a module shared worker its connection, only once its graph has run', async () => {
   const body: Record<string, string> = {
     // what sets the listeners is a module the worker's script imports

@@ -31898,12 +31898,20 @@ export function installDom(
     constructor(url: Any, options: Any = {}) {
       super();
       const { resolved, source } = workerScript(url, 'Worker');
+      // a module worker's graph is fetched with the credentials it names
+      // (HTML 10.2.6.3, "WorkerOptions"), and a classic one's as its own
+      const credentials = options?.credentials;
       const id = call(
         'workerStart',
         JSON.stringify({
           url: resolved,
           type: options?.type === 'module' ? 'module' : 'classic',
           name: str(options?.name ?? ''),
+          ...(credentials === 'omit' ||
+          credentials === 'include' ||
+          credentials === 'same-origin'
+            ? { credentials }
+            : {}),
         }),
         source,
       );
@@ -31956,6 +31964,10 @@ export function installDom(
    * `connect` event (`__workerMessage`).
    */
   const sharedThreads = new Map<string, number>();
+  /** The options each shared worker was made with, by its thread, which a
+   *  `SharedWorker` that names it with others is refused for (HTML
+   *  10.2.6.4, "the SharedWorker(scriptURL, options) constructor", 12.6). */
+  const sharedOptions = new Map<number, string>();
   /** The `SharedWorker`s of each thread, which its errors are told to. */
   const sharedWorkersOf = new Map<number, Set<Any>>();
   /** Each connection's end in this realm, page or worker. */
@@ -31986,23 +31998,83 @@ export function installDom(
           ? { name: options ?? '' }
           : (options ?? {});
       const name = str(named.name ?? '');
+      // the dictionary's members, an enum each, read as Web IDL reads them
+      const member = (
+        key: string,
+        allowed: string[],
+        fallback: string,
+        type: string,
+      ): string => {
+        const value = named[key];
+        if (value === undefined) return fallback;
+        const text = str(value);
+        if (!allowed.includes(text)) {
+          throw new TypeError(
+            `Failed to construct 'SharedWorker': Failed to read the '${key}' property from 'WorkerOptions': The provided value '${text}' is not a valid enum value of type ${type}.`,
+          );
+        }
+        return text;
+      };
+      const type = member(
+        'type',
+        ['classic', 'module'],
+        'classic',
+        'WorkerType',
+      );
+      const credentials = member(
+        'credentials',
+        ['omit', 'same-origin', 'include'],
+        'same-origin',
+        'RequestCredentials',
+      );
+      const sameSiteCookies = member(
+        'sameSiteCookies',
+        ['all', 'none'],
+        'all',
+        'SameSiteCookiesType',
+      );
+      const extendedLifetime = !!named.extendedLifetime;
+      const optionsKey = JSON.stringify([
+        type,
+        credentials,
+        extendedLifetime,
+        sameSiteCookies,
+      ]);
       const { resolved, source } = workerScript(url, 'SharedWorker');
       const key = `${resolved}\u0000${name}`;
       let id = sharedThreads.get(key);
+      // one of that script and name with other options is no connection to
+      // it: the new one hears `error`, a task later, and its port nothing
+      if (id !== undefined && sharedOptions.get(id) !== optionsKey) {
+        this.port = new MessagePort();
+        setTimer(
+          () => {
+            const ev = new Event('error');
+            ev.isTrusted = true;
+            dispatch(this, ev);
+          },
+          0,
+          [],
+          false,
+        );
+        return;
+      }
       if (id === undefined) {
         id = Number(
           call(
             'workerStart',
             JSON.stringify({
               url: resolved,
-              type: named.type === 'module' ? 'module' : 'classic',
+              type,
               name,
+              credentials,
               shared: true,
             }),
             source,
           ),
         );
         sharedThreads.set(key, id);
+        sharedOptions.set(id, optionsKey);
         sharedWorkersOf.set(id, new Set());
       }
       sharedWorkersOf.get(id)!.add(this);
