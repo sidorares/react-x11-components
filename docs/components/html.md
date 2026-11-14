@@ -3429,6 +3429,8 @@ attribute is emptied, and its nonce kept where no selector reads it, which
 `securitypolicyviolation` event — a `SecurityPolicyViolationEvent`, bubbling
 and composed — at the element it was about where that is in its document, at
 the document otherwise, and at a worker's global in a worker, a task later.
+What an image, a sheet, a font or a media element asked for is no element's
+violation: it is told at the document, as CSP 3 makes a request's.
 Its `blockedURI` is a URL as a report may carry one (no fragment, no
 credentials, a local scheme's name alone), the one first asked for where a
 redirect took it elsewhere, `inline` for inline content and `eval` or

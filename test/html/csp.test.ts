@@ -426,25 +426,6 @@ scripted(
 );
 
 scripted(
-  'an image a policy refuses is never asked for, and its element hears error',
-  async () => {
-    const page = await policed(
-      `<meta http-equiv="Content-Security-Policy" content="img-src 'none'">${LISTEN}`,
-      `<img id="i" src="https://example.test/a.png" onerror="console.log('error')">
-     <script nonce="n">setTimeout(function () {
-       console.log('seen ' + JSON.stringify(seen.map(function (s) { return [s[0], s[1], s[4]]; })));
-     }, 100)</script>`,
-    );
-    assert.deepEqual(JSON.parse(await page.until('seen')), [
-      ['https://example.test/a.png', 'img-src', 'IMG'],
-    ]);
-    await page.until('error');
-    assert.ok(!page.asked.includes('https://example.test/a.png'));
-    page.unmount();
-  },
-);
-
-scripted(
   'a redirect a policy refuses is refused before its request is sent, and told by the URL first asked for',
   async () => {
     const page = await policed(
@@ -761,6 +742,44 @@ scripted(
       await page.until('out'),
       'https://example.test/blocked.js|0|0',
     );
+    page.unmount();
+  },
+);
+
+scripted(
+  'an image a policy refuses is never asked for, its element hears error, and the violation is told at the document',
+  async () => {
+    const page = await policed(
+      `<meta http-equiv="Content-Security-Policy" content="img-src 'none'">${LISTEN}`,
+      `<img id="i" src="https://example.test/a.png" onerror="console.log('error')">
+     <script nonce="n">setTimeout(function () {
+       console.log('seen ' + JSON.stringify(seen.map(function (s) { return [s[0], s[1], s[4]]; })));
+     }, 100)</script>`,
+    );
+    assert.deepEqual(JSON.parse(await page.until('seen')), [
+      ['https://example.test/a.png', 'img-src', 'document'],
+    ]);
+    await page.until('error');
+    assert.ok(!page.asked.includes('https://example.test/a.png'));
+    page.unmount();
+  },
+);
+
+scripted(
+  'a frame another origin’s policy refuses is told by that origin alone, where an image is told by its URL',
+  async () => {
+    const page = await policed(
+      `<meta http-equiv="Content-Security-Policy" content="frame-src 'none'; img-src 'none'">${LISTEN}`,
+      `<iframe src="https://other.test/path/frame.html?q"></iframe>
+     <img src="https://other.test/path/a.png">
+     <script nonce="n">setTimeout(function () {
+       console.log('seen ' + JSON.stringify(seen.map(function (s) { return [s[0], s[1]]; }).sort()));
+     }, 100)</script>`,
+    );
+    assert.deepEqual(JSON.parse(await page.until('seen')), [
+      ['https://other.test', 'frame-src'],
+      ['https://other.test/path/a.png', 'img-src'],
+    ]);
     page.unmount();
   },
 );
