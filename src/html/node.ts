@@ -243,6 +243,7 @@ import {
   GENERATED_FROM,
   COLUMN_BOXES,
   GENERATED_ON,
+  GRID_TRACKS,
   generatedStyle,
   INLINE_OFFSETS,
   LINE_BOX_RAISES,
@@ -8797,6 +8798,9 @@ export class HtmlViewNode extends Node {
       insets: resolvedInsets(box, this._laidOutWidth, this._viewportHeight()),
       inline: box.kind === 'inline',
       replaced: box.replaced !== 'none',
+      // a grid's tracks as its layout left them, which its templates read
+      // as (CSS Grid 1, 7.2.6)
+      grid: box.style.grid ? GRID_TRACKS.get(box) : undefined,
     };
     // a box laid out in a vertical flow's frame has the frame's sides,
     // which are drawn at the page's others (`layout/writing.ts`)

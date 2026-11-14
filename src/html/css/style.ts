@@ -186,6 +186,22 @@ export interface GridTrack {
   max: Len | 'min-content' | 'max-content' | { fr: number } | { fit: Len };
 }
 
+/** A track as it was written, which `getComputedStyle` reads it as
+ *  (`computed.ts`): a size alone, `minmax()` or `fit-content()`, since
+ *  `1fr` and `minmax(auto, 1fr)` come to one track. */
+export interface WrittenTrack {
+  track: GridTrack;
+  form: 'size' | 'minmax' | 'fit';
+}
+
+/** A track list's parts as written: groups of line names, tracks, and
+ *  `repeat()`s of them, which the computed value keeps (CSS Grid 1, 7.2.6:
+ *  an element that is no grid container reads it so). */
+export type WrittenPart =
+  | { names: string[] }
+  | WrittenTrack
+  | { repeat: number | 'auto-fill' | 'auto-fit'; parts: WrittenPart[] };
+
 /** `grid-template-columns` or `-rows`: its tracks and the names of the
  *  lines between them — `names[i]` the line's before track `i`, and the
  *  last the line's after the last track — and a `repeat()` whose count the
@@ -208,6 +224,8 @@ export interface GridTemplate {
    *  groups that repeats, and the ones after it, which the span the box
    *  has counts out (`subgridNames` in `layout/css-grid.ts`). */
   subgrid?: SubgridNames;
+  /** Its parts as written, for `getComputedStyle`. */
+  written?: WrittenPart[];
 }
 
 /** A subgrid's `<line-name-list>`, a group of names a line. */
@@ -1647,6 +1665,10 @@ export interface ComputedStyle {
   gridColumns: GridTemplate | null;
   gridRows: GridTemplate | null;
   gridAutoRows: GridTrack;
+  /** `grid-auto-rows` and `grid-auto-columns` as written, every track of
+   *  the list, where layout takes the first: null for `auto`. */
+  gridAutoRowsWritten: WrittenTrack[] | null;
+  gridAutoColumnsWritten: WrittenTrack[] | null;
   /** `grid-auto-columns`: a column the placement makes past the template. */
   gridAutoColumns: GridTrack;
   /** `grid-template-areas`, which also names the lines at their edges. */
@@ -2209,7 +2231,9 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     gridColumns: null,
     gridRows: null,
     gridAutoRows: AUTO_TRACK,
+    gridAutoRowsWritten: null,
     gridAutoColumns: AUTO_TRACK,
+    gridAutoColumnsWritten: null,
     gridAreas: null,
     gridAutoFlow: 'row',
     gridColumnStart: null,
@@ -5194,10 +5218,27 @@ export function applyDeclaration(
     }
     case 'grid-auto-rows':
     case 'grid-auto-columns': {
-      const track = parseGridTrack(splitValue(value)[0] ?? '', ctx);
-      if (!track) return;
-      if (name === 'grid-auto-rows') style.gridAutoRows = track;
-      else style.gridAutoColumns = track;
+      // a list of track sizes, which the implicit tracks take in turn; the
+      // layout takes the first, and the computed value all of them
+      const parts = splitValue(value);
+      const written: WrittenTrack[] = [];
+      for (const part of parts) {
+        const track = parseGridTrack(part, ctx);
+        if (!track) return;
+        written.push({ track, form: trackForm(part) });
+      }
+      if (!written.length) return;
+      const kept =
+        written.length === 1 && written[0].track === AUTO_TRACK
+          ? null
+          : written;
+      if (name === 'grid-auto-rows') {
+        style.gridAutoRows = written[0].track;
+        style.gridAutoRowsWritten = kept;
+      } else {
+        style.gridAutoColumns = written[0].track;
+        style.gridAutoColumnsWritten = kept;
+      }
       return;
     }
     case 'grid-template': {
@@ -5221,11 +5262,20 @@ export function applyDeclaration(
       const parts = splitTopLevelSlash(value);
       const flows = (part: string | undefined) =>
         part !== undefined && /(^|\s)auto-flow(\s|$)/i.test(part);
-      const autoTrack = (part: string): GridTrack | null => {
+      // the `auto-flow` axis's implicit tracks, as written, null for
+      // `auto`, or undefined for none
+      const autoTracks = (part: string): WrittenTrack[] | null | undefined => {
         const words = splitValue(part).filter(
           (w) => !/^(auto-flow|dense)$/i.test(w),
         );
-        return words.length ? parseGridTrack(words[0], ctx) : AUTO_TRACK;
+        if (!words.length) return null;
+        const written: WrittenTrack[] = [];
+        for (const word of words) {
+          const track = parseGridTrack(word, ctx);
+          if (!track) return undefined;
+          written.push({ track, form: trackForm(word) });
+        }
+        return written;
       };
       const dense = (part: string) => /(^|\s)dense(\s|$)/i.test(part);
       const axis = (part: string): GridTemplate | null | undefined =>
@@ -5233,26 +5283,30 @@ export function applyDeclaration(
           ? null
           : parseGridTemplate(part, ctx);
       if (parts.length === 2 && flows(parts[0])) {
-        const rows = autoTrack(parts[0]);
+        const rows = autoTracks(parts[0]);
         const columns = axis(parts[1]);
-        if (!rows || columns === undefined) return;
+        if (rows === undefined || columns === undefined) return;
         style.gridRows = null;
         style.gridColumns = columns;
         style.gridAreas = null;
-        style.gridAutoRows = rows;
+        style.gridAutoRows = rows?.[0].track ?? AUTO_TRACK;
+        style.gridAutoRowsWritten = rows;
         style.gridAutoColumns = AUTO_TRACK;
+        style.gridAutoColumnsWritten = null;
         style.gridAutoFlow = dense(parts[0]) ? 'row dense' : 'row';
         return;
       }
       if (parts.length === 2 && flows(parts[1])) {
         const rows = axis(parts[0]);
-        const columns = autoTrack(parts[1]);
-        if (rows === undefined || !columns) return;
+        const columns = autoTracks(parts[1]);
+        if (rows === undefined || columns === undefined) return;
         style.gridRows = rows;
         style.gridColumns = null;
         style.gridAreas = null;
         style.gridAutoRows = AUTO_TRACK;
-        style.gridAutoColumns = columns;
+        style.gridAutoRowsWritten = null;
+        style.gridAutoColumns = columns?.[0].track ?? AUTO_TRACK;
+        style.gridAutoColumnsWritten = columns;
         style.gridAutoFlow = dense(parts[1]) ? 'column dense' : 'column';
         return;
       }
@@ -5263,7 +5317,9 @@ export function applyDeclaration(
       style.gridColumns = template?.columns ?? null;
       style.gridAreas = template?.areas ?? null;
       style.gridAutoRows = AUTO_TRACK;
+      style.gridAutoRowsWritten = null;
       style.gridAutoColumns = AUTO_TRACK;
+      style.gridAutoColumnsWritten = null;
       style.gridAutoFlow = 'row';
       return;
     }
@@ -8246,7 +8302,12 @@ function parseGridTemplate(
     const names = parseSubgrid(value.trim().slice('subgrid'.length));
     return names && { tracks: [], names: [[]], repeat: null, subgrid: names };
   }
-  const out: GridTemplate = { tracks: [], names: [[]], repeat: null };
+  const out: GridTemplate = {
+    tracks: [],
+    names: [[]],
+    repeat: null,
+    written: [],
+  };
   // where a group of names goes: the line after the last track, or the
   // line after an auto repeat until a track follows it
   let pending: string[] | null = null;
@@ -8255,12 +8316,14 @@ function parseGridTemplate(
     into: GridTrack[],
     names: string[][],
     top: boolean,
+    written: WrittenPart[],
   ): boolean => {
     for (const part of parts) {
       if (part.startsWith('[')) {
         const group = lineNames(part);
         if (!group) return false;
         (top && pending ? pending : names[names.length - 1]).push(...group);
+        written.push({ names: group });
         continue;
       }
       const repeat = /^repeat\((.*)\)$/is.exec(part);
@@ -8268,10 +8331,11 @@ function parseGridTemplate(
         const [count, ...rest] = splitCommas(repeat[1]);
         const inner: GridTrack[] = [];
         const innerNames: string[][] = [[]];
+        const innerWritten: WrittenPart[] = [];
         const innerParts = trackParts(rest.join(','));
         if (
           !innerParts ||
-          !read(innerParts, inner, innerNames, false) ||
+          !read(innerParts, inner, innerNames, false, innerWritten) ||
           !inner.length
         ) {
           return false;
@@ -8287,10 +8351,12 @@ function parseGridTemplate(
             fit: n === 'auto-fit',
           };
           pending = out.repeat.after;
+          written.push({ repeat: n, parts: innerWritten });
           continue;
         }
-        const times = Number(n);
+        const times = repeatCount(n);
         if (!Number.isInteger(times) || times < 1 || times > 1000) return false;
+        written.push({ repeat: times, parts: innerWritten });
         for (let i = 0; i < times; i += 1) {
           names[names.length - 1].push(...innerNames[0]);
           for (let t = 0; t < inner.length; t += 1) {
@@ -8305,18 +8371,39 @@ function parseGridTemplate(
       if (!track) return false;
       into.push(track);
       names.push([]);
+      written.push({ track, form: trackForm(part) });
       if (top) pending = null;
     }
     return true;
   };
   const parts = trackParts(value);
-  if (!parts || !read(parts, out.tracks, out.names, true)) return undefined;
+  if (!parts || !read(parts, out.tracks, out.names, true, out.written!)) {
+    return undefined;
+  }
   if (!out.tracks.length && !out.repeat) return undefined;
   // beside an auto repetition every track is a fixed size, at least or at
   // most a length or a percentage (CSS Grid 2, 7.2's `<auto-track-list>`):
   // `max-content repeat(auto-fill, 100px)` is no track list
   if (out.repeat && !out.tracks.every(fixedTrack)) return undefined;
   return out;
+}
+
+/** How a track was written: `minmax()`, `fit-content()`, or a size. */
+function trackForm(part: string): WrittenTrack['form'] {
+  const t = part.trim().toLowerCase();
+  if (t.startsWith('minmax(')) return 'minmax';
+  if (t.startsWith('fit-content(')) return 'fit';
+  return 'size';
+}
+
+/** A `repeat()`'s count: an integer, or a calculation that comes to one,
+ *  rounded as an `<integer>` is (CSS Values 4, 10.9). NaN for anything
+ *  else. */
+function repeatCount(text: string): number {
+  if (/^\d+$/.test(text)) return Number(text);
+  if (!isMathFunction(text)) return NaN;
+  const n = parseNumber(text);
+  return n === null ? NaN : Math.round(n);
 }
 
 /** Whether a track is a `<fixed-size>`: its least or its greatest size a
@@ -10152,8 +10239,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'grid-column-gap': ['columnGap', 'columnGapNormal'],
   'grid-template-columns': ['gridColumns'],
   'grid-template-rows': ['gridRows'],
-  'grid-auto-rows': ['gridAutoRows'],
-  'grid-auto-columns': ['gridAutoColumns'],
+  'grid-auto-rows': ['gridAutoRows', 'gridAutoRowsWritten'],
+  'grid-auto-columns': ['gridAutoColumns', 'gridAutoColumnsWritten'],
   'grid-template-areas': ['gridAreas'],
   'grid-auto-flow': ['gridAutoFlow'],
   'grid-lanes-direction': ['gridLanesDirection'],
@@ -10166,7 +10253,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'gridColumns',
     'gridAreas',
     'gridAutoRows',
+    'gridAutoRowsWritten',
     'gridAutoColumns',
+    'gridAutoColumnsWritten',
     'gridAutoFlow',
   ],
   'grid-area': [

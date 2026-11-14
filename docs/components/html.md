@@ -5597,6 +5597,16 @@ give. It has no tracks past the ones it spans: an item placed past its
 last line is pulled back into the last track. Subgrids nest. A box with
 layout or paint containment, and an item of a box that is no grid, is no
 subgrid, and its template on that axis is `none`.
+`getComputedStyle` reads a grid container's `grid-template-columns` and
+`grid-template-rows` as its tracks laid out (CSS Grid 1, 7.2.6): every
+track, implicit ones too, in pixels, an `auto-fit` one collapsed as `0px`,
+with the names of the explicit grid's lines between them; grid lanes read
+their lanes so, and their stacking axis as it computes. Any other element,
+and a subgrid's axis, reads the list as it computes, `repeat()` kept and
+its lengths in pixels. `grid-template-areas` reads as a string a row,
+`grid-auto-rows` and `grid-auto-columns` as their whole lists (layout takes
+the first), and the placement longhands and `grid-lanes` as they compute.
+The track lists do not interpolate yet.
 Baseline alignment of the items is not read.
 Grid lanes (CSS Grid 3), which is masonry by its standard name, are
 `display: grid-lanes` and `inline-grid-lanes`, `inline grid-lanes` among

@@ -35,10 +35,15 @@ import type {
   GapRule,
   GridAreas,
   GridLine,
+  GridTemplate,
   GridTrack,
   SizeOf,
+  SubgridNames,
   TimelineRef,
+  WrittenPart,
+  WrittenTrack,
 } from './css/style.js';
+import type { GridTracks } from './layout/boxes.js';
 import { serializeLinear } from './css/calc-tree.js';
 import type { Primitive, TransformFunction } from './css/transform.js';
 import { matrix4Of, matrixOf } from './css/transform.js';
@@ -86,6 +91,9 @@ export interface UsedBox {
   /** The border widths a page reads where they are not those laid out: a
    *  control the palette draws, which reads the web's (`edgesAsRead`). */
   borderRead?: [number, number, number, number];
+  /** A grid container's tracks as its layout left them, which its
+   *  templates read as (CSS Grid 1, 7.2.6). */
+  grid?: GridTracks;
 }
 
 const SIDES = ['top', 'right', 'bottom', 'left'] as const;
@@ -1048,6 +1056,9 @@ const FROM_A_BOX: ReadonlySet<string> = new Set(
   [
     'width',
     'height',
+    'grid-template-columns',
+    'grid-template-rows',
+    'grid-lanes',
     'inline-size',
     'block-size',
     'transform',
@@ -1403,6 +1414,18 @@ function cssomAt(
   out['object-view-box'] = objectViewBoxText(style.objectViewBox, scale);
   // grid lanes' own (CSS Grid 3): the direction as it serializes, and the
   // tolerance a length at its computed value or a keyword
+  // a grid container's track lists are its tracks as laid out, and any
+  // other element's as they compute (CSS Grid 1, 7.2.6)
+  const tracks = box?.grid;
+  const lanesRows = lanesAreRows(style);
+  out['grid-template-columns'] =
+    tracks && resolves(style, style.gridColumns, false, lanesRows)
+      ? resolvedTracks(tracks.cols, tracks.colLines.names, scale)
+      : templateText(style.gridColumns, scale);
+  out['grid-template-rows'] =
+    tracks && resolves(style, style.gridRows, true, lanesRows)
+      ? resolvedTracks(tracks.rows, tracks.rowLines.names, scale)
+      : templateText(style.gridRows, scale);
   out['grid-lanes-direction'] = style.gridLanesDirection;
   out['grid-lanes-pack'] = style.gridLanesPack;
   out['fit-tolerance'] =
@@ -1682,31 +1705,6 @@ function filterText(
     .join(' ');
 }
 
-/** One track size of `grid-auto-rows` or `-columns`. */
-function trackText(track: GridTrack, scale: number): string {
-  const size = (v: GridTrack['max']): string =>
-    typeof v === 'string'
-      ? v
-      : typeof v === 'number' || 'pct' in v
-        ? len(v, scale)
-        : 'fr' in v
-          ? `${num(v.fr)}fr`
-          : `fit-content(${len(v.fit, scale)})`;
-  const { min, max } = track;
-  if (typeof max === 'object' && max !== null && 'fit' in max) return size(max);
-  if (
-    min === 'auto' &&
-    typeof max === 'object' &&
-    max !== null &&
-    'fr' in max
-  ) {
-    return size(max);
-  }
-  const lo = size(min);
-  const hi = size(max);
-  return lo === hi ? lo : `minmax(${lo}, ${hi})`;
-}
-
 /** `grid-template-areas`' strings again, a `.` for each cell no area has. */
 function areasText(areas: GridAreas | null): string {
   if (!areas) return 'none';
@@ -1782,6 +1780,148 @@ function gridLineText(line: GridLine): string {
 function followsFrom(first: GridLine, next: GridLine): boolean {
   const named = first !== null && !('span' in first) && !('line' in first);
   return named ? gridLineText(next) === gridLineText(first) : next === null;
+}
+
+/** Whether a grid lanes container's lanes are rows: `row`, or at `normal`
+ *  a row template and no column one (CSS Grid 3, 2.3), as
+ *  `layout/grid-lanes.ts` reads it. */
+function lanesAreRows(style: ComputedStyle): boolean {
+  const direction = style.gridLanesDirection;
+  if (direction.startsWith('row')) return true;
+  if (direction.startsWith('column')) return false;
+  return style.gridColumns === null && style.gridRows !== null;
+}
+
+/** Whether a grid container's axis reads as the tracks it was laid out
+ *  with: a grid's, but for a subgrid's axis, which reads as its template;
+ *  and grid lanes' lanes, but not their stacking axis, which has none. */
+function resolves(
+  style: ComputedStyle,
+  template: GridTemplate | null,
+  rows: boolean,
+  lanesRows: boolean,
+): boolean {
+  if (template?.subgrid) return false;
+  return !style.gridLanes || lanesRows === rows;
+}
+
+/** A track list as a grid's layout left it (7.2.6): every track, implicit
+ *  ones too, in pixels, an `auto-fit` one collapsed as nought, and the
+ *  names of the explicit grid's lines between them. `none` for none. */
+function resolvedTracks(
+  tracks: readonly (readonly [number, number])[],
+  names: readonly (readonly string[])[],
+  scale: number,
+): string {
+  if (!tracks.length) return 'none';
+  const out: string[] = [];
+  const group = (line: number) => {
+    const list = names[line];
+    if (list?.length) out.push(`[${list.join(' ')}]`);
+  };
+  tracks.forEach(([start, end], t) => {
+    group(t);
+    out.push(px(Math.max(0, end - start), scale));
+  });
+  group(tracks.length);
+  return out.join(' ');
+}
+
+/** A track's least or greatest size as it computes: a length in pixels,
+ *  never below nought, a percentage, a flex, `fit-content()` or a
+ *  keyword. */
+function trackSizeText(
+  size: GridTrack['min'] | GridTrack['max'],
+  scale: number,
+): string {
+  if (typeof size === 'number') return px(Math.max(0, size), scale);
+  if (typeof size === 'string') return size;
+  if ('fr' in size) return `${num(size.fr)}fr`;
+  if ('fit' in size) return `fit-content(${trackSizeText(size.fit, scale)})`;
+  return len(size, scale);
+}
+
+/** A track as it was written, as it computes. */
+function writtenTrackText(
+  { track, form }: WrittenTrack,
+  scale: number,
+): string {
+  if (form === 'minmax') {
+    return `minmax(${trackSizeText(track.min, scale)}, ${trackSizeText(track.max, scale)})`;
+  }
+  return trackSizeText(track.max, scale);
+}
+
+/** A track list's parts as they compute: names, tracks and `repeat()`s
+ *  kept as written, their lengths in pixels. */
+function writtenText(parts: readonly WrittenPart[], scale: number): string {
+  return parts
+    .map((part) =>
+      'names' in part
+        ? `[${part.names.join(' ')}]`
+        : 'repeat' in part
+          ? `repeat(${part.repeat}, ${writtenText(part.parts, scale)})`
+          : writtenTrackText(part, scale),
+    )
+    .join(' ');
+}
+
+/** `subgrid` and the names it gives its lines, a group a line, with its
+ *  `repeat(auto-fill, …)` where it has one. */
+function subgridText(names: SubgridNames): string {
+  const group = (list: readonly string[]) => `[${list.join(' ')}]`;
+  const parts = ['subgrid', ...names.names.map(group)];
+  if (names.fill) {
+    parts.push(`repeat(auto-fill, ${names.fill.names.map(group).join(' ')})`);
+    parts.push(...names.fill.after.map(group));
+  }
+  return parts.join(' ');
+}
+
+/** A template as it computes, where no layout's tracks stand for it. */
+function templateText(template: GridTemplate | null, scale: number): string {
+  if (!template) return 'none';
+  if (template.subgrid) return subgridText(template.subgrid);
+  if (template.written) return writtenText(template.written, scale);
+  return template.tracks
+    .map((track) => writtenTrackText({ track, form: 'size' }, scale))
+    .join(' ');
+}
+
+/** `grid-lanes` (CSS Grid 3): the area string along the lanes, the lanes'
+ *  template and the direction; the other axis's template is none of it.
+ *  `''` where the areas are no one string along the lanes. */
+function lanesText(all: Record<string, string>, style: ComputedStyle): string {
+  const direction = style.gridLanesDirection;
+  const rows = direction.startsWith('row');
+  const template = rows
+    ? all['grid-template-rows']
+    : all['grid-template-columns'];
+  const parts: string[] = [];
+  const areas = style.gridAreas;
+  if (areas) {
+    if (rows ? areas.columns !== 1 : areas.rows !== 1) return '';
+    const words = new Array<string>(rows ? areas.rows : areas.columns).fill(
+      '.',
+    );
+    for (const [name, area] of areas.areas) {
+      const [from, to] = rows ? area.rows : area.columns;
+      for (let i = from; i < to; i += 1) words[i] = name;
+    }
+    parts.push(`"${words.join(' ')}"`);
+  }
+  if (template !== 'none') parts.push(template);
+  parts.push(direction);
+  return parts.join(' ');
+}
+
+/** `grid-auto-rows` or `grid-auto-columns`: its tracks as written. */
+function autoTracksText(
+  written: readonly WrittenTrack[] | null,
+  scale: number,
+): string {
+  if (!written) return 'auto';
+  return written.map((one) => writtenTrackText(one, scale)).join(' ');
 }
 
 function gridAxisText(start: GridLine, end: GridLine): string {
@@ -2123,9 +2263,10 @@ const SHORTHANDS: Record<string, Composer> = {
   'grid-row-end': (_, style) => gridLineText(style.gridRowEnd),
   'grid-column-start': (_, style) => gridLineText(style.gridColumnStart),
   'grid-column-end': (_, style) => gridLineText(style.gridColumnEnd),
-  'grid-auto-rows': (_, style, scale) => trackText(style.gridAutoRows, scale),
+  'grid-auto-rows': (_, style, scale) =>
+    autoTracksText(style.gridAutoRowsWritten, scale),
   'grid-auto-columns': (_, style, scale) =>
-    trackText(style.gridAutoColumns, scale),
+    autoTracksText(style.gridAutoColumnsWritten, scale),
   'grid-template-areas': (_, style) => areasText(style.gridAreas),
   'grid-row-gap': (all) => all['row-gap'],
   'grid-column-gap': (all) => all['column-gap'],
@@ -2171,6 +2312,7 @@ const SHORTHANDS: Record<string, Composer> = {
     style.scrollbarThumbColor === null || style.scrollbarTrackColor === null
       ? 'auto'
       : `${cssomColor(style.scrollbarThumbColor, null, style.color, style.colorSource)} ${cssomColor(style.scrollbarTrackColor, null, style.color, style.colorSource)}`,
+  'grid-lanes': (all, style) => lanesText(all, style),
   columns: (_, style, scale) =>
     [
       style.columnWidth === null ? '' : px(style.columnWidth, scale),
