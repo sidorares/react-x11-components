@@ -52,6 +52,7 @@ import type { installPointers } from './pointers.js';
 import type { installEditing } from './editing.js';
 import type { installEncodedTransform } from './encoded-transform.js';
 import type { installTextTracks } from './text-tracks.js';
+import type { installStorageManager } from './storage-manager.js';
 import type { installCsp } from './csp-page.js';
 import type { installClipboard } from './clipboard.js';
 import type { installNotifications } from './notifications.js';
@@ -108,6 +109,7 @@ export function installDom(
   textTracksApi: typeof installTextTracks,
   cspApi: typeof installCsp,
   smilApi: typeof installSmil,
+  storageManagerApi: typeof installStorageManager,
   pathDataApi: typeof installPathData,
   namedAccess: boolean,
   inWorker: boolean,
@@ -148,6 +150,9 @@ export function installDom(
   /** An op's answer, or the host's error thrown as a `DOMException`. */
   /** A media element's text tracks (`text-tracks.ts`), once installed. */
   let textTracksOf: Any = null;
+  /** What carries a file system handle across a clone (`storage-manager.ts`),
+   *  once it is installed. */
+  let storageHandles: Any = null;
   /** The page's half of its Content Security Policy (`csp-page.ts`), once
    *  installed: the violation event and the guards on string
    *  compilation. */
@@ -28250,6 +28255,13 @@ export function installDom(
       seen.set(value, out);
       return out;
     }
+    // a file system handle, `[Serializable]` (File System, 2.2): a kind and
+    // a path, which the copy names as well
+    if (storageHandles?.is(value)) {
+      out = storageHandles.from(storageHandles.data(value));
+      seen.set(value, out);
+      return out;
+    }
     // a certificate, which is `[Serializable]` (WebRTC 1.0, 4.9)
     if (certificatesOf?.is(value)) {
       out = certificatesOf.from(certificatesOf.data(value));
@@ -28797,6 +28809,9 @@ export function installDom(
       if (certificatesOf?.is(v)) {
         return { i: index, t: 'X', d: certificatesOf.data(v) };
       }
+      if (storageHandles?.is(v)) {
+        return { i: index, t: 'H', d: storageHandles.data(v) };
+      }
       // an encoded frame, which is `[Serializable]` but not for storage
       // (WebRTC Encoded Transform, 6.4), its data walked as any buffer is,
       // so two frames over one buffer share it again
@@ -29050,6 +29065,16 @@ export function installDom(
           out = mediaTransfer.adopt(v.d, port);
           break;
         }
+        case 'H':
+          // a file system handle, of this origin's file system
+          if (!storageHandles) {
+            throw new DOMException(
+              'A FileSystemHandle cannot be received here.',
+              'DataCloneError',
+            );
+          }
+          out = storageHandles.from(v.d);
+          break;
         case 'X':
           // a certificate, which a window's realm alone can make again
           // (`[Exposed=Window]`): in a worker a `messageerror`
@@ -29361,15 +29386,37 @@ export function installDom(
       const from = edge(start, 0);
       const to = Math.max(edge(end, size), from);
       const blob = new Blob([], { type: type === undefined ? '' : str(type) });
-      blob._bytes = this._bytes.slice(from, to);
+      if (this._size === undefined) {
+        blob._bytes = this._bytes.slice(from, to);
+        return blob;
+      }
+      // a slice of a file whose bytes are read as they are asked for is
+      // read so too, and fails where its file's read does
+      const whole = this;
+      let bytes: Uint8Array | null = null;
+      blob._size = to - from;
+      Object.defineProperty(blob, '_bytes', {
+        get: (): Uint8Array => (bytes ??= whole._bytes.slice(from, to)),
+        set: (value: Uint8Array) => {
+          bytes = value;
+        },
+        configurable: true,
+      });
       return blob;
     }
     stream(): Any {
-      const bytes = this._bytes;
+      const blob = this;
+      let bytes: Uint8Array | null = null;
       let at = 0;
       return new ReadableStream({
         type: 'bytes',
         pull(controller: Any): void {
+          try {
+            bytes ??= blob._bytes;
+          } catch (error) {
+            controller.error(error);
+            return;
+          }
           if (at >= bytes.length) {
             controller.close();
             controller.byobRequest?.respond(0);
@@ -29381,14 +29428,28 @@ export function installDom(
         },
       });
     }
+    // a file's bytes read as they are asked for may fail (File System's
+    // `getFile()` of a file that changed since), which rejects
     text(): Promise<string> {
-      return Promise.resolve(new TextDecoder().decode(this._bytes));
+      try {
+        return Promise.resolve(new TextDecoder().decode(this._bytes));
+      } catch (error) {
+        return Promise.reject(error);
+      }
     }
     arrayBuffer(): Promise<ArrayBuffer> {
-      return Promise.resolve(this._bytes.slice().buffer);
+      try {
+        return Promise.resolve(this._bytes.slice().buffer);
+      } catch (error) {
+        return Promise.reject(error);
+      }
     }
     bytes(): Promise<Uint8Array> {
-      return Promise.resolve(this._bytes.slice());
+      try {
+        return Promise.resolve(this._bytes.slice());
+      } catch (error) {
+        return Promise.reject(error);
+      }
     }
   }
   /** How much of a blob a read of its stream hands over at once. */
@@ -30813,6 +30874,36 @@ export function installDom(
     schema?: string;
   }
   const idbDatabases = new Map<string, IdbData>();
+  /** About how many bytes this realm's databases hold, for
+   *  `navigator.storage.estimate()`: what the values come to, and something
+   *  for each database and store, as a store on disk has files for them. */
+  const idbUsage = (): number => {
+    const seen = new Set<Any>();
+    const sizeOf = (v: Any): number => {
+      if (v === null || v === undefined) return 1;
+      if (typeof v === 'string') return v.length * 2;
+      if (typeof v !== 'object') return 8;
+      if (seen.has(v)) return 0;
+      seen.add(v);
+      if (v instanceof Blob) return v.size;
+      if (v instanceof ArrayBuffer) return v.byteLength;
+      if (ArrayBuffer.isView(v)) return v.byteLength;
+      let size = 16;
+      for (const key of Object.keys(v)) size += key.length * 2 + sizeOf(v[key]);
+      return size;
+    };
+    let size = 0;
+    for (const data of idbDatabases.values()) {
+      size += 4096;
+      for (const store of data.stores.values()) {
+        size += 1024;
+        for (const record of store.records) {
+          size += sizeOf(record.key) + sizeOf(record.value);
+        }
+      }
+    }
+    return size;
+  };
 
   /** Whether the host keeps databases past the document, asked once. */
   let idbKept: boolean | null = null;
@@ -41372,9 +41463,80 @@ export function installDom(
   readonlyAttribute('history', () => history);
   define('navigation', navigation);
   readonlyAttribute('navigator', () => navigator);
+  // --- navigator.storage and the origin private file system ---------------------
+  //
+  // `storage-manager.ts`: the Storage Standard's `StorageManager` and the File
+  // System Standard's handles, over the host's tree (`opfs.ts`, the `opfs`
+  // op), which a worker's thread asks of its page's process. `[SecureContext]`
+  // all of it, so `secureGlobals` puts it in place.
+  const STORAGE = storageManagerApi({
+    DOMException,
+    call: call as Any,
+    lazyFile: (
+      name: string,
+      lastModified: number,
+      size: number,
+      read: () => Uint8Array,
+    ): Any => {
+      const file = new File([], name, { lastModified });
+      file._size = size;
+      let bytes: Uint8Array | null = null;
+      Object.defineProperty(file, '_bytes', {
+        get(): Uint8Array {
+          return (bytes ??= read());
+        },
+        set(value: Uint8Array) {
+          bytes = value;
+        },
+        configurable: true,
+      });
+      return file;
+    },
+    blobBytes: (blob: Any) => blob._bytes,
+    isBlob: (value: Any) => value instanceof Blob,
+    utf8: (text: string) => utf8Bytes(text),
+    base64OfBytes,
+    bytesOfBase64,
+    streams: streamInternals as Any,
+    WritableStream,
+    WritableStreamDefaultWriter,
+    idbUsage: () => idbUsage(),
+  });
+  storageHandles = STORAGE.handles;
+  /** Whether this realm has the file system's interfaces now, where
+   *  `storage` goes once the navigator's interface is made. */
+  let storageSecure = false;
+  const placeStorage = (): void => {
+    const proto = Object.getPrototypeOf(navigator);
+    for (const on of [navigator, proto]) delete (on as Any).storage;
+    if (!storageSecure) return;
+    const target = proto === Object.prototype ? navigator : proto;
+    const get = function (this: Any) {
+      if (this !== navigator) throw new TypeError('Illegal invocation');
+      return STORAGE.storage();
+    };
+    Object.defineProperty(get, 'name', { value: 'get storage' });
+    Object.defineProperty(target, 'storage', {
+      get,
+      enumerable: true,
+      configurable: true,
+    });
+  };
+  const storageGlobals = (secure: boolean): void => {
+    for (const name of Object.keys(STORAGE.interfaces)) delete G[name];
+    delete G.FileSystemSyncAccessHandle;
+    storageSecure = secure;
+    if (secure) {
+      for (const [name, value] of Object.entries(STORAGE.interfaces)) {
+        define(name, value);
+      }
+    }
+    placeStorage();
+  };
   /** What only a secure context has, which a worker asks again of its own
    *  address (`[SecureContext]`, Web IDL 3.3.17). */
   const secureGlobals = (secure: boolean): void => {
+    storageGlobals(secure);
     UI_EVENTS.secure(secure);
     // `pointerrawupdate`'s handler is `[SecureContext]` (Pointer Events 3)
     for (const on of [HTMLElement.prototype, Document.prototype, G]) {
@@ -41718,6 +41880,8 @@ export function installDom(
     Object.setPrototypeOf(object, Interface.prototype);
     define(name, Interface);
   }
+  // `storage` is `Navigator`'s attribute, on the prototype it has now
+  placeStorage();
   getter('innerWidth', () => windowSize?.[0] ?? viewport().width);
   getter('innerHeight', () => windowSize?.[1] ?? viewport().height);
   getter('outerWidth', () => windowSize?.[0] ?? viewport().width);
@@ -43307,6 +43471,35 @@ export function installDom(
       toString: () => here.href,
     };
     secureGlobals(call('secureContext') === true);
+    // a worker's navigator is a `WorkerNavigator` (HTML 10.3.3), which has
+    // what the window's had of the navigator's own, `storage` among them
+    {
+      const was = Object.getPrototypeOf(navigator);
+      delete was.storage;
+      const WorkerNavigator = function WorkerNavigator() {
+        throw new TypeError('Illegal constructor');
+      } as Any;
+      WorkerNavigator.prototype = Object.create(was, {
+        constructor: {
+          value: WorkerNavigator,
+          writable: true,
+          configurable: true,
+        },
+        [Symbol.toStringTag]: { value: 'WorkerNavigator', configurable: true },
+      });
+      Object.defineProperty(WorkerNavigator, 'prototype', { writable: false });
+      Object.setPrototypeOf(navigator, WorkerNavigator.prototype);
+      define('WorkerNavigator', WorkerNavigator);
+      placeStorage();
+    }
+    // `persist()` is a window's (`[Exposed=Window]`), and the sync access
+    // handle a dedicated worker's (`[Exposed=DedicatedWorker]`)
+    STORAGE.worker();
+    if (!shared && !service && call('secureContext') === true) {
+      for (const [n, value] of Object.entries(STORAGE.dedicatedWorker())) {
+        define(n, value);
+      }
+    }
     const scope = (label: string): Any => {
       const fn: Any = function () {
         throw new TypeError('Illegal constructor');
