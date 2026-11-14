@@ -43861,10 +43861,10 @@ export function installDom(
   // IndexedDB's interfaces in Web IDL's shape (IndexedDB 3, 4): each one's
   // members enumerable, an attribute read off its prototype or any other
   // object a TypeError, an operation called with fewer arguments than it
-  // requires a TypeError and its \`length\` that count, and an interface with
+  // requires a TypeError and its `length` that count, and an interface with
   // no constructor one a page cannot call or construct. The classes stay as
-  // they are for this realm's own \`new\`, and the page is handed interface
-  // objects over the same prototypes, so \`instanceof\` holds.
+  // they are for this realm's own `new`, and the page is handed interface
+  // objects over the same prototypes, so `instanceof` holds.
   {
     const IDB_OPERATIONS: Record<string, [string, number][]> = {
       IDBFactory: [
