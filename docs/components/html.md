@@ -1858,6 +1858,30 @@ microtasks or a `setParameters` between, it answers the same
 `transactionId`, and a `setParameters` after the task is refused.
 Nothing offers H.264, RED or ULPFEC, so the tests of them fail here.
 
+A description is checked as a browser checks it before werift reads it. A
+remote one is refused where an ICE credential has a character ICE does not
+allow, where it has no DTLS fingerprint, as an offer keyed only by SDES has
+none, and where two of its m-sections carry one track or one SSRC; and an answer is
+refused where its directions or its media types are not ones its offer
+allows. One with no mids is taken, each m-section given the mid of its
+place, or in an answer that of its offer's. A remote offer's m-section is
+paired only with a transceiver `addTrack` made, and only where the
+m-section receives (JSEP 5.10): one `addTransceiver` made waits for an offer
+of its own connection, and a polite peer's glare keeps its own transceivers'
+directions. A rollback keeps a transceiver `addTrack` gave a track, whatever
+it sends by then, and takes the tracks it takes away out of their streams. A
+rejected m-section is recycled for a new transceiver of any kind, and an
+unknown kind's stays in every offer after, rejected. An ICE restart's
+credentials are ice-chars, where werift's own have `-` and `_`, which Chrome
+refuses. A transceiver no
+m-section has has no transport. `setLocalDescription()` with no description
+sets the last offer or answer made while nothing has changed since (WebRTC
+1.0, 4.4.1.5). Where the browsers part this goes one way: two m-sections of
+one track are refused as Firefox refuses them, where Chrome takes them, and
+an answer that names another unknown media type is refused, which no browser
+does yet. A local description the page changed is taken where it has the
+connection's credentials, as every browser takes one.
+
 `fakeMediaDevices()` is a camera that draws colour bars with a band moving
 down them and its frame's number along the bottom, natively at 640×480,
 320×240, 1280×720 and 1920×1080, a microphone that plays a 440 Hz tone and

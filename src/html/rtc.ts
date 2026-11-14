@@ -204,6 +204,10 @@ export interface RTCTransceiverInit {
   /** The ids of the streams that track is in. */
   streams: string[];
   sendEncodings: RTCEncodingLike[];
+  /** Made by `addTrack`: a remote offer's m-section that receives may be
+   *  paired with such a transceiver, and with no other one a page made
+   *  (JSEP 5.10). */
+  addTrack?: boolean;
 }
 
 /** One transceiver of a connection. */
@@ -234,6 +238,10 @@ export interface RTCTransceiverLike {
   }): Promise<void>;
   /** `stop()`: it is stopped once the next negotiation takes it out. */
   stop(): void;
+  /** `addTrack` gave a track to one a remote offer made: a rollback of
+   *  that offer keeps it, whatever track it has by then, and from then on
+   *  it is paired as one `addTrack` made (JSEP 4.1.8.2, 5.10). */
+  madeByAddTrack?(): void;
   /** What `getSynchronizationSources` and `getContributingSources` answer
    *  from. */
   sources(): RTCRtpSourceLike[];
@@ -690,6 +698,9 @@ class DeferredTransceiver implements RTCTransceiverLike {
   }
   stop(): void {
     this._do((t) => t.stop());
+  }
+  madeByAddTrack(): void {
+    this._do((t) => t.madeByAddTrack?.());
   }
   sources(): RTCRtpSourceLike[] {
     return this.real ? this.real.sources() : [];
