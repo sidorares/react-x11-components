@@ -1696,7 +1696,81 @@ function serializeDeclarations(
 /** A declaration block's declarations, from its text: an element's
  *  `style` attribute, or what a rule's braces hold. */
 function declarationsIn(block: string | null | undefined) {
-  return block ? parseDeclarations(block) : [];
+  if (!block) return [];
+  return parseDeclarations(block).map((d) => {
+    const value = tidyValue(d.value);
+    return value === d.value ? d : { ...d, value };
+  });
+}
+
+/** A number of a value as CSS serializes it: a fraction with a leading
+ *  0, no `+`, no zero after the point, and no negative 0. */
+const NUMBER =
+  /(^|[\s,(/*+-])([+-]?)(\d*)(?:\.(\d+))?(?![\d.])(?=%|[a-z]|[\s,)/*]|$)/gi;
+
+/**
+ * A declaration's value as CSSOM serializes a specified value that is kept
+ * as written (CSSOM 6.7.2): its numbers canonical, `.5em` as `0.5em` and
+ * `-0` as `0`, its strings in double quotes and a `url()`'s argument a
+ * string. A value with a `var()` is kept as written, as a browser keeps
+ * one, since what it substitutes is no value yet.
+ */
+function tidyValue(value: string): string {
+  if (!/[.+'(]|-0/.test(value)) return value;
+  if (/\b(?:var|env|attr)\(/i.test(value)) return value;
+  let out = '';
+  let i = 0;
+  let plain = '';
+  const flush = (): void => {
+    out += plain.replace(
+      NUMBER,
+      (all, before: string, sign: string, whole: string, frac?: string) => {
+        if (!whole && !frac) return all;
+        const fraction = (frac ?? '').replace(/0+$/, '');
+        const int = whole.replace(/^0+(?=\d)/, '') || '0';
+        const zero = int === '0' && !fraction;
+        const text = fraction ? `${int}.${fraction}` : int;
+        return `${before}${sign === '-' && !zero ? '-' : ''}${text}`;
+      },
+    );
+    plain = '';
+  };
+  while (i < value.length) {
+    const c = value[i];
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      let text = '';
+      while (j < value.length && value[j] !== c) {
+        if (value[j] === '\\' && j + 1 < value.length) {
+          text += value[j] + value[j + 1];
+          j += 2;
+          continue;
+        }
+        text += value[j];
+        j += 1;
+      }
+      flush();
+      // the quote it had need not be escaped, and the double quote does
+      const inner =
+        c === "'"
+          ? text.replace(/\\'/g, "'").replace(/(^|[^\\])"/g, '$1\\"')
+          : text;
+      out += `"${inner}"`;
+      i = j + 1;
+      continue;
+    }
+    const url = /^url\(\s*([^"'()\s]*)\s*\)/i.exec(value.slice(i));
+    if (url && !/[\w-]/.test(value[i - 1] ?? '')) {
+      flush();
+      out += `url("${url[1].replace(/["\\]/g, '\\$&')}")`;
+      i += url[0].length;
+      continue;
+    }
+    plain += c;
+    i += 1;
+  }
+  flush();
+  return out;
 }
 
 /** What a block declares a property as, as `getPropertyValue` reads it: a
@@ -5483,7 +5557,11 @@ export class DomHost {
       case 'adopt': {
         const sheets: unknown = JSON.parse(text(a) || '[]');
         if (Array.isArray(sheets)) {
-          this._seams.adopt?.(sheets.map((sheet) => String(sheet)));
+          const texts = sheets.map((sheet) => String(sheet));
+          // the view at once, so the task that adopted them reads them, and
+          // the host's render after, which hands them on as `stylesheet`
+          this._seams.handle?.adoptSheets?.(texts);
+          this._seams.adopt?.(texts);
         }
         return null;
       }

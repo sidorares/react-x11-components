@@ -18540,10 +18540,132 @@ export function installDom(
       return this._type;
     }
   }
+  /** The pseudo-elements a selector may end in, which a page's query does
+   *  not take and a rule does. */
+  const RULE_PSEUDO_ELEMENTS =
+    /::(?:before|after|marker|placeholder|selection|first-line|first-letter|backdrop|file-selector-button|target-text|spelling-error|grammar-error|details-content|checkmark|picker-icon|column|scroll-marker|scroll-marker-group|cue|view-transition(?:-(?:group|image-pair|old|new|group-children))?(?:\([^()]*\))?|(?:part|slotted|highlight|picker|scroll-button|cue)\([^()]*\))|:(?:before|after|first-line|first-letter)\b/gi;
+  /** The namespaces a sheet's `@namespace` rules declare: the default
+   *  one's URL, and each prefix's. */
+  const sheetNamespaces = (
+    sheet: Any,
+  ): { default: string | null; prefixes: Map<string, string> } => {
+    const out = { default: null as string | null, prefixes: new Map() };
+    const rules = sheet?.cssRules;
+    if (!rules) return out;
+    for (let i = 0; i < rules.length; i += 1) {
+      const rule = rules[i];
+      if (rule?.type !== 10) continue;
+      const m =
+        /^@namespace\s+(?:([\w-]+)\s+)?(?:url\(\s*)?["']?([^"')]*)["']?\s*\)?/i.exec(
+          rule.cssText ?? '',
+        );
+      if (!m) continue;
+      if (m[1]) out.prefixes.set(m[1], m[2]);
+      else out.default = m[2];
+    }
+    return out;
+  };
+  /** An `An+B` as CSSOM serializes it: `2n+1` for `odd`, no `+0`. */
+  const anPlusB = (text: string): string | null => {
+    const v = text.replace(/\s+/g, '').toLowerCase();
+    if (v === 'even') return '2n';
+    if (v === 'odd') return '2n+1';
+    const m = /^([+-]?\d*)n([+-]\d+)?$/.exec(v);
+    if (m) {
+      const a =
+        m[1] === '' || m[1] === '+' ? 1 : m[1] === '-' ? -1 : Number(m[1]);
+      const b = m[2] ? Number(m[2]) : 0;
+      if (a === 0) return String(b);
+      const an = a === 1 ? 'n' : a === -1 ? '-n' : `${a}n`;
+      return b > 0 ? `${an}+${b}` : b < 0 ? `${an}${b}` : an;
+    }
+    return /^[+-]?\d+$/.test(v) ? String(Number(v)) : null;
+  };
+  /**
+   * A selector as CSSOM serializes it (6.6.4): a type's namespace left off
+   * where it is the default one, or any where there is no default; a
+   * universal selector left off before what else its compound holds; a
+   * pseudo-class's argument trimmed, and an `An+B` in its canonical form.
+   * What is in brackets and strings is left as written.
+   */
+  const serializeSelector = (text: string, sheet: Any): string => {
+    const ns = sheetNamespaces(sheet);
+    const kept: string[] = [];
+    let v = text
+      .trim()
+      .replace(/\[[^\]]*\]|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, (m) => {
+        // an attribute in no namespace written `[|a]` is `[a]`
+        kept.push(m.replace(/^\[\s*\|(?!=)/, '['));
+        return `\u0000${kept.length - 1}\u0000`;
+      });
+    const start = '(^|[\\s>+~,(])';
+    v = v.replace(
+      new RegExp(
+        `${start}([\\w-]+|\\*)?\\|(?=[\\w*\\\\-]|[^\\x00-\\x7f])`,
+        'g',
+      ),
+      (all, before: string, prefix?: string) => {
+        if (prefix === '*') return ns.default === null ? before : all;
+        if (
+          prefix &&
+          ns.default !== null &&
+          ns.prefixes.get(prefix) === ns.default
+        ) {
+          return before;
+        }
+        return all;
+      },
+    );
+    v = v.replace(new RegExp(`${start}\\*(?=[.#:\\u0000])`, 'g'), '$1');
+    v = v.replace(
+      /:(nth-(?:last-)?(?:child|of-type))\(\s*([^()]*?)\s*\)/gi,
+      (all, name: string, arg: string) => {
+        const [first, ...rest] = arg.split(/\s+of\s+/i);
+        const canon = anPlusB(first);
+        if (canon === null) return all;
+        return `:${name.toLowerCase()}(${canon}${rest.length ? ` of ${rest.join(' of ')}` : ''})`;
+      },
+    );
+    v = v.replace(
+      /:(lang|not|is|where|has|dir|host|host-context)\(\s*([^()]*?)\s*\)/gi,
+      (_, name: string, arg: string) => `:${name}(${arg})`,
+    );
+    return v.replace(/\u0000(\d+)\u0000/g, (_, i: string) => kept[Number(i)]);
+  };
   class CSSStyleRule extends CSSRule {
     override _type = 1;
     get selectorText(): string {
-      return preludeOf(this._text);
+      return serializeSelector(preludeOf(this._text), this.parentStyleSheet);
+    }
+    // its selector as it serializes, and its block as it stands, which may
+    // hold rules nested in it
+    override get cssText(): string {
+      const open = blockStart(this._text);
+      return open < 0
+        ? this._text
+        : `${this.selectorText} ${this._text.slice(open)}`;
+    }
+    override set cssText(_v: Any) {}
+    /** CSSOM 6.4.3: a selector that parses replaces the rule's, serialized
+     *  — a namespace that is any, or none, of a document with no default
+     *  one left off — and one that does not leaves it as it was. */
+    set selectorText(v: Any) {
+      const given = str(v).trim();
+      // and a compound that starts with a digit, which no selector does and
+      // css-select reads as a type
+      if (!given || /[{};]/.test(given) || /(^|[\s>+~,])-?\d/.test(given)) {
+        return;
+      }
+      try {
+        document
+          .createDocumentFragment()
+          .querySelector(given.replace(RULE_PSEUDO_ELEMENTS, ''));
+      } catch {
+        return;
+      }
+      const text = given.replace(/\s+/g, ' ');
+      const body = str(call('blockText', blockOf(this._text)) ?? '');
+      replaceRule(this, `${text} { ${body ? `${body} ` : ''}}`);
     }
     _style: Any = null;
     get style(): Any {
@@ -19025,6 +19147,190 @@ export function installDom(
     const list = sheet.cssRules;
     if (list && list[at] !== rule) list[LIST].items[at] = rule;
   };
+  /** What an `@page` rule declares (CSSOM 6.4.6, CSS Paged Media 3): its
+   *  margins, `size` and `page-orientation`, and nothing else. */
+  const PAGE_DESCRIPTORS = [
+    'margin',
+    'margin-top',
+    'margin-right',
+    'margin-bottom',
+    'margin-left',
+    'page-orientation',
+    'size',
+  ];
+  const PAGE_TAKES = new Set(PAGE_DESCRIPTORS);
+  const PAGE_SIZES = '(?:a5|a4|a3|b5|b4|jis-b5|jis-b4|letter|legal|ledger)';
+  const PAGE_LENGTH =
+    '(?:0|[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:px|cm|mm|q|in|pt|pc|em|rem|ex|ch|vw|vh|vmin|vmax))';
+  const PAGE_SIZE = new RegExp(
+    `^(?:auto|${PAGE_LENGTH}(?:\\s+${PAGE_LENGTH})?|${PAGE_SIZES}(?:\\s+(?:portrait|landscape))?|(?:portrait|landscape)(?:\\s+${PAGE_SIZES})?)$`,
+    'i',
+  );
+  /** Whether a descriptor takes a value: `size` and `page-orientation` by
+   *  their grammars, a margin as a style's would. */
+  const pageValueTakes = (name: string, value: string): boolean => {
+    if (name === 'size') return PAGE_SIZE.test(value);
+    if (name === 'page-orientation') {
+      return /^(?:upright|rotate-left|rotate-right)$/i.test(value);
+    }
+    return call('blockSet', '', name, value, '') !== null;
+  };
+  /** An `@page` rule's declarations of its descriptors, in order. */
+  const pageDeclarations = (
+    block: string,
+  ): { name: string; value: string; important: boolean }[] => {
+    const out: { name: string; value: string; important: boolean }[] = [];
+    for (const part of block.split(/;(?![^(]*\))/)) {
+      const colon = part.indexOf(':');
+      if (colon < 0) continue;
+      const name = part.slice(0, colon).trim().toLowerCase();
+      if (!PAGE_TAKES.has(name)) continue;
+      let value = part.slice(colon + 1).trim();
+      const important = /!\s*important$/i.test(value);
+      if (important) value = value.replace(/!\s*important$/i, '').trim();
+      if (!value) continue;
+      const at = out.findIndex((d) => d.name === name);
+      if (at >= 0) out.splice(at, 1);
+      out.push({ name, value, important });
+    }
+    return out;
+  };
+  /** A margin side as the `margin` declared before it gives it, where it
+   *  is not declared itself: one to four values, as a box's edges are. */
+  const pageMargin = (
+    decls: { name: string; value: string }[],
+    name: string,
+  ): string => {
+    const own = decls.find((d) => d.name === name);
+    if (own) return own.value;
+    const side = ['top', 'right', 'bottom', 'left'].indexOf(
+      name.slice('margin-'.length),
+    );
+    const all = decls.find((d) => d.name === 'margin');
+    if (side < 0 || !all) return '';
+    const v = all.value.split(/\s+(?![^(]*\))/);
+    const edges = [v[0], v[1] ?? v[0], v[2] ?? v[0], v[3] ?? v[1] ?? v[0]];
+    return edges[side] ?? '';
+  };
+  /** A page rule's selector as it serializes: its page's name, and its
+   *  pseudo-pages lower-cased; null for one that is none. */
+  const pageSelector = (given: string): string | null => {
+    const v = given.trim();
+    const m = /^([a-z_-][\w-]*)?((?::[a-z-]+)*)$/i.exec(v);
+    if (!m) return null;
+    const pseudos = m[2].toLowerCase();
+    if (pseudos && !/^(?::(?:first|left|right|blank))+$/.test(pseudos)) {
+      return null;
+    }
+    return (m[1] ?? '') + pseudos;
+  };
+  /** A `@page` rule as CSSOM serializes it. */
+  const pageText = (
+    selector: string,
+    decls: readonly { name: string; value: string; important: boolean }[],
+  ): string => {
+    const body = declarationsText(decls);
+    return `@page ${selector ? `${selector} ` : ''}{ ${body ? `${body} ` : ''}}`;
+  };
+  /** An `@page` rule's declarations (CSSOM 6.4.6): a style of what the rule
+   *  declares, each descriptor an attribute, by its name and in camel case,
+   *  and any other property none. */
+  class CSSPageDescriptors extends CSSStyleDeclaration {
+    constructor() {
+      super();
+    }
+  }
+  for (const name of PAGE_DESCRIPTORS) {
+    const descriptor = {
+      get(this: Any): string {
+        return this.getPropertyValue(name);
+      },
+      set(this: Any, v: Any): void {
+        this.setProperty(name, v);
+      },
+      configurable: true,
+      enumerable: true,
+    };
+    Object.defineProperty(
+      CSSPageDescriptors.prototype,
+      name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase()),
+      descriptor,
+    );
+    if (name.includes('-')) {
+      Object.defineProperty(CSSPageDescriptors.prototype, name, {
+        ...descriptor,
+      });
+    }
+  }
+  idlAttributes(CSSPageDescriptors);
+  const pageStyle = (rule: Any): Any => {
+    const decls = () => pageDeclarations(blockOf(rule._text));
+    const write = (
+      list: { name: string; value: string; important: boolean }[],
+    ): void => replaceRule(rule, pageText(rule.selectorText, list));
+    const style = Object.create(CSSPageDescriptors.prototype);
+    declarationBlocks.set(style, {
+      value: (name) =>
+        name.startsWith('margin-')
+          ? pageMargin(decls(), name)
+          : (decls().find((d) => d.name === name)?.value ?? ''),
+      priority: (name) =>
+        decls().find((d) => d.name === name)?.important ? 'important' : '',
+      set: (name, value, priority) => {
+        if (!PAGE_TAKES.has(name)) return;
+        const v = value.trim();
+        const list = decls();
+        const at = list.findIndex((d) => d.name === name);
+        if (!v) {
+          if (at < 0) return;
+          list.splice(at, 1);
+        } else {
+          if (!pageValueTakes(name, v)) return;
+          const decl = {
+            name,
+            value: v,
+            important: priority.toLowerCase() === 'important',
+          };
+          if (at >= 0) list[at] = decl;
+          else list.push(decl);
+        }
+        write(list);
+      },
+      names: () => decls().map((d) => d.name),
+      text: () => declarationsText(decls()),
+      setText: (text) => write(pageDeclarations(text)),
+      rule,
+    });
+    return style;
+  };
+  /** An `@page` rule (CSSOM 6.4.6): its page selector, which a page may
+   *  set, and its descriptors. */
+  class CSSPageRule extends CSSRule {
+    override _type = 6;
+    _style: Any = null;
+    get selectorText(): string {
+      return pageSelector(conditionOf(this._text)) ?? '';
+    }
+    set selectorText(v: Any) {
+      const selector = pageSelector(str(v));
+      if (selector === null) return;
+      replaceRule(
+        this,
+        pageText(selector, pageDeclarations(blockOf(this._text))),
+      );
+    }
+    get style(): Any {
+      return (this._style ??= pageStyle(this));
+    }
+    set style(v: Any) {
+      this.style.cssText = v;
+    }
+    override get cssText(): string {
+      return pageText(this.selectorText, pageDeclarations(blockOf(this._text)));
+    }
+    override set cssText(_v: Any) {}
+  }
+  idlAttributes(CSSPageRule);
   /** A `@position-try` rule (CSS Anchor Positioning 1, 8.1): its name, and
    *  its declarations, which a page may set. */
   class CSSPositionTryRule extends CSSRule {
@@ -19349,6 +19655,7 @@ export function installDom(
     'font-face': CSSFontFaceRule,
     keyframes: CSSKeyframesRule,
     'position-try': CSSPositionTryRule,
+    page: CSSPageRule,
   };
   const AT_RULE_TYPES: Record<string, number> = {
     charset: 2,
@@ -41405,6 +41712,8 @@ export function installDom(
     CSSViewTransitionRule,
     CSSPositionTryRule,
     CSSPositionTryDescriptors,
+    CSSPageRule,
+    CSSPageDescriptors,
   };
   // and their interfaces with it, which a page tells a service worker by
   if (serviceWorkersOn) Object.assign(classes, SW.interfaces);

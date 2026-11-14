@@ -884,6 +884,13 @@ export interface HtmlHandle {
     play: string | null,
   ): void;
   /**
+   * The sheets a page's script adopted on its document
+   * (`document.adoptedStyleSheets`), as text, applied after the document's
+   * own at once: a script that adopts one reads what it styles in the same
+   * task. They stand until the next render hands the view its `stylesheet`.
+   */
+  adoptSheets(sheets: readonly string[]): void;
+  /**
    * What an animation's `commitStyles()` writes: the values `properties`
    * come to on the element now, those animations made after `id` left out,
    * as `prop\u0000value` pairs joined by `\u0001`; null where the element
@@ -1860,6 +1867,8 @@ export function makeHtmlHandle(
       effect: string | null,
       play: string | null,
     ) => nodeRef.current?.setScriptAnimation(element, id, effect, play),
+    adoptSheets: (sheets: readonly string[]) =>
+      nodeRef.current?.adoptSheets(sheets),
     scriptAnimationValues: (
       element: Element,
       id: number,

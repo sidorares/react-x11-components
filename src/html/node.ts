@@ -3495,7 +3495,11 @@ export class HtmlViewNode extends Node {
       if (own.length && !shadowRead.has(key)) shadowRead.set(key, own);
       if (own.length) shadowOwn.push([key, own]);
     }
-    const extras = this._extraSheets(props.stylesheet);
+    const extras = this._extraSheets(
+      this._adoptedNow && this._adoptedFor === props.stylesheet
+        ? this._adoptedNow
+        : props.stylesheet,
+    );
     const fonts = this._fonts();
     // Sheets that read as they did last time are the same rules: an append
     // to a streamed document, or a width across a `@media` breakpoint,
@@ -6638,6 +6642,16 @@ export class HtmlViewNode extends Node {
    * then at each frame of it that changes what it draws. A document drawn
    * at rest builds it again at once.
    */
+  /** The sheets a page's script adopted on the document, at once, and
+   *  the `stylesheet` they stand in for until a render hands it on. */
+  private _adoptedNow: string[] | null = null;
+  private _adoptedFor: string | string[] | undefined = undefined;
+  adoptSheets(sheets: readonly string[]): void {
+    this._adoptedNow = [...sheets];
+    this._adoptedFor = this._props().stylesheet;
+    this._invalidate(Stale.Style);
+  }
+
   setScriptAnimation(
     element: Element,
     id: number,
