@@ -181,7 +181,7 @@ export class PageSockets {
     const text = (v: Primitive): string => (typeof v === 'string' ? v : '');
     switch (op) {
       case 'wsOpen':
-        this._open(Number(a), text(b), text(c));
+        this._open(Number(a), text(b), text(c), text(d));
         return null;
       case 'wsSend': {
         const s = this._sockets.get(Number(a));
@@ -288,7 +288,12 @@ export class PageSockets {
     this._tell('__wsClosed', [s.id, 1006, '', false, true], true);
   }
 
-  private _open(id: number, url: string, protocolsJson: string): void {
+  private _open(
+    id: number,
+    url: string,
+    protocolsJson: string,
+    space = '',
+  ): void {
     let protocols: string[] = [];
     try {
       const parsed = JSON.parse(protocolsJson) as unknown;
@@ -337,7 +342,14 @@ export class PageSockets {
     let conn: WebSocketConnectionLike;
     try {
       conn = connector.connect(
-        { url, origin, protocols: [...protocols] },
+        {
+          url,
+          origin,
+          protocols: [...protocols],
+          ...(space === 'local' || space === 'loopback' || space === 'public'
+            ? { targetAddressSpace: space }
+            : {}),
+        },
         {
           open: (info: WebSocketOpened) => {
             if (s.state !== 'connecting') return;

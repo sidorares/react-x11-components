@@ -320,6 +320,21 @@ export function installWebSocket(deps: WebSocketDeps): Record<string, unknown> {
       }
       const href = socketUrl(url, 'WebSocket');
       const list = checkedProtocols(protocolsOf(protocols, true), 'WebSocket');
+      // an option bag's `targetAddressSpace` (Local Network Access), an
+      // enumeration whose other values are a TypeError
+      let space = '';
+      if (
+        isObject(protocols) &&
+        typeof protocols[iterator] !== 'function' &&
+        protocols.targetAddressSpace !== undefined
+      ) {
+        space = String(protocols.targetAddressSpace);
+        if (space !== 'local' && space !== 'loopback' && space !== 'public') {
+          throw typeError(
+            `Failed to construct 'WebSocket': The provided value '${space}' is not a valid enum value of type IPAddressSpace.`,
+          );
+        }
+      }
       super();
       const id = ++seq;
       const s = {
@@ -338,7 +353,7 @@ export function installWebSocket(deps: WebSocketDeps): Record<string, unknown> {
       };
       apply(wmSet, slots, [this, s]);
       sockets.set(id, s);
-      call('wsOpen', id, href, stringify(list));
+      call('wsOpen', id, href, stringify(list), space);
     }
     get url(): string {
       return slotOf(this, 'socket').url;

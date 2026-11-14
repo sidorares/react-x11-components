@@ -1339,7 +1339,10 @@ checks what the standard has it check, each a `SyntaxError`: a URL that
 does not parse against the document's base, a scheme but `ws:`, `wss:`,
 `http:` and `https:` (the last two made `ws:` and `wss:`), a fragment, and
 protocols that are no tokens or that repeat, whatever their case; an
-option bag, `{ protocols }`, is taken as WPT has it. `close()` takes 1000
+option bag, `{ protocols }`, is taken as WPT has it, and its
+`targetAddressSpace` (Local Network Access) is `loopback`, `local` or
+`public`, anything else a `TypeError`, and `HtmlNetwork` fails the
+connection where the host resolves into another space. `close()` takes 1000
 or 3000 to 4999 (`InvalidAccessError` for anything else) and a reason of at
 most 123 bytes (`SyntaxError`); `send()` before the socket is open throws
 `InvalidStateError`, and once it is closing only counts what it was given
