@@ -1595,6 +1595,20 @@ export interface ComputedStyle {
   // grid (CSS Grid 1): a grid container is a flex box to the box tree, and
   // laid out by `layout/css-grid.ts`
   grid: boolean;
+  /** `display: grid-lanes` (CSS Grid 3, 2.2): a grid container — `grid` is
+   *  true as well — whose items go into the lanes one axis's tracks make,
+   *  each into the one that leaves it highest (`layout/grid-lanes.ts`). */
+  gridLanes: boolean;
+  /** `grid-lanes-direction` as it serializes: `normal`, or `row` or
+   *  `column` with `fill-reverse` and then `track-reverse` after it. */
+  gridLanesDirection: string;
+  /** `grid-lanes-pack`: whether an item goes back for a hole it fits. */
+  gridLanesPack: 'normal' | 'dense';
+  /** `fit-tolerance` (CSS Grid 3, 4.2): how near the highest place another
+   *  must be to count as tied with it — `normal`, which is 1em in grid
+   *  lanes, `infinite`, or a length or a percentage of the grid axis's
+   *  content size, never below nought. */
+  fitTolerance: Len | 'normal' | 'infinite';
   gridColumns: GridTemplate | null;
   gridRows: GridTemplate | null;
   gridAutoRows: GridTrack;
@@ -2144,6 +2158,10 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     rowGapNormal: true,
     columnGap: 0,
     grid: false,
+    gridLanes: false,
+    gridLanesDirection: 'normal',
+    gridLanesPack: 'normal',
+    fitTolerance: 'normal',
     gridColumns: null,
     gridRows: null,
     gridAutoRows: AUTO_TRACK,
@@ -2729,9 +2747,10 @@ export function applyDeclaration(
       // a grid container is a flex container to the box tree — its
       // children are blockified items, and it holds its floats — and its
       // own layout (`css-grid.ts`) to the engine
-      else if (v === 'grid') style.display = 'flex';
-      else if (v === 'inline-grid') style.display = 'inline-flex';
-      else if (v === 'flow-root') style.display = 'block';
+      else if (v === 'grid' || v === 'grid-lanes') style.display = 'flex';
+      else if (v === 'inline-grid' || v === 'inline-grid-lanes') {
+        style.display = 'inline-flex';
+      } else if (v === 'flow-root') style.display = 'block';
       // the legacy flexible box, a flex box until `settleClamp` has read
       // its orient, and the prefixed spelling of the modern one
       else if (v === '-webkit-box' || v === '-webkit-flex') {
@@ -2741,7 +2760,8 @@ export function applyDeclaration(
       } else if (DISPLAYS.has(v)) style.display = v as Display;
       else return;
       style.flowRoot = v === 'flow-root';
-      style.grid = v === 'grid' || v === 'inline-grid';
+      style.gridLanes = v === 'grid-lanes' || v === 'inline-grid-lanes';
+      style.grid = style.gridLanes || v === 'grid' || v === 'inline-grid';
       style.webkitBox =
         v === '-webkit-box'
           ? 'block'
@@ -5048,6 +5068,47 @@ export function applyDeclaration(
         : (flow as 'row' | 'column');
       return;
     }
+    case 'grid-lanes-direction': {
+      const direction = lanesDirection(value);
+      if (direction !== null) style.gridLanesDirection = direction;
+      return;
+    }
+    case 'grid-lanes-pack': {
+      const v = value.trim().toLowerCase();
+      if (v === 'normal' || v === 'dense') style.gridLanesPack = v;
+      return;
+    }
+    case 'fit-tolerance': {
+      const v = value.trim().toLowerCase();
+      if (v === 'normal' || v === 'infinite') {
+        style.fitTolerance = v;
+        return;
+      }
+      if (/\s/.test(v) && !/^[a-z-]*\(/.test(v)) return;
+      const len = parseLength(v, ctx);
+      if (len === null || len === AUTO) return;
+      // a length below nought is refused as written, and a calculation that
+      // comes to one is nought (CSS Values 4, 10.12)
+      if (typeof len === 'number') {
+        if (len < 0 && !/\(/.test(v)) return;
+        style.fitTolerance = Math.max(0, len);
+      } else if (!(len.pct < 0 && len.px === undefined)) {
+        style.fitTolerance = len;
+      }
+      return;
+    }
+    case 'grid-lanes': {
+      // a track list, with an area string, for the axis the direction
+      // names, and the direction, `column` where it is not given (CSS Grid
+      // 3); `none` alone sets the templates back to theirs
+      const lanes = lanesShorthand(value, ctx);
+      if (!lanes) return;
+      style.gridColumns = lanes.columns;
+      style.gridRows = lanes.rows;
+      style.gridAreas = lanes.areas;
+      style.gridLanesDirection = lanes.direction;
+      return;
+    }
     case 'grid-auto-rows':
     case 'grid-auto-columns': {
       const track = parseGridTrack(splitValue(value)[0] ?? '', ctx);
@@ -5284,7 +5345,14 @@ const DISPLAYS = new Set<string>([
 ]);
 
 /** What a box is inside, which an outer display can stand beside. */
-const INNER_DISPLAYS = new Set(['flow', 'flow-root', 'flex', 'grid', 'table']);
+const INNER_DISPLAYS = new Set([
+  'flow',
+  'flow-root',
+  'flex',
+  'grid',
+  'grid-lanes',
+  'table',
+]);
 
 /**
  * `display`'s words as the one keyword that says the same (CSS Display 3,
@@ -8139,7 +8207,23 @@ function parseGridTemplate(
   const parts = trackParts(value);
   if (!parts || !read(parts, out.tracks, out.names, true)) return undefined;
   if (!out.tracks.length && !out.repeat) return undefined;
+  // beside an auto repetition every track is a fixed size, at least or at
+  // most a length or a percentage (CSS Grid 2, 7.2's `<auto-track-list>`):
+  // `max-content repeat(auto-fill, 100px)` is no track list
+  if (out.repeat && !out.tracks.every(fixedTrack)) return undefined;
   return out;
+}
+
+/** Whether a track is a `<fixed-size>`: its least or its greatest size a
+ *  length or a percentage. */
+function fixedTrack(track: GridTrack): boolean {
+  const fixed = (len: GridTrack['min'] | GridTrack['max']): boolean =>
+    typeof len === 'number' ||
+    (typeof len === 'object' &&
+      len !== null &&
+      !('fr' in len) &&
+      !('fit' in len));
+  return fixed(track.min) || fixed(track.max);
 }
 
 /**
@@ -8180,6 +8264,102 @@ function parseSubgrid(value: string): SubgridNames | undefined {
     }
   }
   return out;
+}
+
+/**
+ * `grid-lanes-direction` (CSS Grid 3) as it serializes: `normal`, or `row`
+ * or `column` first and then `fill-reverse` and `track-reverse`, each at
+ * most once, in either order. Null for anything else.
+ */
+function lanesDirection(value: string): string | null {
+  const words = value.trim().toLowerCase().split(/\s+/);
+  if (words.length === 1 && words[0] === 'normal') return 'normal';
+  const [axis, ...rest] = words;
+  if (axis !== 'row' && axis !== 'column') return null;
+  let fill = false;
+  let track = false;
+  for (const word of rest) {
+    if (word === 'fill-reverse' && !fill) fill = true;
+    else if (word === 'track-reverse' && !track) track = true;
+    else return null;
+  }
+  return `${axis}${fill ? ' fill-reverse' : ''}${track ? ' track-reverse' : ''}`;
+}
+
+const LANE_WORDS = new Set([
+  'normal',
+  'row',
+  'column',
+  'fill-reverse',
+  'track-reverse',
+]);
+
+/**
+ * `grid-lanes` (CSS Grid 3): a track list for the lanes' axis, with an area
+ * string before it or after it whose words are the lanes', and the
+ * direction before all of it or after it, `column` where it is left out.
+ * The other axis's template, and every template where it is `none`, is
+ * none. Null for anything else.
+ */
+function lanesShorthand(
+  value: string,
+  ctx: UnitContext,
+): {
+  columns: GridTemplate | null;
+  rows: GridTemplate | null;
+  areas: GridAreas | null;
+  direction: string;
+} | null {
+  if (value.trim().toLowerCase() === 'none') {
+    return { columns: null, rows: null, areas: null, direction: 'column' };
+  }
+  const parts = trackParts(value);
+  if (!parts?.length) return null;
+  const isWord = (part: string) => LANE_WORDS.has(part.toLowerCase());
+  let lead = 0;
+  while (lead < parts.length && isWord(parts[lead])) lead += 1;
+  let tail = parts.length;
+  while (tail > lead && isWord(parts[tail - 1])) tail -= 1;
+  if (lead > 0 && tail < parts.length) return null;
+  const words = lead > 0 ? parts.slice(0, lead) : parts.slice(tail);
+  const direction = words.length ? lanesDirection(words.join(' ')) : 'column';
+  if (direction === null) return null;
+  let rest = parts.slice(lead, tail);
+  if (rest.some(isWord)) return null;
+  const quoted = (part: string) => /^["']/.test(part);
+  let area: string | null = null;
+  if (rest.length && quoted(rest[0])) {
+    area = rest[0];
+    rest = rest.slice(1);
+  } else if (rest.length && quoted(rest[rest.length - 1])) {
+    area = rest[rest.length - 1];
+    rest = rest.slice(0, -1);
+  }
+  if (rest.some(quoted)) return null;
+  // two groups of names side by side are one group written wrongly
+  for (let i = 1; i < rest.length; i += 1) {
+    if (rest[i].startsWith('[') && rest[i - 1].startsWith('[')) return null;
+  }
+  if (area !== null && !rest.length) return null;
+  const template = rest.length ? parseGridTemplate(rest.join(' '), ctx) : null;
+  if (template === undefined || template?.subgrid) return null;
+  const rows = direction.startsWith('row');
+  let areas: GridAreas | null = null;
+  if (area !== null) {
+    const cells = area.slice(1, -1).trim().split(/\s+/).filter(Boolean);
+    if (!cells.length) return null;
+    const parsed = parseAreas(
+      rows ? cells.map((cell) => `"${cell}"`) : [`"${cells.join(' ')}"`],
+    );
+    if (!parsed) return null;
+    areas = parsed;
+  }
+  return {
+    columns: rows ? null : template,
+    rows: rows ? template : null,
+    areas,
+    direction,
+  };
 }
 
 /**
@@ -9744,7 +9924,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'counter-increment': ['counterIncrement'],
   'counter-set': ['counterSet'],
   'border-spacing': ['borderSpacing', 'borderSpacingY'],
-  display: ['display', 'flowRoot', 'webkitBox', 'grid'],
+  display: ['display', 'flowRoot', 'webkitBox', 'grid', 'gridLanes'],
   width: ['width', 'widthKeyword', 'widthSize'],
   height: ['height', 'heightKeyword', 'heightSize'],
   'interpolate-size': ['interpolateSize'],
@@ -9869,6 +10049,10 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'grid-auto-columns': ['gridAutoColumns'],
   'grid-template-areas': ['gridAreas'],
   'grid-auto-flow': ['gridAutoFlow'],
+  'grid-lanes-direction': ['gridLanesDirection'],
+  'grid-lanes-pack': ['gridLanesPack'],
+  'fit-tolerance': ['fitTolerance'],
+  'grid-lanes': ['gridColumns', 'gridRows', 'gridAreas', 'gridLanesDirection'],
   'grid-template': ['gridRows', 'gridColumns', 'gridAreas'],
   grid: [
     'gridRows',

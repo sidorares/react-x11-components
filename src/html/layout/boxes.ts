@@ -809,6 +809,9 @@ export interface GridTracks {
   colLines: GridLines;
   rowLines: GridLines;
   first: Box | null;
+  /** For grid lanes, the first item placed in each lane: the container's
+   *  baseline is the highest of theirs (CSS Grid 3, 6.5). */
+  firsts?: Box[];
   /** How wide a grid with no limit on its width is at its narrowest, where
    *  that may be wider than these tracks (`layoutGrid`); else none. */
   atNarrowest: number;

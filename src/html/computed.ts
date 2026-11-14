@@ -698,8 +698,10 @@ function listStyleTypeText(type: string): string {
  *  another: a grid and a `flow-root` are kept apart from what they lay
  *  out as. */
 function display(style: ComputedStyle): string {
-  if (style.grid)
-    return style.display === 'inline-flex' ? 'inline-grid' : 'grid';
+  if (style.grid) {
+    const kind = style.gridLanes ? 'grid-lanes' : 'grid';
+    return style.display === 'inline-flex' ? `inline-${kind}` : kind;
+  }
   if (style.flowRoot) return 'flow-root';
   if (style.webkitBox === 'block') return '-webkit-box';
   if (style.webkitBox === 'inline') return '-webkit-inline-box';
@@ -1303,6 +1305,14 @@ function cssomAt(
         .join(', ')})`
     : 'auto';
   out['object-view-box'] = objectViewBoxText(style.objectViewBox, scale);
+  // grid lanes' own (CSS Grid 3): the direction as it serializes, and the
+  // tolerance a length at its computed value or a keyword
+  out['grid-lanes-direction'] = style.gridLanesDirection;
+  out['grid-lanes-pack'] = style.gridLanesPack;
+  out['fit-tolerance'] =
+    style.fitTolerance === 'normal' || style.fitTolerance === 'infinite'
+      ? style.fitTolerance
+      : len(style.fitTolerance, scale);
   const widths = [
     style.borderTopWidth,
     style.borderRightWidth,

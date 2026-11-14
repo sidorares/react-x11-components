@@ -80,7 +80,7 @@ import type { GridLines } from './grid-lines.js';
 import { sizeTracks } from './tracks.js';
 import type { SizingTrack, TrackItem, TrackMax, TrackMin } from './tracks.js';
 
-interface Item {
+export interface Item {
   box: Box;
   col: number;
   cols: number;
@@ -107,7 +107,7 @@ interface Item {
  * start of the first row that holds an item, which the grid's baseline is
  * taken from (CSS Grid 1, 10.6).
  */
-function firstItem(items: Item[]): Box | null {
+export function firstItem(items: Item[]): Box | null {
   let first: Item | null = null;
   for (const item of items) {
     if (
@@ -1091,10 +1091,14 @@ function fromParent(
 /** An axis's explicit tracks and the names of their lines, a `repeat()`
  *  of what fits counted out against its size where it has one, and once
  *  where it has none (CSS Grid 1, 7.2.3.2). */
-function trackList(
+export function trackList(
   template: GridTemplate | null,
   width: number,
   gap: number,
+  /** How many times an auto repetition repeats, where something else has
+   *  worked it out: grid lanes, whose repetitions may be sized by their
+   *  content (CSS Grid 3, 3.1.1). */
+  repetitions?: number,
 ): {
   tracks: GridTrack[];
   names: string[][];
@@ -1115,8 +1119,8 @@ function trackList(
     lengthOf(track.max, base) ?? lengthOf(track.min, base) ?? 0;
   const others = outer.reduce((sum, t) => sum + fixed(t), 0);
   const each = unit.reduce((sum, t) => sum + fixed(t), 0);
-  let count = 1;
-  if (Number.isFinite(width) && each > 0) {
+  let count = repetitions ?? 1;
+  if (repetitions === undefined && Number.isFinite(width) && each > 0) {
     const room = width - others - gap * outer.length;
     count = Math.max(1, Math.floor((room + gap) / (each + gap * unit.length)));
   }
@@ -1309,7 +1313,7 @@ function lengthOf(
 
 /** The size of the tracks from one to `count` after it, the gaps and the
  *  space distributed between them included. */
-function extent(
+export function extent(
   sizes: number[],
   at: number[],
   from: number,
@@ -1380,12 +1384,15 @@ function minContentOf(box: Box, ctx: LayoutContext): number {
  * tenths of its column, and one `min-width: 50%` aligned to the start was
  * as wide as its text.
  */
-function layoutItem(
+export function layoutItem(
   item: Item,
   area: number,
   ctx: LayoutContext,
   /** The height of the rows it spans, where they have one yet. */
   rows: number,
+  /** Whether it is sized to its content in the area, whatever aligns it:
+   *  grid lanes' items along the stacking axis (`grid-lanes.ts`). */
+  fit = false,
 ): void {
   const child = item.box;
   const style = child.style;
@@ -1436,13 +1443,15 @@ function layoutItem(
   // element, which it sizes as a block's is: a box with a ratio is as wide
   // as a block would be where it has no height yet (CSS Grid 1, 6.2)
   const across =
+    !fit &&
     (justify === 'stretch' ||
       (justify === 'normal' && child.kind !== 'replaced')) &&
     !autoMargins(child, 'x').some(Boolean);
   // a height it has already, through a ratio: its width, whatever its
   // content says, where `stretch` does not fill its area (CSS Sizing 4,
   // 5.1)
-  const fills = justify === 'stretch' && !autoMargins(child, 'x').some(Boolean);
+  const fills =
+    !fit && justify === 'stretch' && !autoMargins(child, 'x').some(Boolean);
   const through =
     style.width === AUTO && !fills && tall !== null
       ? widthThroughRatio(child, tall)
@@ -1541,7 +1550,7 @@ function widthTakesRows(item: Item): boolean {
 /** Lay an item out at a width: a table stretched across its area at that
  *  width as its own (`STRETCHED_ACROSS`), for this layout alone — or keep
  *  the layout an earlier one gave it there (`keptItem`). */
-function layoutAcross(
+export function layoutAcross(
   item: Item,
   width: number,
   area: number,
@@ -1754,7 +1763,7 @@ function keptTracks(
 }
 
 /** Where each track that stays is among those that do. */
-function indexOfKept(keep: boolean[] | null): number[] | null {
+export function indexOfKept(keep: boolean[] | null): number[] | null {
   if (!keep) return null;
   const at: number[] = [];
   let n = 0;
@@ -1767,7 +1776,7 @@ function indexOfKept(keep: boolean[] | null): number[] | null {
 
 /** Each track's start and end, the collapsed ones back among the others
  *  as nothing, at the end of the one before. */
-function tracksOf(
+export function tracksOf(
   sizes: number[],
   at: number[],
   keep: boolean[] | null,
@@ -1789,7 +1798,7 @@ function tracksOf(
 /** A track's sizing functions, its lengths resolved against the size of the
  *  axis: a percentage of a size the tracks are still finding is `auto`
  *  (CSS Grid 1, 7.2.1), and `fit-content()` of one its content's widest. */
-function sizing(track: GridTrack, base: number): SizingTrack {
+export function sizing(track: GridTrack, base: number): SizingTrack {
   const length = (len: Len): number | null =>
     typeof len === 'number'
       ? Math.max(0, len)
@@ -1817,7 +1826,7 @@ function sizing(track: GridTrack, base: number): SizingTrack {
  * "minimum contribution"): its narrowest where it has a width of its own,
  * and its own least width where it has one of those.
  */
-function leastWidth(
+export function leastWidth(
   item: Item,
   tracks: SizingTrack[],
   gap: number,
@@ -1892,7 +1901,11 @@ function automaticMinimum(
 /** What an item makes of the rows it is in: its height at its area's
  *  width, whichever the constraint, and the least it can be, as a
  *  column's. */
-function rowItem(item: Item, tracks: SizingTrack[], gap: number): TrackItem {
+export function rowItem(
+  item: Item,
+  tracks: SizingTrack[],
+  gap: number,
+): TrackItem {
   const box = item.box;
   const margins = box.marginTop + box.marginBottom + item.before + item.after;
   const height = () => (Number.isNaN(item.height) ? box.height : item.height);
@@ -1929,7 +1942,7 @@ function rowItem(item: Item, tracks: SizingTrack[], gap: number): TrackItem {
 /** A grid's least content width, which with no limit on its width its `auto`
  *  tracks stretch to as they do to a width it has, and not at its narrowest,
  *  where they are as narrow as they come. */
-function leastWidthInside(box: Box): number {
+export function leastWidthInside(box: Box): number {
   const { minWidth, boxSizing } = box.style;
   if (typeof minWidth !== 'number') return 0;
   const edges = boxSizing === 'border-box' ? box.horizontalExtra : 0;
@@ -1938,7 +1951,7 @@ function leastWidthInside(box: Box): number {
 
 /** A grid's least content height where it has no height of its own: its
  *  `min-height`, a length or a percentage of a height. */
-function leastHeight(box: Box): number {
+export function leastHeight(box: Box): number {
   const style = box.style;
   if (style.minHeight === AUTO) return 0;
   const px = resolveOrNull(style.minHeight, box.percentHeightBase);
@@ -1957,7 +1970,7 @@ function leastHeight(box: Box): number {
  * overflow the start as well, where the tracks are larger than the room;
  * the distributions fall back to the start.
  */
-function starts(
+export function starts(
   sizes: number[],
   gap: number,
   distribution: string,
@@ -1996,7 +2009,7 @@ function starts(
 }
 
 /** Which of an item's margins on an axis are `auto`, start and end. */
-function autoMargins(box: Box, axis: 'x' | 'y'): [boolean, boolean] {
+export function autoMargins(box: Box, axis: 'x' | 'y'): [boolean, boolean] {
   const style = box.style;
   return axis === 'x'
     ? [style.marginLeft === AUTO, style.marginRight === AUTO]
@@ -2004,7 +2017,7 @@ function autoMargins(box: Box, axis: 'x' | 'y'): [boolean, boolean] {
 }
 
 /** Whether a track's least or greatest size is a percentage. */
-function percentTrack(track: GridTrack): boolean {
+export function percentTrack(track: GridTrack): boolean {
   const { min, max } = track;
   if (typeof min === 'object' && isPct(min)) return true;
   if (typeof max !== 'object' || max === null) return false;
