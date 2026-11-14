@@ -293,7 +293,6 @@ export function installDom(
    *  sets one on each element, and no list reads that attribute. */
   const KEEPS_LISTS = new Set([
     'info',
-    'longhands',
     'opaqueSrcdoc',
     'editingStyle',
     'colorText',
@@ -2791,16 +2790,6 @@ export function installDom(
             ? Array.from(v as Iterable<Any>)
             : v;
       }
-      // a composite is an enum, converted as it is read: what is none of
-      // its values is a TypeError there, before the easing is read
-      if (key === 'composite' && members.composite !== undefined) {
-        const list = Array.isArray(members.composite)
-          ? members.composite
-          : [members.composite];
-        members.composite = Array.isArray(members.composite)
-          ? list.map(keyframeComposite)
-          : keyframeComposite(members.composite);
-      }
     }
     const names = Object.keys(obj)
       .filter((name) => animatableProperty(name) !== null)
@@ -2818,17 +2807,6 @@ export function installDom(
       } else values[name] = String(v);
     }
     return { members, values };
-  };
-
-  /** A keyframe's `composite`, as its IDL enum takes it. */
-  const keyframeComposite = (given: Any): string => {
-    const v = String(given);
-    if (v === 'replace' || v === 'add' || v === 'accumulate' || v === 'auto') {
-      return v;
-    }
-    throw new TypeError(
-      `Failed to read the 'composite' property from 'BaseKeyframe': The provided value '${v}' is not a valid enum value of type CompositeOperationOrAuto.`,
-    );
   };
 
   const keyframesOf = (given: Any): Any[] => {
@@ -2884,10 +2862,7 @@ export function installDom(
       const composites = listOf(given.composite);
       frames.forEach((frame, i) => {
         if (easings.length) frame.easing = easings[i % easings.length];
-        // a list shorter than the frames is repeated, as the easings are
-        if (composites.length) {
-          frame.composite = composites[i % composites.length];
-        }
+        if (i < composites.length) frame.composite = composites[i];
       });
     }
     // a property's value is a string, whatever it was given as
@@ -2898,11 +2873,6 @@ export function installDom(
           frame[name] = String(value);
         }
       }
-    }
-    // and an easing is read once every frame is, so a bad one throws after
-    // all of a page's getters have been called
-    for (const frame of frames) {
-      if (frame.easing !== undefined) frame.easing = easingOf(frame.easing).css;
     }
     let last = -Infinity;
     for (const { offset } of frames) {
@@ -3339,34 +3309,6 @@ export function installDom(
     });
   };
 
-  /** The pseudo-elements an effect can name, and the functional ones by
-   *  their name before the parenthesis. */
-  const PSEUDO_ELEMENTS =
-    /^::(?:before|after|marker|backdrop|placeholder|selection|first-line|first-letter|file-selector-button|target-text|spelling-error|grammar-error|details-content|checkmark|picker-icon|column|scroll-marker|scroll-marker-group|view-transition|(?:view-transition-(?:group|image-pair|old|new|group-children)|part|highlight|picker|scroll-button|slotted)\([^()]*\))$/;
-  /**
-   * A pseudo-element selector as an effect or `getAnimations()` takes it
-   * (Web Animations 1, 6.6 and 6.7): CSS 2's single-colon four as their
-   * double-colon selves, and a SyntaxError for what selects no
-   * pseudo-element.
-   */
-  const pseudoSelector = (given: Any): string => {
-    const v = String(given);
-    const legacy = /^:(before|after|first-line|first-letter)$/i.exec(v);
-    if (legacy) return `::${legacy[1].toLowerCase()}`;
-    // a functional one's argument trimmed, and closed where the selector
-    // ends first, as a selector is parsed: `::view-transition-group( a`
-    const named = v
-      .replace(/^::[a-z-]+/i, (m) => m.toLowerCase())
-      .replace(/^(::[a-z-]+)\(\s*([^()]*?)\s*\)?$/, '$1($2)');
-    if (!PSEUDO_ELEMENTS.test(named)) {
-      throw new DOMException(
-        `'${v}' is not a valid pseudo-element selector.`,
-        'SyntaxError',
-      );
-    }
-    return named;
-  };
-
   class KeyframeEffect extends AnimationEffect {
     _target: Any;
     _pseudo: string | null;
@@ -3411,7 +3353,7 @@ export function installDom(
       this._target = target ?? null;
       this._pseudo =
         options && typeof options === 'object' && options.pseudoElement
-          ? pseudoSelector(options.pseudoElement)
+          ? String(options.pseudoElement)
           : null;
       this._frames = keyframesOf(keyframes);
       this._timing = timingOf(options);
@@ -3457,7 +3399,7 @@ export function installDom(
       return this._pseudo;
     }
     set pseudoElement(pseudo: Any) {
-      this._pseudo = pseudo === null ? null : pseudoSelector(pseudo);
+      this._pseudo = pseudo === null ? null : String(pseudo);
       this._framesJson = null;
       this._animation?._changed();
     }
@@ -3502,7 +3444,6 @@ export function installDom(
       this._frames = keyframesOf(keyframes);
       this._framesJson = null;
       this._animation?._changed();
-      removeReplacedSoon();
     }
     /** The CSS properties its frames set, by their CSS names. */
     _properties(): string[] {
@@ -3512,20 +3453,6 @@ export function installDom(
           const prop = keyframeProperty(name);
           if (prop) out.add(prop);
         }
-      }
-      return [...out];
-    }
-    /** What its frames set as the style's fields, a shorthand's its
-     *  longhands', which is what replacing it is about (5.5); a custom
-     *  property is its name. */
-    _fields(): string[] {
-      const out = new Set<string>();
-      for (const prop of this._properties()) {
-        const fields = prop.startsWith('--')
-          ? ''
-          : str(call('longhands', prop));
-        if (fields) for (const f of fields.split(',')) out.add(f);
-        else out.add(prop);
       }
       return [...out];
     }
@@ -4427,7 +4354,6 @@ export function installDom(
     // — asked at every frame, since a document says it owes them from
     // inside the pass that made them, and the frame that comes first takes
     // them (`__cssOwed` only brings a frame where none is coming)
-    removeReplaced();
     cssOwed = false;
     try {
       dispatchCssEvents(call('cssEvents'));
@@ -4516,52 +4442,6 @@ export function installDom(
    *  `getAnimations` lists, those that are relevant (Web Animations 1,
    *  5.4.4). */
   const liveAnimations = new Set<Any>();
-  /**
-   * Web Animations 1, 5.5, "remove replaced animations": each finished,
-   * filling animation of an element whose every property a later one of
-   * the element's in composite order sets as well is removed, and told so.
-   * Run where the procedure would be, in a microtask after what made one
-   * replaceable (`removeReplacedSoon`) and at each frame.
-   */
-  const removeReplaced = (): void => {
-    const groups = new Map<Any, Map<string | null, Any[]>>();
-    for (const a of liveAnimations) {
-      if (!a._replaceable?.()) continue;
-      const target = a._effect.target;
-      let byPseudo = groups.get(target);
-      if (!byPseudo) groups.set(target, (byPseudo = new Map()));
-      const pseudo = a._effect.pseudoElement ?? null;
-      let list = byPseudo.get(pseudo);
-      if (!list) byPseudo.set(pseudo, (list = []));
-      list.push(a);
-    }
-    for (const byPseudo of groups.values()) {
-      for (const list of byPseudo.values()) {
-        if (list.length < 2) continue;
-        list.sort((x, y) => y._hostId - x._hostId);
-        const covered = new Set<string>();
-        list.forEach((a, i) => {
-          const props: string[] = a._effect._fields();
-          if (i > 0 && props.every((p) => covered.has(p))) {
-            a.replaceState = 'removed';
-            liveAnimations.delete(a);
-            a._report();
-            a._tell('remove', a._out(a._cur()));
-          }
-          for (const p of props) covered.add(p);
-        });
-      }
-    }
-  };
-  let replacedOwed = false;
-  const removeReplacedSoon = (): void => {
-    if (replacedOwed) return;
-    replacedOwed = true;
-    queueMicrotask(() => {
-      replacedOwed = false;
-      removeReplaced();
-    });
-  };
 
   /** A promise with its settling kept beside it. */
   const settleable = (): Any => {
@@ -4691,8 +4571,6 @@ export function installDom(
     /** A time as the page reads it: a percentage on a progress-based
      *  timeline. */
     _out(v: number | null): Any {
-      // no time is -0, which a reversed animation's arithmetic comes to
-      if (v !== null) v += 0;
       return v === null ? null : this._finite() ? percentOf(v) : v;
     }
     /** A time a page sets, as the model computes with it (Web Animations
@@ -4721,8 +4599,6 @@ export function installDom(
         return pct.value;
       }
       if (v instanceof CSSNumericValue) {
-        // a number is milliseconds, as a double is
-        if (v instanceof CSSUnitValue && v.unit === 'number') return v.value;
         let ms: Any;
         try {
           ms = v.to('ms');
@@ -4761,7 +4637,6 @@ export function installDom(
       if (effect) effect._animation = this;
       this._updateFinished(false, false);
       this._changed();
-      removeReplacedSoon();
     }
     get timeline(): Any {
       return this._timeline;
@@ -5337,12 +5212,10 @@ export function installDom(
     _notifyFinished(): void {
       if (this.playState !== 'finished' || this._finishedDone) return;
       this._finishedDone = true;
-      // what it replaces goes before a page that awaits it hears it has
-      // finished, and not while the call that finished it runs
-      removeReplacedSoon();
       const settle = this._finishedSettle;
       settle?.resolve(this);
       this._tell('finish', this._out(this._cur()));
+      this._replaceOlder();
     }
 
     // -- what it tells the host, and when it looks again
@@ -5467,6 +5340,43 @@ export function installDom(
       this._toldTo = target;
       this._told = told;
       call('animation', target._id, this._hostId, described, play);
+    }
+    /**
+     * The finished animations of its target that fill and that this one
+     * and the others finished after them cover every property of, removed
+     * (Web Animations 1, 5.5, "removing replaced animations"): a page that
+     * fades a panel in and out with `fill: forwards`, a new animation each
+     * time, would otherwise keep every one of them on the element, each
+     * sampled at every restyle.
+     */
+    _replaceOlder(): void {
+      const target = this._effect?.target;
+      if (!target || !this._replaceable()) return;
+      const pseudo = this._effect.pseudoElement;
+      const later: Any[] = [];
+      const mine = [...liveAnimations]
+        .filter(
+          (a) =>
+            a._effect?.target === target &&
+            a._effect.pseudoElement === pseudo &&
+            a._replaceable(),
+        )
+        .sort((a, b) => b._hostId - a._hostId);
+      for (const a of mine) {
+        const covered = new Set<string>();
+        for (const b of later) {
+          for (const p of b._effect._properties()) covered.add(p);
+        }
+        const props = a._effect._properties();
+        later.push(a);
+        if (a === mine[0] || !props.every((p: string) => covered.has(p))) {
+          continue;
+        }
+        a.replaceState = 'removed';
+        liveAnimations.delete(a);
+        a._report();
+        a._tell('remove', a._out(a._cur()));
+      }
     }
     /** Whether it may be replaced by later ones: finished, filling, not
      *  persisted, and of an element (Web Animations 1, 5.5). */
@@ -7434,13 +7344,6 @@ export function installDom(
     override get nodeName(): string {
       return '#document-fragment';
     }
-    /** The animations of what is in the tree (DocumentOrShadowRoot). */
-    getAnimations(): Any[] {
-      return animationsOf(document, true).filter((a) => {
-        const on = a.effect?.target;
-        return !!on?.isConnected && on.getRootNode() === this;
-      });
-    }
     get pointerLockElement(): Any {
       return null;
     }
@@ -8880,19 +8783,8 @@ export function installDom(
       animation.play();
       return animation;
     }
-    /** Its animations (Web Animations 1, 6.7): the element's own, or a
-     *  pseudo-element's where `pseudoElement` names one, and with `subtree`
-     *  its pseudo-elements' and its descendants'. */
     getAnimations(options?: Any): Any[] {
-      const subtree = !!options?.subtree;
-      const given = options?.pseudoElement;
-      const pseudo =
-        given === undefined || given === null ? null : pseudoSelector(given);
-      return animationsOf(this, subtree || pseudo !== null).filter((a) => {
-        const of = a.effect?.pseudoElement ?? null;
-        if (pseudo !== null) return a.effect?.target === this && of === pseudo;
-        return subtree || of === null;
-      });
+      return animationsOf(this, !!options?.subtree);
     }
     /** A view transition of what the element holds (CSS View Transitions
      *  2, 2.2): the document's, where it is the root element. */
@@ -20859,13 +20751,8 @@ export function installDom(
       }
       return found;
     }
-    /** The animations of what is in it, and not of what is in a frame, in a
-     *  shadow tree or in no document (Web Animations 1, 6.8). */
     getAnimations(): Any[] {
-      return animationsOf(document, true).filter((a) => {
-        const on = a.effect?.target;
-        return !!on?.isConnected && on.getRootNode() === this;
-      });
+      return animationsOf(this, true);
     }
     startViewTransition(...args: Any[]): Any {
       if (!(this instanceof Document)) {
@@ -32918,14 +32805,7 @@ export function installDom(
   ): DeclarationBlock => ({
     value,
     priority: () => '',
-    // `setProperty` and `removeProperty` of a computed style throw, as its
-    // `cssText` does (CSSOM 6.7, the readonly flag)
-    set: () => {
-      throw new DOMException(
-        'These styles are computed, and therefore read-only.',
-        'NoModificationAllowedError',
-      );
-    },
+    set: () => {},
     names,
     text: () => '',
     setText: () => {
@@ -33172,14 +33052,7 @@ export function installDom(
         if (/^\d+$/.test(key)) return items()[Number(key)];
         readProperty(key);
         const name = computedName(key);
-        // a property a style has reads '' where nothing answers for it, as
-        // it does of an element in no document, and never undefined
-        return animated(
-          name,
-          values[name] ??
-            shorthand(key) ??
-            (isStyleProperty(key) ? '' : undefined),
-        );
+        return animated(name, values[name] ?? shorthand(key));
       },
       read,
       () => {

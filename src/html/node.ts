@@ -243,6 +243,7 @@ import {
   GENERATED_FROM,
   COLUMN_BOXES,
   GENERATED_ON,
+  GRID_TRACKS,
   generatedStyle,
   INLINE_OFFSETS,
   LINE_BOX_RAISES,
@@ -6663,10 +6664,7 @@ export class HtmlViewNode extends Node {
         return;
       }
     }
-    // and an element no script animates any more is styled again now: a
-    // frame would restyle it, and a page that reads it before then reads
-    // what no animation gives it (`_timedNow` asks the scripts)
-    if (!this._animating() || !this._scripts.has(element)) {
+    if (!this._animating()) {
       this._invalidate(Stale.Boxes, new Set([element]), true);
       return;
     }
@@ -8797,6 +8795,9 @@ export class HtmlViewNode extends Node {
       insets: resolvedInsets(box, this._laidOutWidth, this._viewportHeight()),
       inline: box.kind === 'inline',
       replaced: box.replaced !== 'none',
+      // a grid's tracks as its layout left them, which its templates read
+      // as (CSS Grid 1, 7.2.6)
+      grid: box.style.grid ? GRID_TRACKS.get(box) : undefined,
     };
     // a box laid out in a vertical flow's frame has the frame's sides,
     // which are drawn at the page's others (`layout/writing.ts`)

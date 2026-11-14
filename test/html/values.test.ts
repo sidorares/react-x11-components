@@ -3559,9 +3559,12 @@ test('what a computed style reads from a box says so, by name and in camel case'
     '<div id="a" style="position: absolute; top: 1px; left: 1px; ' +
       'border: 1px solid; transform: translateX(10%)"></div>' +
       '<div id="b" style="position: relative; top: 1px; border: 1px solid; ' +
-      'transform: translateX(10%); writing-mode: vertical-rl; direction: rtl"></div>',
+      'transform: translateX(10%); writing-mode: vertical-rl; direction: rtl"></div>' +
+      // a grid, whose track lists are its tracks as laid out
+      '<div id="c" style="display: grid"></div>',
   );
   const el = view(node);
+  const lines = { tracks: 1, named: new Map(), names: [[], []], areas: [] };
   const box = (at: number): Parameters<typeof cssomStyle>[2] => ({
     width: 100 + at,
     height: 200 + at,
@@ -3570,16 +3573,30 @@ test('what a computed style reads from a box says so, by name and in camel case'
     border: [5 + at, 5 + at, 5 + at, 5 + at],
     padding: [9 + at, 10 + at, 11 + at, 12 + at],
     insets: [13 + at, 14 + at, 15 + at, 16 + at],
+    grid: {
+      cols: [[0, 100 + at]],
+      rows: [[0, 200 + at]],
+      colLines: lines,
+      rowLines: lines,
+      first: null,
+      atNarrowest: 0,
+      lanes: { cols: [], rows: [], areas: [], items: [] },
+    },
   });
-  for (const id of ['a', 'b']) {
+  // what any of them reads from its box
+  const names = new Set<string>(SHORTHAND_NAMES);
+  const moved = new Set<string>();
+  for (const id of ['a', 'b', 'c']) {
     const { style } = boxOf(el, id) as unknown as { style: ComputedStyle };
     const one = cssomStyle(style, 1, box(0));
     const other = cssomStyle(style, 1, box(30));
-    const names = [...Object.keys(one), ...SHORTHAND_NAMES];
-    const moved = names.filter((name) => one[name] !== other[name]);
-    for (const name of names) {
-      assert.strictEqual(comesFromBox(name), moved.includes(name), name);
+    for (const name of [...Object.keys(one), ...SHORTHAND_NAMES]) {
+      names.add(name);
+      if (one[name] !== other[name]) moved.add(name);
     }
+  }
+  for (const name of names) {
+    assert.strictEqual(comesFromBox(name), moved.has(name), name);
   }
   assert.ok(comesFromBox('marginInlineEnd'));
   assert.ok(comesFromBox('insetBlockStart'));

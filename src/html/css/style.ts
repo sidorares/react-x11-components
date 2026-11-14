@@ -178,6 +178,22 @@ export interface GridTrack {
   max: Len | 'min-content' | 'max-content' | { fr: number } | { fit: Len };
 }
 
+/** A track as it was written, which `getComputedStyle` reads it as
+ *  (`computed.ts`): a size alone, `minmax()` or `fit-content()`, since
+ *  `1fr` and `minmax(auto, 1fr)` come to one track. */
+export interface WrittenTrack {
+  track: GridTrack;
+  form: 'size' | 'minmax' | 'fit';
+}
+
+/** A track list's parts as written: groups of line names, tracks, and
+ *  `repeat()`s of them, which the computed value keeps (CSS Grid 1, 7.2.6:
+ *  an element that is no grid container reads it so). */
+export type WrittenPart =
+  | { names: string[] }
+  | WrittenTrack
+  | { repeat: number | 'auto-fill' | 'auto-fit'; parts: WrittenPart[] };
+
 /** `grid-template-columns` or `-rows`: its tracks and the names of the
  *  lines between them — `names[i]` the line's before track `i`, and the
  *  last the line's after the last track — and a `repeat()` whose count the
@@ -200,6 +216,8 @@ export interface GridTemplate {
    *  groups that repeats, and the ones after it, which the span the box
    *  has counts out (`subgridNames` in `layout/css-grid.ts`). */
   subgrid?: SubgridNames;
+  /** Its parts as written, for `getComputedStyle`. */
+  written?: WrittenPart[];
 }
 
 /** A subgrid's `<line-name-list>`, a group of names a line. */
@@ -826,19 +844,10 @@ export interface ComputedStyle {
   tabSize: number;
   tabSizeIsLength: boolean;
   whiteSpace: 'normal' | 'nowrap' | 'pre' | 'pre-wrap' | 'pre-line';
-  /** `white-space-collapse: break-spaces` (CSS Text 4, 3.1), which
-   *  `white-space: break-spaces` is with wrapping: the spaces it keeps take
-   *  room at a line's end, where `pre-wrap`'s hang, and a line may break
-   *  after each of them. `whiteSpace` says `pre-wrap` for it, or `pre`
-   *  where the lines do not wrap, so all that holds of kept spaces holds of
-   *  these (`layoutBreakSpaces`). Inherited. */
-  breakSpaces: boolean;
   /** Whether a word too long for its line may be cut inside itself
    *  (`overflow-wrap`, CSS Text 3, 5.5): `normal` lets it run past the
    *  line's end, as a browser does, and `anywhere` is `break-word`. */
-  /** `anywhere` breaks as `break-word` does here, and is kept for a page
-   *  to read. */
-  overflowWrap: 'normal' | 'break-word' | 'anywhere';
+  overflowWrap: 'normal' | 'break-word';
   /** `word-break` (CSS Text 3, 5.2): `break-all` and `break-word` cut a
    *  word too long for its line whatever `overflow-wrap` says, which is
    *  as near as the engines come to breaking between any two letters.
@@ -1105,9 +1114,6 @@ export interface ComputedStyle {
   /** A form control's own look (`auto`), or `none`: the page draws it,
    *  with its own background, borders and padding (`ControlFace`). */
   appearance: 'auto' | 'none';
-  /** The keyword `appearance` was given, for a page to read: every one but
-   *  `none` is `auto` to what draws it. */
-  appearanceText: string;
   /** Whether the page styled a form control's box: set a background or a
    *  border property on it, whatever to, or `appearance: none`. Its look
    *  is the page's then and not the palette's (`Cascade`'s
@@ -1135,9 +1141,6 @@ export interface ComputedStyle {
   /** `scrollbar-color`'s thumb colour, null for `auto` (CSS Scrollbars 1,
    *  2): the track is an overlay bar's, which draws none. Inherited. */
   scrollbarThumbColor: string | null;
-  /** `scrollbar-color`'s track, which an overlay bar draws none of and a
-   *  page reads. */
-  scrollbarTrackColor: string | null;
   /** `caret-color`, null for `auto`, the text's own colour (CSS UI 4,
    *  6.2.1): what an editing host's caret is drawn in. Inherited, and as a
    *  keyword where it is `currentColor`, worked out against each element's
@@ -1432,9 +1435,6 @@ export interface ComputedStyle {
    *  pan: `'xy'` for `auto`, `''` for `none`. Its zooms are nothing here,
    *  so `manipulation` is `'xy'` and `pinch-zoom` alone is `''`. */
   touchAction: '' | 'x' | 'y' | 'xy';
-  /** `touch-action` as a page reads it: which way is which is all
-   *  `touchAction` keeps. */
-  touchActionText: string;
   /** `scroll-initial-target` (CSS Scroll Snap 2, 3.1): whether the box is
    *  what its nearest scroll container is first scrolled to. */
   scrollInitialTarget: 'none' | 'nearest';
@@ -1630,6 +1630,10 @@ export interface ComputedStyle {
   gridColumns: GridTemplate | null;
   gridRows: GridTemplate | null;
   gridAutoRows: GridTrack;
+  /** `grid-auto-rows` and `grid-auto-columns` as written, every track of
+   *  the list, where layout takes the first: null for `auto`. */
+  gridAutoRowsWritten: WrittenTrack[] | null;
+  gridAutoColumnsWritten: WrittenTrack[] | null;
   /** `grid-auto-columns`: a column the placement makes past the template. */
   gridAutoColumns: GridTrack;
   /** `grid-template-areas`, which also names the lines at their edges. */
@@ -1675,7 +1679,6 @@ export const INHERITED = [
   'colorSource',
   'interpolateSize',
   'scrollbarThumbColor',
-  'scrollbarTrackColor',
   'caretColor',
   'colorScheme',
   'colorSchemeKeywords',
@@ -1714,7 +1717,6 @@ export const INHERITED = [
   'orphans',
   'widows',
   'whiteSpace',
-  'breakSpaces',
   'overflowWrap',
   'wordBreak',
   'lineBreakAnywhere',
@@ -1883,7 +1885,6 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     tabSize: 8,
     tabSizeIsLength: false,
     whiteSpace: 'normal',
-    breakSpaces: false,
     overflowWrap: 'normal',
     wordBreak: 'normal',
     lineBreakAnywhere: false,
@@ -1981,7 +1982,6 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     objectFit: 'fill',
     objectViewBox: null,
     appearance: 'auto',
-    appearanceText: 'auto',
     styledControl: false,
     itemsThrough: false,
     overlay: 'none',
@@ -1991,7 +1991,6 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     overflowY: 'visible',
     scrollbarWidth: 'auto',
     scrollbarThumbColor: null,
-    scrollbarTrackColor: null,
     caretColor: null,
     clip: null,
     clipPath: null,
@@ -2114,7 +2113,6 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     scrollSnapAlign: NO_SNAP_ALIGN,
     scrollSnapStop: 'normal',
     touchAction: 'xy',
-    touchActionText: 'auto',
     scrollInitialTarget: 'none',
     scrollPaddingTop: AUTO,
     scrollPaddingRight: AUTO,
@@ -2189,7 +2187,9 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     gridColumns: null,
     gridRows: null,
     gridAutoRows: AUTO_TRACK,
+    gridAutoRowsWritten: null,
     gridAutoColumns: AUTO_TRACK,
+    gridAutoColumnsWritten: null,
     gridAreas: null,
     gridAutoFlow: 'row',
     gridColumnStart: null,
@@ -2260,7 +2260,6 @@ export function inherit(
   out.colorSource = parent.colorSource;
   out.interpolateSize = parent.interpolateSize;
   out.scrollbarThumbColor = parent.scrollbarThumbColor;
-  out.scrollbarTrackColor = parent.scrollbarTrackColor;
   out.caretColor = parent.caretColor;
   out.colorScheme = parent.colorScheme;
   out.colorSchemeKeywords = parent.colorSchemeKeywords;
@@ -2298,7 +2297,6 @@ export function inherit(
   out.orphans = parent.orphans;
   out.widows = parent.widows;
   out.whiteSpace = parent.whiteSpace;
-  out.breakSpaces = parent.breakSpaces;
   out.overflowWrap = parent.overflowWrap;
   out.wordBreak = parent.wordBreak;
   out.lineBreakAnywhere = parent.lineBreakAnywhere;
@@ -3025,10 +3023,8 @@ export function applyDeclaration(
       // every keyword but `none` is some control's own look, which is the
       // only other thing this engine has
       const v = value.trim().toLowerCase();
-      if (/^[a-z-]+$/.test(v)) {
+      if (/^[a-z-]+$/.test(v))
         style.appearance = v === 'none' ? 'none' : 'auto';
-        style.appearanceText = v;
-      }
       return;
     }
     case 'contain': {
@@ -3229,17 +3225,14 @@ export function applyDeclaration(
     case 'scrollbar-color': {
       if (value.trim().toLowerCase() === 'auto') {
         style.scrollbarThumbColor = null;
-        style.scrollbarTrackColor = null;
         return;
       }
       // a thumb and a track: an overlay bar draws no track
       const parts = splitValue(value);
       if (parts.length !== 2) return;
       const thumb = parseColor(parts[0]);
-      const track = parseColor(parts[1]);
-      if (thumb === null || track === null) return;
+      if (thumb === null || parseColor(parts[1]) === null) return;
       style.scrollbarThumbColor = thumb;
-      style.scrollbarTrackColor = track;
       return;
     }
     case 'caret-color': {
@@ -3289,10 +3282,7 @@ export function applyDeclaration(
     }
     case 'touch-action': {
       const t = parseTouchAction(value);
-      if (t !== null) {
-        style.touchAction = t;
-        style.touchActionText = touchActionText(value);
-      }
+      if (t !== null) style.touchAction = t;
       return;
     }
     case 'scroll-initial-target': {
@@ -4570,12 +4560,10 @@ export function applyDeclaration(
         v === 'pre-line'
       ) {
         style.whiteSpace = v;
-        style.breakSpaces = false;
       } else if (v === 'break-spaces') {
         // `pre-wrap` whose spaces take room at a line's end rather than
-        // hanging past it (`breakSpaces`)
+        // hanging past it, which is as near as the engines come
         style.whiteSpace = 'pre-wrap';
-        style.breakSpaces = true;
       }
       return;
     }
@@ -4585,7 +4573,9 @@ export function applyDeclaration(
     case 'word-wrap': {
       const v = value.trim().toLowerCase();
       if (v === 'normal') style.overflowWrap = 'normal';
-      else if (v === 'break-word' || v === 'anywhere') style.overflowWrap = v;
+      else if (v === 'break-word' || v === 'anywhere') {
+        style.overflowWrap = 'break-word';
+      }
       return;
     }
     case 'line-break': {
@@ -4628,7 +4618,6 @@ export function applyDeclaration(
               : null;
       if (collapse) {
         style.whiteSpace = whiteSpaceOf(collapse, wrapsIn(style.whiteSpace));
-        style.breakSpaces = v === 'break-spaces';
       }
       return;
     }
@@ -5146,10 +5135,27 @@ export function applyDeclaration(
     }
     case 'grid-auto-rows':
     case 'grid-auto-columns': {
-      const track = parseGridTrack(splitValue(value)[0] ?? '', ctx);
-      if (!track) return;
-      if (name === 'grid-auto-rows') style.gridAutoRows = track;
-      else style.gridAutoColumns = track;
+      // a list of track sizes, which the implicit tracks take in turn; the
+      // layout takes the first, and the computed value all of them
+      const parts = splitValue(value);
+      const written: WrittenTrack[] = [];
+      for (const part of parts) {
+        const track = parseGridTrack(part, ctx);
+        if (!track) return;
+        written.push({ track, form: trackForm(part) });
+      }
+      if (!written.length) return;
+      const kept =
+        written.length === 1 && written[0].track === AUTO_TRACK
+          ? null
+          : written;
+      if (name === 'grid-auto-rows') {
+        style.gridAutoRows = written[0].track;
+        style.gridAutoRowsWritten = kept;
+      } else {
+        style.gridAutoColumns = written[0].track;
+        style.gridAutoColumnsWritten = kept;
+      }
       return;
     }
     case 'grid-template': {
@@ -5173,11 +5179,20 @@ export function applyDeclaration(
       const parts = splitTopLevelSlash(value);
       const flows = (part: string | undefined) =>
         part !== undefined && /(^|\s)auto-flow(\s|$)/i.test(part);
-      const autoTrack = (part: string): GridTrack | null => {
+      // the `auto-flow` axis's implicit tracks, as written, null for
+      // `auto`, or undefined for none
+      const autoTracks = (part: string): WrittenTrack[] | null | undefined => {
         const words = splitValue(part).filter(
           (w) => !/^(auto-flow|dense)$/i.test(w),
         );
-        return words.length ? parseGridTrack(words[0], ctx) : AUTO_TRACK;
+        if (!words.length) return null;
+        const written: WrittenTrack[] = [];
+        for (const word of words) {
+          const track = parseGridTrack(word, ctx);
+          if (!track) return undefined;
+          written.push({ track, form: trackForm(word) });
+        }
+        return written;
       };
       const dense = (part: string) => /(^|\s)dense(\s|$)/i.test(part);
       const axis = (part: string): GridTemplate | null | undefined =>
@@ -5185,26 +5200,30 @@ export function applyDeclaration(
           ? null
           : parseGridTemplate(part, ctx);
       if (parts.length === 2 && flows(parts[0])) {
-        const rows = autoTrack(parts[0]);
+        const rows = autoTracks(parts[0]);
         const columns = axis(parts[1]);
-        if (!rows || columns === undefined) return;
+        if (rows === undefined || columns === undefined) return;
         style.gridRows = null;
         style.gridColumns = columns;
         style.gridAreas = null;
-        style.gridAutoRows = rows;
+        style.gridAutoRows = rows?.[0].track ?? AUTO_TRACK;
+        style.gridAutoRowsWritten = rows;
         style.gridAutoColumns = AUTO_TRACK;
+        style.gridAutoColumnsWritten = null;
         style.gridAutoFlow = dense(parts[0]) ? 'row dense' : 'row';
         return;
       }
       if (parts.length === 2 && flows(parts[1])) {
         const rows = axis(parts[0]);
-        const columns = autoTrack(parts[1]);
-        if (rows === undefined || !columns) return;
+        const columns = autoTracks(parts[1]);
+        if (rows === undefined || columns === undefined) return;
         style.gridRows = rows;
         style.gridColumns = null;
         style.gridAreas = null;
         style.gridAutoRows = AUTO_TRACK;
-        style.gridAutoColumns = columns;
+        style.gridAutoRowsWritten = null;
+        style.gridAutoColumns = columns?.[0].track ?? AUTO_TRACK;
+        style.gridAutoColumnsWritten = columns;
         style.gridAutoFlow = dense(parts[1]) ? 'column dense' : 'column';
         return;
       }
@@ -5215,7 +5234,9 @@ export function applyDeclaration(
       style.gridColumns = template?.columns ?? null;
       style.gridAreas = template?.areas ?? null;
       style.gridAutoRows = AUTO_TRACK;
+      style.gridAutoRowsWritten = null;
       style.gridAutoColumns = AUTO_TRACK;
+      style.gridAutoColumnsWritten = null;
       style.gridAutoFlow = 'row';
       return;
     }
@@ -7542,28 +7563,6 @@ const NO_LIGATURES = 'liga=0,clig=0,dlig=0,hlig=0,calt=0';
  * ligatures`' alone, so beside anything else the shorthand cannot say it, and
  * reads ''.
  */
-/** One `font-variant` longhand's value, its keywords in the shorthand's
- *  order. */
-export function fontVariantPartText(
-  style: ComputedStyle,
-  kind: 'ligatures' | 'caps' | 'numeric' | 'position',
-): string {
-  const held = style[VARIANT_FIELDS[kind]];
-  if (!held) return 'normal';
-  if (kind === 'ligatures' && held === NO_LIGATURES) return 'none';
-  const words: string[] = [];
-  for (const word of Object.keys(VARIANTS)) {
-    const [of, features] = VARIANTS[word];
-    if (of !== kind) continue;
-    const named =
-      kind === 'caps'
-        ? held === features
-        : `,${held},`.includes(`,${features},`);
-    if (named) words.push(word);
-  }
-  return words.join(' ') || 'normal';
-}
-
 export function fontVariantText(style: ComputedStyle): string {
   const {
     fontVariantLigatures: ligatures,
@@ -8198,7 +8197,12 @@ function parseGridTemplate(
     const names = parseSubgrid(value.trim().slice('subgrid'.length));
     return names && { tracks: [], names: [[]], repeat: null, subgrid: names };
   }
-  const out: GridTemplate = { tracks: [], names: [[]], repeat: null };
+  const out: GridTemplate = {
+    tracks: [],
+    names: [[]],
+    repeat: null,
+    written: [],
+  };
   // where a group of names goes: the line after the last track, or the
   // line after an auto repeat until a track follows it
   let pending: string[] | null = null;
@@ -8207,12 +8211,14 @@ function parseGridTemplate(
     into: GridTrack[],
     names: string[][],
     top: boolean,
+    written: WrittenPart[],
   ): boolean => {
     for (const part of parts) {
       if (part.startsWith('[')) {
         const group = lineNames(part);
         if (!group) return false;
         (top && pending ? pending : names[names.length - 1]).push(...group);
+        written.push({ names: group });
         continue;
       }
       const repeat = /^repeat\((.*)\)$/is.exec(part);
@@ -8220,10 +8226,11 @@ function parseGridTemplate(
         const [count, ...rest] = splitCommas(repeat[1]);
         const inner: GridTrack[] = [];
         const innerNames: string[][] = [[]];
+        const innerWritten: WrittenPart[] = [];
         const innerParts = trackParts(rest.join(','));
         if (
           !innerParts ||
-          !read(innerParts, inner, innerNames, false) ||
+          !read(innerParts, inner, innerNames, false, innerWritten) ||
           !inner.length
         ) {
           return false;
@@ -8239,10 +8246,12 @@ function parseGridTemplate(
             fit: n === 'auto-fit',
           };
           pending = out.repeat.after;
+          written.push({ repeat: n, parts: innerWritten });
           continue;
         }
-        const times = Number(n);
+        const times = repeatCount(n);
         if (!Number.isInteger(times) || times < 1 || times > 1000) return false;
+        written.push({ repeat: times, parts: innerWritten });
         for (let i = 0; i < times; i += 1) {
           names[names.length - 1].push(...innerNames[0]);
           for (let t = 0; t < inner.length; t += 1) {
@@ -8257,18 +8266,39 @@ function parseGridTemplate(
       if (!track) return false;
       into.push(track);
       names.push([]);
+      written.push({ track, form: trackForm(part) });
       if (top) pending = null;
     }
     return true;
   };
   const parts = trackParts(value);
-  if (!parts || !read(parts, out.tracks, out.names, true)) return undefined;
+  if (!parts || !read(parts, out.tracks, out.names, true, out.written!)) {
+    return undefined;
+  }
   if (!out.tracks.length && !out.repeat) return undefined;
   // beside an auto repetition every track is a fixed size, at least or at
   // most a length or a percentage (CSS Grid 2, 7.2's `<auto-track-list>`):
   // `max-content repeat(auto-fill, 100px)` is no track list
   if (out.repeat && !out.tracks.every(fixedTrack)) return undefined;
   return out;
+}
+
+/** How a track was written: `minmax()`, `fit-content()`, or a size. */
+function trackForm(part: string): WrittenTrack['form'] {
+  const t = part.trim().toLowerCase();
+  if (t.startsWith('minmax(')) return 'minmax';
+  if (t.startsWith('fit-content(')) return 'fit';
+  return 'size';
+}
+
+/** A `repeat()`'s count: an integer, or a calculation that comes to one,
+ *  rounded as an `<integer>` is (CSS Values 4, 10.9). NaN for anything
+ *  else. */
+function repeatCount(text: string): number {
+  if (/^\d+$/.test(text)) return Number(text);
+  if (!isMathFunction(text)) return NaN;
+  const n = parseNumber(text);
+  return n === null ? NaN : Math.round(n);
 }
 
 /** Whether a track is a `<fixed-size>`: its least or its greatest size a
@@ -9736,8 +9766,6 @@ function whiteSpacePart(
   style.whiteSpace = wraps
     ? whiteSpaceOf(COLLAPSE_OF[style.whiteSpace], wrapsIn(from.whiteSpace))
     : whiteSpaceOf(COLLAPSE_OF[from.whiteSpace], wrapsIn(style.whiteSpace));
-  // `break-spaces` is what is kept of the white space, and goes with it
-  if (!wraps) style.breakSpaces = from.breakSpaces;
 }
 
 /**
@@ -9942,12 +9970,12 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'font-feature-settings': ['fontFeatureSettings'],
   'tab-size': ['tabSize', 'tabSizeIsLength'],
   '-moz-tab-size': ['tabSize', 'tabSizeIsLength'],
-  'white-space': ['whiteSpace', 'breakSpaces'],
+  'white-space': ['whiteSpace'],
   'overflow-wrap': ['overflowWrap'],
   'word-wrap': ['overflowWrap'],
   'word-break': ['wordBreak'],
   'line-break': ['lineBreakAnywhere'],
-  'white-space-collapse': ['whiteSpace', 'breakSpaces'],
+  'white-space-collapse': ['whiteSpace'],
   'text-wrap': ['whiteSpace', 'textWrapStyle'],
   'text-wrap-mode': ['whiteSpace'],
   'text-wrap-style': ['textWrapStyle'],
@@ -10104,8 +10132,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'grid-column-gap': ['columnGap', 'columnGapNormal'],
   'grid-template-columns': ['gridColumns'],
   'grid-template-rows': ['gridRows'],
-  'grid-auto-rows': ['gridAutoRows'],
-  'grid-auto-columns': ['gridAutoColumns'],
+  'grid-auto-rows': ['gridAutoRows', 'gridAutoRowsWritten'],
+  'grid-auto-columns': ['gridAutoColumns', 'gridAutoColumnsWritten'],
   'grid-template-areas': ['gridAreas'],
   'grid-auto-flow': ['gridAutoFlow'],
   'grid-lanes-direction': ['gridLanesDirection'],
@@ -10118,7 +10146,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'gridColumns',
     'gridAreas',
     'gridAutoRows',
+    'gridAutoRowsWritten',
     'gridAutoColumns',
+    'gridAutoColumnsWritten',
     'gridAutoFlow',
   ],
   'grid-area': [
@@ -10210,9 +10240,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'aspect-ratio': ['aspectRatio'],
   'object-fit': ['objectFit'],
   'object-view-box': ['objectViewBox'],
-  appearance: ['appearance', 'appearanceText'],
-  '-webkit-appearance': ['appearance', 'appearanceText'],
-  '-moz-appearance': ['appearance', 'appearanceText'],
+  appearance: ['appearance'],
+  '-webkit-appearance': ['appearance'],
+  '-moz-appearance': ['appearance'],
   contain: ['contain'],
   'content-visibility': ['contentVisibility'],
   'container-type': [
@@ -10260,13 +10290,13 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'overflow-x': ['overflowX'],
   'overflow-y': ['overflowY'],
   'scrollbar-width': ['scrollbarWidth'],
-  'scrollbar-color': ['scrollbarThumbColor', 'scrollbarTrackColor'],
+  'scrollbar-color': ['scrollbarThumbColor'],
   'caret-color': ['caretColor'],
   opacity: ['opacity'],
   'scroll-snap-type': ['scrollSnapType'],
   'scroll-snap-align': ['scrollSnapAlign'],
   'scroll-snap-stop': ['scrollSnapStop'],
-  'touch-action': ['touchAction', 'touchActionText'],
+  'touch-action': ['touchAction'],
   'scroll-initial-target': ['scrollInitialTarget'],
   'scroll-padding': [
     'scrollPaddingTop',
@@ -10343,13 +10373,6 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'text-underline-offset': ['textUnderlineOffset'],
   'table-layout': ['tableLayout'],
 };
-
-/** The fields of a computed style a property sets, by its name: a
- *  shorthand's are its longhands', which is how two properties are told to
- *  overlap (Web Animations 1, 5.5). Empty for a name with none. */
-export function fieldsOfProperty(name: string): readonly string[] {
-  return INHERIT_TARGETS[name.toLowerCase()] ?? [];
-}
 
 /**
  * A decoration's thickness or an underline's offset: a length, a
@@ -10899,23 +10922,6 @@ function axisList(value: string): string | null {
  *  none of the property's: `auto | none | [pan-x | pan-left | pan-right] ||
  *  [pan-y | pan-up | pan-down] || pinch-zoom | manipulation`. A direction is
  *  its axis here, since nothing pans one way only. */
-/** A `touch-action` that parsed, its words in the order Chrome writes them:
- *  across, then down, then `pinch-zoom`. */
-function touchActionText(value: string): string {
-  const rank = (w: string): number =>
-    /^pan-(?:x|left|right)$/.test(w)
-      ? 0
-      : /^pan-(?:y|up|down)$/.test(w)
-        ? 1
-        : 2;
-  return value
-    .trim()
-    .toLowerCase()
-    .split(/\s+/)
-    .sort((a, b) => rank(a) - rank(b))
-    .join(' ');
-}
-
 function parseTouchAction(value: string): '' | 'x' | 'y' | 'xy' | null {
   const words = value.trim().toLowerCase().split(/\s+/);
   if (words.length === 1) {

@@ -23,9 +23,7 @@ import type { Animations } from './css/animation.js';
 import { RANGE_END, RANGE_START } from './css/triggers.js';
 import type { RangeEdge } from './css/triggers.js';
 import { composeShorthand } from './css/specified.js';
-import { fontVariantPartText, fontVariantText, urlOf } from './css/style.js';
-import type { CounterChange } from './css/content.js';
-import type { FilterFunction } from './css/filter.js';
+import { fontVariantText, urlOf } from './css/style.js';
 import type {
   BackgroundRepeat,
   ClipPath,
@@ -34,10 +32,15 @@ import type {
   GapRule,
   GridAreas,
   GridLine,
+  GridTemplate,
   GridTrack,
   SizeOf,
+  SubgridNames,
   TimelineRef,
+  WrittenPart,
+  WrittenTrack,
 } from './css/style.js';
+import type { GridTracks } from './layout/boxes.js';
 import { serializeLinear } from './css/calc-tree.js';
 import type { Primitive, TransformFunction } from './css/transform.js';
 import { matrix4Of, matrixOf } from './css/transform.js';
@@ -85,6 +88,9 @@ export interface UsedBox {
   /** The border widths a page reads where they are not those laid out: a
    *  control the palette draws, which reads the web's (`edgesAsRead`). */
   borderRead?: [number, number, number, number];
+  /** A grid container's tracks as its layout left them, which its
+   *  templates read as (CSS Grid 1, 7.2.6). */
+  grid?: GridTracks;
 }
 
 const SIDES = ['top', 'right', 'bottom', 'left'] as const;
@@ -965,11 +971,12 @@ const FROM_A_BOX: ReadonlySet<string> = new Set(
   [
     'width',
     'height',
+    'grid-template-columns',
+    'grid-template-rows',
+    'grid-lanes',
     'inline-size',
     'block-size',
     'transform',
-    'transform-origin',
-    'perspective-origin',
     ...SIDES,
     'margin',
     'padding',
@@ -1206,10 +1213,7 @@ function cssomAt(
           )
           .join(', ')
       : 'none',
-    'white-space':
-      style.breakSpaces && style.whiteSpace === 'pre-wrap'
-        ? 'break-spaces'
-        : style.whiteSpace,
+    'white-space': style.whiteSpace,
     direction: style.direction,
     'writing-mode': style.writingMode,
     'text-orientation': style.textOrientation,
@@ -1287,10 +1291,6 @@ function cssomAt(
         : cssomTransform(style.transform, scale);
   // and the transforms of their own, as they compute (CSS Transforms 2,
   // 5): what is left at its initial value at the end left out
-  // an origin resolves against the box where there is one, as Chrome
-  // answers it in pixels, and is its lengths as computed where not
-  out['transform-origin'] = originText(style.transformOrigin, box, scale);
-  out['perspective-origin'] = originText(style.perspectiveOrigin, box, scale);
   out.translate = translateText(style.translate, scale);
   out.rotate = rotateText(style.rotate);
   out.scale = scaleText(style.scale);
@@ -1320,6 +1320,28 @@ function cssomAt(
   out['object-view-box'] = objectViewBoxText(style.objectViewBox, scale);
   // grid lanes' own (CSS Grid 3): the direction as it serializes, and the
   // tolerance a length at its computed value or a keyword
+  // a grid container's track lists are its tracks as laid out, and any
+  // other element's as they compute (CSS Grid 1, 7.2.6)
+  const tracks = box?.grid;
+  const lanesRows = lanesAreRows(style);
+  out['grid-template-columns'] =
+    tracks && resolves(style, style.gridColumns, false, lanesRows)
+      ? resolvedTracks(tracks.cols, tracks.colLines.names, scale)
+      : templateText(style.gridColumns, scale);
+  out['grid-template-rows'] =
+    tracks && resolves(style, style.gridRows, true, lanesRows)
+      ? resolvedTracks(tracks.rows, tracks.rowLines.names, scale)
+      : templateText(style.gridRows, scale);
+  out['grid-template-areas'] = areasText(style.gridAreas);
+  out['grid-auto-columns'] = autoTracksText(
+    style.gridAutoColumnsWritten,
+    scale,
+  );
+  out['grid-auto-rows'] = autoTracksText(style.gridAutoRowsWritten, scale);
+  out['grid-row-start'] = gridLineText(style.gridRowStart);
+  out['grid-row-end'] = gridLineText(style.gridRowEnd);
+  out['grid-column-start'] = gridLineText(style.gridColumnStart);
+  out['grid-column-end'] = gridLineText(style.gridColumnEnd);
   out['grid-lanes-direction'] = style.gridLanesDirection;
   out['grid-lanes-pack'] = style.gridLanesPack;
   out['fit-tolerance'] =
@@ -1548,121 +1570,6 @@ function ruleText(rule: GapRule, style: ComputedStyle, scale: number): string {
 }
 
 /** A corner's shape as it computes, whichever keyword it was written as. */
-/** A `transform-origin` or a `perspective-origin`: each length against the
- *  box's border box where it has one. */
-function originText(
-  [x, y]: readonly [Len, Len],
-  box: UsedBox | null,
-  scale: number,
-): string {
-  if (!box) return `${len(x, scale)} ${len(y, scale)}`;
-  const at = (l: Len, base: number): string =>
-    typeof l === 'object'
-      ? px((l.pct / 100) * base + (l.px ?? 0), scale)
-      : len(l, scale);
-  return `${at(x, box.width)} ${at(y, box.height)}`;
-}
-
-/** A `filter` list as Chrome writes it: an amount as a number, a turn in
- *  degrees, a shadow's colour first. */
-function filterText(
-  list: readonly FilterFunction[] | null,
-  style: ComputedStyle,
-  scale: number,
-): string {
-  if (!list) return 'none';
-  return list
-    .map((f) => {
-      switch (f.fn) {
-        case 'hue-rotate':
-          return `hue-rotate(${num(f.angle)}deg)`;
-        case 'blur':
-          return `blur(${px(f.radius, scale)})`;
-        case 'drop-shadow':
-          return `drop-shadow(${cssomColor(f.color, null, style.color, style.colorSource)} ${px(f.x, scale)} ${px(f.y, scale)} ${px(f.blur, scale)})`;
-        case 'url':
-          return urlText(f.url);
-        default:
-          return `${f.fn}(${num(f.amount)})`;
-      }
-    })
-    .join(' ');
-}
-
-/** One track size of `grid-auto-rows` or `-columns`. */
-function trackText(track: GridTrack, scale: number): string {
-  const size = (v: GridTrack['max']): string =>
-    typeof v === 'string'
-      ? v
-      : typeof v === 'number' || 'pct' in v
-        ? len(v, scale)
-        : 'fr' in v
-          ? `${num(v.fr)}fr`
-          : `fit-content(${len(v.fit, scale)})`;
-  const { min, max } = track;
-  if (typeof max === 'object' && max !== null && 'fit' in max) return size(max);
-  if (
-    min === 'auto' &&
-    typeof max === 'object' &&
-    max !== null &&
-    'fr' in max
-  ) {
-    return size(max);
-  }
-  const lo = size(min);
-  const hi = size(max);
-  return lo === hi ? lo : `minmax(${lo}, ${hi})`;
-}
-
-/** `grid-template-areas`' strings again, a `.` for each cell no area has. */
-function areasText(areas: GridAreas | null): string {
-  if (!areas) return 'none';
-  const cells = Array.from({ length: areas.rows }, () =>
-    Array.from({ length: areas.columns }, () => '.'),
-  );
-  for (const [name, { rows, columns }] of areas.areas) {
-    for (let r = rows[0]; r < rows[1]; r++) {
-      for (let c = columns[0]; c < columns[1]; c++) cells[r][c] = name;
-    }
-  }
-  return cells.map((row) => `"${row.join(' ')}"`).join(' ');
-}
-
-/** A `counter-reset`, `-increment` or `-set`: each name and its number. */
-function countersText(list: readonly CounterChange[] | null): string {
-  if (!list) return 'none';
-  return list
-    .map((c) => {
-      const name = c.reversed ? `reversed(${c.name})` : c.name;
-      return c.counted ? name : `${name} ${c.value}`;
-    })
-    .join(' ');
-}
-
-/** A string as CSSOM serializes one. */
-function stringText(text: string): string {
-  return `"${text.replace(/[\\"]/g, '\\$&').replace(/\n/g, '\\a ')}"`;
-}
-
-/** `font-feature-settings` from the features a style holds, as Chrome
- *  writes it: each tag once, the last it was given, in the tags' order,
- *  and its number where it is not 1. */
-function featureSettingsText(held: string): string {
-  if (!held) return 'normal';
-  const last = new Map<string, string>();
-  for (const pair of held.split(',')) {
-    const [tag, n] = pair.split('=');
-    last.set(tag, n);
-  }
-  return [...last.keys()]
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-    .map((tag) => {
-      const n = last.get(tag);
-      return n === '1' ? stringText(tag) : `${stringText(tag)} ${n}`;
-    })
-    .join(', ');
-}
-
 function cornerShapeText(k: number): string {
   if (k === Infinity) return 'superellipse(infinity)';
   if (k === -Infinity) return 'superellipse(-infinity)';
@@ -1689,6 +1596,164 @@ function gridLineText(line: GridLine): string {
 function followsFrom(first: GridLine, next: GridLine): boolean {
   const named = first !== null && !('span' in first) && !('line' in first);
   return named ? gridLineText(next) === gridLineText(first) : next === null;
+}
+
+/** Whether a grid lanes container's lanes are rows: `row`, or at `normal`
+ *  a row template and no column one (CSS Grid 3, 2.3), as
+ *  `layout/grid-lanes.ts` reads it. */
+function lanesAreRows(style: ComputedStyle): boolean {
+  const direction = style.gridLanesDirection;
+  if (direction.startsWith('row')) return true;
+  if (direction.startsWith('column')) return false;
+  return style.gridColumns === null && style.gridRows !== null;
+}
+
+/** Whether a grid container's axis reads as the tracks it was laid out
+ *  with: a grid's, but for a subgrid's axis, which reads as its template;
+ *  and grid lanes' lanes, but not their stacking axis, which has none. */
+function resolves(
+  style: ComputedStyle,
+  template: GridTemplate | null,
+  rows: boolean,
+  lanesRows: boolean,
+): boolean {
+  if (template?.subgrid) return false;
+  return !style.gridLanes || lanesRows === rows;
+}
+
+/** A track list as a grid's layout left it (7.2.6): every track, implicit
+ *  ones too, in pixels, an `auto-fit` one collapsed as nought, and the
+ *  names of the explicit grid's lines between them. `none` for none. */
+function resolvedTracks(
+  tracks: readonly (readonly [number, number])[],
+  names: readonly (readonly string[])[],
+  scale: number,
+): string {
+  if (!tracks.length) return 'none';
+  const out: string[] = [];
+  const group = (line: number) => {
+    const list = names[line];
+    if (list?.length) out.push(`[${list.join(' ')}]`);
+  };
+  tracks.forEach(([start, end], t) => {
+    group(t);
+    out.push(px(Math.max(0, end - start), scale));
+  });
+  group(tracks.length);
+  return out.join(' ');
+}
+
+/** A track's least or greatest size as it computes: a length in pixels,
+ *  never below nought, a percentage, a flex, `fit-content()` or a
+ *  keyword. */
+function trackSizeText(
+  size: GridTrack['min'] | GridTrack['max'],
+  scale: number,
+): string {
+  if (typeof size === 'number') return px(Math.max(0, size), scale);
+  if (typeof size === 'string') return size;
+  if ('fr' in size) return `${num(size.fr)}fr`;
+  if ('fit' in size) return `fit-content(${trackSizeText(size.fit, scale)})`;
+  return len(size, scale);
+}
+
+/** A track as it was written, as it computes. */
+function writtenTrackText(
+  { track, form }: WrittenTrack,
+  scale: number,
+): string {
+  if (form === 'minmax') {
+    return `minmax(${trackSizeText(track.min, scale)}, ${trackSizeText(track.max, scale)})`;
+  }
+  return trackSizeText(track.max, scale);
+}
+
+/** A track list's parts as they compute: names, tracks and `repeat()`s
+ *  kept as written, their lengths in pixels. */
+function writtenText(parts: readonly WrittenPart[], scale: number): string {
+  return parts
+    .map((part) =>
+      'names' in part
+        ? `[${part.names.join(' ')}]`
+        : 'repeat' in part
+          ? `repeat(${part.repeat}, ${writtenText(part.parts, scale)})`
+          : writtenTrackText(part, scale),
+    )
+    .join(' ');
+}
+
+/** `subgrid` and the names it gives its lines, a group a line, with its
+ *  `repeat(auto-fill, …)` where it has one. */
+function subgridText(names: SubgridNames): string {
+  const group = (list: readonly string[]) => `[${list.join(' ')}]`;
+  const parts = ['subgrid', ...names.names.map(group)];
+  if (names.fill) {
+    parts.push(`repeat(auto-fill, ${names.fill.names.map(group).join(' ')})`);
+    parts.push(...names.fill.after.map(group));
+  }
+  return parts.join(' ');
+}
+
+/** A template as it computes, where no layout's tracks stand for it. */
+function templateText(template: GridTemplate | null, scale: number): string {
+  if (!template) return 'none';
+  if (template.subgrid) return subgridText(template.subgrid);
+  if (template.written) return writtenText(template.written, scale);
+  return template.tracks
+    .map((track) => writtenTrackText({ track, form: 'size' }, scale))
+    .join(' ');
+}
+
+/** `grid-template-areas` as it computes: a string a row, its cells a word
+ *  each and a `.` for each cell no area has. */
+function areasText(areas: GridAreas | null): string {
+  if (!areas) return 'none';
+  const cells: string[][] = [];
+  for (let r = 0; r < areas.rows; r += 1) {
+    cells.push(new Array<string>(areas.columns).fill('.'));
+  }
+  for (const [name, { rows, columns }] of areas.areas) {
+    for (let r = rows[0]; r < rows[1]; r += 1) {
+      for (let c = columns[0]; c < columns[1]; c += 1) cells[r][c] = name;
+    }
+  }
+  return cells.map((row) => `"${row.join(' ')}"`).join(' ');
+}
+
+/** `grid-lanes` (CSS Grid 3): the area string along the lanes, the lanes'
+ *  template and the direction; the other axis's template is none of it.
+ *  `''` where the areas are no one string along the lanes. */
+function lanesText(all: Record<string, string>, style: ComputedStyle): string {
+  const direction = style.gridLanesDirection;
+  const rows = direction.startsWith('row');
+  const template = rows
+    ? all['grid-template-rows']
+    : all['grid-template-columns'];
+  const parts: string[] = [];
+  const areas = style.gridAreas;
+  if (areas) {
+    if (rows ? areas.columns !== 1 : areas.rows !== 1) return '';
+    const words = new Array<string>(rows ? areas.rows : areas.columns).fill(
+      '.',
+    );
+    for (const [name, area] of areas.areas) {
+      const [from, to] = rows ? area.rows : area.columns;
+      for (let i = from; i < to; i += 1) words[i] = name;
+    }
+    parts.push(`"${words.join(' ')}"`);
+  }
+  if (template !== 'none') parts.push(template);
+  parts.push(direction);
+  return parts.join(' ');
+}
+
+/** `grid-auto-rows` or `grid-auto-columns`: its tracks as written. */
+function autoTracksText(
+  written: readonly WrittenTrack[] | null,
+  scale: number,
+): string {
+  if (!written) return 'auto';
+  return written.map((one) => writtenTrackText(one, scale)).join(' ');
 }
 
 function gridAxisText(start: GridLine, end: GridLine): string {
@@ -2024,60 +2089,7 @@ const SHORTHANDS: Record<string, Composer> = {
   'grid-column': (_, style) =>
     gridAxisText(style.gridColumnStart, style.gridColumnEnd),
   'grid-area': (_, style) => gridAreaText(style),
-  // and the longhands a style holds that a page seldom reads, composed as
-  // they are read (the background longhands' comment above says why)
-  'grid-row-start': (_, style) => gridLineText(style.gridRowStart),
-  'grid-row-end': (_, style) => gridLineText(style.gridRowEnd),
-  'grid-column-start': (_, style) => gridLineText(style.gridColumnStart),
-  'grid-column-end': (_, style) => gridLineText(style.gridColumnEnd),
-  'grid-auto-rows': (_, style, scale) => trackText(style.gridAutoRows, scale),
-  'grid-auto-columns': (_, style, scale) =>
-    trackText(style.gridAutoColumns, scale),
-  'grid-template-areas': (_, style) => areasText(style.gridAreas),
-  'grid-row-gap': (all) => all['row-gap'],
-  'grid-column-gap': (all) => all['column-gap'],
-  filter: (_, style, scale) => filterText(style.filter, style, scale),
-  'backdrop-filter': (_, style, scale) =>
-    filterText(style.backdropFilter, style, scale),
-  'counter-reset': (_, style) => countersText(style.counterReset),
-  'counter-increment': (_, style) => countersText(style.counterIncrement),
-  'counter-set': (_, style) => countersText(style.counterSet),
-  quotes: (_, style) =>
-    typeof style.quotes === 'string'
-      ? style.quotes
-      : style.quotes.map(stringText).join(' '),
-  'overflow-wrap': (_, style) => style.overflowWrap,
-  'word-wrap': (_, style) => style.overflowWrap,
-  'white-space-collapse': (_, style) =>
-    style.whiteSpace === 'pre' || style.whiteSpace === 'pre-wrap'
-      ? 'preserve'
-      : style.whiteSpace === 'pre-line'
-        ? 'preserve-breaks'
-        : 'collapse',
-  'page-break-inside': (_, style) => style.breakInside,
-  'font-kerning': (_, style) =>
-    style.fontKerning === 'kern=1'
-      ? 'normal'
-      : style.fontKerning === 'kern=0'
-        ? 'none'
-        : 'auto',
-  'font-feature-settings': (_, style) =>
-    featureSettingsText(style.fontFeatureSettings),
-  'font-variant-ligatures': (_, style) =>
-    fontVariantPartText(style, 'ligatures'),
-  'font-variant-caps': (_, style) => fontVariantPartText(style, 'caps'),
-  'font-variant-numeric': (_, style) => fontVariantPartText(style, 'numeric'),
-  'font-variant-position': (_, style) => fontVariantPartText(style, 'position'),
-  'list-style-image': (_, style) => {
-    const url = style.listStyleImage ? urlOf(style.listStyleImage) : null;
-    return url === null ? 'none' : urlText(url);
-  },
-  'touch-action': (_, style) => style.touchActionText,
-  appearance: (_, style) => style.appearanceText,
-  'scrollbar-color': (_, style) =>
-    style.scrollbarThumbColor === null || style.scrollbarTrackColor === null
-      ? 'auto'
-      : `${cssomColor(style.scrollbarThumbColor, null, style.color, style.colorSource)} ${cssomColor(style.scrollbarTrackColor, null, style.color, style.colorSource)}`,
+  'grid-lanes': (all, style) => lanesText(all, style),
   columns: (_, style, scale) =>
     [
       style.columnWidth === null ? '' : px(style.columnWidth, scale),
