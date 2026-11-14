@@ -93,3 +93,36 @@ test("a style rule's selectorText takes a selector that parses, and keeps its ow
     'div::before',
   ]);
 });
+
+test('an @page rule is a CSSPageRule, its style the descriptors it declares and no other property', async () => {
+  const out = await inPage(
+    '<style id="s">@page { size: a3; margin: 1em 24px 2in 101.5mm } @page { size: 216mm }</style>',
+    `var rules = document.getElementById('s').sheet.cssRules;
+     var st = rules[0].style, other = rules[1].style;
+     other.size = 'portrait';
+     other.size = 'notarealsize';
+     other.setProperty('float', 'left');
+     rules[1].selectorText = 'named:First';
+     var kept = rules[1].selectorText;
+     rules[1].selectorText = 'named :first';
+     return [
+       rules[0] instanceof CSSPageRule,
+       Object.getPrototypeOf(st) === CSSPageDescriptors.prototype,
+       st.size, st.marginLeft, st['margin-bottom'],
+       other.size, other.cssFloat === undefined,
+       kept, rules[1].selectorText, rules[1].cssText,
+     ];`,
+  );
+  assert.deepEqual(out, [
+    true,
+    true,
+    'a3',
+    '101.5mm',
+    '2in',
+    'portrait',
+    true,
+    'named:first',
+    'named:first',
+    '@page named:first { size: portrait; }',
+  ]);
+});
