@@ -376,11 +376,15 @@ const OWN_SCRIPT = {
     ? { credentials: init.credentials }
     : {}),
 } as const;
+/** Where the last script `importScript` asked for came from, after its
+ *  redirects (`WorkerScope.importedUrl`). */
+let importedFrom = '';
 const importScript = (
   url: string,
   type?: ValueModule,
   own = false,
 ): string | null => {
+  importedFrom = url;
   // an import is held to the worker's own policies (CSP 3, 4.1.2): its own
   // script was held to its owner's as it was asked for
   if (!own && !host.csp.request({ url, destination: type ? type : 'script' })) {
@@ -398,9 +402,11 @@ const importScript = (
       source: string | null;
       policy?: string;
       csp?: [string, string][];
+      url?: string;
     } => !('id' in (m as object)),
     performance.now() + 60_000,
   );
+  if (answer?.url) importedFrom = answer.url;
   // what the worker's own script's response says its requests' referrers
   // are made under, and its Content Security Policies, which an import's
   // has no say in
@@ -414,8 +420,16 @@ host.workerScope = {
   post: (data) => tell({ kind: 'message', data }),
   close: () => tell({ kind: 'close' }),
   importScript,
-  error: (message, filename, line, column) =>
-    tell({ kind: 'error', message, filename, line, column }),
+  importedUrl: () => importedFrom,
+  error: (message, filename, line, column, failed) =>
+    tell({
+      kind: 'error',
+      message,
+      filename,
+      line,
+      column,
+      ...(failed && { failed: true }),
+    }),
   rtc: (message) => tell(message),
   service: (text, bytes) =>
     tell({ kind: 'service', text, ...(bytes ? { bytes } : {}) }),
@@ -578,32 +592,32 @@ port.on('message', (m: ToWorker) => {
 // where it is not
 const source = init.source ?? importScript(init.url, undefined, true);
 script = () => {
+  // a script that did not come, or did not parse, is a plain `error` at the
+  // `Worker`, and nothing at this global (HTML 10.2.4, "run a worker")
+  const failed = (why: string): void =>
+    host.workerScope!.error(why, init.url, 0, 0, true);
   if (source === null) {
-    host.workerScope!.error(
-      `The worker's script at ${init.url} could not be loaded.`,
-      init.url,
-      0,
-      0,
-    );
+    failed(`The worker's script at ${init.url} could not be loaded.`);
     if (init.service) engine.call('__serviceStarted', [false]);
     hearHeld();
   } else if (init.type === 'module') {
-    void engine.module(source, init.url, init.source === null).then((ran) => {
-      // one whose graph did not all come is its worker's `error`, as one
-      // whose script did not
-      if (ran === 'unfetched') {
-        host.workerScope!.error(
-          `A module the worker's script at ${init.url} imports could not be loaded.`,
-          init.url,
-          0,
-          0,
-        );
-      }
-      if (init.service) engine.call('__serviceStarted', [ran === 'ran']);
-      hearHeld();
-    });
+    void engine
+      .module(source, init.url, init.source === null, true)
+      .then((ran) => {
+        // one whose graph did not all come, or did not parse or link, is its
+        // worker's `error`, as one whose script did not
+        if (ran === 'unfetched' || ran === 'unparsed') {
+          failed(
+            `The worker's module script at ${init.url}, or one it imports, could not be loaded or parsed.`,
+          );
+        }
+        if (init.service) engine.call('__serviceStarted', [ran === 'ran']);
+        hearHeld();
+      });
   } else {
-    const ran = engine.exec(source, init.url, 0);
+    const ran = engine.exec(source, init.url, 0, false, null, () =>
+      failed(`The worker's script at ${init.url} did not parse.`),
+    );
     // its registry goes on from here (Service Workers 1, "Run Service Worker")
     if (init.service) engine.call('__serviceStarted', [ran]);
   }

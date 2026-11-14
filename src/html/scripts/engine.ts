@@ -905,7 +905,10 @@ export class ScriptEngine {
     code: string,
     url: string,
     external: boolean,
-  ): Promise<'ran' | 'failed' | 'unfetched'> {
+    /** A worker's own script, whose graph that did not parse or link is
+     *  its `Worker`'s plain `error`, reported nowhere here: `unparsed`. */
+    quiet = false,
+  ): Promise<'ran' | 'failed' | 'unfetched' | 'unparsed'> {
     if (this._broken || this._disposed) return 'failed';
     if (this._held) {
       await new Promise<void>((go) => this._held?.push(go));
@@ -933,6 +936,10 @@ export class ScriptEngine {
       if (UNFETCHED.has(error as object)) {
         this._options.log('error', messageOf(error as Error));
         return 'unfetched';
+      }
+      if (quiet) {
+        this._options.log('error', messageOf(error as Error));
+        return 'unparsed';
       }
       // a module that did not parse or link: the runtime's error, reported
       // in the page as its own, of its kind — a link's is a `SyntaxError`
@@ -1273,6 +1280,25 @@ export class ScriptEngine {
   /** A `TypeError` of the page's own, or a `SyntaxError`, with nothing of
    *  the host's in its `stack`: made by the host, it would name the host's
    *  frames and files. */
+  /**
+   * The runtime's `SyntaxError` for a script that did not parse, made the
+   * page's own, with where it failed as a frame of its stack: the runtime
+   * says so on its first line, `file:line`, which a page reads as the
+   * error's `filename` and `lineno` when it is reported.
+   */
+  private _syntaxErrorAt(error: Error): object {
+    const made = this._pageError(error.message, 'SyntaxError');
+    const at = /^(\S+):(\d+)\n/.exec(String(error.stack ?? ''));
+    if (at) {
+      Object.defineProperty(made, 'stack', {
+        value: `SyntaxError: ${error.message}\n    at ${at[1]}:${at[2]}:1`,
+        writable: true,
+        configurable: true,
+      });
+    }
+    return made;
+  }
+
   private _pageError(
     message: string,
     kind: 'TypeError' | 'SyntaxError' = 'TypeError',
@@ -1518,10 +1544,15 @@ export class ScriptEngine {
      *  column from 1 each: an inline script's, whose frames are numbered
      *  from there. */
     at: { line: number; column: number } | null = null,
+    /** A worker's own script, whose parse error is its `Worker`'s plain
+     *  `error` and reported nowhere here (HTML 10.2.4, "run a worker"). */
+    unparsed?: () => void,
   ): boolean {
     if (this._broken || this._disposed) return false;
     if (this._held) {
-      this._held.push(() => void this.exec(code, url, script, muted, at));
+      this._held.push(
+        () => void this.exec(code, url, script, muted, at, unparsed),
+      );
       return false;
     }
     // inside another script, which put this one in (`_prepareScript`)
@@ -1536,7 +1567,8 @@ export class ScriptEngine {
       });
     } catch (error) {
       // the runtime's `SyntaxError`, the host's, made the page's own
-      if (muted) this._mutedFault(error);
+      if (unparsed) unparsed();
+      else if (muted) this._mutedFault(error);
       else {
         this._fault(
           !isHostError(error)
@@ -1585,13 +1617,17 @@ export class ScriptEngine {
    * of the task; a worker imports its scripts first, as a rule, with none
    * waiting. The outer call's timeout covers it.
    */
-  runNested(code: string, url: string, muted = false): 'ran' | 'threw' | null {
+  runNested(
+    code: string,
+    url: string,
+    muted = false,
+  ): 'ran' | 'threw' | 'muted' | null {
     if (this._broken || this._disposed) return null;
     const context = this._context as Record<string, unknown>;
     // what another origin's script threw is its own, and its text with it:
-    // the caller hears that it failed (HTML 8.1.4.6, "rethrow errors")
-    const thrown = (error: unknown): unknown =>
-      muted ? this._pageError('Script error.') : error;
+    // the caller throws a `NetworkError` of its own where it is called
+    // (HTML 8.1.4.6, "rethrow errors" with muted errors)
+    const thrown = (error: unknown): unknown => error;
     let compiled: VmScript;
     try {
       compiled = new vm.Script(code, {
@@ -1599,11 +1635,12 @@ export class ScriptEngine {
         importModuleDynamically: this._importer as never,
       });
     } catch (error) {
+      if (muted) return 'muted';
       context.__thrown = thrown(
         !isHostError(error)
           ? error
           : error.name === 'SyntaxError'
-            ? this._pageError(error.message, 'SyntaxError')
+            ? this._syntaxErrorAt(error)
             : this._pageError(messageOf(error)),
       );
       return 'threw';
@@ -1613,6 +1650,7 @@ export class ScriptEngine {
       compiled.runInContext(this._context, UNDECORATED);
       return 'ran';
     } catch (error) {
+      if (muted) return 'muted';
       // the page's own exception, handed back unread
       context.__thrown = thrown(
         isHostError(error) ? this._pageError(messageOf(error)) : error,

@@ -334,7 +334,14 @@ function network(files: Record<string, string>, held: string) {
       status: 200,
       statusText: 'OK',
       redirected: false,
-      headers: [['content-type', 'text/html']],
+      // a worker's script is one only where its response says so (HTML
+      // 8.1.5.1, "fetch a classic worker script")
+      headers: [
+        [
+          'content-type',
+          file.endsWith('.js') ? 'text/javascript' : 'text/html',
+        ],
+      ],
       body: files[file] ?? '',
     };
   };

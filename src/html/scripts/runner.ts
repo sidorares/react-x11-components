@@ -471,13 +471,14 @@ export class ScriptRunner {
             message: (id, data) =>
               this.engine.call('__workerMessage', [id, data]),
             rtc: (id, message) => this.host.rtcFromWorker(id, message),
-            error: (id, message, filename, line, column) =>
+            error: (id, message, filename, line, column, failed) =>
               this.engine.call('__workerError', [
                 id,
                 message,
                 filename,
                 line,
                 column,
+                !!failed,
               ]),
           });
     this.host.workers = this._workers;
