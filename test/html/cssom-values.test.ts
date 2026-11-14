@@ -160,3 +160,21 @@ test('a selector reads back as CSSOM serializes it, its namespaces and its argum
     '*|e',
   ]);
 });
+
+test('a sheet the document adopts styles it in the task that adopted it', async () => {
+  const out = await inPage(
+    '<span id="g">x</span>',
+    `var g = document.getElementById('g'), r = [];
+     var s = new CSSStyleSheet();
+     s.replaceSync('span { color: rgb(0, 128, 0) }');
+     var before = getComputedStyle(g).color;
+     document.adoptedStyleSheets = [s];
+     r.push(getComputedStyle(g).color);
+     s.replaceSync('span { color: rgb(255, 0, 0) }');
+     r.push(getComputedStyle(g).color);
+     document.adoptedStyleSheets = [];
+     r.push(getComputedStyle(g).color === before);
+     return r;`,
+  );
+  assert.deepEqual(out, ['rgb(0, 128, 0)', 'rgb(255, 0, 0)', true]);
+});

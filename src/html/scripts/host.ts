@@ -5551,7 +5551,11 @@ export class DomHost {
       case 'adopt': {
         const sheets: unknown = JSON.parse(text(a) || '[]');
         if (Array.isArray(sheets)) {
-          this._seams.adopt?.(sheets.map((sheet) => String(sheet)));
+          const texts = sheets.map((sheet) => String(sheet));
+          // the view at once, so the task that adopted them reads them, and
+          // the host's render after, which hands them on as `stylesheet`
+          this._seams.handle?.adoptSheets?.(texts);
+          this._seams.adopt?.(texts);
         }
         return null;
       }
