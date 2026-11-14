@@ -53,6 +53,10 @@ export interface WIce {
   readonly connection?: {
     remoteCandidates?: unknown[];
     nominated?: WHeardPair;
+    /** Its candidate pairs, each with werift's `CandidatePairState`. */
+    checkList?: readonly { readonly state: number }[];
+    /** Whether the peer said it has no more candidates. */
+    remoteCandidatesEnd?: boolean;
   };
   /** The peer's candidates it has, but those it found as peer-reflexive. */
   getRemoteCandidates?(): unknown[];
@@ -404,6 +408,9 @@ export class WeriftTransports {
     { pair: string; count: number; since: number; quiet: boolean }
   >();
   private _listening: unknown = null;
+  /** The checking transports whose every pair failed while the peer may
+   *  still send a candidate (`_listen`). */
+  private readonly _outOfPairs = new Set<number>();
   /** The association being watched, and what was last told of it. */
   private _association: WAssociation | null = null;
   private _sctpTold = 'connecting';
@@ -510,8 +517,12 @@ export class WeriftTransports {
    * disconnected, and connected again as anything comes. werift checks
    * consent every 4 to 6 seconds and has its peer's checks as often, so an
    * idle connection hears something in every 6 seconds, and `QUIET_MS` is
-   * past that; it fails only as consent expires, 30 seconds on. Looked at
-   * each second while any transport is connected or disconnected.
+   * past that; it fails only as consent expires, 30 seconds on. And a
+   * checking transport whose every pair failed is disconnected while the
+   * peer has not said it has no more candidates, since `failed` waits for
+   * that (WebRTC 1.0, RTCIceTransportState), where werift stays
+   * checking. Looked at each second while any transport is checking,
+   * connected or disconnected.
    */
   private _listen(): void {
     if (this._listening !== null) return;
@@ -523,7 +534,22 @@ export class WeriftTransports {
       let any = false;
       for (const [dtls, id] of this._transports) {
         const told = this._iceTold.get(id);
-        const pair = dtls.iceTransport.connection?.nominated;
+        const connection = dtls.iceTransport.connection;
+        if (told === 'checking' || this._outOfPairs.has(id)) {
+          any = true;
+          const pairs = connection?.checkList ?? [];
+          const out =
+            pairs.length > 0 &&
+            pairs.every((p) => p.state === FAILED_PAIR) &&
+            !connection?.remoteCandidatesEnd;
+          if (out !== this._outOfPairs.has(id)) {
+            if (out) this._outOfPairs.add(id);
+            else this._outOfPairs.delete(id);
+            moved = true;
+          }
+          continue;
+        }
+        const pair = connection?.nominated;
         if (!pair || (!CONNECTED.has(told ?? '') && told !== 'disconnected')) {
           if (this._heard.get(id)?.quiet) moved = true;
           this._heard.delete(id);
@@ -746,12 +772,18 @@ export class WeriftTransports {
       if (was === 'new' && CONNECTED.has(state.iceState)) {
         this._send(id, { ...state, iceState: 'checking' });
       }
-      // what has heard nothing for a while is disconnected (`_listen`)
+      // what has heard nothing for a while is disconnected, and so is
+      // what has no pair left to check (`_listen`)
       if (CONNECTED.has(state.iceState) && this._heard.get(id)?.quiet) {
         state.iceState = 'disconnected';
       }
+      if (state.iceState === 'checking' && this._outOfPairs.has(id)) {
+        state.iceState = 'disconnected';
+      }
       this._send(id, state);
-      if (CONNECTED.has(state.iceState)) this._listen();
+      if (CONNECTED.has(state.iceState) || state.iceState === 'checking') {
+        this._listen();
+      }
     }
   }
 
@@ -836,6 +868,8 @@ const CONNECTED = new Set(['connected', 'completed']);
 /** How long a connected transport hears nothing before it is
  *  disconnected: past werift's consent cadence (`_listen`). */
 const QUIET_MS = 7000;
+/** werift's `CandidatePairState.FAILED`. */
+const FAILED_PAIR = 4;
 
 /**
  * A remote candidate's stats as a page may read them. One the agent learned
