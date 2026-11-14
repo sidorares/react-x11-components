@@ -3536,10 +3536,15 @@ function resolvedSteps(
   return out ?? steps;
 }
 
+/** A number for each highlight's styler, which stands for the style it
+ *  lights text in while the styler lives (`BoxTree.highlightStyler`). */
+const STYLER_IDS = new WeakMap<SelectionStyler, number>();
+let stylerIds = 0;
+
 /** What a kept surface's drawing depends on beyond its box's: whether it
  *  is drawn through a matrix, where its corner falls within a pixel, the
- *  display's scale, and the part of the box's text the selection covers,
- *  and in what colour. */
+ *  display's scale, the part of the box's text the selection covers, and
+ *  in what colour, and each custom highlight's part, and its style. */
 function spriteKey(
   box: Box,
   options: PaintOptions,
@@ -3553,6 +3558,16 @@ function spriteKey(
     const from = Math.max(range.start, box.subtreeTextStart);
     const to = Math.min(range.end, box.subtreeTextEnd);
     if (to > from) selected = `${from}-${to} ${options.selectionColor}`;
+  }
+  // a highlight a page sets after the surface was drawn is drawn on a new
+  // one, as the selection is
+  for (const lit of options.highlights ?? []) {
+    const from = Math.max(lit.selection.start, box.subtreeTextStart);
+    const to = Math.min(lit.selection.end, box.subtreeTextEnd);
+    if (to <= from) continue;
+    let id = STYLER_IDS.get(lit.styler);
+    if (id === undefined) STYLER_IDS.set(lit.styler, (id = ++stylerIds));
+    selected += ` h${id}:${from}-${to}`;
   }
   const kind = through ? 'turned' : 'group';
   return `${kind} ${fractionX} ${fractionY} ${options.scale ?? 1} ${selected}`;
