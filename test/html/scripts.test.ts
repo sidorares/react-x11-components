@@ -9607,6 +9607,31 @@ test('a frame’s document is held to the policies its own response says, and ne
   assert.equal(text('a', 'x'), 'no');
 });
 
+test('a srcdoc frame’s realm has its parent’s policies, its referrer policy and its Content Security Policy, which no response of its own says', async () => {
+  const { text, fetched } = await hostedFrames(
+    '<!doctype html><html><head><meta name="referrer" content="no-referrer">' +
+      '<meta http-equiv="Content-Security-Policy" content="connect-src \'self\'"></head><body>' +
+      '<p id="out"></p><iframe srcdoc="<script>' +
+      'fetch(&quot;whose&quot;).then(function () { return fetch(&quot;https://other.test/x&quot;, { mode: &quot;no-cors&quot; }); })' +
+      '.then(function () { parent.document.getElementById(&quot;out&quot;).textContent = &quot;sent&quot;; },' +
+      ' function () { parent.document.getElementById(&quot;out&quot;).textContent = &quot;refused&quot;; });' +
+      '</script>"></iframe></body></html>',
+    {},
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    'refused',
+  );
+  const own = fetched.find((r) => r.url.endsWith('/whose'));
+  assert.ok(own, 'the frame’s own-origin fetch is sent');
+  // sent with no Referer, as its parent's no-referrer has it
+  assert.equal(own.referrer, null);
+  assert.ok(!fetched.some((r) => r.url === 'https://other.test/x'));
+});
+
 test('a srcdoc frame’s view asks for what it draws under its parent’s referrer policy, which it has no response of its own to say', async () => {
   const { asked } = await hostedFrames(
     '<!doctype html><html><head><meta name="referrer" content="no-referrer"></head><body>' +
@@ -19694,9 +19719,12 @@ async function hostedFrames(
   result: Awaited<ReturnType<typeof renderX11>>;
   /** What a frame's view asked for. */
   asked: ResourceRequest[];
+  /** What a page's or a frame's script fetched. */
+  fetched: FetchRequest[];
 }> {
   const logs: string[] = [];
   const asked: ResourceRequest[] = [];
+  const fetched: FetchRequest[] = [];
   const seams: ScriptsOptions = {
     userAgent: 'test',
     language: 'en-US',
@@ -19717,6 +19745,7 @@ async function hostedFrames(
     log: (level, text) => void logs.push(`${level}: ${text}`),
     title: () => {},
     fetch: async (request) => {
+      fetched.push(request);
       const name = request.url.slice(request.url.lastIndexOf('/') + 1);
       if (name === 'whose') {
         // whose request it was, as a server that reflects `Origin` says
@@ -19810,7 +19839,7 @@ async function hostedFrames(
     const el = document && findById(document, id);
     return el ? textOf(el) : '';
   };
-  return { text, logs, runner: page, result, asked };
+  return { text, logs, runner: page, result, asked, fetched };
 }
 
 /** What `read` answers once `done` holds of it, or by `ms`. */

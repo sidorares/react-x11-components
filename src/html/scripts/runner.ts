@@ -339,15 +339,20 @@ export class ScriptRunner {
     // and the policy its requests' referrers are made under, which a
     // document with no response of its own has from the one around it
     // (HTML 7.4.2.3, a local scheme's policy container is its creator's)
+    // a frame's document is told local by where its frame is, since a
+    // `srcdoc` one is handed its parent's address, its base
+    // (`DomHost.frames`), which says nothing of it
+    const address =
+      (_link?.frame && _link.parent.host.frameAddressOf(_link.frame)) || url;
     this.host.referrerPolicy =
-      /^about:(blank|srcdoc)\b/.test(url) && _link
+      /^about:(blank|srcdoc)\b/.test(address) && _link
         ? _link.parent.host.documentReferrerPolicy()
         : referrerPolicyOfHeaders(headers);
     if (_link?.frame) this.host.frameParent = _link.parent.host;
     // its Content Security Policies: its response's, or, for a document of
     // no response of its own, those of the one that made it (CSP 3, 4.2.1;
     // HTML's policy container)
-    const local = /^(about:(blank|srcdoc)\b|blob:|data:)/i.test(url);
+    const local = /^(about:(blank|srcdoc)\b|blob:|data:)/i.test(address);
     if (local && _link) this.host.csp.inherit(_link.parent.host.csp);
     else if (local && popup?.creatorCsp && slot?.auxiliary) {
       this.host.csp.inherit(popup.creatorCsp);
