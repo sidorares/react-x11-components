@@ -472,6 +472,12 @@ export class ScriptRunner {
       (blank, address, seams) => new ScriptRunner(blank, address, seams),
     );
     this.host.windows = this._windows;
+    // a worklet's modules, fetched as this document's (`worklet-host.ts`)
+    this.host.workletFetch = (url, destination, credentials) =>
+      this._scriptFrom(url, null, true, 'javascript', null, {
+        destination,
+        credentials,
+      }).then((script) => script?.text ?? null);
     slot?.adopt(this);
     // a window goes by the name it was opened under, and a frame's by its
     // element's, whichever document it shows
@@ -1624,10 +1630,19 @@ export class ScriptRunner {
     /** The element whose `referrerpolicy` it is asked for under, where that
      *  is not its own: the script that imports it. */
     referring: Element | null = element,
+    /** A worklet's module's: its destination, and what its credentials mode
+     *  makes of its CORS request (HTML, "fetch a worklet script graph"). */
+    worklet: { destination: string; credentials: string } | null = null,
   ): Promise<{ text: string; muted: boolean } | null> {
     const origin = this.host.origin;
     const set = corsSetting(element?.attribs.crossorigin);
-    const mode = module ? (set ?? 'anonymous') : set;
+    const mode = worklet
+      ? worklet.credentials === 'include'
+        ? 'use-credentials'
+        : 'anonymous'
+      : module
+        ? (set ?? 'anonymous')
+        : set;
     const cors = mode ? { origin, mode } : undefined;
     // asked for as this document's, which a sandbox's is of no origin, and
     // a frame's is the frame's and not the page's
@@ -1645,7 +1660,8 @@ export class ScriptRunner {
     const csp: CspRequest = {
       url,
       destination:
-        type === 'javascript' ? 'script' : type === 'css' ? 'style' : type,
+        worklet?.destination ??
+        (type === 'javascript' ? 'script' : type === 'css' ? 'style' : type),
       nonce:
         element || referring ? this.host.nonceOf((element ?? referring)!) : '',
       integrity: element?.attribs.integrity ?? '',

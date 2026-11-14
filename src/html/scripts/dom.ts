@@ -54,6 +54,7 @@ import type { installEncodedTransform } from './encoded-transform.js';
 import type { installTextTracks } from './text-tracks.js';
 import type { installStorageManager } from './storage-manager.js';
 import type { installCsp } from './csp-page.js';
+import type { installWorklets } from './worklets.js';
 import type { installClipboard } from './clipboard.js';
 import type { installNotifications } from './notifications.js';
 import type { installWindows, WindowInternals } from './windows.js';
@@ -111,6 +112,7 @@ export function installDom(
   smilApi: typeof installSmil,
   storageManagerApi: typeof installStorageManager,
   pathDataApi: typeof installPathData,
+  workletsApi: typeof installWorklets,
   namedAccess: boolean,
   inWorker: boolean,
 ): void {
@@ -42984,6 +42986,28 @@ export function installDom(
     cspOf.policyChanged(str(call('csp', 'said') ?? ''));
   }
 
+  // --- Worklets ---------------------------------------------------------------
+  //
+  // `Worklet`, `AudioWorklet` and `CSS.paintWorklet` (`worklets.ts`): a
+  // worklet's modules are fetched and run by the host, in a global scope of
+  // their own (`worklet-host.ts`). A window's: a worker has none.
+  let worklets: Any = null;
+  if (!inWorker) {
+    worklets = workletsApi({
+      host: call,
+      DOMException,
+      base: () => String(call('base', 0)),
+    });
+    define('Worklet', worklets.interfaces.Worklet);
+    define('AudioWorklet', worklets.interfaces.AudioWorklet);
+    let paint: Any = null;
+    Object.defineProperty(cssNamespace, 'paintWorklet', {
+      get: () => (paint ??= worklets.make('paint')),
+      configurable: true,
+      enumerable: true,
+    });
+  }
+
   // --- WebRTC and media capture -------------------------------------------------
   //
   // WebRTC 1.0 (`webrtc.ts`, `datachannel.ts`) and Media Capture and Streams
@@ -43036,6 +43060,10 @@ export function installDom(
       isTrack: media.internals.isTrack,
       sourceOf: media.internals.sourceOf,
       bytesOfBase64,
+      audioWorklet: (rate: number) => worklets?.make('audio', rate) ?? null,
+      workletRegistered: (worklet: Any, name: string) =>
+        !!worklets?.registered(worklet, name),
+      MessageChannel,
     });
     for (const name of Object.getOwnPropertyNames(audio)) {
       define(name, audio[name]);
@@ -45083,6 +45111,12 @@ export function installDom(
     return blob instanceof Blob ? str(blob.type) : null;
   });
 
+  // an `addModule` the host has settled (`worklet-host.ts`)
+  entry('__workletAdded', () => {
+    const [ask, status, names] = input();
+    worklets?.added(Number(ask), str(status), str(names));
+    return null;
+  });
   // a violation of the document's Content Security Policy (CSP 3, 5.3): at
   // its element where that is connected, else at the document, or a
   // worker's global

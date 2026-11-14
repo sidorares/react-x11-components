@@ -1741,13 +1741,32 @@ them, and to another peer the host can reach.
   `MediaStreamAudioSourceNode` — a microphone a meter shows — its newest
   samples the host keeps while it is asked, and its frequency data Web
   Audio's windowed transform, smoothed. Nothing else on a path is
-  rendered, an `AudioWorklet` is not there,
+  rendered, an `OfflineAudioContext` renders silence, its `length` frames
+  of it a task after `startRendering`, with `complete`,
   `decodeAudioData` reads WAV and gives anything else the `EncodingError` a
   browser gives what it cannot decode, and nothing is heard, since core has
   no audio output.
   A page that feature-detects `AudioContext` gets an API that never throws
   where a browser's would not, and silence where a browser with no
   speakers has silence; WPT's WebRTC tests make their audio from one.
+- **A worklet's modules run where nothing of the page's is**
+  (`src/html/scripts/worklets.ts`, the host's half `worklet-host.ts`):
+  `Worklet`, a context's `audioWorklet` and `CSS.paintWorklet`, whose
+  `addModule` fetches a module graph as the document's — its destination
+  `audioworklet` or `paintworklet`, by CORS under its credentials mode, held
+  to the document's policies (`script-src`) and upgraded where they upgrade
+  insecure requests — and runs it in a global scope of its own, a context
+  with `registerProcessor`, `AudioWorkletProcessor`, `sampleRate` and the
+  clock, or `registerPaint`, and nothing else. Its `eval` is refused natively
+  where an enforced policy refuses the page's, and its `import()` always is.
+  The promise is settled a task after the graph has run: an `AbortError`
+  where a module of it did not come, a `SyntaxError` where one did not
+  compile, and resolved whatever its code threw. An `AudioWorkletNode` is
+  made only for a name the worklet's modules registered, and is silent, its
+  `port` a channel's whose other end no processor holds. No processor's
+  `process` runs, since nothing renders, and no `paint()` image is drawn,
+  which the cascade reads none of; `CSS.layoutWorklet` and
+  `CSS.animationWorklet` are not there, as no browser ships them.
 - **A canvas's text is drawn in the document's fonts**: `fillText`,
   `strokeText` and `measureText`, with `textAlign`, `textBaseline`,
   `direction`, `fontStretch`, `letterSpacing`, `wordSpacing` and `maxWidth`,
