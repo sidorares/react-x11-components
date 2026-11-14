@@ -826,6 +826,13 @@ export interface ComputedStyle {
   tabSize: number;
   tabSizeIsLength: boolean;
   whiteSpace: 'normal' | 'nowrap' | 'pre' | 'pre-wrap' | 'pre-line';
+  /** `white-space-collapse: break-spaces` (CSS Text 4, 3.1), which
+   *  `white-space: break-spaces` is with wrapping: the spaces it keeps take
+   *  room at a line's end, where `pre-wrap`'s hang, and a line may break
+   *  after each of them. `whiteSpace` says `pre-wrap` for it, or `pre`
+   *  where the lines do not wrap, so all that holds of kept spaces holds of
+   *  these (`layoutBreakSpaces`). Inherited. */
+  breakSpaces: boolean;
   /** Whether a word too long for its line may be cut inside itself
    *  (`overflow-wrap`, CSS Text 3, 5.5): `normal` lets it run past the
    *  line's end, as a browser does, and `anywhere` is `break-word`. */
@@ -1707,6 +1714,7 @@ export const INHERITED = [
   'orphans',
   'widows',
   'whiteSpace',
+  'breakSpaces',
   'overflowWrap',
   'wordBreak',
   'lineBreakAnywhere',
@@ -1875,6 +1883,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     tabSize: 8,
     tabSizeIsLength: false,
     whiteSpace: 'normal',
+    breakSpaces: false,
     overflowWrap: 'normal',
     wordBreak: 'normal',
     lineBreakAnywhere: false,
@@ -2289,6 +2298,7 @@ export function inherit(
   out.orphans = parent.orphans;
   out.widows = parent.widows;
   out.whiteSpace = parent.whiteSpace;
+  out.breakSpaces = parent.breakSpaces;
   out.overflowWrap = parent.overflowWrap;
   out.wordBreak = parent.wordBreak;
   out.lineBreakAnywhere = parent.lineBreakAnywhere;
@@ -4560,10 +4570,12 @@ export function applyDeclaration(
         v === 'pre-line'
       ) {
         style.whiteSpace = v;
+        style.breakSpaces = false;
       } else if (v === 'break-spaces') {
         // `pre-wrap` whose spaces take room at a line's end rather than
-        // hanging past it, which is as near as the engines come
+        // hanging past it (`breakSpaces`)
         style.whiteSpace = 'pre-wrap';
+        style.breakSpaces = true;
       }
       return;
     }
@@ -4616,6 +4628,7 @@ export function applyDeclaration(
               : null;
       if (collapse) {
         style.whiteSpace = whiteSpaceOf(collapse, wrapsIn(style.whiteSpace));
+        style.breakSpaces = v === 'break-spaces';
       }
       return;
     }
@@ -9723,6 +9736,8 @@ function whiteSpacePart(
   style.whiteSpace = wraps
     ? whiteSpaceOf(COLLAPSE_OF[style.whiteSpace], wrapsIn(from.whiteSpace))
     : whiteSpaceOf(COLLAPSE_OF[from.whiteSpace], wrapsIn(style.whiteSpace));
+  // `break-spaces` is what is kept of the white space, and goes with it
+  if (!wraps) style.breakSpaces = from.breakSpaces;
 }
 
 /**
@@ -9927,12 +9942,12 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'font-feature-settings': ['fontFeatureSettings'],
   'tab-size': ['tabSize', 'tabSizeIsLength'],
   '-moz-tab-size': ['tabSize', 'tabSizeIsLength'],
-  'white-space': ['whiteSpace'],
+  'white-space': ['whiteSpace', 'breakSpaces'],
   'overflow-wrap': ['overflowWrap'],
   'word-wrap': ['overflowWrap'],
   'word-break': ['wordBreak'],
   'line-break': ['lineBreakAnywhere'],
-  'white-space-collapse': ['whiteSpace'],
+  'white-space-collapse': ['whiteSpace', 'breakSpaces'],
   'text-wrap': ['whiteSpace', 'textWrapStyle'],
   'text-wrap-mode': ['whiteSpace'],
   'text-wrap-style': ['textWrapStyle'],
