@@ -30134,6 +30134,10 @@ export function installDom(
   /** A worker's location (WorkerLocation, HTML 10.3.4), which `location`
    *  answers in a realm that is a worker's (`__becomeWorker`). */
   let workerLocation: Any = null;
+  /** Marks a function as a built-in's for `Function.prototype.toString`
+   *  (the native-code block, below): what an interface defined after the
+   *  facade's install, a worker's, is marked with. */
+  let markNative: (fn: Any) => void = () => {};
 
   /** What a page's window has that a worker's global does not
    *  (`__becomeWorker`). */
@@ -34818,7 +34822,10 @@ export function installDom(
 
   const navigator = {
     userAgent,
+    appCodeName: 'Mozilla',
     appName: 'Netscape',
+    product: 'Gecko',
+    productSub: '20030107',
     appVersion: userAgent.replace(/^Mozilla\//, ''),
     platform,
     vendor: '',
@@ -44195,18 +44202,95 @@ export function installDom(
       }
     }
     const here = new URL(str(url));
-    workerLocation = {
-      href: here.href,
-      origin: here.origin,
-      protocol: here.protocol,
-      host: here.host,
-      hostname: here.hostname,
-      port: here.port,
-      pathname: here.pathname,
-      search: here.search,
-      hash: here.hash,
-      toString: () => here.href,
+    // `WorkerLocation` (HTML 10.3.4), an interface of its own: its
+    // attributes on its prototype, read from the worker's address, and
+    // `href` its stringifier
+    const LOCATION = new WeakMap<object, Any>();
+    const located = (self: Any): Any => {
+      const at = LOCATION.get(self);
+      if (!at) throw new TypeError('Illegal invocation');
+      return at;
     };
+    class WorkerLocation {
+      constructor() {
+        throw new TypeError('Illegal constructor');
+      }
+      get href(): string {
+        return located(this).href;
+      }
+      get origin(): string {
+        return located(this).origin;
+      }
+      get protocol(): string {
+        return located(this).protocol;
+      }
+      get host(): string {
+        return located(this).host;
+      }
+      get hostname(): string {
+        return located(this).hostname;
+      }
+      get port(): string {
+        return located(this).port;
+      }
+      get pathname(): string {
+        return located(this).pathname;
+      }
+      get search(): string {
+        return located(this).search;
+      }
+      get hash(): string {
+        return located(this).hash;
+      }
+      toString(): string {
+        return located(this).href;
+      }
+    }
+    idlAttributes(WorkerLocation);
+    Object.defineProperty(WorkerLocation.prototype, 'toString', {
+      enumerable: true,
+    });
+    Object.defineProperty(WorkerLocation.prototype, Symbol.toStringTag, {
+      value: 'WorkerLocation',
+      configurable: true,
+    });
+    workerLocation = Object.create(WorkerLocation.prototype);
+    LOCATION.set(workerLocation, here);
+    define('WorkerLocation', WorkerLocation);
+    markNative(WorkerLocation);
+    // `self` is the worker's global and no page's to replace, where a
+    // window's is `[Replaceable]` (HTML 10.2.1.1)
+    Object.defineProperty(G, 'self', {
+      get: () => G,
+      // an assignment changes nothing, as Web IDL has it for a readonly
+      // attribute in sloppy code: with no setter the context's global took
+      // one for a new property of its own
+      set() {},
+      enumerable: true,
+      configurable: true,
+    });
+    // a service worker's registrations and workers are what any secure
+    // worker can be handed (`[Exposed=(Window,Worker)]`)
+    if (call('secureContext') === true) {
+      for (const [n, value] of Object.entries(SW.interfaces) as [
+        string,
+        Any,
+      ][]) {
+        if (
+          !Object.prototype.hasOwnProperty.call(
+            value.prototype,
+            Symbol.toStringTag,
+          )
+        ) {
+          Object.defineProperty(value.prototype, Symbol.toStringTag, {
+            value: n,
+            configurable: true,
+          });
+        }
+        define(n, value);
+        markNative(value);
+      }
+    }
     secureGlobals(call('secureContext') === true);
     // a worker's navigator is a `WorkerNavigator` (HTML 10.3.3), which has
     // what the window's had of the navigator's own, `storage` among them
@@ -44227,6 +44311,9 @@ export function installDom(
       Object.defineProperty(WorkerNavigator, 'prototype', { writable: false });
       Object.setPrototypeOf(navigator, WorkerNavigator.prototype);
       define('WorkerNavigator', WorkerNavigator);
+      markNative(WorkerNavigator);
+      // `productSub` and `vendor` are a window's navigator's (HTML 8.9.1.1)
+      delete (navigator as Any).productSub;
       placeStorage();
     }
     // `persist()` is a window's (`[Exposed=Window]`), and the sync access
@@ -45737,6 +45824,7 @@ export function installDom(
       return realToString.call(this);
     };
     nativeFns.add(toString);
+    markNative = (fn: Any) => markFn(fn, 8);
     Object.defineProperty(Function.prototype, 'toString', {
       value: toString,
       writable: true,
