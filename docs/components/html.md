@@ -5731,7 +5731,21 @@ and a subgrid's axis, reads the list as it computes, `repeat()` kept and
 its lengths in pixels. `grid-template-areas` reads as a string a row,
 `grid-auto-rows` and `grid-auto-columns` as their whole lists (layout takes
 the first), and the placement longhands and `grid-lanes` as they compute.
-The track lists do not interpolate yet.
+The track lists do not interpolate yet. A script's `el.style` takes each
+grid property only where its grammar does, and keeps it canonical (CSSOM
+6.7): a track list's keywords in lower case and its empty groups of names
+dropped, a grid line's number before its name and `span` first, `span 1`
+before a name as `span`, and `grid-auto-flow: row dense` as `dense`. The
+placement shorthands set their longhands and read back from them as short
+as they can be said, `grid-area` leaving off each line that is the one it
+would copy, and so do `grid-template` and `grid`: `grid` reads as a
+template where its flow is `row` and its implicit tracks `auto`, as one
+axis's template and the other `auto-flow` where that axis has none, and
+as nothing otherwise; `grid-lanes` the same over its template, areas and
+direction. `@supports` answers a grid property by the same grammar, and
+the cascade reads `grid-template`'s strings with it: a strings' form with
+no slash is taken, and one with `none` or a `repeat()` for its columns, or
+a third group of names between rows, is not.
 Items a row aligns by their first baselines — `align-self` or `align-items`
 `baseline` — meet the lowest of their row's, an item spanning rows meeting
 its first row's, and are not stretched; the row is sized with what that
