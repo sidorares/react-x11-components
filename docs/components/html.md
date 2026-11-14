@@ -2443,7 +2443,14 @@ and a cancelled one leaves the element its own style. The delay, the end
 delay, the iterations and where they start, the direction, the effect's
 easing and each frame's are Web Animations' (4.8 to 4.11), and a property a
 frame leaves out at either end is the element's value under the CSS
-animations. `commitStyles()` writes what the effect comes to now, under the
+animations. An effect or a keyframe whose `composite` is `add` or
+`accumulate` puts its values on top of what is under them — the element's
+own style, or the animations under it in their composite order — and a
+track that leaves an end out takes that value there; `iterationComposite:
+'accumulate'` adds the last frame's value again at each iteration (5.4.4,
+4.4.9). Numbers, lengths and colours add part by part, a transform list
+added goes after the one under it, and a value that cannot be added
+replaces the one under it. `commitStyles()` writes what the effect comes to now, under the
 animations made after it, into the `style` attribute
 (`scriptAnimationValues`), and throws as a browser does for an element that
 is not rendered and for a pseudo-element. A finished animation that fills

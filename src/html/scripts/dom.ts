@@ -3231,8 +3231,29 @@ export function installDom(
   class KeyframeEffect extends AnimationEffect {
     _target: Any;
     _pseudo: string | null;
-    composite = 'replace';
-    iterationComposite = 'replace';
+    _composite = 'replace';
+    _iterationComposite = 'replace';
+    /** How its values composite onto what is under them (Web Animations
+     *  1, 5.4.4), an enumeration whose other values are ignored. */
+    get composite(): string {
+      return this._composite;
+    }
+    set composite(value: Any) {
+      const v = String(value);
+      if (v !== 'replace' && v !== 'add' && v !== 'accumulate') return;
+      this._composite = v;
+      this._animation?._changed();
+    }
+    /** Whether its iterations build on each other (4.4.9). */
+    get iterationComposite(): string {
+      return this._iterationComposite;
+    }
+    set iterationComposite(value: Any) {
+      const v = String(value);
+      if (v !== 'replace' && v !== 'accumulate') return;
+      this._iterationComposite = v;
+      this._animation?._changed();
+    }
     _frames: Any[];
     /** Its pseudo-element and frames as the host is told them, made
      *  again where they change; '' where `<Html>` draws none of it. */
@@ -3244,6 +3265,8 @@ export function installDom(
         this._pseudo = target.pseudoElement;
         this._frames = target._frames.map((f: Any) => ({ ...f }));
         this._timing = timingOf({}, target._timing);
+        this._composite = target._composite;
+        this._iterationComposite = target._iterationComposite;
         return;
       }
       this._target = target ?? null;
@@ -3253,6 +3276,36 @@ export function installDom(
           : null;
       this._frames = keyframesOf(keyframes);
       this._timing = timingOf(options);
+      // the options' composite operations, enumerations whose other values
+      // are a TypeError (Web IDL 3.2.20)
+      if (options && typeof options === 'object') {
+        const enumOf = (
+          v: Any,
+          allowed: string[],
+          what: string,
+        ): string | null => {
+          if (v === undefined) return null;
+          const text = String(v);
+          if (!allowed.includes(text)) {
+            throw new TypeError(
+              `Failed to construct 'KeyframeEffect': The provided value '${text}' is not a valid enum value of type ${what}.`,
+            );
+          }
+          return text;
+        };
+        this._composite =
+          enumOf(
+            options.composite,
+            ['replace', 'add', 'accumulate'],
+            'CompositeOperation',
+          ) ?? 'replace';
+        this._iterationComposite =
+          enumOf(
+            options.iterationComposite,
+            ['replace', 'accumulate'],
+            'IterationCompositeOperation',
+          ) ?? 'replace';
+      }
     }
     get target(): Any {
       return this._target;
@@ -3362,7 +3415,12 @@ export function installDom(
                 frame.offset !== null && typeof frame.offset === 'object'
                   ? this._timelineOffset(frame.offset)
                   : frame.computedOffset;
-              return [at, String(frame.easing), props];
+              return [
+                at,
+                String(frame.easing),
+                props,
+                String(frame.composite ?? 'auto'),
+              ];
             })
             .filter((frame) => frame[0] !== null)
             .sort((x, y) => (x[0] as number) - (y[0] as number));
@@ -3388,6 +3446,8 @@ export function installDom(
         n.duration,
         n.direction,
         n.easing,
+        String(this.composite),
+        String(this.iterationComposite),
       ];
       return `[${json},${JSON.stringify(timing)}]`;
     }

@@ -217,6 +217,9 @@ export interface Keyframe {
   /** Where in an iteration the frame is, 0 to 1: one per selector in its
    *  list, `from` 0 and `to` 1. */
   offsets: number[];
+  /** How its values composite onto the value under them (Web Animations
+   *  1, 5.4.4), where a script's keyframe says; the animation's where not. */
+  composite?: 'replace' | 'add' | 'accumulate';
   /** The selectors in its list that are timeline offsets, a range's name
    *  and a percentage of it (`cover 0%`), placed only on a view timeline
    *  (Scroll-driven Animations 1, 4.4); none where it has none. */

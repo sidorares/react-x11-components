@@ -59,6 +59,10 @@ export interface ScriptTiming {
   duration: number;
   direction: AnimationDirection;
   easing: Easing;
+  /** How its frames composite onto what is under them, where a frame says
+   *  nothing of its own, and whether its iterations accumulate. */
+  composite: 'replace' | 'add' | 'accumulate';
+  iterationComposite: 'replace' | 'accumulate';
 }
 
 /** One animation a page's script made, as the host was last told it. */
@@ -210,8 +214,10 @@ export function readEffect(
   if (!timing) return null;
   const frames: Keyframe[] = [];
   for (const frame of f as unknown[]) {
-    if (!Array.isArray(frame) || frame.length !== 3) return null;
-    const [offset, easing, props] = frame as unknown[];
+    if (!Array.isArray(frame) || frame.length < 3 || frame.length > 4) {
+      return null;
+    }
+    const [offset, easing, props, frameComposite] = frame as unknown[];
     // a frame at a timeline offset may be placed outside the iteration
     if (typeof offset !== 'number' || !Number.isFinite(offset)) return null;
     if (typeof easing !== 'string' || !Array.isArray(props)) return null;
@@ -225,10 +231,18 @@ export function readEffect(
     }
     // the easing to the next frame, linear where it says none (Web
     // Animations 1, 6.6.1): an easing that is not one is linear too
+    // and how it composites: its own where it says, else the effect's
+    const composite =
+      frameComposite === 'replace' ||
+      frameComposite === 'add' ||
+      frameComposite === 'accumulate'
+        ? frameComposite
+        : timing.composite;
     frames.push({
       offsets: [offset],
       declarations,
       easing: easing === 'linear' ? null : easing,
+      ...(composite !== 'replace' ? { composite } : {}),
     });
   }
   return {
@@ -247,8 +261,19 @@ const DIRECTIONS = new Set([
 ]);
 
 function readTiming(t: unknown[]): ScriptTiming | null {
-  if (t.length !== 8) return null;
-  const [delay, endDelay, fill, start, iterations, duration, direction, ez] = t;
+  if (t.length !== 8 && t.length !== 10) return null;
+  const [
+    delay,
+    endDelay,
+    fill,
+    start,
+    iterations,
+    duration,
+    direction,
+    ez,
+    composite,
+    iterationComposite,
+  ] = t;
   const finite = (v: unknown): v is number =>
     typeof v === 'number' && Number.isFinite(v);
   if (!finite(delay) || !finite(endDelay)) return null;
@@ -270,6 +295,10 @@ function readTiming(t: unknown[]): ScriptTiming | null {
     duration,
     direction: direction as AnimationDirection,
     easing: (typeof ez === 'string' && parseEasing(ez)) || LINEAR,
+    composite:
+      composite === 'add' || composite === 'accumulate' ? composite : 'replace',
+    iterationComposite:
+      iterationComposite === 'accumulate' ? 'accumulate' : 'replace',
   };
 }
 
@@ -307,6 +336,8 @@ export function scriptProgress(
   phase: Phase;
   /** Whether the directed progress grows with the active time. */
   directed: boolean;
+  /** The current iteration, from 0; 0 where it has no effect. */
+  iteration?: number;
   /** The active phase's bounds, in the animation's own time. */
   beforeActive: number;
   activeAfter: number;
@@ -370,7 +401,7 @@ export function scriptProgress(
     directed = turn === Infinity || turn % 2 === 0;
   }
   const progress = ease(timing.easing, directed ? simple : 1 - simple);
-  return { progress, phase, directed, beforeActive, activeAfter };
+  return { progress, phase, directed, beforeActive, activeAfter, iteration };
 }
 
 /** Whether an easing's output only ever grows with its input, so that a
@@ -432,7 +463,7 @@ export function sampleScripts(
     if (now === null) {
       if (timing.fill !== 'forwards' && timing.fill !== 'both') continue;
       const rest = { ...timing, duration: 0, delay: 0, endDelay: 0 };
-      const { progress } = scriptProgress(rest, 0, false);
+      const { progress, iteration } = scriptProgress(rest, 0, false);
       if (progress === null) continue;
       willChange |= animatedWillChange(rule);
       (samples ??= []).push({
@@ -442,13 +473,14 @@ export function sampleScripts(
         duration: 0,
         forwards: true,
         left: 0,
+        ...compositing(timing, iteration),
       });
       continue;
     }
     const { rate } = animation;
     const moves = animation.running && rate !== 0;
     const local = animation.base + (moves ? (now - animation.at) * rate : 0);
-    const { progress, phase, directed, beforeActive, activeAfter } =
+    const { progress, phase, directed, beforeActive, activeAfter, iteration } =
       scriptProgress(timing, local, rate < 0);
     if (phase !== 'after' || progress !== null) {
       willChange |= animatedWillChange(rule);
@@ -485,9 +517,30 @@ export function sampleScripts(
       duration,
       forwards: directed === rate > 0,
       left,
+      ...compositing(timing, iteration),
     });
   }
   return { samples, timed, active, inherits, willChange };
+}
+
+/** What a sample says of how it composites (Web Animations 1, 5.4.4): its
+ *  effect's composite operation, and the iteration it is in where its
+ *  iterations accumulate. Nothing for the default, `replace` both. */
+function compositing(
+  timing: ScriptTiming,
+  iteration: number | undefined,
+): Pick<Sample, 'composite' | 'accumulateIterations'> {
+  const out: Pick<Sample, 'composite' | 'accumulateIterations'> = {};
+  if (timing.composite !== 'replace') out.composite = timing.composite;
+  if (
+    timing.iterationComposite === 'accumulate' &&
+    iteration !== undefined &&
+    Number.isFinite(iteration) &&
+    iteration > 0
+  ) {
+    out.accumulateIterations = iteration;
+  }
+  return out;
 }
 
 /** The CSS properties an animation's frames set: what `commitStyles`
