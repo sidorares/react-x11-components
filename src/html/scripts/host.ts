@@ -111,7 +111,6 @@ import {
   scriptForOther,
   scriptTypeOf,
   namespaceFor,
-  namespaceIn,
   namespaceOf,
   ATTRIBUTE_SPACES,
   CDATA_SECTIONS,
@@ -1430,10 +1429,18 @@ const XML_QUERY = {
  *  around it says whose it is. A `<script>` is HTML's here, which is where
  *  a page's scripts are run from. */
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const inDrawing = (el: Element): boolean =>
-  el.name !== 'script' &&
-  !MADE_AS_HTML.has(el) &&
-  namespaceIn(el.parent) === SVG_NS;
+/** The namespace an element the parser made has where it stands, where
+ *  that is SVG's or MathML's (HTML 13.2.6.5), by one walk up: a `<math>`
+ *  and what is in one that is no HTML integration point's are MathML's,
+ *  and in a drawing all but a `<script>` (`inDrawing`) are SVG's. */
+const MATHML_NS = 'http://www.w3.org/1998/Math/MathML';
+const foreignNamespace = (el: Element): string | undefined => {
+  if (MADE_AS_HTML.has(el)) return undefined;
+  const found = namespaceOf(el);
+  if (found === MATHML_NS) return found;
+  if (found === SVG_NS && el.name !== 'script') return found;
+  return undefined;
+};
 
 /** What a copy keeps of what was made of what it copies, which is a tree
  *  alike to it: that it was made as HTML, which in a drawing nothing else
@@ -4170,7 +4177,7 @@ export class DomHost {
         if (node instanceof Element) {
           // a namespace the element was made in, where it says one: `~`
           // for none
-          const ns = node.namespace ?? (inDrawing(node) ? SVG_NS : undefined);
+          const ns = node.namespace ?? foreignNamespace(node);
           return ns === undefined
             ? `1|${node.name}`
             : `1|${node.name}\u0000${ns || '~'}`;

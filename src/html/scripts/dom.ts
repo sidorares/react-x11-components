@@ -7527,6 +7527,7 @@ export function installDom(
 
   const HTML_NS = 'http://www.w3.org/1999/xhtml';
   const SVG_NS = 'http://www.w3.org/2000/svg';
+  const MATHML_NS = 'http://www.w3.org/1998/Math/MathML';
   const XML_NS = 'http://www.w3.org/XML/1998/namespace';
   const XMLNS_NS = 'http://www.w3.org/2000/xmlns/';
   const XLINK_NS = 'http://www.w3.org/1999/xlink';
@@ -7699,7 +7700,11 @@ export function installDom(
             ? (ELEMENT_CLASSES[name] ?? htmlKind(name))
             : ns === SVG_NS
               ? (SVG_CLASSES[name.slice(name.indexOf(':') + 1)] ?? SVGElement)
-              : Element
+              : ns === MATHML_NS
+                ? name === 'a'
+                  ? MathMLAnchorElement
+                  : MathMLElement
+                : Element
         : type === 9 && ns
           ? XMLDocument
           : type === 3
@@ -10866,6 +10871,32 @@ export function installDom(
     }
     override get tagName(): string {
       return this._name;
+    }
+  }
+  /** An element of MathML's (MathML Core 2.1.2): HTMLOrForeignElement's
+   *  members, as an SVG element has them, and its own events' handlers. */
+  class MathMLElement extends Element {
+    get style(): Any {
+      return (this._style ??= styleOf(this));
+    }
+    set style(v: Any) {
+      this.style.cssText = v;
+    }
+    get dataset(): Any {
+      return (this._dataset ??= datasetOf(this));
+    }
+    override get namespaceURI(): string | null {
+      return this._ns === undefined ? MATHML_NS : this._ns;
+    }
+    override get tagName(): string {
+      return this._name;
+    }
+  }
+  /** MathML's `<a>` (MathML Core 3.2.4): a hyperlink, with
+   *  HTMLHyperlinkElementUtils as an HTML `<a>` has them (`MATHML_LINK`). */
+  class MathMLAnchorElement extends MathMLElement {
+    override toString(): string {
+      return (this as Any).href;
     }
   }
   /** What the host works out of a drawing (`svg-geometry.ts`), as numbers,
@@ -22202,7 +22233,8 @@ export function installDom(
       if (
         (at instanceof HTMLAnchorElement ||
           at instanceof HTMLAreaElement ||
-          at instanceof SVGAElement) &&
+          at instanceof SVGAElement ||
+          at instanceof MathMLAnchorElement) &&
         !followLink(at, false)
       ) {
         break;
@@ -22212,6 +22244,7 @@ export function installDom(
         at instanceof HTMLAnchorElement ||
         at instanceof HTMLAreaElement ||
         at instanceof SVGAElement ||
+        at instanceof MathMLAnchorElement ||
         at instanceof HTMLButtonElement ||
         at instanceof HTMLInputElement
       ) {
@@ -23593,7 +23626,10 @@ export function installDom(
   const tabStop = (el: Any): number => {
     const name = el.localName;
     if (el.namespaceURI !== HTML_NS) {
-      return el.namespaceURI === SVG_NS && name === 'a' ? 0 : -1;
+      return (el.namespaceURI === SVG_NS || el.namespaceURI === MATHML_NS) &&
+        name === 'a'
+        ? 0
+        : -1;
     }
     if (TAB_STOPS.has(name)) return 0;
     // a summary for its parent details
@@ -24226,6 +24262,7 @@ export function installDom(
   for (const name of ['focus', 'blur', 'tabIndex', 'nonce', 'autofocus']) {
     const d = Object.getOwnPropertyDescriptor(HTMLElement.prototype, name);
     if (d) Object.defineProperty(SVGElement.prototype, name, d);
+    if (d) Object.defineProperty(MathMLElement.prototype, name, d);
   }
 
   // ParentNode is a mixin (Web IDL 2.5), so what it has is each
@@ -26120,6 +26157,7 @@ export function installDom(
     const name = `on${type.toLowerCase()}`;
     Object.defineProperty(HTMLElement.prototype, name, property);
     Object.defineProperty(SVGElement.prototype, name, property);
+    Object.defineProperty(MathMLElement.prototype, name, property);
     Object.defineProperty(Document.prototype, name, property);
     Object.defineProperty(G, name, windowHandler(type));
     windowHandlerTypes.add(type);
@@ -43371,6 +43409,25 @@ export function installDom(
     Object.defineProperty(SVGAElement.prototype, name, TEXT(name));
   }
 
+  // MathML's `<a>` has an HTML `<a>`'s hyperlink members, each its own
+  for (const name of [
+    'href',
+    'target',
+    'download',
+    'ping',
+    'rel',
+    'relList',
+    'hreflang',
+    'type',
+    'referrerPolicy',
+    ...URL_PARTS,
+  ]) {
+    const d = Object.getOwnPropertyDescriptor(
+      HTMLAnchorElement.prototype,
+      name,
+    );
+    if (d) Object.defineProperty(MathMLAnchorElement.prototype, name, d);
+  }
   const classes: Record<string, Any> = {
     DOMException,
     QuotaExceededError,
@@ -43469,6 +43526,8 @@ export function installDom(
     CustomStateSet,
     ElementInternals,
     SVGElement,
+    MathMLElement,
+    MathMLAnchorElement,
     SVGGraphicsElement,
     SVGSVGElement,
     SVGRectElement,

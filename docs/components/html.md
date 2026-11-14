@@ -3241,6 +3241,16 @@ was made, and a form-associated custom element submits what `setFormValue`
 set. A query whose selector ends in a pseudo-element matches nothing rather
 than throwing.
 
+**What the parser makes in a `<math>` is MathML's** (HTML 13.2.6.5): a
+page reads a `<math>` and what it holds as `MathMLElement`s in MathML's
+namespace, but where an HTML integration point holds HTML, an `<mtext>`'s
+or an `<annotation-xml>` whose `encoding` is HTML's. A `MathMLElement` has
+`style`, `dataset`, focus, `tabIndex` and the event handlers, as an SVG
+element has them, and MathML's `<a>` is a `MathMLAnchorElement` with an
+HTML `<a>`'s hyperlink members, followed when it is clicked. What a script
+makes keeps the namespace it was made in. Nothing here lays MathML out as
+MathML Core does yet, so a float in one is still a float.
+
 **A drawing's geometry is worked out from its attributes.** No box stands for
 what an inline `<svg>` holds, so `getBBox`, `getCTM`, `getScreenCTM`,
 `getBoundingClientRect` and a shape's `getTotalLength` and `getPointAtLength`
