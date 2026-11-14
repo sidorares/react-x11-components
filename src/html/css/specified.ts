@@ -27,6 +27,7 @@ import {
   shapeThresholdSpecified,
 } from './shape-outside.js';
 import { parseDecorationInset } from './decoration-inset.js';
+import { parseTextTransform } from './text-transform.js';
 import { parseZoom, splitValue } from './values.js';
 import {
   GRID_SPECIFIED,
@@ -225,6 +226,12 @@ export function specifiedValue(
     return parts.length === 2 && parts[0] === parts[1]
       ? parts[0]
       : parts.join(' ');
+  }
+  // its keywords each at most once, in the order CSS Text 3, 2.1 gives them
+  if (name === 'text-transform') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return parseTextTransform(word) ?? null;
   }
   if (name === 'clip-path' || name === '-webkit-clip-path') {
     // a basic shape other than `shape()`, its arguments in canonical form

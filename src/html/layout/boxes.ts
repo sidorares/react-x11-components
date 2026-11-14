@@ -47,6 +47,15 @@ import {
   overflowGivenToViewport,
 } from '../css/cascade.js';
 import { outOfPlane } from '../css/transform.js';
+import {
+  fullSizeKana,
+  fullWidth,
+  lowerIn,
+  mathAuto,
+  tailoredLanguage,
+  transformParts,
+  upperIn,
+} from '../css/text-transform.js';
 import { frameOf, holdsTurnBack, makeFrame } from './writing.js';
 import type {
   Cascade,
@@ -5477,7 +5486,16 @@ class Builder {
       const last = text.charCodeAt(text.length - 1);
       this._ws = last === 32 ? 'space' : last === 10 ? 'start' : 'content';
     }
-    text = transformText(text, style.textTransform, this._lettered);
+    text = transformText(
+      text,
+      style.textTransform,
+      this._lettered,
+      style.textTransform === 'none'
+        ? ''
+        : owner
+          ? languageOf(owner)
+          : languageIn(into),
+    );
     this._lettered = letteredAfter(text, this._lettered);
     const search = this._firstLetter;
     const letter = search ? FIRST_LETTER.exec(text) : null;
@@ -5532,7 +5550,12 @@ class Builder {
     }
     into.append(box);
     if (letterStyle.textTransform !== style.textTransform) {
-      text = transformText(text, letterStyle.textTransform);
+      text = transformText(
+        text,
+        letterStyle.textTransform,
+        false,
+        languageIn(box),
+      );
     }
     return { box, text: this._textBox(text, box, letterStyle, owner), style };
   }
@@ -6059,21 +6082,48 @@ function numberAttr(el: Element, name: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * `text` as `transform` makes it (CSS Text 3, 2.1): its case, tailored for
+ * the language it is in where that is one with rules of its own
+ * (`tailoredLanguage`), then its width and its kana.
+ */
 function transformText(
   text: string,
   transform: ComputedStyle['textTransform'],
   lettered = false,
+  /** The text's language, as `lang` gives it. */
+  lang = '',
 ): string {
-  switch (transform) {
+  if (transform === 'none') return text;
+  const parts = transformParts(transform);
+  const tailored = parts.kase && lang ? tailoredLanguage(lang) : null;
+  let out = text;
+  switch (parts.kase) {
     case 'uppercase':
-      return text.toUpperCase();
+      out = upperIn(out, tailored);
+      break;
     case 'lowercase':
-      return text.toLowerCase();
+      out = lowerIn(out, tailored);
+      break;
     case 'capitalize':
-      return capitalize(text, lettered);
-    default:
-      return text;
+      out = capitalize(out, lettered, tailored);
+      break;
+    case 'math-auto':
+      out = mathAuto(out);
+      break;
   }
+  if (parts.width) out = fullWidth(out);
+  if (parts.kana) out = fullSizeKana(out);
+  return out;
+}
+
+/** The language of what goes in `box`: its element's, or the nearest
+ *  element's around an anonymous box. */
+function languageIn(box: Box): string {
+  for (let at: Box | null = box; at; at = at.parent) {
+    if (at.el) return languageOf(at.el);
+  }
+  return '';
 }
 
 /**
@@ -6119,14 +6169,33 @@ const IN_WORD =
  * starts with is not its first letter — `(p.p.)` is `(P.p.)` — and a word
  * the text continues, `lettered`, has had its own: `<b>fo</b>o` is `Foo`.
  */
-function capitalize(text: string, lettered: boolean): string {
+function capitalize(
+  text: string,
+  lettered: boolean,
+  /** The language its words are cased for (`tailoredLanguage`): Dutch's
+   *  `ij` is one letter at a word's start, `IJsland`, and Turkish's and
+   *  Azeri's `i` is `İ`. */
+  lang: string | null = null,
+): string {
   let out = '';
   let from = 0;
   let at = 0;
   for (const ch of text) {
     if (LETTER_UNIT.test(ch)) {
       if (!lettered) {
-        const title = titleCase(ch);
+        let title = titleCase(ch);
+        if ((lang === 'tr' || lang === 'az') && ch === 'i') title = '\u0130';
+        if (
+          lang === 'nl' &&
+          (ch === 'i' || ch === 'I') &&
+          (text[at + 1] === 'j' || text[at + 1] === 'J')
+        ) {
+          out += text.slice(from, at) + 'IJ';
+          from = at + 2;
+          lettered = true;
+          at += ch.length;
+          continue;
+        }
         if (title !== ch) {
           out += text.slice(from, at) + title;
           from = at + ch.length;
