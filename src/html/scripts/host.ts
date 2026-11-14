@@ -9519,6 +9519,12 @@ export class DomHost {
           doc,
           referrerPolicyOfHeaders(response.headers),
         );
+        // and the headers its response came with, which the realm a frame's
+        // document runs in reads its own policies from (`frames.ts`)
+        this._responseHeaders.set(
+          doc,
+          response.headers.map(([k, v]): [string, string] => [k, v]),
+        );
         // another origin's scripts never run in this realm, where it was
         // asked for or where it sent the frame, and a sandbox's, of an origin
         // of their own or none to run, no more than they
@@ -10982,6 +10988,13 @@ export class DomHost {
    *  loaded with no realm of its own (`_loadFrame`), whose policy it is
    *  until a `<meta>` says otherwise. */
   private _responseReferrers = new WeakMap<Document, ReferrerPolicy>();
+  private _responseHeaders = new WeakMap<Document, [string, string][]>();
+  /** The headers the response a frame's document came in had: its own
+   *  Content Security Policies, sandbox and `Last-Modified`, where the
+   *  page's are the page's. Empty for one of no response. */
+  responseHeadersOf(doc: Document): [string, string][] {
+    return this._responseHeaders.get(doc) ?? [];
+  }
   /** The document's referrer policy: what its response said, unless a
    *  `<meta>` in its head said otherwise since. */
   documentReferrerPolicy(): ReferrerPolicy {

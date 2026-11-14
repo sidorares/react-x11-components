@@ -3369,9 +3369,10 @@ its `Content-Security-Policy-Report-Only` ones, reported only — read from
 `headers` or `scripts.headers` — and each `<meta
 http-equiv="Content-Security-Policy">` the head holds, from where the parser
 or a script put it on, kept once it is met. A meta's policy says nothing of
-`report-uri`, `frame-ancestors` or `sandbox`. A document of no response of its
-own, `about:blank` or a `srcdoc` in a frame, has the policies of the one it is
-in, and a worker whose script is a blob's or a `data:` URL's those of the
+`report-uri`, `frame-ancestors` or `sandbox`. A frame's document that came in a
+response of its own has that response's, and never the page's. A document of
+no response of its own, `about:blank` or a `srcdoc` in a frame, has the
+policies of the one it is in, and a worker whose script is a blob's or a `data:` URL's those of the
 document that started it; another worker has its own script's response's.
 
 What a policy holds, and where it is asked:
