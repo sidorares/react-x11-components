@@ -7228,7 +7228,13 @@ element's text stays together, at its hyphens as well as its spaces, and
 `pre`'s spaces take their room at a
 line's end, where other spaces hang; `pre-wrap`'s hang there, past the
 line and inside their element's background, and take room before a
-forced break where they fit; and tabs go to their stops, every
+forced break where they fit; `break-spaces`'s take room at every line's
+end, and a line may break after each of them, inside a run of them and
+before a word whose space after it would not fit, so a right-aligned line
+comes in by its spaces — in a paragraph of text alone, which is laid out a
+line at a time for it, and as `pre-wrap`'s anywhere else, beside an image,
+an inline box with edges, a float, an indent, a clamp or justified text;
+and tabs go to their stops, every
 `tab-size` spaces; a line break straight after `<pre>`'s
 start tag is dropped, as HTML's parser drops it) and CSS Text 4's halves
 of it, `white-space-collapse` and `text-wrap-mode`, `text-wrap` (Tailwind

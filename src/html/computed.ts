@@ -1200,7 +1200,10 @@ function cssomAt(
           )
           .join(', ')
       : 'none',
-    'white-space': style.whiteSpace,
+    'white-space':
+      style.breakSpaces && style.whiteSpace === 'pre-wrap'
+        ? 'break-spaces'
+        : style.whiteSpace,
     direction: style.direction,
     'writing-mode': style.writingMode,
     'text-orientation': style.textOrientation,
