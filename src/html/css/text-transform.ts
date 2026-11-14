@@ -34,6 +34,54 @@ export function parseTextTransform(value: string): string | undefined {
   return out.length ? out.join(' ') : undefined;
 }
 
+/**
+ * A `word-space-transform` value (CSS Text 4, 2.2): `none`, or `space` or
+ * `ideographic-space` with `auto-phrase` beside it or not, in the order
+ * written, which is how it reads back. Undefined for anything else.
+ */
+export function parseWordSpaceTransform(value: string): string | undefined {
+  const words = value.trim().toLowerCase().split(/\s+/);
+  if (words.length === 1 && words[0] === 'none') return 'none';
+  let space = 0;
+  let phrase = 0;
+  for (const word of words) {
+    if (word === 'space' || word === 'ideographic-space') space += 1;
+    else if (word === 'auto-phrase') phrase += 1;
+    else return undefined;
+  }
+  return space === 1 && phrase <= 1 && words.length === space + phrase
+    ? words.join(' ')
+    : undefined;
+}
+
+/**
+ * What `word-space-transform` puts where a zero width space or a `<wbr>`
+ * was (CSS Text 4, 2.2): a space or an ideographic space, or null for
+ * `none`. Phrases are not looked for, so `auto-phrase` adds nothing.
+ */
+export function expandedSeparator(value: string): string | null {
+  if (value === 'none') return null;
+  return value.includes('ideographic-space') ? '\u3000' : ' ';
+}
+
+/**
+ * `text` with each zero width space a `<wbr>` or the text has made the
+ * separator `word-space-transform` expands it to, but for one next to a
+ * line feed, a forced line break the text keeps, which stays as it is.
+ */
+export function expandSeparators(text: string, into: string): string {
+  if (!text.includes('\u200b')) return text;
+  let out = '';
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    out +=
+      ch === '\u200b' && text[i - 1] !== '\n' && text[i + 1] !== '\n'
+        ? into
+        : ch;
+  }
+  return out;
+}
+
 /** What a value does: its case transform, and whether it widens and
  *  enlarges kana. Kept by the value, which a document has few of. */
 export interface TransformParts {

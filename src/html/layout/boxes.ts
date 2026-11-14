@@ -48,6 +48,8 @@ import {
 } from '../css/cascade.js';
 import { outOfPlane } from '../css/transform.js';
 import {
+  expandedSeparator,
+  expandSeparators,
   fullSizeKana,
   fullWidth,
   lowerIn,
@@ -4419,6 +4421,13 @@ class Builder {
     // and for the element whatever box it makes (CSS 2.1 12.4)
     this._counterChanges(style, place);
 
+    // `<wbr>` is a place a line may break (HTML 4.5.29): a zero width space,
+    // in its own style, which `word-space-transform` expands where the
+    // element's says to
+    if (tag === 'wbr') {
+      this._textNode('\u200b', into, style, el);
+      return;
+    }
     // `<br>` is a line break rather than a box, and it is the one element
     // whose *absence* of a box still has to reach the inline layout.
     if (tag === 'br') {
@@ -5501,6 +5510,15 @@ class Builder {
       if (!text) return;
       const last = text.charCodeAt(text.length - 1);
       this._ws = last === 32 ? 'space' : last === 10 ? 'start' : 'content';
+    }
+    // after the white space collapses and before the case changes, so an
+    // expanded separator neither collapses nor is left out of `full-width`
+    // (CSS Text 4, 2.3)
+    if (style.wordSpaceTransform !== 'none') {
+      text = expandSeparators(
+        text,
+        expandedSeparator(style.wordSpaceTransform)!,
+      );
     }
     text = transformText(
       text,

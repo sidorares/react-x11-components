@@ -7670,7 +7670,11 @@ end),
 together in any order, and `math-auto`, which sets a text of one letter in
 its mathematical italic; a case is the language's where the element is in
 Dutch, Turkish, Azeri, Lithuanian or Greek, so `ijsland` capitalized in
-Dutch is `IJsland` and Greek capitals lose their tonos), `letter-spacing`
+Dutch is `IJsland` and Greek capitals lose their tonos),
+`word-space-transform` (a zero width space and a `<wbr>`, which is one, set
+as a space or an ideographic space after the white space collapses and
+before `text-transform`, but for one beside a line feed the text keeps;
+`auto-phrase` finds no phrases, and adds nothing), `letter-spacing`
 and `word-spacing` (the first is the text engine's; the second is spacing added to each space and
 no-break space, so only text that asks for it is split into more runs),
 and a space that justification or `word-spacing` widens keeps the
