@@ -126,6 +126,7 @@ import {
   typeNameOf,
   setSheetDisabled,
   setStyleGate,
+  sourcePositionOf,
   xmlTree,
 } from '../dom.js';
 import {
@@ -287,7 +288,7 @@ import { PagePeers } from './peers.js';
 import type { ChannelRelay } from './peers.js';
 import { PageTransports } from './transports.js';
 import { PageSockets } from './sockets.js';
-import { PageCsp, cspNonceOf } from './csp-host.js';
+import { PageCsp, cspNonceOf, runningScriptAt } from './csp-host.js';
 import type { CspViolation, CspWhere } from './csp-host.js';
 import type { CspPolicy } from '../csp.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
@@ -2785,6 +2786,20 @@ export class DomHost {
       };
       if (this.entries?.running) void Promise.resolve().then(tell);
       else tell();
+    },
+    // the page's code that caused it, where some is running, else the
+    // element's place in the document its parser read (CSP 3, 5.3)
+    where: (target) => {
+      const running = this.entries?.running ? runningScriptAt() : null;
+      if (running) return running;
+      const at = target ? sourcePositionOf(target) : null;
+      return at
+        ? {
+            sourceFile: this.url,
+            lineNumber: at.contentLine,
+            columnNumber: at.contentColumn,
+          }
+        : {};
     },
   });
   /** Where a `report-to` group sends, from the response's
@@ -10909,7 +10924,8 @@ export class DomHost {
   ): Primitive {
     const text = (v: Primitive): string => (typeof v === 'string' ? v : '');
     this.cspScan();
-    const where = this._cspWhere();
+    // where each was caused is the `where` seam's to say (`PageCsp`)
+    const where: CspWhere = {};
     switch (kind) {
       case 'said':
         return this.csp.said;
@@ -10938,12 +10954,6 @@ export class DomHost {
       default:
         return true;
     }
-  }
-
-  /** Where a violation a script caused comes from, for its report: none
-   *  is known here yet. */
-  private _cspWhere(): CspWhere {
-    return {};
   }
 
   /** The policy the last `<meta name="referrer">` that said one brought,

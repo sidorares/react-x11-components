@@ -39,6 +39,10 @@ export function installCsp(deps: CspDeps) {
   const usv = (v: Any): string => String(v);
 
   const DISPOSITIONS = ['enforce', 'report'];
+  /** The events made here, which an attribute's getter is asked of: one
+   *  read off another object is a `TypeError`, as a platform object's is
+   *  (Web IDL 3.7.6). */
+  const MADE = new WeakSet<object>();
 
   /** `securitypolicyviolation` (CSP 3, 5.?): what was refused, by which of
    *  the document's policies, and where. */
@@ -85,6 +89,7 @@ export function installCsp(deps: CspDeps) {
       this._statusCode = (Number(d.statusCode) || 0) & 0xffff;
       this._lineNumber = Number(d.lineNumber) >>> 0;
       this._columnNumber = Number(d.columnNumber) >>> 0;
+      MADE.add(this);
     }
     get documentURI(): string {
       return this._documentURI;
@@ -137,15 +142,30 @@ export function installCsp(deps: CspDeps) {
     'lineNumber',
     'columnNumber',
   ]) {
-    const d = Object.getOwnPropertyDescriptor(
-      SecurityPolicyViolationEvent.prototype,
-      name,
-    ) as Any;
+    const read = (
+      Object.getOwnPropertyDescriptor(
+        SecurityPolicyViolationEvent.prototype,
+        name,
+      ) as Any
+    ).get;
+    const get = {
+      [name](this: Any): Any {
+        if (!MADE.has(this)) throw new TypeError('Illegal invocation');
+        return read.call(this);
+      },
+    }[name];
+    Object.defineProperty(get, 'name', { value: `get ${name}` });
     Object.defineProperty(SecurityPolicyViolationEvent.prototype, name, {
-      ...d,
+      get,
       enumerable: true,
+      configurable: true,
     });
   }
+  Object.defineProperty(
+    SecurityPolicyViolationEvent.prototype,
+    Symbol.toStringTag,
+    { value: 'SecurityPolicyViolationEvent', configurable: true },
+  );
 
   /** A violation the host tells, fired at what it names (CSP 3, 5.3,
    *  "Report a violation"): bubbling and composed, so a listener on the

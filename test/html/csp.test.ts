@@ -683,3 +683,84 @@ scripted(
     page.unmount();
   },
 );
+
+scripted(
+  'a violation says where in the document it was caused: the running script’s frame, else what it is about',
+  async () => {
+    const head = `<meta http-equiv="Content-Security-Policy" content="script-src 'nonce-n'">
+<script nonce="n">
+  window.seen = [];
+  document.addEventListener('securitypolicyviolation', function (e) {
+    seen.push([e.blockedURI, e.sourceFile, e.lineNumber, e.columnNumber]);
+  });
+</script>`;
+    const body = `
+<script nonce="n">
+  try {
+    eval('1');
+  } catch (e) {}
+</script>
+<script id="blocked">console.log('ran');</script>
+<script nonce="n">setTimeout(function () {
+  console.log('seen ' + JSON.stringify(seen));
+}, 100)</script>`;
+    const page = await policed(head, body);
+    // as the document's lines are numbered, and its columns from 1
+    const source = `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
+    const place = (index: number): [number, number] => {
+      const before = source.slice(0, index).split('\n');
+      return [before.length, before.at(-1)!.length + 1];
+    };
+    const evalAt = place(source.indexOf("eval('1')"));
+    const blockedAt = place(
+      source.indexOf('<script id="blocked">') + '<script id="blocked">'.length,
+    );
+    assert.deepEqual(JSON.parse(await page.until('seen')), [
+      ['eval', PAGE_URL, ...evalAt],
+      ['inline', PAGE_URL, ...blockedAt],
+    ]);
+    assert.ok(!page.logs.includes('log: ran'));
+    page.unmount();
+  },
+);
+
+scripted(
+  'a violation event’s attributes are read off the event alone, and it says what it is',
+  async () => {
+    const page = await policed(
+      '',
+      `<script>
+      var e = new SecurityPolicyViolationEvent('securitypolicyviolation', { lineNumber: 3 });
+      var threw;
+      try { SecurityPolicyViolationEvent.prototype.lineNumber; } catch (x) { threw = x.name; }
+      console.log('out ' + [e.lineNumber, threw, Object.prototype.toString.call(e),
+        Object.getOwnPropertyDescriptor(SecurityPolicyViolationEvent.prototype, 'lineNumber').get.name].join('|'));
+    </script>`,
+    );
+    assert.equal(
+      await page.until('out'),
+      '3|TypeError|[object SecurityPolicyViolationEvent]|get lineNumber',
+    );
+    page.unmount();
+  },
+);
+
+scripted(
+  'a <script src> the parser met and a policy refuses is reported by its URL, at no place in the document',
+  async () => {
+    const page = await policed(
+      `<meta http-equiv="Content-Security-Policy" content="script-src 'nonce-n'">
+<script nonce="n">
+  document.addEventListener('securitypolicyviolation', function (e) {
+    console.log('out ' + [e.blockedURI, e.lineNumber, e.columnNumber].join('|'));
+  });
+</script>`,
+      `<script src="https://example.test/blocked.js"></script>`,
+    );
+    assert.equal(
+      await page.until('out'),
+      'https://example.test/blocked.js|0|0',
+    );
+    page.unmount();
+  },
+);
