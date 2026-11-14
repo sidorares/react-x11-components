@@ -9117,6 +9117,25 @@ export function installEditing(deps: EditingDeps): EditingInternals {
     range.setEnd(after, 0);
   }
 
+  /** Whether an element is laid out inline, as `display` has it. */
+  function laidOutInline(node: Any): boolean {
+    return (
+      node.nodeType == 1 &&
+      /^inline(-block)?$/.test(computedStyle(node, 'display'))
+    );
+  }
+
+  /** A single-line container a paragraph is split from: a `<div>` or a
+   *  `<p>` laid out inline is none, and its line is wrapped in one and split
+   *  as anything inline is, as Chromium has it (WPT's tentative
+   *  insertparagraph-with-white-space-style). */
+  function isParagraphContainer(node: Any): boolean {
+    return (
+      isSingleLineContainer(node) &&
+      !(isHtmlElement(node, ['div', 'p']) && laidOutInline(node))
+    );
+  }
+
   commands.insertparagraph = {
     preservesOverrides: true,
     action: function () {
@@ -9152,6 +9171,61 @@ export function installEditing(deps: EditingDeps): EditingInternals {
         if (!isSingleLineContainer(block)) {
           splitBlockAt(block);
           return true;
+        }
+      }
+
+      // and where the host is laid out inline, a line break, or a line feed
+      // where its white space keeps one (WPT's tentative
+      // insertparagraph-with-white-space-style)
+      if (host && laidOutInline(host)) {
+        var through = getActiveRange().startContainer;
+        while (through != host && !isBlockNode(through)) {
+          through = through.parentNode;
+        }
+        if (through == host) {
+          insertLineBreakOrFeed();
+          return true;
+        }
+      }
+
+      // a <div> or a <p> laid out inline is a line's part, and the line it
+      // is on is wrapped in a default single-line container first, which
+      // the paragraph is then split from, the element with it
+      var inlined = getActiveRange().startContainer;
+      while (
+        inlined &&
+        inlined != host &&
+        !(isHtmlElement(inlined, ['div', 'p']) && laidOutInline(inlined)) &&
+        !isBlockNode(inlined)
+      ) {
+        inlined = inlined.parentNode;
+      }
+      if (
+        inlined &&
+        inlined != host &&
+        isHtmlElement(inlined, ['div', 'p']) &&
+        laidOutInline(inlined) &&
+        isEditable(inlined) &&
+        (inlined.parentNode == host || isBlockNode(inlined.parentNode))
+      ) {
+        var first = inlined;
+        var last = inlined;
+        var onLine = (n: Any): boolean =>
+          !!n && isInlineNode(n) && !isHtmlElement(n, 'br');
+        while (onLine(first.previousSibling)) first = first.previousSibling;
+        while (onLine(last.nextSibling)) last = last.nextSibling;
+        // a <p> holds no <div> or <p>, and a <div> holds it then
+        var line = document.createElement(
+          isAllowedChild(inlined.localName, defaultSingleLineContainerName)
+            ? defaultSingleLineContainerName
+            : 'div',
+        );
+        first.parentNode.insertBefore(line, first);
+        for (var moving = first; ;) {
+          var next = moving.nextSibling;
+          movePreservingRanges(moving, line, -1);
+          if (moving == last) break;
+          moving = next;
         }
       }
 
@@ -9191,7 +9265,7 @@ export function installEditing(deps: EditingDeps): EditingInternals {
       // parent is editable and in the same editing host as node, set
       // container to its parent."
       while (
-        !isSingleLineContainer(container) &&
+        !isParagraphContainer(container) &&
         isEditable(container.parentNode) &&
         inSameEditingHost(node, container.parentNode)
       ) {
@@ -9202,7 +9276,7 @@ export function installEditing(deps: EditingDeps): EditingInternals {
       // editing host as node, and its local name is "p" or "div":"
       if (
         isEditable(container) &&
-        isSingleLineContainer(container) &&
+        isParagraphContainer(container) &&
         inSameEditingHost(node, container.parentNode) &&
         (container.tagName == 'P' || container.tagName == 'DIV')
       ) {
@@ -9231,7 +9305,7 @@ export function installEditing(deps: EditingDeps): EditingInternals {
       if (
         !isEditable(container) ||
         !inSameEditingHost(container, node) ||
-        !isSingleLineContainer(container)
+        !isParagraphContainer(container)
       ) {
         // "Let tag be the default single-line container name."
         var tag = defaultSingleLineContainerName;
