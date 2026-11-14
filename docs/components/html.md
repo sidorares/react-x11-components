@@ -7648,6 +7648,17 @@ a plain percentage would be, so `calc(40px + 10%)` against a height nothing
 sets is no height. The constants `pi`, `e`, `infinity` and `NaN` are read,
 and a calculation that comes to no finite number is what a browser makes
 of it: NaN is nought, and an infinity the largest length there is.
+A value that is one math function is read, as a page's `el.style` keeps
+it, with every function of CSS Values 4 — the stepped value, trigonometric,
+exponential and sign-related ones with `calc()` and the comparisons — type
+checked against what the property takes, simplified as far as values that
+need no layout go, and serialized as Chrome serializes it: `round(10px,
+3px)` is `calc(9px)`, `atan2(1, 1)` is `calc(45deg)` and `calc(1000ms)` is
+`calc(1s)`. One whose syntax or types are wrong, `mod(1px)` or `calc(1px +
+2)` in a width, or a percentage where the property has nothing it is of,
+is refused, as a browser refuses it. What this cannot judge — a function
+it does not know, an `anchor()`, a value of more than the one function, a
+property whose type it does not know — is kept as it was written.
 
 **`zoom`** (CSS Viewport 1, 5) scales every length under the element, a
 number or a percentage, and nested ones multiply. It is kept as Blink keeps

@@ -7,6 +7,7 @@
 
 import { positionAreaText } from './anchor.js';
 import { serializeMath } from './calc-tree.js';
+import { specifiedMath } from './math.js';
 import { CALC_SIZE, calcSizeSpecified } from './calc-size.js';
 import {
   ANIMATION_LONGHANDS,
@@ -67,6 +68,10 @@ export function specifiedValue(
     return undefined;
   }
   const name = prop.toLowerCase();
+  // a value that is one math function, typed against what the property
+  // takes and simplified (`math.ts`), where that can be said
+  const math = specifiedMath(name, value);
+  if (math !== undefined) return math;
   // the grid's, refused and kept as the cascade reads them
   // (`grid-specified.ts`)
   if (GRID_SPECIFIED.has(name)) {
