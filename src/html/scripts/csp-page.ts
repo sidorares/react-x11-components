@@ -26,6 +26,13 @@ export interface CspDeps {
   /** The realm's own `eval` and `Function`, taken before any page code. */
   nativeEval: unknown;
   nativeFunction: unknown;
+  /** Trusted Types (`trusted-types.ts`): a TrustedScript's string, or
+   *  undefined for anything else, and a string as the default policy makes
+   *  it where the document requires Trusted Types, throwing where none
+   *  does. */
+  trustedScript?(value: unknown): string | undefined;
+  trustedComply?(value: unknown, sink: string): string;
+  trustedRequired?(): boolean;
 }
 
 export function installCsp(deps: CspDeps) {
@@ -204,10 +211,30 @@ export function installCsp(deps: CspDeps) {
     guarded = true;
     const evalGuard = {
       eval(x: Any): Any {
-        if (typeof x !== 'string') return x;
-        ensureCompiles(x);
+        // a TrustedScript is the code it holds (Trusted Types, 4.8,
+        // HostGetCodeForEval), and a string, where the document requires
+        // Trusted Types, what the default policy makes of it, unchanged
+        const held = deps.trustedScript?.(x);
+        if (typeof x !== 'string' && held === undefined) return x;
+        const source = held ?? x;
+        if (held === undefined && deps.trustedRequired?.()) {
+          let made: string;
+          try {
+            made = deps.trustedComply!(x, 'eval');
+          } catch {
+            throw new EvalError(
+              "Refused to evaluate a string as JavaScript because this document requires 'TrustedScript' assignment.",
+            );
+          }
+          if (made !== x) {
+            throw new EvalError(
+              'The default policy changed what eval was handed, which it may not.',
+            );
+          }
+        }
+        ensureCompiles(source);
         // indirect, as no call through a name but `eval` is direct
-        return nativeEval(x);
+        return nativeEval(source);
       },
     }.eval;
     Object.defineProperty(G, 'eval', {
@@ -306,7 +333,7 @@ export function installCsp(deps: CspDeps) {
   let policed = false;
   const policyChanged = (said: string): void => {
     if (said.includes('p')) policed = true;
-    if (said.includes('e')) guard();
+    if (said.includes('e') || said.includes('t')) guard();
     if (said.includes('w')) guardWasm();
   };
 
