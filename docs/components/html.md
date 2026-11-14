@@ -3195,6 +3195,15 @@ painted or any fill and its stroke likewise, a text's run by the box it
 takes up, an image's rectangle, and the `<svg>` itself where the point is
 over none. What a rule of the document's says of `pointer-events`, `fill` or
 `visibility` is not read there, only the attributes and `style`.
+A text's characters are laid out as SVG 2's text
+layout has them (`placedChars`), white space collapsed, each at the `x`
+and `y` its element's lists give it or where the one before ended, moved by
+`dx` and `dy`, turned by `rotate`, and each chunk anchored by `text-anchor`:
+`getNumberOfChars()`, `getSubStringLength()`, `getStartPositionOfChar()`,
+`getEndPositionOfChar()`, `getExtentOfChar()`, `getRotationOfChar()` and
+`getCharNumAtPosition()` read them, down the line where `writing-mode` runs
+it down. A `textPath` is laid out as a line, and `textLength` stretches
+nothing.
 
 **A path's `d` is segments to a script** (SVG Paths, `SVGPathData`,
 `src/html/scripts/path-data.ts`). `getPathData()` reads the attribute as
