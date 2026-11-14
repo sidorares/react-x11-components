@@ -235,18 +235,6 @@ function mixSizes(
   return { size: a.size + (b.size - a.size) * q, plus: plus as Len };
 }
 
-/**
- * The fields of a width and a height written so that a size between a
- * length and a keyword runs, as `interpolate-size: allow-keywords` lets it
- * (CSS Values 5, 12.1): both ends as a `calc-size()` of the keyword — the
- * length as none of the keyword's size and the length added, the keyword
- * as all of it, a `calc-size()` already as it is — so that `widthSize`
- * and `heightSize` run between the two as any record of numbers does,
- * and `width`, `height` and their keywords are the same at both ends. A
- * size the two ends give the same way, two lengths or one keyword, is
- * left as it is, and so are two keywords, which do not run. Null where
- * nothing was written so.
- */
 /** The sizes `interpolate-size: allow-keywords` lets a keyword run in,
  *  each with the fields its keyword and its `calc-size()` are kept in. */
 const KEYWORD_SIZE_FIELDS = [
@@ -258,6 +246,18 @@ const KEYWORD_SIZE_FIELDS = [
   ['maxHeight', 'maxHeightKeyword', 'maxHeightSize'],
 ] as const;
 
+/**
+ * The fields of a size written so that a size between a
+ * length and a keyword runs, as `interpolate-size: allow-keywords` lets it
+ * (CSS Values 5, 12.1): both ends as a `calc-size()` of the keyword — the
+ * length as none of the keyword's size and the length added, the keyword
+ * as all of it, a `calc-size()` already as it is — so that its `calc-size()`
+ * field runs between the two as any record of numbers does,
+ * and `width`, `height` and their keywords are the same at both ends. A
+ * size the two ends give the same way, two lengths or one keyword, is
+ * left as it is, and so are two keywords, which do not run. Null where
+ * nothing was written so.
+ */
 export function keywordSizes(
   was: ComputedStyle,
   now: ComputedStyle,

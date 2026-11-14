@@ -2601,7 +2601,9 @@ identifier or string. Its `cssRules` are `CSSKeyframeRule`s, a keyframe
 dropped where a selector is outside 0% to 100% and `keyText` read as `0%`
 for `from` and `100%` for `to`, and a keyframe's `style` holds none of the
 animation properties but `animation-timing-function` and
-`animation-composition`, whatever a shorthand after them says. A page
+`animation-composition`, whatever a shorthand after them says; a frame's
+`animation-composition` is how its values composite onto what is under
+them (CSS Animations 2, 4.3). A page
 renames it, edits a keyframe's selector or style, and adds, finds and
 removes keyframes (`appendRule`, `findRule`, `deleteRule`), and the rule is
 written again in its sheet, which what runs it animates by.
@@ -6741,10 +6743,14 @@ an accordion shuts is drawn as it shuts. An element whose `display` goes to
 `allow-discrete`, which keeps its box, and what runs beside it, to the end
 of the run: a popover or a menu faded out as it is hidden. Under `interpolate-size:
 allow-keywords` (CSS Values 5), inherited and so usually set on `:root`, a
-`width` or a `height` runs between a length and a keyword — `height: 0` to
-`auto` — through a `calc-size()` of the keyword, both ends written as one
-(`calc-size(auto, size * 0)` to `calc-size(auto, size)`), and in `@keyframes`
-as well; two keywords still go over at once. One
+`width` or a `height`, a minimum or a maximum, or a logical size, runs
+between a length and a keyword — `height: 0` to `auto` — through a
+`calc-size()` of the keyword, both ends written as one (`calc-size(auto,
+size * 0)` to `calc-size(auto, size)`), and in `@keyframes` as well; two
+keywords still go over at once, and so does a keyword a frame adds onto,
+since nothing adds a length to one. A page that seeks an animation of a
+size and reads it in the same task reads where it went: the box is laid
+out again first. One
 under way that is turned back the way it came runs back as far as it had
 come, in that part of its duration; one given a new end runs on to it from
 where it is; and one whose property the list no longer names is at its
