@@ -31,6 +31,8 @@ import type {
   CspRequest,
   InlineType,
 } from '../csp.js';
+import type { Element } from 'domhandler';
+import { namedAttributeTwice } from '../dom.js';
 import { nodeModule } from './platform.js';
 
 interface CryptoModule {
@@ -51,6 +53,8 @@ export function cspNonceOf(
 ): string {
   const nonce = slot ?? element?.attribs.nonce;
   if (!element || !nonce) return '';
+  // nor where its start tag named an attribute twice (HTML 2.6.3)
+  if (namedAttributeTwice(element as Element)) return '';
   for (const [name, value] of Object.entries(element.attribs)) {
     if (/<(script|style)/i.test(name) || /<(script|style)/i.test(value)) {
       return '';
