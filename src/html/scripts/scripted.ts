@@ -140,7 +140,13 @@ async function timedResource<T>(
   const report = (
     clock: ResourceClock,
     context: Omit<ResourceContext, 'origin'>,
-  ): void => reporter()?.(clock, context);
+  ): void => {
+    try {
+      reporter()?.(clock, context);
+    } catch {
+      // the page's record of the fetch, which the fetch does not wait on
+    }
+  };
   if (
     request.opaqueSheet ||
     request.kind === 'video' ||

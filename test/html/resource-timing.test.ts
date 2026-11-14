@@ -302,3 +302,21 @@ test("an image the document asks for is an entry, and another origin's says none
   );
   assert.equal(await doc.until((l) => l.includes('img')), 'img:0:0');
 });
+
+test('a response the host answers with no body still settles the fetch, and is timed', async () => {
+  // what a service worker's answer may be: a head and nothing else
+  const doc = await hosted(
+    '<script>' +
+      "fetch('empty').then(function (r) { console.log('status:' + r.status + ':' + performance.getEntriesByType('resource').length) }, function (e) { console.log('failed:' + e) });" +
+      '</script>',
+    (url) =>
+      ({
+        url,
+        status: 204,
+        statusText: 'No Content',
+        redirected: false,
+        headers: [],
+      }) as unknown as FetchResponse,
+  );
+  assert.equal(await doc.until((l) => /status|failed/.test(l)), 'status:204:1');
+});
