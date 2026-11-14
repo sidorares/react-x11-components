@@ -1554,6 +1554,85 @@ test('an RTCRtpScriptTransform on each side sees every VP8 frame in its worker, 
   }
 });
 
+test('createEncodedStreams() hands the page each side’s VP8 frames on streams of its own, and what it writes back is what is sent and decoded', async () => {
+  const logs = await run(`
+    ${CALL}
+    // inverts every byte past a frame's first ten, on the way out and back
+    // on the way in, and says what it saw; asked to, it writes a frame twice
+    var twice = false;
+    function pass(name, streams, heard) {
+      var r = streams.readable.getReader(), w = streams.writable.getWriter();
+      var seen = 0;
+      (async function () {
+        for (;;) {
+          var got = await r.read();
+          if (got.done) return;
+          var f = got.value, m = f.getMetadata();
+          if (seen++ === 0) heard.push('first:' + name + ':' + (f instanceof RTCEncodedVideoFrame) + ':' + f.type + ':' + m.mimeType + ':' + (f.timestamp === m.rtpTimestamp));
+          var bytes = new Uint8Array(f.data);
+          for (var i = 10; i < bytes.length; i++) bytes[i] ^= 0xff;
+          var data = f.data;
+          await w.write(f);
+          // what the page read is still the page's
+          if (seen === 1) heard.push('kept:' + name + ':' + (data.byteLength > 10));
+          if (twice) {
+            // a frame written again errors the stream
+            try { await w.write(f); heard.push('twice:' + name + ':written'); }
+            catch (x) { heard.push('twice:' + name + ':' + x.name); }
+            return;
+          }
+        }
+      })();
+    }
+    var canvas = document.createElement('canvas');
+    canvas.width = 160; canvas.height = 120;
+    document.documentElement.appendChild(canvas);
+    var g = canvas.getContext('2d');
+    var n = 0;
+    var timer = setInterval(function () {
+      n++;
+      g.fillStyle = 'rgb(' + (n * 20 % 255) + ',80,120)';
+      g.fillRect(0, 0, 160, 120);
+    }, 100);
+    var stream = canvas.captureStream();
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    var sender = pc1.addTrack(stream.getVideoTracks()[0], stream);
+    var heard = [];
+    var out = sender.createEncodedStreams();
+    log('streams', out.readable instanceof ReadableStream, out.writable instanceof WritableStream);
+    try { sender.createEncodedStreams(); log('twice'); }
+    catch (x) { log('made twice', x.name); }
+    pass('sender', out, heard);
+    pc2.ontrack = function (e) { pass('receiver', e.receiver.createEncodedStreams(), heard); };
+    await call(pc1, pc2);
+    // what the receiver wrote back decodes: the bytes it inverted were
+    // inverted back
+    var decoded = 0;
+    for (var end = Date.now() + 15000; decoded <= 2 && Date.now() < end; ) {
+      (await pc2.getStats()).forEach(function (x) { if (x.type === 'inbound-rtp') decoded = x.framesDecoded; });
+      await new Promise(function (r) { setTimeout(r, 100); });
+    }
+    log('decoded', decoded > 2);
+    twice = true;
+    await wait('frames', function () {
+      return heard.filter(function (h) { return /^twice/.test(h); }).length === 2;
+    });
+    log('heard', heard.sort().join(','));
+    clearInterval(timer);
+    pc1.close(); pc2.close();
+    log('done');
+  `);
+  for (const line of [
+    'streams|true|true',
+    'made twice|InvalidStateError',
+    'decoded|true',
+    'heard|first:receiver:true:key:video/VP8:true,first:sender:true:key:video/VP8:true,kept:receiver:true,kept:sender:true,twice:receiver:OperationError,twice:sender:OperationError',
+    'done',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
 test('abs-capture-time an app adds to its offer is answered and sent, and a receiver’s sources carry the capture time; offered by default it is not', async () => {
   const logs = await run(`
     ${CALL}
