@@ -72,6 +72,7 @@ import {
   partialsMade,
 } from './block.js';
 import { layoutGrid } from './css-grid.js';
+import { layoutGridLanes } from './grid-lanes.js';
 import { LineNode, onOneLine } from './flex-line.js';
 import { firstBaselineIn } from './inline.js';
 import { TABLE_CONTENT } from './table.js';
@@ -146,6 +147,7 @@ export function layoutFlex(
   contentWidth: number,
 ): number {
   // a grid container is one of these to the box tree, and laid out apart
+  if (box.style.gridLanes) return layoutGridLanes(box, ctx, contentWidth);
   if (box.style.grid) return layoutGrid(box, ctx, contentWidth);
   if (!layoutLoaded()) return layoutAsBlockFallback(box, ctx, contentWidth);
   // Each flex box in a flex item runs its Yoga pass inside the measure of

@@ -5494,6 +5494,44 @@ last line is pulled back into the last track. Subgrids nest. A box with
 layout or paint containment, and an item of a box that is no grid, is no
 subgrid, and its template on that axis is `none`.
 Baseline alignment of the items is not read.
+Grid lanes (CSS Grid 3), which is masonry by its standard name, are
+`display: grid-lanes` and `inline-grid-lanes`, `inline grid-lanes` among
+them: a grid in one axis, whose tracks are the lanes, and a flow down each
+lane in the other. The lanes are columns, or rows where
+`grid-lanes-direction` says `row` or, at `normal`, where there is a row
+template and no column one, and the template, `repeat()`, `auto-fit`, line
+names, areas and gaps read as a grid's. Their tracks are sized as a grid's
+are, but an item with no line of its own sizes every lane it could go in,
+at every start it could have, since where it goes is known only once the
+items before it are laid out (3.4); and a `repeat(auto-fill, …)` of tracks
+their content sizes, `repeat(auto-fill, auto)`, repeats as many times as
+tracks as large as its hypothetical ones fit (3.1.1). Each item, in
+`order`, goes in the lane that leaves it highest: the start whose spanned
+tracks end lowest, or among those within `fit-tolerance` of it — `normal`
+is 1em, `infinite` fills strictly in order — the first at or after where
+the item before it ended, and is laid out in its area there, as wide as its
+lanes and as tall as its content. `grid-lanes-pack: dense` puts an item in
+a hole a spanning item left above, where the lanes there come to the width
+it was laid out at. `track-reverse` fills the lanes from the last, and
+`fill-reverse` stacks from the far edge, the stacking range mirrored in
+itself and at that edge of the container under `normal` alignment. Along
+the lanes, `align-content` (`justify-content` for row lanes) places the
+stacking range as a whole, and an item's own alignment moves it in the hole
+after it; across them, items align in their lanes as a grid's do, and
+`flow-start` and `flow-end` follow the order the lanes fill in. An item's
+negative margin can take back the gap after it, as the engines have it,
+where the specification floors its size at nought first; a lane's running
+position never goes back. A grid lanes container sits on the highest
+baseline of the items placed first in its lanes (6.5), and one with no
+width of its own and row lanes is as wide as its stacking range. An
+absolutely positioned child's static position turns round with the lanes.
+The `grid-lanes` shorthand sets the lanes' template, an area string and the
+direction. Beside an auto repetition every track has to be a fixed size, as
+CSS Grid 2's grammar has it, in a grid as much as in grid lanes:
+`max-content repeat(auto-fill, 100px)` is no track list. Not read yet:
+subgrids in the lanes — an item with `subgrid` is laid out as a grid of its
+own — the items' own baseline alignment, fragmentation, and `direction:
+rtl`, which no grid here reads either.
 A table's borders collapse where it asks: one border along each edge of its
 grid, centred on it, chosen from the cells, rows, row groups, columns,
 column groups and the table that meet there as CSS 2.1 17.6.2.1 chooses —

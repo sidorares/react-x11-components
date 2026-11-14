@@ -3770,7 +3770,17 @@ export function isButton(box: Box): boolean {
  */
 function flexBaseline(box: Box): number | null {
   if (box.style.grid) {
-    const item = GRID_TRACKS.get(box)?.first;
+    const tracks = GRID_TRACKS.get(box);
+    // grid lanes': the highest of those of the items placed first in
+    // their lanes (CSS Grid 3, 6.5)
+    if (tracks?.firsts?.length) {
+      let highest = Infinity;
+      for (const item of tracks.firsts) {
+        highest = Math.min(highest, itemBaselineOf(item));
+      }
+      return highest;
+    }
+    const item = tracks?.first;
     return item ? itemBaselineOf(item) : null;
   }
   const items: Box[] = [];
