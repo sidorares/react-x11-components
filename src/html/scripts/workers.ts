@@ -12,6 +12,7 @@
 // on a shared word (`Atomics.wait`) while this side fetches, then reads the
 // answer off the port (`receiveMessageOnPort`). The thread blocks; the page
 // does not.
+import { isClassicScriptType } from '../dom.js';
 import type { ValueModule } from './script-origin.js';
 import { readDataUrl } from '../network.js';
 import { referrerPolicyOfHeaders } from '../referrer.js';
@@ -85,13 +86,16 @@ export interface PageWorkersSeams {
   message(id: number, data: string): void;
   /** A worker asked of a data channel the page handed it. */
   rtc?(id: number, message: ChannelRelay): void;
-  /** A worker's script threw what nothing there caught. */
+  /** A worker's script threw what nothing there caught; or, `failed`, its
+   *  script did not come or did not parse, which is a plain `error` at its
+   *  `Worker` (HTML 10.2.4, "run a worker", step 24). */
   error(
     id: number,
     message: string,
     filename: string,
     line: number,
     column: number,
+    failed?: boolean,
   ): void;
   /** What a worker's `caches` ask, in the store the page's are kept in. */
   caches?(origin: string, ask: HtmlCacheAsk): Promise<HtmlCacheAnswer>;
@@ -145,6 +149,7 @@ export type FromWorker =
       filename: string;
       line: number;
       column: number;
+      failed?: boolean;
     }
   | { kind: 'fetch'; id: number; request: FetchRequest }
   | { kind: 'abort'; id: number }
@@ -591,7 +596,13 @@ export class PageWorkers implements PageWorkersLike {
   ): Promise<
     | string
     | null
-    | { source: string | null; policy: string; csp?: [string, string][] }
+    | {
+        source: string | null;
+        policy: string;
+        csp?: [string, string][];
+        /** Where it came from, after its redirects. */
+        url?: string;
+      }
   > {
     // a `data:` script is read here, whatever the mode: Fetch hands a data:
     // URL to its scheme fetch before it asks whose it is (4.1, "main fetch")
@@ -614,8 +625,23 @@ export class PageWorkers implements PageWorkersLike {
         new AbortController().signal,
         id,
       );
+      // a classic worker's script and what it imports, over HTTP(S), are
+      // scripts only where their response says so (HTML 8.1.5.1, "fetch a
+      // classic worker script" and "fetch a classic worker-imported
+      // script"): `text/plain` is a network error, as a 404 is. A module's
+      // type is judged where its graph is (`judgeScript`)
+      const typed =
+        mode === 'cors' ||
+        !/^https?:/i.test(response.url || url) ||
+        isClassicScriptType(
+          (response.headers.find(([k]) => /^content-type$/i.test(k))?.[1] ?? '')
+            .split(';')[0]
+            .trim(),
+        );
       const source =
-        response.status >= 200 && response.status < 300 ? response.body : null;
+        typed && response.status >= 200 && response.status < 300
+          ? response.body
+          : null;
       return own
         ? {
             source,
@@ -624,7 +650,9 @@ export class PageWorkers implements PageWorkersLike {
               /^content-security-policy(-report-only)?$/i.test(k),
             ),
           }
-        : source;
+        : // an import's, with where it came from, which says whose its
+          // errors are (HTML 8.1.4.6, "muted errors")
+          { source, policy: '', url: response.url || url };
     } catch {
       return null;
     }
@@ -688,7 +716,14 @@ export class PageWorkers implements PageWorkersLike {
         this._seams.message(id, m.data);
         return;
       case 'error':
-        this._seams.error(id, m.message, m.filename, m.line, m.column);
+        this._seams.error(
+          id,
+          m.message,
+          m.filename,
+          m.line,
+          m.column,
+          m.failed,
+        );
         return;
       case 'log':
         this._seams.log(m.level, `[worker ${running.url}] ${m.text}`);
