@@ -976,7 +976,11 @@ charset }` — the `<script>` is the request's `element`, and the root
   `type: 'css'` is a `TypeError`, and nothing is asked for. A module worker
   hears what was posted to it, and a module shared worker its `connect`, once
   its graph has run, as a classic one hears them after its script: what sets
-  `onconnect` is often a module the worker's script imports.
+  `onconnect` is often a module the worker's script imports. A module
+  worker's graph is fetched with the `credentials` its options name, its
+  owner's cookies by default. A `SharedWorker` that names a shared worker
+  already running with another `type`, `credentials`, `extendedLifetime` or
+  `sameSiteCookies` connects to nothing and hears `error`, a task later.
   Each is a module of its own beside the script at the same URL. Another
   type, `type: 'javascript'` among them, is a `TypeError`, and an attribute
   but `type` a `SyntaxError` in an `import` and a `TypeError` in an

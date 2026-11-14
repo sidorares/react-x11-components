@@ -504,6 +504,9 @@ export interface WorkerInit {
    *  are then too, whatever its policies say (Upgrade Insecure Requests,
    *  3.3). */
   upgrades?: boolean;
+  /** What a module worker's graph is fetched with (`WorkerOptions`): its
+   *  owner's cookies by default, none, or any origin's. */
+  credentials?: 'omit' | 'same-origin' | 'include';
   /** A shared worker's (HTML 10.2.6.4), whose global takes connections
    *  rather than messages of its own. */
   shared?: boolean;
