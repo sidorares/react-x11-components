@@ -595,6 +595,7 @@ import { CanvasText } from './canvas-text.js';
 import { WebFonts } from './fonts.js';
 import type { DeclaredFace, DocumentFontFace, FontMatch } from './fonts.js';
 import { corsOfKey, resolveUrl, UrlResolver } from './url.js';
+import { originOf } from './scripts/fetch-hops.js';
 
 /** The element name — registration key, `node.kind` and JSX tag alike. */
 export const ELEMENT = 'htmlview';
@@ -1617,11 +1618,32 @@ export class HtmlViewNode extends Node {
   private _widgets: ReadonlySet<Element> = new Set();
   private _widgetsOf: ControlRect[] | null = null;
   private _reportedDomRevision = -1;
+  /** What a stylesheet of another origin than the document's names — its
+   *  imports, its fonts, its images — which a page sees nothing of having
+   *  been fetched (`ResourceRequest.opaqueSheet`). */
+  private _opaqueSheetUrls = new Set<string>();
+
+  /** A sheet read from `base`: where that is another origin than the
+   *  document's, the URLs its rules name are noted as an opaque sheet's. */
+  private _noteSheetOrigin(text: string, base: string | null): void {
+    const own = this._urls.base;
+    if (!base || !own || originOf(base) === originOf(own)) return;
+    for (const m of text.matchAll(
+      /(?:url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s]*))|@import\s+(?:"([^"]*)"|'([^']*)'))/gi,
+    )) {
+      const named = m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5];
+      if (named) this._opaqueSheetUrls.add(resolveUrl(named, base));
+    }
+  }
 
   constructor(props: Record<string, unknown>, app: NtkApp) {
     super(ELEMENT, props, app);
     const ask = (request: ResourceRequest) =>
-      this._props().onResource?.(request) ?? null;
+      this._props().onResource?.(
+        this._opaqueSheetUrls.has(request.url)
+          ? { ...request, opaqueSheet: true }
+          : request,
+      ) ?? null;
     this._resources = new ResourceStore(
       ask,
       (what, layout, lazily) => {
@@ -3437,6 +3459,9 @@ export class HtmlViewNode extends Node {
         ref.kind === 'inline'
           ? documentBase
           : this._resources.sheetBase(ref.href);
+      if (linked && ref.kind !== 'inline') {
+        this._noteSheetOrigin(text, base ?? ref.href);
+      }
       read.push({
         text,
         encoding,
@@ -3738,6 +3763,7 @@ export class HtmlViewNode extends Node {
       this._resources.request({ url, kind: 'stylesheet', element });
       const fetched = this._resources.stylesheet(url, [encoding]);
       const base = this._resources.sheetBase(url);
+      if (fetched?.text) this._noteSheetOrigin(fetched.text, base ?? url);
       seen.push({ url, text: fetched?.text ?? null, base });
       const key = base ?? url;
       if (!fetched || depth >= MAX_IMPORT_DEPTH || chain.has(key)) continue;

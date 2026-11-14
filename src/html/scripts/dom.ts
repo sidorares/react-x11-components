@@ -53,6 +53,7 @@ import type { installEditing } from './editing.js';
 import type { installEncodedTransform } from './encoded-transform.js';
 import type { installTextTracks } from './text-tracks.js';
 import type { installStorageManager } from './storage-manager.js';
+import type { installResourceTiming } from './resource-timing.js';
 import type { installCsp } from './csp-page.js';
 import type { installWorklets } from './worklets.js';
 import type { installTrustedTypes } from './trusted-types.js';
@@ -115,6 +116,7 @@ export function installDom(
   pathDataApi: typeof installPathData,
   workletsApi: typeof installWorklets,
   trustedTypesApi: typeof installTrustedTypes,
+  resourceTimingApi: typeof installResourceTiming,
   namedAccess: boolean,
   inWorker: boolean,
 ): void {
@@ -28677,6 +28679,9 @@ export function installDom(
    *  has no say in, so CORS asks nothing of them (`EventSource`). No page
    *  has the key. */
   const UA_HEADERS = Symbol('uaHeaders');
+  /** What made a request, which its resource timing entry says
+   *  (`initiatorType`): `fetch` where nothing says other. No page has it. */
+  const INITIATOR = Symbol('initiator');
   /** The errors of requests CORS turned down, which say so to no page but
    *  tell an `EventSource` that asking again would come to the same. */
   const CORS_REFUSED = new WeakSet<object>();
@@ -28864,6 +28869,7 @@ export function installDom(
             // the body is taken as it arrives
             stream: true,
             ...(init[UA_HEADERS] ? { uaHeaders: init[UA_HEADERS] } : null),
+            initiator: init[INITIATOR] ?? 'fetch',
             // what the host checks another origin's answer against
             mode,
             credentials: str(
@@ -29485,6 +29491,7 @@ export function installDom(
         body: bodyless ? null : body,
         signal: controller.signal,
         credentials: this.withCredentials ? 'include' : 'same-origin',
+        [INITIATOR]: 'xmlhttprequest',
       }).then(
         (response: Any) => {
           if (attempt !== this._attempt) return undefined;
@@ -30240,6 +30247,12 @@ export function installDom(
   const observers = new Set<Any>();
   const noteEntry = (entry: Any): Any => {
     entries.push(entry);
+    queueEntry(entry);
+    return entry;
+  };
+  /** Performance Timeline 2's "queue a PerformanceEntry": to the observers
+   *  that watch its type, whatever buffer it is kept in. */
+  const queueEntry = (entry: Any): void => {
     for (const observer of observers) {
       if (!observer._types.has(entry.entryType)) continue;
       observer._queue.push(entry);
@@ -30247,8 +30260,28 @@ export function installDom(
         Promise.resolve().then(() => observer._deliver());
       }
     }
-    return entry;
   };
+  // Resource Timing 2 (`resource-timing.ts`): `PerformanceResourceTiming`,
+  // the `Performance` interface `performance` is, and the buffer of the
+  // entries the host makes of what the document fetched (`__resourceTiming`)
+  const resourceTiming = resourceTimingApi({
+    EventTarget,
+    Event,
+    setHandler,
+    getHandler: handlerOf,
+    fire: (target: Any, event: Any) => {
+      event.isTrusted = true;
+      dispatch(target, event);
+    },
+    later: (fn: () => void, ms: number) => setTimer(fn, ms, [], false),
+    queue: queueEntry,
+  });
+  /** Entries in the order a timeline lists them: by when each started. */
+  const byStartTime = (list: Any[]): Any[] =>
+    list
+      .map((entry, i) => [entry, i])
+      .sort((a: Any, b: Any) => a[0].startTime - b[0].startTime || a[1] - b[1])
+      .map((pair: Any) => pair[0]);
   const entryList = (list: Any[]) => ({
     getEntries: () => list.slice(),
     getEntriesByType: (type: Any) =>
@@ -30405,7 +30438,12 @@ export function installDom(
     }
   }
   class PerformanceObserver {
-    static readonly supportedEntryTypes = ['mark', 'measure', 'paint'];
+    static readonly supportedEntryTypes = [
+      'mark',
+      'measure',
+      'paint',
+      'resource',
+    ];
     _fn: Any;
     _types = new Set<string>();
     _queue: Any[] = [];
@@ -30423,7 +30461,10 @@ export function installDom(
       }
       observers.add(this);
       if (options.buffered) {
-        for (const entry of entries) {
+        for (const entry of [
+          ...entries,
+          ...resourceTiming.internals.buffer(),
+        ]) {
           if (this._types.has(entry.entryType)) this._queue.push(entry);
         }
         if (this._queue.length) Promise.resolve().then(() => this._deliver());
@@ -36943,6 +36984,7 @@ export function installDom(
         keepalive: true,
         credentials: 'include',
         mode: plain ? 'no-cors' : 'cors',
+        [INITIATOR]: 'beacon',
       }).catch(() => {});
       return true;
     },
@@ -37045,6 +37087,7 @@ export function installDom(
         signal: controller.signal,
         cache: 'no-store',
         [UA_HEADERS]: ['cache-control', 'last-event-id'],
+        [INITIATOR]: 'other',
       }).then(
         (response: Any) => this._opened(response, controller),
         (error: Any) => {
@@ -44831,9 +44874,13 @@ export function installDom(
    *  entry first, then its marks and measures. */
   const pageEntries = (): Any[] => [
     navigationTimingOf(document, String(call('location')), pageArrival()),
-    ...entries,
+    ...byStartTime([...entries, ...resourceTiming.internals.buffer()]),
   ];
-  define('performance', {
+  for (const [name, value] of Object.entries(resourceTiming.interfaces)) {
+    define(name, value);
+  }
+  /** `performance`, the one `Performance` there is, and its members. */
+  const performanceMembers = {
     now,
     timeOrigin,
     mark(name: Any, options: Any = {}) {
@@ -44885,8 +44932,6 @@ export function installDom(
         }
       }
     },
-    clearResourceTimings() {},
-    setResourceTimingBufferSize() {},
     getEntries: () => pageEntries(),
     getEntriesByType: (type: Any) =>
       entryList(pageEntries()).getEntriesByType(type),
@@ -44913,7 +44958,14 @@ export function installDom(
     toJSON() {
       return { timeOrigin: this.timeOrigin };
     },
-  });
+  };
+  define(
+    'performance',
+    Object.defineProperties(
+      resourceTiming.internals.makePerformance(),
+      Object.getOwnPropertyDescriptors(performanceMembers),
+    ),
+  );
   const screenObject = {
     get width() {
       return viewport().width;
@@ -46964,6 +47016,12 @@ export function installDom(
   entry('__lockStolen', () => {
     const [id] = input();
     lockRequests.get(id)?.stolen();
+    return true;
+  });
+  // an entry the host made of a fetch the document made (`resource-timing.ts`)
+  entry('__resourceTiming', () => {
+    const [record] = input();
+    resourceTiming.internals.add(record);
     return true;
   });
   // what came of a `fetch`

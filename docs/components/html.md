@@ -240,6 +240,42 @@ when:
   frame whose document has no realm of its own has a `performance` of its
   own, whose navigation entry is its document's and whose marks and
   measures are the page's.
+- **What a document fetches over HTTP is a resource timing entry**
+  (Resource Timing 2): a `PerformanceResourceTiming` for each `fetch`,
+  `XMLHttpRequest`, beacon and `EventSource` of the page's, and for each
+  image, stylesheet, font and script its host fetched for it, in
+  `performance.getEntriesByType("resource")` and to a `PerformanceObserver`
+  of `resource`. The buffer is 250 entries until
+  `setResourceTimingBufferSize` says other, and `resourcetimingbufferfull`
+  fires at `performance` as it fills. A `data:` or a `blob:` URL makes none.
+  - **The times are what the host stamped** (`ResourceRequest.timing`):
+    `HtmlNetwork` stamps when each request on the way was sent and
+    answered, and when the body ended. A host that stamps nothing makes an
+    entry of when the fetch began and ended. The lookup and the connection
+    are the runtime's, which keeps its connections and says nothing of
+    them, so they read as one reused: `domainLookup…` and `connect…` are
+    `fetchStart`, and `nextHopProtocol` is `http/1.1`, whatever undici
+    spoke.
+  - **Another origin shows what it lets the page see.** Its times, its
+    `transferSize` and its `serverTiming` need its `Timing-Allow-Origin`, at
+    every hop, and `null` is what it names once a redirect has left the
+    page's origin. Its status, its type and its sizes need a response the
+    page may read: an element's request of another origin, answered opaque,
+    says 0 and nothing.
+  - **The type is minimized** as Fetch has it: any JavaScript type is
+    `text/javascript`, a JSON one `application/json`, an XML one
+    `application/xml`, and one this does nothing with is empty.
+  - **`renderBlockingStatus` is `blocking`** where the element was
+    potentially render-blocking in the head as its fetch began — its
+    `blocking=render`, or a classic script or a stylesheet the parser put
+    there — whether or not the document still took elements into its
+    render-blocking set, and for a `<style>` the parser made anywhere, as
+    Chromium has it. What it imports is its fetch's, and a preload a
+    blocking sheet or script took up is theirs.
+  - **What a stylesheet of another origin asks for makes no entry** — its
+    imports, its fonts and its images (`ResourceRequest.opaqueSheet`).
+  - **Not yet:** a frame's document, and an `<object>`'s or an `<embed>`'s
+    that holds one, make no entry.
 - **An image moves the boxes only where its size lays something out.** An
   `<img>` built before its image arrived is the size its `width` and
   `height` attributes say, and takes its image's size where it lands, in

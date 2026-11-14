@@ -4026,6 +4026,24 @@ the timeout. And **the timeout is counted from the page's first frame**:
 counted from that origin, every page a long-lived process ran after its
 first ten seconds blocked nothing.
 
+**A resource timing entry is made on the host, of a clock the fetch was
+stamped on** (`../resource-timing.ts`, `ResourceClock`). The page's own
+requests are timed a hop at a time in `_fetchFor` and `_fetchNow`, and what
+the document's host fetches is timed by the clock `<Html scripts>` puts on
+the request (`timedResource`, `ResourceRequest.timing`), which
+`HtmlNetwork` stamps in `_send`, for every hop `_exchange` makes. Three
+things are load-bearing. **Every time is the page's `performance.now()`**,
+which is the host thread's own: `timeOrigin` is the process's, so a stamp
+needs no conversion, and a stamp from any other clock is an entry out of
+order. **What another origin lets a page see is decided in
+`resourceEntry`, and only there**: the timing allow check of every hop, and
+the tainting of the last, are two rules with two outcomes, and the realm
+believes the record it is handed. And **an entry is told before the
+response it is of** (`__resourceTiming` ahead of `__fetched`, and of
+`__fetchEnd` for a body that streams): a page that reads
+`getEntriesByName` once its `fetch` settled reads it there. Anything new
+that sends a page's request goes through `_stamped`, or it makes no entry.
+
 **A script the parser met waits for the sheets before it, and `<Html>`
 knows which those are** (`scriptsUnblocked`, `_blocksScripts`): HTML's
 "style sheet that is blocking scripts". The host's runner waits on the

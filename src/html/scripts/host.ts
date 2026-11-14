@@ -206,6 +206,8 @@ import { focusableElement, isInert } from '../focus.js';
 import { CONTROL_PSEUDOS } from '../control-state.js';
 import { serializeXml } from './xml.js';
 import { RenderBlocking } from './render-blocking.js';
+import { resourceEntry } from '../resource-timing.js';
+import type { ResourceClock, ResourceContext } from '../resource-timing.js';
 import { XAttr, compileXPath, evaluateXPath, prefixesIn } from './xpath.js';
 import type { CompiledXPath, XNode } from './xpath.js';
 import {
@@ -612,7 +614,25 @@ interface PageRequest extends FetchRequest {
    *  or a URL of the page's origin (Fetch 2.2.5). Absent, `client`. */
   referrerSource?: string;
   destination?: string;
+  /** What made it, which its resource timing entry says: `fetch`,
+   *  `xmlhttprequest`, `beacon`, `other`. */
+  initiator?: string;
 }
+
+/** What a page's request says of itself to its resource timing entry. */
+const timingOf = (request: PageRequest): Omit<ResourceContext, 'origin'> => ({
+  name: request.url,
+  initiatorType: request.initiator ?? 'fetch',
+  mode: request.mode,
+});
+
+/** Whether a request a hop yields is a CORS preflight, which is in a
+ *  fetch's time and no hop of it. */
+const isPreflight = (request: FetchRequest): boolean =>
+  request.method === 'OPTIONS' &&
+  request.headers.some(
+    ([k]) => k.toLowerCase() === 'access-control-request-method',
+  );
 
 /** What CORS remembers of a preflight (Fetch 4.9, the CORS-preflight
  *  cache): what the server allowed, until when. */
@@ -2489,6 +2509,12 @@ export class DomHost {
   >();
   /** The bodies being handed to the page a chunk at a time (`_pump`). */
   private _bodies = new Map<number, AsyncIterator<Uint8Array>>();
+  /** What a page's request whose body is still arriving has been timed at,
+   *  for its resource timing entry once the body ends. */
+  private _fetchClocks = new Map<
+    number,
+    { clock: ResourceClock; context: Omit<ResourceContext, 'origin'> }
+  >();
   /** The changes since `<Html>` was last told, as `refresh` takes them. */
   private _changes: HtmlChange[] = [];
   /** The page's `MutationObserver`s, by id in the order they were made: the
@@ -3267,6 +3293,11 @@ export class DomHost {
    *  document's rendering no more (HTML 3.1.6, "unblock rendering"). */
   renderUnblock(el: Element): void {
     this._renderBlocking.unblock(el);
+  }
+  /** Whether a fetch `el` makes now is render-blocking, as its resource
+   *  timing entry says (`renderBlockingStatus`). */
+  rendersBlockedBy(el: Element): boolean {
+    return this._renderBlocking.blocksFetch(el);
   }
 
   /** Load the frames the document has, as a browser loads a frame as the
@@ -8043,6 +8074,7 @@ export class DomHost {
         return null;
       }
       case 'abortFetch':
+        this._fetchClocks.delete(Number(a));
         this._fetches.get(Number(a))?.abort();
         this._fetches.delete(Number(a));
         void this._bodies.get(Number(a))?.return?.();
@@ -12288,11 +12320,21 @@ export class DomHost {
   /** A page's `fetch`: its own origin's, or another's where CORS lets it
    *  (`_fetchFor`), and its answer handed back through `__fetched`. */
   private _fetch(id: number, json: string): void {
+    const clock: ResourceClock = { start: performance.now(), hops: [] };
     const answer = (value: FetchResponse | string, refused = false) => {
       if (!this._fetches.has(id) || this._disposed) {
         if (typeof value !== 'string') release(value);
         return;
       }
+      if (typeof value === 'string') {
+        clock.failed = true;
+        clock.end = performance.now();
+        this._markTiming(clock, timingOf(request));
+      } else if (!value.chunks) {
+        clock.end = performance.now();
+        clock.bytes = value.bytes?.length ?? value.body.length;
+        this._markTiming(clock, timingOf(request));
+      } else this._fetchClocks.set(id, { clock, context: timingOf(request) });
       // a body that arrives a chunk at a time is handed on so, after the
       // headers: the page's promise is settled by them, as a browser's is
       if (typeof value !== 'string' && value.chunks) {
@@ -12330,7 +12372,7 @@ export class DomHost {
     }
     const controller = new AbortController();
     this._fetches.set(id, controller);
-    this._fetchFor(request, controller.signal).then(answer, (error) => {
+    this._fetchFor(request, controller.signal, clock).then(answer, (error) => {
       if (error instanceof CorsError) {
         this._seams.log(
           'error',
@@ -12354,11 +12396,13 @@ export class DomHost {
   ): Promise<void> {
     if (!this._fetches.has(id) || this._disposed) return;
     let failed: string | null = null;
+    let received = 0;
     try {
       for (;;) {
         const { done, value } = await iterator.next();
         if (done) break;
         if (!this._fetches.has(id) || this._disposed) return;
+        received += value.length;
         if (value.length) {
           this.entries?.call('__fetchChunk', [id, base64Of(value)]);
         }
@@ -12368,7 +12412,15 @@ export class DomHost {
     } finally {
       if (this._bodies.get(id) === iterator) this._bodies.delete(id);
     }
+    const timed = this._fetchClocks.get(id);
+    this._fetchClocks.delete(id);
     if (!this._fetches.delete(id) || this._disposed) return;
+    if (timed) {
+      timed.clock.end = performance.now();
+      timed.clock.bytes = received;
+      if (failed) timed.clock.failed = true;
+      this._markTiming(timed.clock, timed.context);
+    }
     this.entries?.call('__fetchEnd', [id, failed]);
   }
 
@@ -12417,7 +12469,83 @@ export class DomHost {
         ? { referrerSource: raw.referrer }
         : {}),
       destination: raw.destination,
+      ...(typeof raw.initiator === 'string'
+        ? { initiator: raw.initiator }
+        : {}),
     };
+  }
+
+  /**
+   * A fetch the document made, made a resource timing entry and handed to
+   * the page (Resource Timing 2, "mark resource timing"): its page's own
+   * `fetch` (`_fetch`), or what the document asked its host for, timed as
+   * it was asked (`resourceTimed`).
+   */
+  private _markTiming(
+    clock: ResourceClock,
+    context: Omit<ResourceContext, 'origin'>,
+  ): void {
+    if (this._disposed) return;
+    const record = resourceEntry(clock, {
+      ...context,
+      origin: this._origin(),
+    });
+    if (record) this.entries?.call('__resourceTiming', [record]);
+  }
+
+  /** A resource the document's host fetched for it, timed as it went
+   *  (`ResourceRequest.timing`). */
+  resourceTimed(
+    clock: ResourceClock,
+    context: Omit<ResourceContext, 'origin'>,
+  ): void {
+    // a preload a render-blocking sheet or script took up is that one's
+    // fetch, and blocks as it does
+    if (
+      !context.renderBlocking &&
+      context.initiatorType === 'link' &&
+      this._takenUpByBlocking(context.name)
+    ) {
+      context = { ...context, renderBlocking: true };
+    }
+    this._markTiming(clock, context);
+  }
+
+  /** Whether a render-blocking stylesheet or script names `url`. */
+  private _takenUpByBlocking(url: string): boolean {
+    for (const el of DomUtils.findAll(
+      (e) => e.name === 'link' || e.name === 'script',
+      this.document.children,
+    )) {
+      const href =
+        el.name === 'script'
+          ? el.attribs.src
+          : /(?:^|\s)stylesheet(?:\s|$)/i.test(el.attribs.rel ?? '')
+            ? el.attribs.href
+            : undefined;
+      if (!href || this._resolve(href, el) !== url) continue;
+      if (this._renderBlocking.blocksFetch(el)) return true;
+    }
+    return false;
+  }
+
+  /** A page request's hops, each stamped on `clock` as it is sent and
+   *  answered (`ResourceHop`). */
+  private _stamped(
+    clock: ResourceClock | null,
+    request: FetchRequest,
+    sent: number,
+    response: FetchResponse,
+  ): FetchResponse {
+    clock?.hops.push({
+      url: request.url,
+      sent,
+      answered: performance.now(),
+      status: response.status,
+      headers: response.headers,
+      ...(isPreflight(request) ? { preflight: true } : {}),
+    });
+    return response;
   }
 
   /**
@@ -12435,19 +12563,32 @@ export class DomHost {
       SYNC_REQUEST_MS,
       this.entries?.waitLeft ?? SYNC_REQUEST_MS,
     );
+    const clock: ResourceClock = { start: performance.now(), hops: [] };
+    let request: PageRequest | null = null;
+    // told once the op is over: the page is inside `send()` now
+    const mark = (): void => {
+      clock.end = performance.now();
+      const context = request && timingOf(request);
+      if (context)
+        void Promise.resolve().then(() => this._markTiming(clock, context));
+    };
     try {
-      const request = this._pageRequest(json);
+      request = this._pageRequest(json);
       const {
         bytes,
         chunks: _chunks,
         ...rest
-      } = this._fetchNow(request, timeout);
+      } = this._fetchNow(request, timeout, clock);
+      clock.bytes = bytes?.length ?? rest.body.length;
+      mark();
       return JSON.stringify({
         ...rest,
         body: bytes ? '' : rest.body,
         ...(bytes && { base64: base64Of(bytes) }),
       });
     } catch (error) {
+      clock.failed = true;
+      mark();
       const message = String((error as Error)?.message ?? error);
       // the page's exception says nothing of why, as a browser's does not
       this._seams.log('error', message);
@@ -12463,7 +12604,11 @@ export class DomHost {
   /** `_fetchFor`, for `_syncRequest`: the same hops, with this thread asleep
    *  where that awaits. A service worker hears nothing of it: its registry is
    *  on this thread. */
-  private _fetchNow(request: PageRequest, timeout: number): FetchResponse {
+  private _fetchNow(
+    request: PageRequest,
+    timeout: number,
+    clock: ResourceClock | null = null,
+  ): FetchResponse {
     this._checkRequest(request);
     const until = performance.now() + timeout;
     const send = (plain: FetchRequest): FetchResponse => {
@@ -12477,7 +12622,12 @@ export class DomHost {
     };
     const hops = this._hops(request);
     let step = hops.next();
-    while (!step.done) step = hops.next(send(step.value));
+    while (!step.done) {
+      const sent = performance.now();
+      step = hops.next(
+        this._stamped(clock, step.value, sent, send(step.value)),
+      );
+    }
     return step.value;
   }
 
@@ -12709,6 +12859,7 @@ export class DomHost {
   private async _fetchFor(
     request: PageRequest,
     signal: AbortSignalLike,
+    clock: ResourceClock | null = null,
   ): Promise<FetchResponse> {
     this._checkRequest(request);
     // a controlled client's request goes to its worker before CORS asks
@@ -12723,7 +12874,9 @@ export class DomHost {
     const hops = this._hops(request);
     let step = hops.next();
     while (!step.done) {
-      step = hops.next(await this._seams.fetch(step.value, signal));
+      const sent = performance.now();
+      const answered = await this._seams.fetch(step.value, signal);
+      step = hops.next(this._stamped(clock, step.value, sent, answered));
     }
     return step.value;
   }
