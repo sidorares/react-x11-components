@@ -1873,7 +1873,13 @@ it sends by then, and takes the tracks it takes away out of their streams. A
 rejected m-section is recycled for a new transceiver of any kind, and an
 unknown kind's stays in every offer after, rejected. An ICE restart's
 credentials are ice-chars, where werift's own have `-` and `_`, which Chrome
-refuses. A transceiver no
+refuses. An ICE restart's local description gathers, its transport and
+the connection `gathering` until the last candidate in the new credentials
+and `complete` after it, where werift stays `complete` and gathers again as
+the answer commits the restart; and `restartIce()` holds until an answer
+leaves no old credentials, so a restart's offer rolled back leaves one to
+make. A transport's state and the connection's are both set before either's
+event fires, as WebRTC 1.0 has them. A transceiver no
 m-section has has no transport. `setLocalDescription()` with no description
 sets the last offer or answer made while nothing has changed since (WebRTC
 1.0, 4.4.1.5). Where the browsers part this goes one way: two m-sections of
