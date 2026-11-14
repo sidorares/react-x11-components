@@ -18539,11 +18539,108 @@ export function installDom(
    *  not take and a rule does. */
   const RULE_PSEUDO_ELEMENTS =
     /::(?:before|after|marker|placeholder|selection|first-line|first-letter|backdrop|file-selector-button|target-text|spelling-error|grammar-error|details-content|checkmark|picker-icon|column|scroll-marker|scroll-marker-group|cue|view-transition(?:-(?:group|image-pair|old|new|group-children))?(?:\([^()]*\))?|(?:part|slotted|highlight|picker|scroll-button|cue)\([^()]*\))|:(?:before|after|first-line|first-letter)\b/gi;
+  /** The namespaces a sheet's `@namespace` rules declare: the default
+   *  one's URL, and each prefix's. */
+  const sheetNamespaces = (
+    sheet: Any,
+  ): { default: string | null; prefixes: Map<string, string> } => {
+    const out = { default: null as string | null, prefixes: new Map() };
+    const rules = sheet?.cssRules;
+    if (!rules) return out;
+    for (let i = 0; i < rules.length; i += 1) {
+      const rule = rules[i];
+      if (rule?.type !== 10) continue;
+      const m =
+        /^@namespace\s+(?:([\w-]+)\s+)?(?:url\(\s*)?["']?([^"')]*)["']?\s*\)?/i.exec(
+          rule.cssText ?? '',
+        );
+      if (!m) continue;
+      if (m[1]) out.prefixes.set(m[1], m[2]);
+      else out.default = m[2];
+    }
+    return out;
+  };
+  /** An `An+B` as CSSOM serializes it: `2n+1` for `odd`, no `+0`. */
+  const anPlusB = (text: string): string | null => {
+    const v = text.replace(/\s+/g, '').toLowerCase();
+    if (v === 'even') return '2n';
+    if (v === 'odd') return '2n+1';
+    const m = /^([+-]?\d*)n([+-]\d+)?$/.exec(v);
+    if (m) {
+      const a =
+        m[1] === '' || m[1] === '+' ? 1 : m[1] === '-' ? -1 : Number(m[1]);
+      const b = m[2] ? Number(m[2]) : 0;
+      if (a === 0) return String(b);
+      const an = a === 1 ? 'n' : a === -1 ? '-n' : `${a}n`;
+      return b > 0 ? `${an}+${b}` : b < 0 ? `${an}${b}` : an;
+    }
+    return /^[+-]?\d+$/.test(v) ? String(Number(v)) : null;
+  };
+  /**
+   * A selector as CSSOM serializes it (6.6.4): a type's namespace left off
+   * where it is the default one, or any where there is no default; a
+   * universal selector left off before what else its compound holds; a
+   * pseudo-class's argument trimmed, and an `An+B` in its canonical form.
+   * What is in brackets and strings is left as written.
+   */
+  const serializeSelector = (text: string, sheet: Any): string => {
+    const ns = sheetNamespaces(sheet);
+    const kept: string[] = [];
+    let v = text
+      .trim()
+      .replace(/\[[^\]]*\]|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, (m) => {
+        // an attribute in no namespace written `[|a]` is `[a]`
+        kept.push(m.replace(/^\[\s*\|(?!=)/, '['));
+        return `\u0000${kept.length - 1}\u0000`;
+      });
+    const start = '(^|[\\s>+~,(])';
+    v = v.replace(
+      new RegExp(
+        `${start}([\\w-]+|\\*)?\\|(?=[\\w*\\\\-]|[^\\x00-\\x7f])`,
+        'g',
+      ),
+      (all, before: string, prefix?: string) => {
+        if (prefix === '*') return ns.default === null ? before : all;
+        if (
+          prefix &&
+          ns.default !== null &&
+          ns.prefixes.get(prefix) === ns.default
+        ) {
+          return before;
+        }
+        return all;
+      },
+    );
+    v = v.replace(new RegExp(`${start}\\*(?=[.#:\\u0000])`, 'g'), '$1');
+    v = v.replace(
+      /:(nth-(?:last-)?(?:child|of-type))\(\s*([^()]*?)\s*\)/gi,
+      (all, name: string, arg: string) => {
+        const [first, ...rest] = arg.split(/\s+of\s+/i);
+        const canon = anPlusB(first);
+        if (canon === null) return all;
+        return `:${name.toLowerCase()}(${canon}${rest.length ? ` of ${rest.join(' of ')}` : ''})`;
+      },
+    );
+    v = v.replace(
+      /:(lang|not|is|where|has|dir|host|host-context)\(\s*([^()]*?)\s*\)/gi,
+      (_, name: string, arg: string) => `:${name}(${arg})`,
+    );
+    return v.replace(/\u0000(\d+)\u0000/g, (_, i: string) => kept[Number(i)]);
+  };
   class CSSStyleRule extends CSSRule {
     override _type = 1;
     get selectorText(): string {
-      return preludeOf(this._text);
+      return serializeSelector(preludeOf(this._text), this.parentStyleSheet);
     }
+    // its selector as it serializes, and its block as it stands, which may
+    // hold rules nested in it
+    override get cssText(): string {
+      const open = blockStart(this._text);
+      return open < 0
+        ? this._text
+        : `${this.selectorText} ${this._text.slice(open)}`;
+    }
+    override set cssText(_v: Any) {}
     /** CSSOM 6.4.3: a selector that parses replaces the rule's, serialized
      *  — a namespace that is any, or none, of a document with no default
      *  one left off — and one that does not leaves it as it was. */
@@ -18561,10 +18658,7 @@ export function installDom(
       } catch {
         return;
       }
-      const text = given
-        .replace(/(^|[\s>+~(,])\*\|(?=[\w*\\-]|[^\x00-\x7f])/g, '$1')
-        .replace(/\[\s*\|/g, '[')
-        .replace(/\s+/g, ' ');
+      const text = given.replace(/\s+/g, ' ');
       const body = str(call('blockText', blockOf(this._text)) ?? '');
       replaceRule(this, `${text} { ${body ? `${body} ` : ''}}`);
     }

@@ -126,3 +126,37 @@ test('an @page rule is a CSSPageRule, its style the descriptors it declares and 
     '@page named:first { size: portrait; }',
   ]);
 });
+
+test('a selector reads back as CSSOM serializes it, its namespaces and its arguments canonical', async () => {
+  const cases = [
+    '*|e',
+    '*.c',
+    '*|*:hover',
+    'e:nth-child(  3n - 0)',
+    ':nth-child( even   )',
+    ':lang( ja )',
+    '[a="*.c"]',
+    '@namespace url(d); @namespace nd url(d); nd|*.c',
+    '@namespace url(d); *|e',
+  ];
+  const out = await inPage(
+    '<style id="s"></style>',
+    `var st = document.getElementById('s');
+     return ${JSON.stringify(cases)}.map(function (c) {
+       st.textContent = c + ' { }';
+       var rules = st.sheet.cssRules;
+       return rules[rules.length - 1].selectorText;
+     });`,
+  );
+  assert.deepEqual(out, [
+    'e',
+    '.c',
+    ':hover',
+    'e:nth-child(3n)',
+    ':nth-child(2n)',
+    ':lang(ja)',
+    '[a="*.c"]',
+    '.c',
+    '*|e',
+  ]);
+});
