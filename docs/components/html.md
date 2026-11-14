@@ -2731,7 +2731,12 @@ takes, a transform list its components. A value with a `var()` in it is a
 `attributeStyleMap` and a rule's `styleMap` are its `style` as a map, which
 set a value only where the property takes it — a numeric value's type held
 to the property's through a `calc()` of it, which is also what keeps one out
-of the property's range — and append only to a list-valued property. So is an
+of the property's range — and append only to a list-valued property. The colour classes are there as well, `CSSRGB` to `CSSOKLCH` and `CSSColor`,
+each holding a channel to what its function takes — a bare number the fraction
+a percentage is, or the number or the degrees it is, by the channel, and
+anything else a SyntaxError — and `CSSColorValue.parse()` reads a function's
+channels as written, a name or a hex colour as `rgb()` numbers, and a system
+colour as a keyword. So is an
 element's
 `computedStyleMap()`, which reifies its computed values: a number, a
 dimension or a percentage a `CSSUnitValue`, a name a `CSSKeywordValue`, and
