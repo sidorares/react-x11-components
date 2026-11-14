@@ -213,6 +213,7 @@ import {
   scrolls,
   scrollsAlong,
   urlOf,
+  verticalMode,
   WILL_HOLD_FIXED,
   WILL_HOLD_FIXED_BOX,
   WILL_STACK,
@@ -318,6 +319,7 @@ import {
   isInlineLevel,
 } from './layout/block.js';
 import { containingParent } from './layout/multicol.js';
+import { subgridAxisOf } from './layout/css-grid.js';
 import type { PlacedTransition } from './layout/block.js';
 import {
   FRAME_ROOTS,
@@ -8817,6 +8819,31 @@ export class HtmlViewNode extends Node {
   }
 
   /** What layout made of a box, as `getComputedStyle` reads it. */
+  /**
+   * On each axis of a grid container, how many of its parent's tracks it
+   * spans where it subgrids them (CSS Grid 2, 9); `'none'` where it is
+   * known to subgrid nothing there — no grid around it, or one it keeps
+   * its layout apart from, or the stacking axis of grid lanes; and null
+   * where it may and the layout does not say, which is across writing
+   * modes, which no subgrid here is laid out across.
+   */
+  private _subgridSpans(
+    box: Box,
+    style: ComputedStyle,
+  ): { cols: number | 'none' | null; rows: number | 'none' | null } {
+    const parent = box.el ? flatParentOf(box.el) : null;
+    const around = parent ? this._styleOf(parent) : null;
+    const across =
+      around !== null &&
+      verticalMode(around.writingMode) !== verticalMode(style.writingMode);
+    const span = (axis: 'cols' | 'rows') => {
+      const sub = subgridAxisOf(box, axis);
+      if (sub) return sub.lines.tracks;
+      return across && around?.grid ? null : 'none';
+    };
+    return { cols: span('cols'), rows: span('rows') };
+  }
+
   private _usedBox(box: Box, style: ComputedStyle): UsedBox {
     const used: UsedBox = {
       width: box.width,
@@ -8835,6 +8862,8 @@ export class HtmlViewNode extends Node {
       // a grid's tracks as its layout left them, which its templates read
       // as (CSS Grid 1, 7.2.6)
       grid: box.style.grid ? GRID_TRACKS.get(box) : undefined,
+      // and what its `subgrid` on each axis came to (CSS Grid 2, 9)
+      subgrid: box.style.grid ? this._subgridSpans(box, style) : undefined,
     };
     // a box laid out in a vertical flow's frame has the frame's sides,
     // which are drawn at the page's others (`layout/writing.ts`)

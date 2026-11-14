@@ -5746,9 +5746,16 @@ subgrid, and its template on that axis is `none`.
 `grid-template-rows` as its tracks laid out (CSS Grid 1, 7.2.6): every
 track, implicit ones too, in pixels, an `auto-fit` one collapsed as `0px`,
 with the names of the explicit grid's lines between them; grid lanes read
-their lanes so, and their stacking axis as it computes. Any other element,
-and a subgrid's axis, reads the list as it computes, `repeat()` kept and
-its lengths in pixels. `grid-template-areas` reads as a string a row,
+their lanes so, and their stacking axis as it computes. Any other element
+reads the list as it computes, `repeat()` kept and its lengths in pixels,
+and `subgrid` with its groups of names as written. A subgrid's axis reads
+`subgrid` and a group of its own names for each line it spans, an
+`auto-fill` of them repeated into the room the others leave, and a grid
+container's `subgrid` on an axis it subgrids nothing on — no grid around
+it, or layout containment — reads `none`. Across writing modes, where no
+subgrid is laid out here, it reads as its groups with a count's
+repetitions said out. A grid with no template, no areas and nothing in it
+reads `none` for its track lists, where its layout made one track. `grid-template-areas` reads as a string a row,
 `grid-auto-rows` and `grid-auto-columns` as their whole lists (layout takes
 the first), and the placement longhands and `grid-lanes` as they compute.
 The track lists do not interpolate yet. A script's `el.style` takes each

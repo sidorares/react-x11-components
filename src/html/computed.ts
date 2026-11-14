@@ -45,6 +45,7 @@ import type {
   WrittenTrack,
 } from './css/style.js';
 import type { GridTracks } from './layout/boxes.js';
+import { subgridNames } from './layout/grid-lines.js';
 import { serializeLinear } from './css/calc-tree.js';
 import type { Primitive, TransformFunction } from './css/transform.js';
 import { matrix4Of, matrixOf } from './css/transform.js';
@@ -95,6 +96,10 @@ export interface UsedBox {
   /** A grid container's tracks as its layout left them, which its
    *  templates read as (CSS Grid 1, 7.2.6). */
   grid?: GridTracks;
+  /** On each axis of a grid container that is a subgrid of its parent's,
+   *  how many of the parent's tracks it spans; null on an axis it is no
+   *  subgrid on. */
+  subgrid?: { cols: number | 'none' | null; rows: number | 'none' | null };
 }
 
 const SIDES = ['top', 'right', 'bottom', 'left'] as const;
@@ -1436,13 +1441,17 @@ function cssomAt(
   const tracks = box?.grid;
   const lanesRows = lanesAreRows(style);
   out['grid-template-columns'] =
-    tracks && resolves(style, style.gridColumns, false, lanesRows)
+    tracks && resolves(style, style.gridColumns, false, lanesRows, tracks)
       ? resolvedTracks(tracks.cols, tracks.colLines.names, scale)
-      : templateText(style.gridColumns, scale);
+      : style.gridColumns?.subgrid && box?.subgrid
+        ? subgridAxisText(style.gridColumns.subgrid, box.subgrid.cols)
+        : templateText(style.gridColumns, scale);
   out['grid-template-rows'] =
-    tracks && resolves(style, style.gridRows, true, lanesRows)
+    tracks && resolves(style, style.gridRows, true, lanesRows, tracks)
       ? resolvedTracks(tracks.rows, tracks.rowLines.names, scale)
-      : templateText(style.gridRows, scale);
+      : style.gridRows?.subgrid && box?.subgrid
+        ? subgridAxisText(style.gridRows.subgrid, box.subgrid.rows)
+        : templateText(style.gridRows, scale);
   out['grid-lanes-direction'] = style.gridLanesDirection;
   out['grid-lanes-pack'] = style.gridLanesPack;
   out['fit-tolerance'] =
@@ -1817,8 +1826,14 @@ function resolves(
   template: GridTemplate | null,
   rows: boolean,
   lanesRows: boolean,
+  tracks: GridTracks,
 ): boolean {
   if (template?.subgrid) return false;
+  // a grid with no explicit grid and nothing in it has no tracks, and
+  // reads `none`, as its template does, where its layout made one
+  if (!template && !style.gridAreas && !tracks.lanes.items.length) {
+    return false;
+  }
   return !style.gridLanes || lanesRows === rows;
 }
 
@@ -1886,13 +1901,38 @@ function writtenText(parts: readonly WrittenPart[], scale: number): string {
 /** `subgrid` and the names it gives its lines, a group a line, with its
  *  `repeat(auto-fill, …)` where it has one. */
 function subgridText(names: SubgridNames): string {
-  const group = (list: readonly string[]) => `[${list.join(' ')}]`;
-  const parts = ['subgrid', ...names.names.map(group)];
-  if (names.fill) {
-    parts.push(`repeat(auto-fill, ${names.fill.names.map(group).join(' ')})`);
-    parts.push(...names.fill.after.map(group));
+  return names.text ? `subgrid ${names.text}` : 'subgrid';
+}
+
+/**
+ * `subgrid` on an axis of a grid container (CSS Grid 2, 7.2.6 and 9): where
+ * it subgrids its parent there, `subgrid` and its own names for each of the
+ * lines it spans, a `repeat(auto-fill, …)` among them repeated to fill them
+ * and none past the last; where it does not — no grid around it, or one
+ * whose layout it keeps apart from — `none`, which is what it computes to;
+ * and where the layout does not say (`_subgridSpans`), its groups with
+ * each count's repetitions said out.
+ */
+function subgridAxisText(
+  names: SubgridNames,
+  span: number | 'none' | null,
+): string {
+  if (span === null) {
+    // its groups, a count's repetitions said out, as near as there is to
+    // the lines it spans
+    const group = (list: readonly string[]) => `[${list.join(' ')}]`;
+    const parts = ['subgrid', ...names.names.map(group)];
+    if (names.fill) {
+      parts.push(`repeat(auto-fill, ${names.fill.names.map(group).join(' ')})`);
+      parts.push(...names.fill.after.map(group));
+    }
+    return parts.join(' ');
   }
-  return parts.join(' ');
+  if (span === 'none') return 'none';
+  const groups = subgridNames(names, span + 1).map(
+    (list) => `[${list.join(' ')}]`,
+  );
+  return ['subgrid', ...groups].join(' ');
 }
 
 /** A template as it computes, where no layout's tracks stand for it. */

@@ -3560,8 +3560,9 @@ test('what a computed style reads from a box says so, by name and in camel case'
       'border: 1px solid; transform: translateX(10%)"></div>' +
       '<div id="b" style="position: relative; top: 1px; border: 1px solid; ' +
       'transform: translateX(10%); writing-mode: vertical-rl; direction: rtl"></div>' +
-      // a grid, whose track lists are its tracks as laid out
-      '<div id="c" style="display: grid"></div>',
+      // a grid, whose track lists are its tracks as laid out: of a template,
+      // since a grid with neither one nor items reads `none`
+      '<div id="c" style="display: grid; grid-template: 1px / 1px"></div>',
   );
   const el = view(node);
   const lines = { tracks: 1, named: new Map(), names: [[], []], areas: [] };
