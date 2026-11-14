@@ -3238,7 +3238,10 @@ moves the second block's first line alone, up to its `<br>` or a line feed it
 keeps, in a `<span>` with that white space, where an element of its own does
 not already keep it, and leaves the rest where it was, while a `<pre>`'s
 white space, its element's, joins as the specification has it; and a delete
-never removes the `<body>`. `document.designMode` makes
+never removes the `<body>`. A paragraph inserted where the editing host is
+laid out inline is a line break, or a line feed where its white space keeps
+them, and one inserted in a `<div>` or a `<p>` laid out inline wraps the line
+it is on in a `<div>` and splits that, the element with it. `document.designMode` makes
 the document's root element the editing host. In a focused
 text field the commands are the field's own edits. `undo` and `redo` put back
 and make again the edits the commands and the keys made, a step each (typing
