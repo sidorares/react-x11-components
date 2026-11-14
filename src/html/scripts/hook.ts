@@ -21,7 +21,7 @@ import type {
   ScriptRequest,
 } from '../index.js';
 import type { MediaEventHandler } from '../media.js';
-import type { FramePost } from './host.js';
+import type { DomHost, FramePost } from './host.js';
 import type {
   PageSwap,
   RunnerSeams,
@@ -161,6 +161,67 @@ export interface ScriptProps {
  * page draws is the worker's to answer in a frame as in a window.
  */
 export async function throughWorker(
+  scripts: ScriptProps,
+  request: ResourceRequest,
+  host: ((request: ResourceRequest) => unknown) | undefined,
+  /** The host whose policies hold the request, where the document has no
+   *  realm of its own and has another's: a frame's `about:blank` or
+   *  `srcdoc`, which has the policies of the document it is in. */
+  policed?: DomHost | null,
+): Promise<unknown> {
+  // held to the document's policies before it is asked for, and by where it
+  // landed after (CSP 3, 4.1.2 and 4.1.3); a script's are the runner's
+  const doc = policed ?? scripts.runner?.()?.host;
+  const destination = destinationOf(request);
+  if (doc && destination) {
+    doc.cspScan(request.element);
+    const csp = {
+      url: request.url,
+      destination,
+      nonce: request.element ? doc.nonceOf(request.element) : '',
+    };
+    if (!doc.csp.request(csp, request.element)) return null;
+    const result = (await answer(scripts, request, host)) as {
+      url?: string;
+      redirects?: string[];
+    } | null;
+    if (result && typeof result === 'object') {
+      const final = result.url ?? request.url;
+      const through = result.redirects?.length
+        ? [...result.redirects.slice(1), final]
+        : final === request.url
+          ? []
+          : [final];
+      if (through.length && !doc.csp.request(csp, request.element, through)) {
+        return null;
+      }
+    }
+    return result;
+  }
+  return answer(scripts, request, host);
+}
+
+/** The destination a resource is fetched as (Fetch 2.2.5), by its kind and
+ *  its element: what a policy holds it to. A script's is none here. */
+function destinationOf(request: ResourceRequest): string | null {
+  switch (request.kind) {
+    case 'image': {
+      const tag = request.element?.name;
+      return tag === 'object' || tag === 'embed' ? tag : 'image';
+    }
+    case 'stylesheet':
+      return 'style';
+    case 'font':
+      return 'font';
+    case 'video':
+    case 'audio':
+      return request.kind;
+    default:
+      return null;
+  }
+}
+
+async function answer(
   scripts: ScriptProps,
   request: ResourceRequest,
   host: ((request: ResourceRequest) => unknown) | undefined,

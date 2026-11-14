@@ -1460,10 +1460,10 @@ reject with `NotSupportedError`.
 `connect-src`, or its `default-src` where it names none (CSP 3), in every
 policy a `<meta http-equiv="Content-Security-Policy">` brought — the
 parser's in the head, and a script's as it goes into the head, kept once
-it is met as a browser keeps it. One the policy does not allow is refused
-before the seam is asked, as a bad port is, and said so on the console. A
-page's `fetch` is not held to it yet, nor a policy a response header
-carries, which `<Html>` is not handed.
+it is met as a browser keeps it, and in those its response's headers carry
+(`scripts.headers`). One the policy does not allow is refused before the
+seam is asked, as a bad port is, and said so on the console. The rest of
+what a policy says is in "Content Security Policy" below.
 
 A host with a network of its own answers the seam itself — a QUIC stack of
 its own, a proxy, a test's server — and `test/fake-transport.ts` is one
@@ -3223,6 +3223,80 @@ new size at once and `resize` is told at the next frame, as a browser tells
 it, which is also where a view transition under way finds the window
 resized and is skipped; the host hears them through `HtmlPopup.onResize`. Not done:
 `moveTo` ([the design](../prd-popups.md#left-out)).
+
+### Content Security Policy
+
+**A document's Content Security Policy is enforced and reported where its
+scripts run** (CSP 3; `src/html/csp.ts` for the algorithms,
+`src/html/scripts/csp-host.ts` for the document's half). Its policies are
+those its response's `Content-Security-Policy` headers carry, enforced, and
+its `Content-Security-Policy-Report-Only` ones, reported only — read from
+`headers` or `scripts.headers` — and each `<meta
+http-equiv="Content-Security-Policy">` the head holds, from where the parser
+or a script put it on, kept once it is met. A meta's policy says nothing of
+`report-uri`, `frame-ancestors` or `sandbox`. A document of no response of its
+own, `about:blank` or a `srcdoc` in a frame, has the policies of the one it is
+in, and a worker whose script is a blob's or a `data:` URL's those of the
+document that started it; another worker has its own script's response's.
+
+What a policy holds, and where it is asked:
+
+| directive                              | holds                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `script-src`, `script-src-elem`        | a `<script src>` and a module it imports, before it is asked for and where redirects took it: by its URL, by a nonce, by integrity metadata whose every hash the list names, and under `'strict-dynamic'` by not being the parser's. An inline `<script>`, the parser's, a script's and one `document.write` wrote: by `'unsafe-inline'`, a nonce or a hash. A `javascript:` URL, as inline script whose text is the URL. |
+| `script-src-attr`                      | an `on…` attribute, as its handler is compiled: by `'unsafe-inline'`, or a hash under `'unsafe-hashes'`.                                                                                                                                                                                                                                                                                                                  |
+| `'unsafe-eval'`, `'wasm-unsafe-eval'`  | `eval`, `Function`, a string handed to a timer, and WebAssembly's compile, which throw an `EvalError` and a `CompileError` where an enforced policy refuses them.                                                                                                                                                                                                                                                         |
+| `style-src`, `style-src-elem`, `-attr` | a `<link rel=stylesheet>` by its URL or its nonce, a `<style>`'s text as the cascade reads the document's sheets, and a `style` attribute as an element is styled. What CSSOM writes into `style` is no inline content and applies whatever the policy says.                                                                                                                                                              |
+| `img-src`, `font-src`, `media-src`     | what `<Html>` asks `onResource` for: refused, it is never asked for, and its element hears `error`.                                                                                                                                                                                                                                                                                                                       |
+| `connect-src`                          | a page's `fetch`, `XMLHttpRequest`, `navigator.sendBeacon` and `EventSource` at every hop, and its WebSockets and WebTransport sessions.                                                                                                                                                                                                                                                                                  |
+| `worker-src`, `child-src`              | a `Worker` and a `SharedWorker`, which hear `error` and start no thread, and an import a worker's own policy refuses.                                                                                                                                                                                                                                                                                                     |
+| `frame-src`, `child-src`               | what a frame is sent to, before and after its redirects: refused, it shows `about:blank` and still hears its `load`.                                                                                                                                                                                                                                                                                                      |
+| `form-action`                          | where a form is submitted, which falls back to no other directive.                                                                                                                                                                                                                                                                                                                                                        |
+| `base-uri`                             | the first `<base href>`: refused, the document's base is its own address.                                                                                                                                                                                                                                                                                                                                                 |
+
+Two sources WebAppSec has yet to settle are read as Chromium reads them, for a
+script: `'url-sha256-…'`, the hash of the URL it was asked for, and with one in
+a list no host or scheme in it lets a script through; and `'eval-sha256-…'`,
+the hash of a string compiled. Under `'strict-dynamic'` an inline script a
+script put in runs, as one with a `src` does, where the parser's needs its nonce
+or its hash.
+
+**A nonce is hidden from its attribute where a response's header brought a
+policy** (HTML 2.6.3): as an element goes into the document its `nonce` content
+attribute is emptied, and its nonce kept where no selector reads it, which
+`element.nonce` answers, a copy keeps, and the checks above read. A policy only
+`<meta>`s brought hides nothing.
+
+**Every violation is told twice, and asked of neither.** The page hears a
+`securitypolicyviolation` event — a `SecurityPolicyViolationEvent`, bubbling
+and composed — at the element it was about where that is in its document, at
+the document otherwise, and at a worker's global in a worker, a task later.
+Its `blockedURI` is a URL as a report may carry one (no fragment, no
+credentials, a local scheme's name alone), the one first asked for where a
+redirect took it elsewhere, `inline` for inline content and `eval` or
+`wasm-eval` for compiled strings; its `sample` is the first 40 characters
+where the list says `'report-sample'`. And the host sends a report through
+the document's network: to the endpoint a `report-to` group names in the
+response's `Reporting-Endpoints` or `Report-To`, as the Reporting API's
+`application/reports+json`, and otherwise to each `report-uri`, resolved
+against the document's address and not its base, as CSP 2's
+`application/csp-report`. A report is the browser's own request, credentialed
+for the document's own origin alone, and held to no policy.
+
+**A guard on string compilation is put on only once a policy speaks of it.**
+`eval` stays the realm's own until a policy has a `script-src` or a
+`default-src` without `'unsafe-eval'`, so a direct `eval` reads the scope it
+is called in on every page with no such policy. Once guarded, `eval` is a
+function of the facade's, and every call through it is an indirect one: in a
+document whose policy only reports `eval`, a direct `eval` reads the global
+scope. The guard is asked by the page's realm, which a page can talk round
+(`Object.getPrototypeOf(async function () {}).constructor` is not guarded), so
+it holds the page's own code to its policy and is no boundary against it.
+
+Not here yet: `trusted-types` and `require-trusted-types-for`,
+`upgrade-insecure-requests`, a violation's line and column, a navigation's
+redirects held to `form-action`, `navigate-to`, and a policy for an `<object>`
+or an `<embed>`'s plug-in, which no document here has.
 
 ### Sandboxes and framing
 

@@ -2190,6 +2190,18 @@ export class HtmlSource {
    */
   facts(): DocumentFacts {
     if (this._facts.scanned === this.revision) return this._facts;
+    // a `<style>`'s text asked of the document's Content Security Policy
+    // as the scan meets it (`setStyleGate`)
+    const outer = scanGate;
+    scanGate = STYLE_GATES.get(this.document) ?? null;
+    try {
+      return this._scanFacts();
+    } finally {
+      scanGate = outer;
+    }
+  }
+
+  private _scanFacts(): DocumentFacts {
     const extended = this._extendFacts();
     if (extended) {
       this._facts = extended;
@@ -2347,6 +2359,33 @@ export class HtmlSource {
  *  of (`sheet.disabled`), which the cascade reads none of. */
 const DISABLED_SHEETS = new WeakSet<Element>();
 
+/** Whether a `<style>`'s text may style its document, as its Content
+ *  Security Policy says (`style-src-elem`; HTML 4.2.6, "update a style
+ *  block", and CSP 3, 4.2.3): asked by the scan, by the document. */
+export interface StyleGate {
+  /** A `<style>`'s text. */
+  sheet(el: Element, text: string): boolean;
+  /** An element's `style` attribute (`style-src-attr`), which the cascade
+   *  asks as it styles the element. */
+  attribute(el: Element, text: string): boolean;
+  /** A `<base href>`, as written (`base-uri`). */
+  base?(el: Element, href: string): boolean;
+}
+const STYLE_GATES = new WeakMap<Document, StyleGate>();
+/** The gate of the document being scanned, while it is. */
+let scanGate: StyleGate | null = null;
+
+/** The question a document's `<style>`s are put, by the host that holds
+ *  its policies: a document whose scripts run. */
+export function setStyleGate(document: Document, gate: StyleGate): void {
+  STYLE_GATES.set(document, gate);
+}
+
+/** A document's gate, for its cascade to ask of `style` attributes. */
+export function styleGateOf(document: Document): StyleGate | null {
+  return STYLE_GATES.get(document) ?? null;
+}
+
 /** Disable an element's sheet, or let it be: whether that changed it. */
 export function setSheetDisabled(el: Element, disabled: boolean): boolean {
   if (DISABLED_SHEETS.has(el) === disabled) return false;
@@ -2377,12 +2416,10 @@ function scanElements(
       // were around all of it (HTML 4.2.6, 4.2.4).
       const media = sheetConditions(attr(el, 'media') ?? '');
       if (media !== false && !DISABLED_SHEETS.has(el)) {
-        sheets.push({
-          kind: 'inline',
-          text: rawTextOf(el),
-          element: el,
-          media,
-        });
+        const text = rawTextOf(el);
+        if (!scanGate || scanGate.sheet(el, text)) {
+          sheets.push({ kind: 'inline', text, element: el, media });
+        }
       }
     } else if (tag === 'link' && !isForeign(el)) {
       const rel = (attr(el, 'rel') ?? '').toLowerCase();
@@ -2421,7 +2458,12 @@ function scanElements(
       facts.title = rawTextOf(el).trim();
     } else if (tag === 'base' && facts.base === null && !isForeign(el)) {
       const href = attr(el, 'href');
-      if (href !== undefined) facts.base = href;
+      // the first one's, where the document's policies let it be the base
+      // (`base-uri`, HTML 2.4.1, "set the frozen base URL"): one they refuse
+      // leaves the document's own address its base
+      if (href !== undefined) {
+        facts.base = !scanGate?.base || scanGate.base(el, href) ? href : '';
+      }
     }
   }
   return true;

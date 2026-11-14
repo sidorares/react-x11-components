@@ -57,6 +57,7 @@ import {
   namespaceOf,
   typeNameOf,
 } from '../dom.js';
+import type { StyleGate } from '../dom.js';
 import {
   BLOCK_AXIS,
   INLINE_AXIS,
@@ -4495,6 +4496,10 @@ export class Cascade {
   /** Whether the host runs the document's scripts: what a `scripting`
    *  media query is answered from (`<Html scripting>`). */
   scripting = false;
+  /** What the document's Content Security Policy says of a `style`
+   *  attribute (`style-src-attr`), where its host holds one: set before a
+   *  restyle, as `scripting` is. */
+  styleGate: StyleGate | null = null;
   /** Device pixels per CSS pixel. Every computed length is device; a
    *  `@media` width is the one CSS-pixel comparison left, and it divides. */
   readonly scale: number;
@@ -10567,7 +10572,7 @@ export class Cascade {
     }
 
     const inline = attr(el, 'style');
-    if (inline) {
+    if (inline && (!this.styleGate || this.styleGate.attribute(el, inline))) {
       const declarations = parseDeclarations(inline);
       if (!this._vars && usesVars(declarations)) this._vars = true;
       if (!this._lh && usesLh(declarations)) this._lh = true;

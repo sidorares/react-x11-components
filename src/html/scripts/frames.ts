@@ -415,6 +415,11 @@ function FrameDocument({
           scripts,
           { ...request, client: url },
           look.onResource,
+          // a local document of no realm of its own has the policies of the
+          // one it is in (CSP 3, 4.2.1)
+          !realm && /^(about:|blob:|data:)/i.test(url)
+            ? context.parent.host
+            : null,
         ) as Promise<ResourceResult | null>,
       onLink: (href, ev) => {
         let link = handle.elementAt(ev.x, ev.y);

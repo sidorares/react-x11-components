@@ -32,6 +32,7 @@
 // and its tree one to one, which `adopt`, `slotById`, `find` and `follow` stand
 // on, and it asks nothing of a tree: a window leaves as a document comes in,
 // which has no node of the old one and has yet to be handed anything.
+import type { PageCsp } from './csp-host.js';
 import type { Document, Element } from 'domhandler';
 
 import type {
@@ -613,6 +614,9 @@ export class Popup implements HtmlPopup {
   /** The document that made it, which its `about:blank` shares an origin
    *  with, `document.domain` and all (`DomHost.creatorDocument`). */
   creatorDocument: Document | null = null;
+  /** The policies of the document that made it, which its first
+   *  `about:blank` has (CSP 3, 4.2.1). */
+  creatorCsp: PageCsp<unknown> | null = null;
 
   /** The sandboxing flags each document it shows has. */
   get sandbox(): number {
@@ -915,6 +919,7 @@ export function windowOps(
     const popup = new Popup(ask, runner.host.url, from.group.number(), runner);
     popup.creatorOrigin = runner.host.opaqueOrigin;
     popup.creatorDocument = runner.host.document;
+    popup.creatorCsp = runner.host.csp as PageCsp<unknown>;
     if (!popups.open(popup)) return 0;
     const slot = new WindowSlot(from.group, from, popup, popup.id);
     startWindow(
