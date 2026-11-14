@@ -12332,7 +12332,7 @@ export class DomHost {
         this._markTiming(clock, timingOf(request));
       } else if (!value.chunks) {
         clock.end = performance.now();
-        clock.bytes = value.bytes?.length ?? value.body.length;
+        clock.bytes = value.bytes?.length ?? value.body?.length ?? 0;
         this._markTiming(clock, timingOf(request));
       } else this._fetchClocks.set(id, { clock, context: timingOf(request) });
       // a body that arrives a chunk at a time is handed on so, after the
@@ -12486,11 +12486,17 @@ export class DomHost {
     context: Omit<ResourceContext, 'origin'>,
   ): void {
     if (this._disposed) return;
-    const record = resourceEntry(clock, {
-      ...context,
-      origin: this._origin(),
-    });
-    if (record) this.entries?.call('__resourceTiming', [record]);
+    // an entry is a page's record of a fetch, and nothing the fetch itself
+    // waits on: whatever goes wrong making it is not the fetch's
+    try {
+      const record = resourceEntry(clock, {
+        ...context,
+        origin: this._origin(),
+      });
+      if (record) this.entries?.call('__resourceTiming', [record]);
+    } catch (error) {
+      this._seams.log('warn', `A resource timing entry was not made: ${error}`);
+    }
   }
 
   /** A resource the document's host fetched for it, timed as it went
