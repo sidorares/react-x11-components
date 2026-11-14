@@ -88,3 +88,46 @@ test('a grid line goes over at the half-way point, and replaces the one under it
   );
   assert.deepEqual(out, ['1', '5']);
 });
+
+test('colours add premultiplied, and a sum past the gamut is clipped only once it has been interpolated', async () => {
+  const out = await inPage(
+    `e.style.color = 'rgb(128, 128, 128)';
+     var a = e.animate({ color: ['rgb(255, 0, 0)', 'rgb(0, 0, 255)'] }, { duration: 100, composite: 'add' });
+     at(a, 0);
+     var start = getComputedStyle(e).color;
+     at(a, 50);
+     var half = getComputedStyle(e).color;
+     a.cancel();
+     var b = e.animate({ color: ['rgba(255, 0, 0, 0.4)', 'rgba(255, 0, 0, 0.4)'] }, { duration: 100, composite: 'add' });
+     at(b, 50);
+     return [start, half, getComputedStyle(e).color];`,
+  );
+  assert.deepEqual(out, [
+    'rgb(255, 128, 128)',
+    'rgb(255, 128, 255)',
+    'rgb(230, 128, 128)',
+  ]);
+});
+
+test('transforms accumulate function by function, and through their matrices where the lists are not alike', async () => {
+  const out = await inPage(
+    `var read = function (under, value) {
+       e.style.transform = under;
+       var a = e.animate({ transform: [value, value] }, { duration: 100, composite: 'accumulate' });
+       at(a, 0);
+       var m = getComputedStyle(e).transform;
+       a.cancel();
+       return m.replace(/(\\d\\.\\d{4})\\d+/g, '$1').replace(/-0(?=[,)])/g, '0');
+     };
+     return [
+       read('scale(2)', 'scale(-3)'),
+       read('rotate(90deg)', 'translateX(100px)'),
+       read('rotate(45deg) translateX(100px)', 'rotate(45deg)'),
+     ];`,
+  );
+  assert.deepEqual(out, [
+    'matrix(-2, 0, 0, -2, 0, 0)',
+    'matrix(0, 1, -1, 0, 100, 0)',
+    'matrix(0, 1, -1, 0, 0, 100)',
+  ]);
+});

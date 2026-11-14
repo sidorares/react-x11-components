@@ -111,6 +111,7 @@ import type { Keyframe } from './parse.js';
 import {
   discrete,
   addField,
+  settleSums,
   interpolateField,
   keywordSizes,
   visibleSpan,
@@ -9300,7 +9301,15 @@ export class Cascade {
           }
           unchanged = Math.min(unchanged, unchangedFor(sample, span, most));
         }
-        declarations.push({ prop, value: '', important: false, computed });
+        // the next animation up composites onto the sum as it is, and the
+        // style takes it clipped
+        const settled = layered ? settleRecord(computed) : computed;
+        declarations.push({
+          prop,
+          value: '',
+          important: false,
+          computed: settled,
+        });
         for (const key of fields) under.set(key, computed[key]);
       }
       if (declarations.length) out.push(declarations);
@@ -12600,4 +12609,13 @@ function unchangedFor(
   if (!(visible < Infinity) || !(steepest < Infinity)) return 0;
   const width = span.end - span.start;
   return Math.min(out, (width * duration) / (visible * steepest));
+}
+
+/** A record of composited fields, each as a style holds it (`settleSums`). */
+function settleRecord(
+  record: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(record)) out[key] = settleSums(record[key]);
+  return out;
 }

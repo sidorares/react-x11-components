@@ -129,6 +129,16 @@ export function rgbaOf(value: string): [number, number, number, number] | null {
   ];
 }
 
+/** A colour's gamma-encoded sRGB and alpha with nothing clipped: what an
+ *  addition of colours runs over (`addField`), whose sum may be past the
+ *  gamut until it is interpolated. */
+export function rgbaUnclipped(
+  value: string,
+): [number, number, number, number] | null {
+  const read = readRgba(value);
+  return read ? [read.rgb[0], read.rgb[1], read.rgb[2], read.a] : null;
+}
+
 function scaled(c: Triple, k: number): Triple {
   return [c[0] * k, c[1] * k, c[2] * k];
 }
