@@ -2151,3 +2151,31 @@ test('a row that stays as it is keeps what a height made of an item', async () =
   const plain = await layouts('<div style="height:25px">a</div>');
   assert.ok(ratio <= plain, `${ratio} boxes laid out, and ${plain}`);
 });
+
+test("an absolute child of a grid stands, where nothing places it, at the grid's content edge", async () => {
+  // as the sole item of an area whose edges are the content edges (CSS
+  // Grid 2, 10.1), where Grid 1 had the padding edges
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:grid;padding:3px 7px;border:1px solid;width:60px;height:40px;' +
+      'justify-items:center">' +
+      '<div id="start" style="position:absolute;width:10px;height:10px;justify-self:start"></div>' +
+      '<div id="end" style="position:absolute;width:10px;height:10px;' +
+      'justify-self:end;align-self:end"></div>' +
+      // a baseline it shares with nothing falls back to the start, and a
+      // last baseline to the end, not to the grid's `justify-items`
+      '<div id="base" style="position:absolute;width:10px;height:10px;justify-self:baseline"></div>' +
+      '<div id="last" style="position:absolute;width:10px;height:10px;' +
+      'justify-self:last baseline"></div>' +
+      '</div>',
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const b = boxOf(el, id);
+    return [b.x, b.y];
+  };
+  assert.deepEqual(at('start'), [8, 4]);
+  assert.deepEqual(at('end'), [58, 34]);
+  assert.deepEqual(at('base'), [8, 4]);
+  assert.deepEqual(at('last'), [58, 4]);
+});

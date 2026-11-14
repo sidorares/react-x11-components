@@ -5436,7 +5436,10 @@ column ending in a `margin-top: auto` button, has every button at the
 bottom of its row. A grid is as wide as
 its tracks, whatever runs past them. An absolutely positioned box
 takes the grid area its lines name for its containing block, and a grid's
-or a flex box's child is where it would be as the box's one item.
+or a flex box's child is where it would be as the box's one item: in a
+grid, the sole item of an area whose edges are the grid's content edges
+(CSS Grid 2, 10.1), aligned by its `justify-self` and `align-self`, a
+baseline falling back to the start and a last baseline to the end.
 A grid sits on the baseline of its first item in row-major order — the
 first in its first row that holds one, by where it was placed — and an
 item with no line of its own gives the bottom edge of its border box (CSS

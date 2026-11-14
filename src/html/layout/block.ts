@@ -10955,8 +10955,9 @@ function placeStatic(
  * An absolutely positioned child of a flex box or a grid, laid out once the
  * flow is: against its own containing block, which the box is only where
  * it is positioned, from where it is as the box's one item — at the start
- * of a flex box's content box (CSS Flexbox 4.1), of a grid's padding box
- * (CSS Grid 1, 9.1). Pushed against the box whatever it was, one in a
+ * of a flex box's content box (CSS Flexbox 4.1), and of a grid's (CSS Grid
+ * 2, 10.1: as the sole item of an area whose edges are the grid's content
+ * edges, where Grid 1 had its padding edges). Pushed against the box whatever it was, one in a
  * static flex box was placed from the box's corner, and `fixed` one from
  * a grid.
  */
@@ -10966,25 +10967,15 @@ export function positionOutOfFlow(
   ctx: LayoutContext,
   flex: boolean,
 ): void {
-  if (flex) {
-    placeStatic(
-      child,
-      container,
-      container.contentX,
-      container.contentWidth,
-      container.contentY,
-    );
-  } else {
-    placeStatic(
-      child,
-      container,
-      container.x + container.borderLeft,
-      container.width - container.borderLeft - container.borderRight,
-      container.y + container.borderTop,
-    );
-  }
+  placeStatic(
+    child,
+    container,
+    container.contentX,
+    container.contentWidth,
+    container.contentY,
+  );
   child.staticPosition!.inside = {
-    box: flex ? 'content' : 'padding',
+    box: 'content',
     ...staticAlignment(child, container, flex),
   };
   ctx.positioned.push({
@@ -11011,8 +11002,20 @@ function staticAlignment(
     own.alignSelf === AUTO ? style.alignItems : own.alignSelf,
   );
   if (!flex) {
-    const justify =
-      own.justifySelf === 'auto' ? style.justifyItems : own.justifySelf;
+    // a baseline the cascade keeps no keyword for falls back to the start,
+    // and a last baseline to the end (CSS Box Alignment 3, 4.2): an
+    // absolutely positioned box shares a baseline with nothing (9.1)
+    const text =
+      own.justifySelfText === 'auto' || !own.justifySelfText
+        ? style.justifyItemsText
+        : own.justifySelfText;
+    const justify = text?.endsWith('baseline')
+      ? text.startsWith('last')
+        ? 'flex-end'
+        : 'flex-start'
+      : own.justifySelf === 'auto'
+        ? style.justifyItems
+        : own.justifySelf;
     return { across: factor(justify), down: cross };
   }
   const justify = style.justifyContent;
