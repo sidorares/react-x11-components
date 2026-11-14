@@ -646,6 +646,12 @@ export class PageSources {
       case 'mdSize':
         this._watchSize(Number(a), b === true);
         return null;
+      case 'mdSettings': {
+        // a source's settings now, as a received track's `getSettings()`
+        // asks: what its source last put together, read with no frame
+        const held = this._held.get(Number(a));
+        return held ? JSON.stringify(held.source.settings()) : '';
+      }
       case 'mdKeep':
         this._keep(Number(a), b === true);
         return null;
