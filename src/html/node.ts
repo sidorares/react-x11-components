@@ -8609,7 +8609,23 @@ export class HtmlViewNode extends Node {
       return cssomStyle(own, this._scale, null, computed, true);
     }
     if (pseudo && pseudo !== 'file-selector-button') return null;
-    const box = this._ownBoxOf(tree, element);
+    let box = this._ownBoxOf(tree, element);
+    // a box a script's animation has resized since it was laid out is laid
+    // out again first: the box answers its used size, and a page that seeks
+    // an animation and reads the height in one task reads where it went,
+    // where the frame that would lay it out comes later
+    if (
+      box &&
+      !computed &&
+      this._scripts.has(element) &&
+      box.style !== style &&
+      laidOutDiffers(box.style, style)
+    ) {
+      this._invalidate(Stale.Boxes, new Set([element]), true);
+      this._settle();
+      const again = this._tree;
+      if (again) box = this._ownBoxOf(again, element);
+    }
     const own = (box && this._placedStyle(box)) ?? style;
     const parent = flatParentOf(element);
     const read = cascade.styleAsRead(
@@ -22524,6 +22540,33 @@ const FONT_FIELDS: ReadonlySet<string> = new Set([
   'lineHeight',
   'textIndent',
 ]);
+
+/** The fields of a style layout sizes a box by beside `LENGTH_FIELDS`: a
+ *  sizing keyword and a `calc-size()`. */
+const SIZE_FIELDS = [
+  'widthKeyword',
+  'heightKeyword',
+  'minWidthKeyword',
+  'minHeightKeyword',
+  'maxWidthKeyword',
+  'maxHeightKeyword',
+  'widthSize',
+  'heightSize',
+  'minWidthSize',
+  'maxWidthSize',
+  'minHeightSize',
+  'maxHeightSize',
+  'flexBasisSize',
+];
+
+/** Whether two styles of one element lay its box out otherwise. */
+function laidOutDiffers(was: ComputedStyle, now: ComputedStyle): boolean {
+  const a = was as unknown as Record<string, unknown>;
+  const b = now as unknown as Record<string, unknown>;
+  for (const key of LENGTH_FIELDS) if (!sameValue(a[key], b[key])) return true;
+  for (const key of SIZE_FIELDS) if (!sameValue(a[key], b[key])) return true;
+  return false;
+}
 
 /** A difference in `LENGTH_FIELDS` (`lengthKind`). */
 const BOX_LENGTHS = 1;
