@@ -18535,10 +18535,38 @@ export function installDom(
       return this._type;
     }
   }
+  /** The pseudo-elements a selector may end in, which a page's query does
+   *  not take and a rule does. */
+  const RULE_PSEUDO_ELEMENTS =
+    /::(?:before|after|marker|placeholder|selection|first-line|first-letter|backdrop|file-selector-button|target-text|spelling-error|grammar-error|details-content|checkmark|picker-icon|column|scroll-marker|scroll-marker-group|cue|view-transition(?:-(?:group|image-pair|old|new|group-children))?(?:\([^()]*\))?|(?:part|slotted|highlight|picker|scroll-button|cue)\([^()]*\))|:(?:before|after|first-line|first-letter)\b/gi;
   class CSSStyleRule extends CSSRule {
     override _type = 1;
     get selectorText(): string {
       return preludeOf(this._text);
+    }
+    /** CSSOM 6.4.3: a selector that parses replaces the rule's, serialized
+     *  — a namespace that is any, or none, of a document with no default
+     *  one left off — and one that does not leaves it as it was. */
+    set selectorText(v: Any) {
+      const given = str(v).trim();
+      // and a compound that starts with a digit, which no selector does and
+      // css-select reads as a type
+      if (!given || /[{};]/.test(given) || /(^|[\s>+~,])-?\d/.test(given)) {
+        return;
+      }
+      try {
+        document
+          .createDocumentFragment()
+          .querySelector(given.replace(RULE_PSEUDO_ELEMENTS, ''));
+      } catch {
+        return;
+      }
+      const text = given
+        .replace(/(^|[\s>+~(,])\*\|(?=[\w*\\-]|[^\x00-\x7f])/g, '$1')
+        .replace(/\[\s*\|/g, '[')
+        .replace(/\s+/g, ' ');
+      const body = str(call('blockText', blockOf(this._text)) ?? '');
+      replaceRule(this, `${text} { ${body ? `${body} ` : ''}}`);
     }
     _style: Any = null;
     get style(): Any {
