@@ -808,10 +808,22 @@ const EXPECTED: Record<string, Expected> = {
  * simplified and serialized; null where it is invalid, its syntax or its
  * types; undefined where this cannot say — no math function all of it, a
  * function in it this does not know, or a property whose type it does not
- * know and nothing else wrong with it.
+ * know and nothing else wrong with it. A `transform`'s functions are read
+ * for the math functions in their arguments (`specifiedTransform`).
  */
 export function specifiedMath(
   prop: string,
+  value: string,
+): string | null | undefined {
+  const name = prop.toLowerCase();
+  if (name === 'transform') return specifiedTransform(value);
+  return mathAs(EXPECTED[name], value);
+}
+
+/** A value that is one math function, typed against `expected`, or against
+ *  nothing where none is given (`specifiedMath`). */
+function mathAs(
+  expected: Expected | undefined,
   value: string,
 ): string | null | undefined {
   if (!STARTS_WITH_MATH.test(value)) return undefined;
@@ -827,7 +839,6 @@ export function specifiedMath(
     throw e;
   }
   if (!node) return null;
-  const expected = EXPECTED[prop.toLowerCase()];
   let type: MathType | null;
   try {
     type = typeOf(
@@ -866,4 +877,103 @@ export function specifiedMath(
     return `calc(${serialize(simplified)})`;
   }
   return serializeRoot(simplified);
+}
+
+const ANGLE: Expected = { type: { angle: 1 }, pct: null };
+
+/** What each transform function's arguments are (CSS Transforms 1, 9 and
+ *  2, 12), the last repeated for those that take more. */
+const TRANSFORM_ARGS: Record<string, Expected[]> = {
+  rotate: [ANGLE],
+  rotatex: [ANGLE],
+  rotatey: [ANGLE],
+  rotatez: [ANGLE],
+  rotate3d: [NUMBER_ONLY, NUMBER_ONLY, NUMBER_ONLY, ANGLE],
+  skew: [ANGLE, ANGLE],
+  skewx: [ANGLE],
+  skewy: [ANGLE],
+  translate: [LENGTH_PCT, LENGTH_PCT],
+  translatex: [LENGTH_PCT],
+  translatey: [LENGTH_PCT],
+  translatez: [LENGTH_ONLY],
+  translate3d: [LENGTH_PCT, LENGTH_PCT, LENGTH_ONLY],
+  scale: [NUMBER_PCT, NUMBER_PCT],
+  scalex: [NUMBER_PCT],
+  scaley: [NUMBER_PCT],
+  scalez: [NUMBER_PCT],
+  scale3d: [NUMBER_PCT, NUMBER_PCT, NUMBER_PCT],
+  perspective: [LENGTH_ONLY],
+  matrix: [NUMBER_ONLY],
+  matrix3d: [NUMBER_ONLY],
+};
+
+/** A value's arguments at its top level, split at its commas. */
+function topLevelArgs(text: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (c === '(') depth += 1;
+    else if (c === ')') depth -= 1;
+    else if (c === ',' && depth === 0) {
+      out.push(text.slice(from, i));
+      from = i + 1;
+    }
+  }
+  out.push(text.slice(from));
+  return out.map((a) => a.trim());
+}
+
+/**
+ * A `transform` with a math function in an argument of one of its
+ * functions: each such argument typed against what its function takes and
+ * simplified, the rest as written; null where one is invalid, and
+ * undefined where no argument is a math function or a function in it is
+ * none this knows.
+ */
+function specifiedTransform(value: string): string | null | undefined {
+  if (
+    !/(?:calc|min|max|clamp|round|mod|rem|sin|cos|tan|asin|acos|atan2?|pow|sqrt|hypot|log|exp|abs|sign)\(/i.test(
+      value,
+    )
+  ) {
+    return undefined;
+  }
+  const text = value.replace(/\/\*[\s\S]*?\*\//g, ' ').trim();
+  const fns: string[] = [];
+  let at = 0;
+  while (at < text.length) {
+    while (/\s/.test(text[at] ?? '')) at += 1;
+    if (at >= text.length) break;
+    const head = /^([a-z][\w-]*)\(/i.exec(text.slice(at));
+    if (!head) return undefined;
+    let depth = 0;
+    let end = at;
+    for (; end < text.length; end += 1) {
+      if (text[end] === '(') depth += 1;
+      else if (text[end] === ')' && (depth -= 1) === 0) break;
+    }
+    if (depth !== 0) return null;
+    const name = head[1].toLowerCase();
+    const kinds = TRANSFORM_ARGS[name];
+    if (!kinds) return undefined;
+    const args = topLevelArgs(text.slice(at + head[0].length, end));
+    const outArgs: string[] = [];
+    for (let i = 0; i < args.length; i += 1) {
+      const arg = args[i];
+      if (!STARTS_WITH_MATH.test(arg)) {
+        outArgs.push(arg);
+        continue;
+      }
+      const expected = kinds[Math.min(i, kinds.length - 1)];
+      const out = mathAs(expected, arg);
+      if (out === null) return null;
+      if (out === undefined) return undefined;
+      outArgs.push(out);
+    }
+    fns.push(`${head[1]}(${outArgs.join(', ')})`);
+    at = end + 1;
+  }
+  return fns.join(' ');
 }

@@ -85,3 +85,21 @@ test('what is wrong with one, its syntax or its types, is refused, and what it c
     assert.deepEqual(out, ['calc(9px)', 'calc(9px)', 'calc(1)', '1']);
   },
 );
+
+test("a transform's function takes a math function in an argument, typed as the function takes it", () => {
+  assert.equal(
+    specifiedMath('transform', 'rotate(asin(1))'),
+    'rotate(calc(90deg))',
+  );
+  assert.equal(
+    specifiedMath(
+      'transform',
+      'rotate(acos(0)) translate(round(10px, 3px), 5%)',
+    ),
+    'rotate(calc(90deg)) translate(calc(9px), 5%)',
+  );
+  assert.equal(specifiedMath('transform', 'rotate(asin(1deg))'), null);
+  assert.equal(specifiedMath('transform', 'rotate(min(1deg, 2))'), null);
+  assert.equal(specifiedMath('transform', 'rotate(45deg)'), undefined);
+  assert.equal(specifiedMath('transform', 'foo(calc(1px))'), undefined);
+});
