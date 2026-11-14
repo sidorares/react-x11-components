@@ -225,6 +225,17 @@ function positioned(name: string, attribs: Record<string, string>): boolean {
   return 'style' in attribs;
 }
 
+/** The elements whose start tag named an attribute twice, which the
+ *  tokenizer reports as a parse error and keeps the first of: such a
+ *  script or style is not nonceable (HTML 2.6.3, "is element nonceable"),
+ *  since what came after the first may be what an attacker put there. */
+const DUPLICATED = new WeakSet<Element>();
+
+/** Whether an element's start tag named an attribute twice. */
+export function namedAttributeTwice(el: Element): boolean {
+  return DUPLICATED.has(el);
+}
+
 /** Whether a document's parser made a `<link>` or a `<style>`. */
 export function madeByParser(el: Element): boolean {
   return PARSER_SHEETS.has(el);
@@ -4195,7 +4206,19 @@ class DocumentParser extends Parser {
 
   // --- tokens -----------------------------------------------------------------
 
+  /** Whether the tag being read has named an attribute twice. */
+  private _duplicated = false;
+
+  override onattribend(quote: number, endIndex: number): void {
+    const self = this as unknown as ParserInternals & { attribname: string };
+    if (self.attribs && Object.hasOwn(self.attribs, self.attribname)) {
+      this._duplicated = true;
+    }
+    super.onattribend(quote, endIndex);
+  }
+
   override onopentagname(start: number, endIndex: number): void {
+    this._duplicated = false;
     const self = this as unknown as ParserInternals;
     // what broke out of a fragment's context left it until it closed
     if (!self.stack.length) self.foreignContext[0] = this._context;
@@ -5884,6 +5907,10 @@ class DocumentParser extends Parser {
     cbs.onopentag(name, attribs);
     cbs.place = null;
     if (positioned(name, attribs)) this._place();
+    if (this._duplicated) {
+      DUPLICATED.add(this._current());
+      this._duplicated = false;
+    }
     // at the top of a fragment read in SVG or MathML, which says nothing
     // of an element the parser made HTML's there
     if (stack.length === 1 && this._context !== NOT_FOREIGN) {
@@ -5917,6 +5944,10 @@ class DocumentParser extends Parser {
     cbs.onopentag(name, attribs);
     cbs.place = null;
     if (positioned(name, attribs)) this._place();
+    if (this._duplicated) {
+      DUPLICATED.add(this._current());
+      this._duplicated = false;
+    }
     if (selfClosing) this._pop();
   }
 
