@@ -1529,7 +1529,9 @@ gives it, a stream played in a `<video>` or an `<audio>` (`srcObject`),
 and `getDisplayMedia`. Media flows over a connection whose stack carries
 it, as `HtmlNetwork.webRTC`'s does (below): a remote track is muted until
 its first packet and again once none has come for two seconds, plays in a
-`<video>` or an `<audio>` (`srcObject`), and its receiver's
+`<video>` or an `<audio>` (`srcObject`), a video one's `getSettings()` has
+the `width` and `height` of the last frame it put together, 0 by 0 before
+the first, and its receiver's
 `getSynchronizationSources` answers from the packets, an audio one's with
 its level; `getStats` has a sender's outbound-rtp from the answer that
 first negotiated it to send and a receiver's inbound-rtp from its first
