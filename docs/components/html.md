@@ -2627,7 +2627,9 @@ until its animations are over, when it is finished.
   is, so the block around it is captured without it.
 - **The tree.** `::view-transition`, in the top layer over everything, holds
   a group for each name, in the order the names were found: the old
-  state's, the root's first, then the new state's. Each group holds an
+  state's, the root's first, then the new state's, each state's in the
+  order the document paints the elements it names (7.4), so a `z-index: 1`
+  element's group is over those of the elements after it. Each group holds an
   image pair, which holds an old image and a new one where the transition
   has each. These are boxes styled by the user agent's sheet and the page's
   rules, a name or a class in a selector's argument counting as a type
@@ -2638,6 +2640,10 @@ until its animations are over, when it is finished.
   of its own, and the images fade — across where it has both, out or in
   where it has one. The old image draws its picture; the new image draws its element
   as it is now, at every paint, at its size or stretched to the image's.
+  An element the tree draws is a hole where it is laid out, to the
+  pointer as much as to the eye: `elementFromPoint` over it is what is
+  behind it, or the pseudo-element over it, which is its originating
+  element's, the root's or a scope's.
   The element itself is a hole where it is laid out, and with the root
   captured, the canvas is too. The old and new images are added to each
   other (`plus-lighter`), so at any point of their fade they come to the
@@ -2694,7 +2700,8 @@ until its animations are over, when it is finished.
 - **Scoped to an element** (CSS View Transitions 2).
   `element.startViewTransition()` runs a transition of what the element
   holds: its names are found inside it, its `::view-transition` hangs off
-  the element and covers its padding box, styled by `#scope::view-transition`,
+  the element and covers its padding box, a stacking context drawn over all
+  the scope holds whatever their `z-index`, styled by `#scope::view-transition`,
   and its groups are placed from the padding box's corner. The element is
   the transition's `transitionRoot` and has it as its
   `activeViewTransition`; for its length it computes

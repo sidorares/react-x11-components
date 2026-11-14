@@ -9581,7 +9581,15 @@ export class HtmlViewNode extends Node {
     // the root element's (CSS View Transitions 1, 7.4)
     const hit = this._suppressed()
       ? null
-      : deepestAt(tree, local.x, local.y, undefined, this._fixedShift(origin));
+      : deepestAt(
+          tree,
+          local.x,
+          local.y,
+          undefined,
+          this._fixedShift(origin),
+          undefined,
+          this._capturedHoles(tree),
+        );
     if (hit) {
       // an image with a map is its areas (HTML 4.8.14), where a point of it
       // is in one, and otherwise the image
@@ -9760,7 +9768,15 @@ export class HtmlViewNode extends Node {
     if (!tree) return null;
     const hit = { text: false };
     const at = selectionHit({ x: x - this.abs.x, y: y - this.abs.y });
-    const el = deepestAt(tree, at.x, at.y, hit, this._fixedShift(), at);
+    const el = deepestAt(
+      tree,
+      at.x,
+      at.y,
+      hit,
+      this._fixedShift(),
+      at,
+      this._capturedHoles(tree),
+    );
     const cursor = cursorKeyword(
       (el && tree.styles.get(el)?.style.cursor) ?? null,
     );
@@ -17635,7 +17651,17 @@ export class HtmlViewNode extends Node {
         group: style.viewTransitionGroup,
       });
     }
-    return out;
+    return capturesInPaintOrder(out);
+  }
+
+  /** What a hit test passes over for the view transitions under way: the
+   *  elements their trees draw (CSS View Transitions 1, 7.4 — such an
+   *  element is not rendered where it is laid out), and null where none
+   *  runs, which asks nothing of a document with no transition. */
+  private _capturedHoles(tree: BoxTree): Set<Box> | null {
+    if (!this._vt && !this._scopedVts.size) return null;
+    const boxes = this._capturedBoxes(tree);
+    return boxes.size ? boxes : null;
   }
 
   /** The boxes of the elements a view transition draws in its tree now. */
@@ -20553,6 +20579,11 @@ function deepestAt(
   /** Told, for the selection, the text or the box what was found was
    *  found in, and the point in its frame (`SelectionHit`). */
   select?: SelectionHit,
+  /** Boxes the walk does not go into: the elements a view transition draws
+   *  in its tree, whose own boxes are holes where they are laid out
+   *  (`HtmlViewNode._capturedBoxes`), so that a point over one is whatever
+   *  is behind it, or the transition's pseudo-element over it. */
+  skip: ReadonlySet<Box> | null = null,
 ): Element | null {
   const box = tree.root;
   let found: Element | null = box.el;
@@ -20592,6 +20623,7 @@ function deepestAt(
     if (style.visibility !== 'visible' || style.pointerEvents === 'none') {
       return;
     }
+    if (dead) return;
     if (compareKeys(key, foundKey) < 0) return;
     found = el;
     foundKey = key;
@@ -20630,6 +20662,46 @@ function deepestAt(
   // order in the document (`gatherLayers`, `placesOn`)
   let order = 0;
   const enter = (
+    child: Box,
+    context: readonly number[],
+    stack: readonly number[],
+    clipped: readonly Box[],
+  ): void => {
+    if (skip?.has(child)) {
+      // nothing of a captured element is under the point, but for its own
+      // transition's tree where it is a scope (CSS View Transitions 2, 4),
+      // which is hung in its box
+      if (
+        !child.children.some(
+          (c) => TRANSITION_KEYS.get(c) === 'view-transition',
+        )
+      ) {
+        return;
+      }
+      dead += 1;
+      try {
+        enterLive(child, context, stack, clipped);
+      } finally {
+        dead -= 1;
+      }
+      return;
+    }
+    if (dead && TRANSITION_KEYS.get(child) === 'view-transition') {
+      const was = dead;
+      dead = 0;
+      try {
+        enterLive(child, context, stack, clipped);
+      } finally {
+        dead = was;
+      }
+      return;
+    }
+    enterLive(child, context, stack, clipped);
+  };
+  /** How many captured boxes the walk is inside, which nothing in is
+   *  taken (`skip`). */
+  let dead = 0;
+  const enterLive = (
     child: Box,
     context: readonly number[],
     stack: readonly number[],
@@ -23623,4 +23695,38 @@ function topOf(node: AnyNode): AnyNode {
     else if (at.parent) at = at.parent;
     else return at;
   }
+}
+
+/**
+ * The elements a view transition captures, in the order the document paints
+ * them (CSS View Transitions 1, 7.4: "for each element of every element
+ * that is connected … in paint order"), so each group's place in the tree
+ * is its element's: a `z-index: 1` element's group is drawn over those of
+ * the elements after it in the tree. A named element is a stacking context,
+ * so each has a place among its context's layers (`paintOrderOf`); the root
+ * element is under them all. Where one's place cannot be told, they stay in
+ * tree order.
+ */
+function capturesInPaintOrder<T extends { el: Element; box: Box }>(
+  named: T[],
+): T[] {
+  if (named.length < 2) return named;
+  const keys = new Map<T, number[]>();
+  for (const n of named) {
+    const key = isRootElement(n.el) ? [] : paintOrderOf(n.box);
+    if (!key) return named;
+    keys.set(n, key);
+  }
+  return named
+    .map((n, i) => ({ n, i }))
+    .sort((a, b) => {
+      const p = keys.get(a.n)!;
+      const q = keys.get(b.n)!;
+      for (let k = 0; k < p.length && k < q.length; k += 1) {
+        if (p[k] !== q[k]) return p[k] - q[k];
+      }
+      // a context is painted before what is in it
+      return p.length - q.length || a.i - b.i;
+    })
+    .map(({ n }) => n);
 }
