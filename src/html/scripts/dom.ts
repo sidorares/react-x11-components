@@ -10141,6 +10141,18 @@ export function installDom(
   }
 
   class HTMLScriptElement extends HTMLElement {
+    /** Whether a `type` is one a script element runs (HTML 4.12.1):
+     *  `classic`, `module` and `importmap`, Chrome's `speculationrules`
+     *  left out, since nothing here reads one. */
+    static supports(type: Any = undefined): boolean {
+      if (arguments.length < 1) {
+        throw new TypeError(
+          "Failed to execute 'supports' on 'HTMLScriptElement': 1 argument required, but only 0 present.",
+        );
+      }
+      const t = str(type);
+      return t === 'classic' || t === 'module' || t === 'importmap';
+    }
     /** Its child text content: the data of its text children, and none of
      *  what an element in it holds (HTML 4.12.1). */
     get text(): string {

@@ -494,9 +494,36 @@ function resolveSpecifier(
   specifier: string,
   base: string,
   map: ImportMap | null = null,
+  resolved?: ResolvedModule[],
 ): string {
   const url = urlLike(specifier, base);
   const normalized = url ?? specifier;
+  const out = resolvedThrough(specifier, url, normalized, base, map);
+  // what a later import map may no longer change (HTML 8.1.5.5, "add
+  // module to resolved module set")
+  resolved?.push({ base, specifier: normalized });
+  return out;
+}
+
+/** A specifier resolved, by the base it was resolved against: what HTML's
+ *  merge of a later import map keeps the map from changing. */
+interface ResolvedModule {
+  base: string;
+  specifier: string;
+}
+
+/** Whether a key of a map changes what a specifier resolves to: the
+ *  specifier itself, or a prefix of it ending in `/`. */
+const keyReaches = (key: string, specifier: string): boolean =>
+  key === specifier || (key.endsWith('/') && specifier.startsWith(key));
+
+function resolvedThrough(
+  specifier: string,
+  url: string | null,
+  normalized: string,
+  base: string,
+  map: ImportMap | null,
+): string {
   if (map) {
     for (const [scope, imports] of map.scopes) {
       if (scope === base || (scope.endsWith('/') && base.startsWith(scope))) {
@@ -713,6 +740,8 @@ export class ScriptEngine {
   private readonly _ownProxies = new WeakSet<object>();
   /** The document's import map (`importMap`), where it has one. */
   private _importMap: ImportMap | null = null;
+  /** What the page's modules resolved, each by its base (`_mergeImportMap`). */
+  private readonly _resolved: ResolvedModule[] = [];
   /** The link under way, which the next waits for (`_link`). */
   private _linking: Promise<void> = Promise.resolve();
   private readonly _evaluated = new WeakMap<PageModule, Promise<void>>();
@@ -739,6 +768,10 @@ export class ScriptEngine {
    *  with what it had before page code ran: null where it has no
    *  `CSSStyleSheet`, a worker's. */
   private readonly _makeSheet: ((text: string) => unknown) | null;
+  /** `import.meta.resolve` for a module at a base URL, made in the page's
+   *  realm (HTML 8.1.6.4): it hands the specifier and the base over as
+   *  strings, and throws its own `TypeError`. */
+  private readonly _metaResolve: (base: string) => unknown;
   /** The context's global, the page's window (`global`). */
   private readonly _global: object;
 
@@ -794,6 +827,34 @@ export class ScriptEngine {
     this._TypeError = run('TypeError') as new (message: string) => object;
     this._SyntaxError = run('SyntaxError') as new (message: string) => object;
     this._parseJson = run('JSON.parse') as (text: string) => unknown;
+    this._metaResolve = (
+      run(
+        `((resolveIn) => (base) => {
+          const TypeError_ = TypeError;
+          const DOMException_ = DOMException;
+          const String_ = String;
+          return {
+            resolve(specifier) {
+              if (arguments.length < 1) {
+                throw new TypeError_(
+                  "Failed to execute 'resolve' on 'ImportMeta': 1 argument required, but only 0 present.",
+                );
+              }
+              const r = resolveIn('importResolve', String_(specifier), base);
+              if (typeof r === 'string' && r.charCodeAt(0) === 2) {
+                throw new TypeError_(r.slice(1));
+              }
+              // the task's time spent, as any op of the bridge's is
+              if (typeof r === 'string' && r.charCodeAt(0) === 1) {
+                const parts = r.split('\u0001');
+                throw new DOMException_(parts[2] || '', parts[1] || 'Error');
+              }
+              return r;
+            },
+          }.resolve;
+        })`,
+      ) as (resolveIn: Bridge) => (base: string) => unknown
+    )(this._bridge((_op, a, b) => this._resolveForPage(String(a), String(b))));
     this._makeSheet = run(
       `(() => {
         const Sheet = globalThis.CSSStyleSheet;
@@ -854,6 +915,11 @@ export class ScriptEngine {
       // is at the document's, which it is no module of
       const known = external ? this._modules.get(url) : undefined;
       if (known) root = await known.catch(() => null);
+      if (!root && !external) {
+        const key = `${url}\u0000${code}`;
+        root = this._prepared.get(key) ?? null;
+        this._prepared.delete(key);
+      }
       if (!root) {
         root = this._compile(code, url);
         if (external) this._modules.set(url, Promise.resolve(root));
@@ -877,6 +943,41 @@ export class ScriptEngine {
     return this._evaluate(root) ? 'ran' : 'failed';
   }
 
+  /** Inline modules compiled as they were prepared (`prepareInline`), by
+   *  their text and base, for `module` to run. */
+  private readonly _prepared = new Map<string, PageModule>();
+
+  /**
+   * An inline module script as it is prepared: compiled, and what it
+   * imports resolved, which a later import map then leaves as it was (HTML
+   * 8.1.5.6). What does not parse or resolve is left for its run to report.
+   */
+  prepareInline(code: string, base: string): void {
+    if (!SourceTextModule || this._broken || this._disposed) return;
+    let module: PageModule;
+    try {
+      module = this._compile(code, base);
+    } catch {
+      return;
+    }
+    this._prepared.set(`${base}\u0000${code}`, module);
+    const held = module as unknown as {
+      moduleRequests?: { specifier: string }[];
+      dependencySpecifiers?: string[];
+    };
+    const specifiers =
+      held.moduleRequests?.map((request) => request.specifier) ??
+      held.dependencySpecifiers ??
+      [];
+    for (const specifier of specifiers) {
+      try {
+        resolveSpecifier(specifier, base, this._importMap, this._resolved);
+      } catch {
+        // its run reports it
+      }
+    }
+  }
+
   /** A module, compiled in this context: `import.meta.url` its address,
    *  and an `import()` in it resolved against that. */
   private _compile(code: string, url: string): PageModule {
@@ -885,6 +986,7 @@ export class ScriptEngine {
       identifier: url,
       initializeImportMeta: (meta, module) => {
         meta.url = module.identifier;
+        meta.resolve = this._metaResolve(module.identifier);
       },
       importModuleDynamically: (specifier, referrer, attributes) =>
         this._imported(
@@ -1065,6 +1167,7 @@ export class ScriptEngine {
       specifier,
       referencing.identifier,
       this._importMap,
+      this._resolved,
     );
     return this._fetch(url, this._moduleType(type));
   };
@@ -1091,7 +1194,12 @@ export class ScriptEngine {
         );
       }
       const type = this._typeAsked(attributes, 'TypeError');
-      const url = resolveSpecifier(specifier, base, this._importMap);
+      const url = resolveSpecifier(
+        specifier,
+        base,
+        this._importMap,
+        this._resolved,
+      );
       module = await this._fetch(url, this._moduleType(type));
       await this._link(module);
     } catch (error) {
@@ -1293,6 +1401,17 @@ export class ScriptEngine {
     return false;
   }
 
+  /** What `import.meta.resolve` answers a page: the specifier as the
+   *  import map has it, or a `TypeError`'s message after a U+0002, which
+   *  the page's function throws in its own realm. */
+  private _resolveForPage(specifier: string, base: string): string {
+    try {
+      return resolveSpecifier(specifier, base, this._importMap, this._resolved);
+    } catch (error) {
+      return `\u0002${messageOf(error as Error)}`;
+    }
+  }
+
   /**
    * A `<script type="importmap">`'s JSON (HTML 8.1.5.6), its URLs against
    * `base`: what a bare specifier, `react`, resolves to from then on. A
@@ -1303,10 +1422,22 @@ export class ScriptEngine {
     let raw: { imports?: unknown; scopes?: unknown };
     try {
       raw = JSON.parse(json) as typeof raw;
-    } catch {
-      this._options.log(
-        'error',
-        'An import map that is not JSON was left out.',
+    } catch (error) {
+      // reported in the page as the parse's `SyntaxError` (HTML 8.1.5.5,
+      // "register an import map": the result's error to rethrow)
+      this._fault(
+        this._pageError(
+          `Failed to parse import map: ${messageOf(error as Error)}`,
+          'SyntaxError',
+        ),
+      );
+      return;
+    }
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      this._fault(
+        this._pageError(
+          'Failed to parse import map: the top-level value needs to be a JSON object.',
+        ),
       );
       return;
     }
@@ -1319,16 +1450,48 @@ export class ScriptEngine {
       }
     }
     scopes.sort((a, b) => b[0].length - a[0].length);
-    const was = this._importMap;
-    if (!was) {
-      this._importMap = { imports, scopes };
-      return;
+    this._mergeImportMap({ imports, scopes });
+  }
+
+  /**
+   * A new import map merged into the one the document has (HTML 8.1.5.6,
+   * "merge existing and new import maps"): a rule that would change what a
+   * specifier already resolved to is dropped, and so is one for a key the
+   * old map has, which keeps its own.
+   */
+  private _mergeImportMap(next: ImportMap): void {
+    const resolved = this._resolved;
+    const was = (this._importMap ??= { imports: [], scopes: [] });
+    for (const [prefix, imports] of next.scopes) {
+      let kept = imports.filter(
+        ([key]) =>
+          !resolved.some(
+            (record) =>
+              (record.base === prefix ||
+                (prefix.endsWith('/') && record.base.startsWith(prefix))) &&
+              keyReaches(key, record.specifier),
+          ),
+      );
+      const old = was.scopes.find(([scope]) => scope === prefix);
+      if (old) {
+        const has = new Set(old[1].map(([key]) => key));
+        kept = kept.filter(([key]) => !has.has(key));
+        old[1].push(...kept);
+        old[1].sort((a, b) => b[0].length - a[0].length);
+      } else {
+        was.scopes.push([prefix, kept]);
+      }
     }
-    const kept = new Set(was.imports.map(([key]) => key));
-    was.imports.push(...imports.filter(([key]) => !kept.has(key)));
-    was.imports.sort((a, b) => b[0].length - a[0].length);
-    was.scopes.push(...scopes);
     was.scopes.sort((a, b) => b[0].length - a[0].length);
+    const has = new Set(was.imports.map(([key]) => key));
+    for (const entry of next.imports) {
+      const [key] = entry;
+      if (has.has(key)) continue;
+      if (resolved.some((record) => keyReaches(key, record.specifier)))
+        continue;
+      was.imports.push(entry);
+    }
+    was.imports.sort((a, b) => b[0].length - a[0].length);
   }
 
   /**

@@ -980,7 +980,18 @@ charset }` — the `<script>` is the request's `element`, and the root
   Each is a module of its own beside the script at the same URL. Another
   type, `type: 'javascript'` among them, is a `TypeError`, and an attribute
   but `type` a `SyntaxError` in an `import` and a `TypeError` in an
-  `import()`, as in a browser;
+  `import()`, as in a browser. **An import map** (`<script
+type="importmap">`) names what a bare specifier, `react`, resolves to, by
+  prefix and by scope, against the document's base URL. `import.meta.resolve`
+  answers through it, and `HTMLScriptElement.supports('importmap')` is true.
+  A second map, from the parser or a page's script, is merged into the first
+  as HTML has it: a key the first has keeps the first's address, and a rule
+  that would change what a module already resolved to is dropped. So an
+  inline module's static imports count as resolved as it is prepared, ahead
+  of a map after it. A map a script puts in applies at once, inline maps are
+  held to `script-src` as any inline script is, one with a `src` is its
+  element's `error`, and one that is not a JSON object is reported as a
+  `SyntaxError` or a `TypeError`. A map's `integrity` is not read;
 - a page's own requests — `fetch`, an asynchronous `XMLHttpRequest`, a frame's
   document, a worker's script — go through `scripts.fetch`, a request of any
   method and the response whatever its status, after the engine has held the

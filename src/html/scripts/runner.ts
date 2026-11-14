@@ -178,6 +178,9 @@ interface Queued {
   /** The document it was prepared in (HTML's "preparation-time
    *  document"), which it runs in only while it is still there. */
   prepared: Document;
+  /** Its base URL, the document's as it was prepared (HTML 8.1.3.3):
+   *  what an inline one's imports resolve against when it runs. */
+  base: string;
 }
 
 /** A script in the in-order list, and its source once it is here. */
@@ -949,12 +952,31 @@ export class ScriptRunner {
     // the specifiers the page's modules import by name, from here on: as
     // the parser meets it, and inline only, as HTML has it
     if (type === 'importmap') {
-      if (!request.src) {
-        this.engine.importMap(
-          request.text,
-          this._options.handle.base ?? this.host.url,
-        );
+      // an external one is no import map and is its element's `error`, a
+      // task later (HTML 4.12.1.1, step 26.2)
+      if (request.element.attribs.src !== undefined) {
+        const element = this.host.idOf(request.element);
+        this._delaying += 1;
+        setTimeout(() => {
+          if (!this._disposed) this.engine.call('__fire', [element, 'error']);
+          this._delayed();
+        }, 0);
+        return;
       }
+      // held to the document's policies as any inline script is (step 19)
+      this.host.cspScan(request.element);
+      if (
+        !this.host.csp.inline(
+          'script',
+          request.text,
+          this.host.nonceOf(request.element),
+          request.element,
+          { sourceFile: this.host.url },
+        )
+      ) {
+        return;
+      }
+      this.engine.importMap(request.text, this.host.documentBaseUrl());
       return;
     }
     // a browser with modules runs no `nomodule` script (HTML 4.12.1), nor
@@ -994,7 +1016,14 @@ export class ScriptRunner {
       module,
       muted: false,
       prepared,
+      base: this.host.documentBaseUrl(),
     };
+    // an inline module's graph is fetched as it is prepared (HTML 4.12.1.1,
+    // step 33.2), so what it imports is resolved before an import map that
+    // comes after it, which then cannot change it
+    if (module && request.src === null) {
+      this.engine.prepareInline(request.text, queued.base);
+    }
     if (request.src) {
       queued.source = request.src.startsWith('blob:')
         ? Promise.resolve(this._blobSource(request.src))
@@ -1574,10 +1603,11 @@ export class ScriptRunner {
     }
     if (queued.module) {
       // linked before it runs, its imports fetched; an inline one is at the
-      // document's address, which `import.meta.url` and its imports read
+      // document's base URL as it was prepared (HTML 8.1.3.3, "script's
+      // base URL"), which `import.meta.url` and its imports read
       const ran = await this.engine.module(
         code,
-        request.src ?? this.host.url,
+        request.src ?? queued.base,
         !!request.src,
       );
       if (this._disposed) return;

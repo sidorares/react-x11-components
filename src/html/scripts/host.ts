@@ -10239,6 +10239,23 @@ export class DomHost {
     const type = scriptTypeOf(el);
     const classic = isClassicScriptType(type);
     const module = type === 'module';
+    // an import map a page's script puts in is registered as it goes in
+    // (HTML 4.12.1.1: an inline one "immediately executes"), so a
+    // resolution on the next line reads it
+    if (type === 'importmap') {
+      let text = '';
+      for (const kid of el.children) if (kid instanceof Text) text += kid.data;
+      this.scriptConnected?.({
+        type,
+        src:
+          attribs.src === undefined
+            ? null
+            : attribs.src && this._resolve(attribs.src),
+        text,
+        element: el,
+      });
+      return;
+    }
     if (!classic && !module) return;
     // its child text content: the text of its children, and not of what
     // they hold
@@ -10762,6 +10779,16 @@ export class DomHost {
         : encodingCodecs.urlInEncoding(encoding, url, base);
     } catch {
       return strict ? '' : url;
+    }
+  }
+
+  /** The document's base URL (HTML 2.4.1), which an inline module script
+   *  is at: its `import.meta.url`, and what its imports resolve against. */
+  documentBaseUrl(): string {
+    try {
+      return this._documentBase(this.document);
+    } catch {
+      return this.url;
     }
   }
 
