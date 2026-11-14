@@ -176,3 +176,53 @@ test('CSSStyleValue.parse() reifies a value for its property, and refuses what t
     '!TypeError',
   ]);
 });
+
+test('an unparsed value holds its strings and references, and serializes them as they tokenize', async () => {
+  const out = await inPage(
+    "new CSSUnparsedValue(['lem', 'on', new CSSVariableReferenceValue('--A', new CSSUnparsedValue(['baz ', new CSSVariableReferenceValue('--B')]))])",
+    "(function () { var u = new CSSUnparsedValue(['a']); u[1] = new CSSVariableReferenceValue('--x'); return u.length + ' ' + [...u].length; })()",
+    "(function () { var u = new CSSUnparsedValue(['a']); u[3] = 'c'; })()",
+    "new CSSVariableReferenceValue('bar')",
+    "new CSSVariableReferenceValue('--foo').fallback",
+  );
+  assert.deepEqual(out, [
+    'lem/**/onvar(--A,baz var(--B))',
+    '2 2',
+    '!RangeError',
+    '!TypeError',
+    'null',
+  ]);
+});
+
+test('an element’s attributeStyleMap reads and writes its style, held to what each property takes', async () => {
+  const out = await inPage(
+    "(function () { e.style.cssText = 'width: 10px; transition-duration: 1s, 2s; --foo: auto; margin: 1px'; var m = e.attributeStyleMap; return [m.get('WIDTH'), m.getAll('transition-duration').length, m.get('--foo').constructor.name, m.get('margin').constructor.name, [...m.keys()].join()].join('|'); })()",
+    "(function () { e.attributeStyleMap.set('width', CSS.px(5)); return e.style.width; })()",
+    "e.attributeStyleMap.set('width', CSS.deg(0))",
+    "e.attributeStyleMap.set('width', '10s')",
+    "e.attributeStyleMap.set('margin', CSS.deg(0))",
+    "e.attributeStyleMap.set('width', CSS.px(1), CSS.px(2))",
+    "(function () { e.attributeStyleMap.append('transition-duration', '3s', CSS.s(4)); return e.style.transitionDuration; })()",
+    "e.attributeStyleMap.append('width', '1px')",
+    "(function () { e.attributeStyleMap.set('height', new CSSUnparsedValue([new CSSVariableReferenceValue('--A')])); return e.attributeStyleMap.get('height').constructor.name; })()",
+    "(function () { e.attributeStyleMap.delete('transition-duration'); e.attributeStyleMap.set('transform', new CSSTransformValue([new CSSRotate(CSS.deg(45))])); return e.computedStyleMap().get('transform').constructor.name; })()",
+    "(function () { e.style.backgroundImage = 'url(\"x.png\")'; return e.attributeStyleMap.get('background-image').constructor.name; })()",
+    "(function () { e.attributeStyleMap.clear(); return e.attributeStyleMap.size + ' ' + (e.attributeStyleMap === e.attributeStyleMap); })()",
+    'new StylePropertyMap()',
+  );
+  assert.deepEqual(out, [
+    '10px|2|CSSUnparsedValue|CSSStyleValue|width,transition-duration,--foo,margin',
+    '5px',
+    '!TypeError',
+    '!TypeError',
+    '!TypeError',
+    '!TypeError',
+    '1s, 2s, 3s, 4s',
+    '!TypeError',
+    'CSSUnparsedValue',
+    'CSSTransformValue',
+    'CSSImageValue',
+    '0 true',
+    '!TypeError',
+  ]);
+});

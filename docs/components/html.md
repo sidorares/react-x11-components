@@ -2689,7 +2689,14 @@ where it comes to one term. The transform components are there as well,
 `CSSTranslate` to `CSSMatrixComponent` in a `CSSTransformValue`, each
 argument held to the type its function takes and each component its
 matrix; and `CSSStyleValue.parse()` reifies a value for a property it
-takes, a transform list its components. So is an element's
+takes, a transform list its components. A value with a `var()` in it is a
+`CSSUnparsedValue` of strings and `CSSVariableReferenceValue`s, an image a
+`CSSImageValue` and a shorthand a `CSSStyleValue` as written. An element's
+`attributeStyleMap` and a rule's `styleMap` are its `style` as a map, which
+set a value only where the property takes it — a numeric value's type held
+to the property's through a `calc()` of it, which is also what keeps one out
+of the property's range — and append only to a list-valued property. So is an
+element's
 `computedStyleMap()`, which reifies its computed values: a number, a
 dimension or a percentage a `CSSUnitValue`, a name a `CSSKeywordValue`, and
 anything else a `CSSStyleValue` that reads as written. They are computed
