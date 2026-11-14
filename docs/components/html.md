@@ -5683,7 +5683,15 @@ its lengths in pixels. `grid-template-areas` reads as a string a row,
 `grid-auto-rows` and `grid-auto-columns` as their whole lists (layout takes
 the first), and the placement longhands and `grid-lanes` as they compute.
 The track lists do not interpolate yet.
-Baseline alignment of the items is not read.
+Items a row aligns by their first baselines — `align-self` or `align-items`
+`baseline` — meet the lowest of their row's, an item spanning rows meeting
+its first row's, and are not stretched; the row is sized with what that
+moves them down (CSS Grid 1, 11.5), and a grid whose first row aligns some
+so sits on their shared baseline (10.6). An item with no baseline has its
+border box's bottom for one, and one with an `auto` margin down the rows,
+or whose height is a percentage of a row its content sizes, takes no part
+and aligns to the start. Baselines across the columns, which a vertical writing mode
+gives, are not read.
 Grid lanes (CSS Grid 3), which is masonry by its standard name, are
 `display: grid-lanes` and `inline-grid-lanes`, `inline grid-lanes` among
 them: a grid in one axis, whose tracks are the lanes, and a flow down each

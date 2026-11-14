@@ -13,7 +13,10 @@
 // their tracks from their parent grid on an axis, its lines' names with
 // them, and whose items size those tracks with the parent's own: a row of
 // cards, each a subgrid down the rows, keeps the parts of one card level
-// with the same parts of the next. Not here: baseline alignment.
+// with the same parts of the next. Items aligned by their first baselines
+// meet the lowest of their row's, and the row is sized with what that moves
+// them (`alignBaselines`). Not here: baseline alignment across the columns,
+// which takes baselines of a vertical writing mode.
 //
 // A subgrid is laid out by its parent, which hands it what it takes from
 // it (`SUBGRIDS`): its lines before anything is placed; its columns'
@@ -75,6 +78,7 @@ import {
 } from './block.js';
 import type { LaidUnder, LayoutContext } from './block.js';
 import type { FontsLike } from './inline.js';
+import { firstBaselineIn } from './inline.js';
 import { gridLines, placement, subgridLines } from './grid-lines.js';
 import type { GridLines } from './grid-lines.js';
 import { sizeTracks } from './tracks.js';
@@ -100,6 +104,11 @@ export interface Item {
   /** Its border box's height as the subgrid it is in laid it out, which
    *  its parent's rows are sized with; NaN for its box's own. */
   height: number;
+  /** For an item aligned by its first baseline, how far down its row it is
+   *  moved to meet the lowest of its row's (CSS Box Alignment 3, 9.3),
+   *  which the row is sized with (CSS Grid 1, 11.5); undefined for one
+   *  that is not. */
+  shim?: number;
 }
 
 /**
@@ -118,7 +127,63 @@ export function firstItem(items: Item[]): Box | null {
       first = item;
     }
   }
+  // but where items in that row are aligned by their baselines, theirs,
+  // which they share (10.6)
+  if (first) {
+    let shared: Item | null = null;
+    for (const item of items) {
+      if (item.row !== first.row || item.shim === undefined) continue;
+      if (shared === null || item.col < shared.col) shared = item;
+    }
+    if (shared) return shared.box;
+  }
   return first?.box ?? null;
+}
+
+/**
+ * Align the items each row aligns by their first baselines (CSS Box
+ * Alignment 3, 9.3): an item's baseline from its margin box's top — its
+ * content's first, or its border box's bottom where it has none — and each
+ * moved down by what the lowest of its row's is below its own (`shim`).
+ * An item spanning rows shares the baseline of its first. One with an
+ * `auto` margin across the rows, or that is a subgrid of them, takes no
+ * part, and nor does one whose `last baseline` aligns it to the end, or
+ * whose height turns on its rows (`cyclic`).
+ */
+function alignBaselines(
+  items: Item[],
+  style: ComputedStyle,
+  cyclic: (item: Item) => boolean,
+): void {
+  const rows = new Map<number, { item: Item; offset: number }[]>();
+  for (const item of items) {
+    item.shim = undefined;
+    const child = item.box;
+    const own = child.style;
+    const text =
+      own.alignSelf === AUTO ? style.alignItemsText : own.alignSelfText;
+    if (!/(^|\s)baseline$/.test(text) || text.startsWith('last')) continue;
+    if (
+      SUBGRIDS.get(child)?.rows ||
+      autoMargins(child, 'y').some(Boolean) ||
+      cyclic(item)
+    ) {
+      continue;
+    }
+    const found = firstBaselineIn(child);
+    const offset =
+      (found === null ? child.y + child.height : found) -
+      child.y +
+      child.marginTop;
+    const list = rows.get(item.row);
+    if (list) list.push({ item, offset });
+    else rows.set(item.row, [{ item, offset }]);
+  }
+  for (const list of rows.values()) {
+    let lowest = -Infinity;
+    for (const { offset } of list) lowest = Math.max(lowest, offset);
+    for (const { item, offset } of list) item.shim = lowest - offset;
+  }
 }
 
 /**
@@ -297,6 +362,18 @@ export function layoutGrid(
     tops: number[];
     height: number;
   } => {
+    // the items aligned by their baselines in each row, as they were laid
+    // out last, each moved down to meet the others
+    alignBaselines(items, style, (item) => {
+      // an item whose height turns on a row its content sizes, which its
+      // baseline would size in turn, takes no part (CSS Grid 1, 11.5)
+      if (!percentOwn(item.box)) return false;
+      for (let r = item.row; r < item.row + item.rows && r < rowCount; r += 1) {
+        const { min, max } = sizing(rowDefs[r], definite);
+        if (typeof min !== 'number' || typeof max !== 'number') return true;
+      }
+      return false;
+    });
     // the rows against a height: percentages of it, or `auto` without one
     // — and those from the cut on the sizes they were, their items left
     // out
@@ -487,8 +564,12 @@ export function layoutGrid(
       dy = (tall - outerHeight) * (top && bottom ? 0.5 : top ? 1 : 0);
     } else if (align === 'center') dy = (tall - outerHeight) / 2;
     else if (align === 'flex-end') dy = tall - outerHeight;
+    // one aligned by its baseline meets its row's, and is not stretched
+    else if (item.shim !== undefined) dy = item.shim;
+    // and one that takes no part aligns to the start, its fallback, and
+    // is not stretched either
     else if (
-      (align === 'stretch' || align === 'normal' || align === 'baseline') &&
+      (align === 'stretch' || align === 'normal') &&
       child.style.height === AUTO &&
       !child.style.heightKeyword &&
       (align === 'stretch' ||
@@ -2007,7 +2088,12 @@ export function rowItem(
   gap: number,
 ): TrackItem {
   const box = item.box;
-  const margins = box.marginTop + box.marginBottom + item.before + item.after;
+  const margins =
+    box.marginTop +
+    box.marginBottom +
+    item.before +
+    item.after +
+    (item.shim ?? 0);
   const height = () => (Number.isNaN(item.height) ? box.height : item.height);
   const outer = () => height() + margins;
   return {
