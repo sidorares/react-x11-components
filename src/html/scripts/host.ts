@@ -18,6 +18,7 @@
 // `storage` keeps it — memory, gone with the process, unless the host keeps
 // a profile; a cookie is what the host's jar lets the document's address
 // have; a navigation is a link the browser follows.
+import { numericTaken } from '../css/typed-om-numbers.js';
 import { trustworthy } from '../fetch-metadata.js';
 import type { FetchMode } from '../fetch-metadata.js';
 import {
@@ -5788,6 +5789,10 @@ export class DomHost {
       }
       // and as a computed style serializes it (`cssomColor`), for the
       // editing commands, which compare colours by it
+      // what numbers a property takes, as Typed OM sets one
+      // (`typed-om-numbers.ts`)
+      case 'typedNumber':
+        return numericTaken(text(a), text(b), c === true);
       case 'colorText': {
         const rgba = cssColorStraight?.(text(a).trim());
         if (!rgba) return '';

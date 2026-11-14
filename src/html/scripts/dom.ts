@@ -321,6 +321,7 @@ export function installDom(
    *  sets one on each element, and no list reads that attribute. */
   const KEEPS_LISTS = new Set([
     'info',
+    'typedNumber',
     'longhands',
     'opaqueSrcdoc',
     'editingStyle',
@@ -2876,6 +2877,26 @@ export function installDom(
   // as it is made and as an argument is set, and which can be turned into
   // the matrix it stands for where every length is absolute.
 
+  /** The kinds of number a value's type is, as a property's table says
+   *  them (`typed-om-numbers.ts`): `n`, `l`, `p`, `a`, `t`, `f`, a length
+   *  and a percentage together `lp`, and `x` for any other type. */
+  const numericKinds = (v: Any): string => {
+    const t = typeOfValue(v);
+    const e = nonZero(t);
+    if (!e.length) return t.hint === null ? 'n' : 'x';
+    if (e.length !== 1 || e[0][1] !== 1) return 'x';
+    const kind = e[0][0];
+    if (t.hint !== null)
+      return t.hint === 'length' && kind === 'length' ? 'lp' : 'x';
+    const letter: Record<string, string> = {
+      length: 'l',
+      percent: 'p',
+      angle: 'a',
+      time: 't',
+      flex: 'f',
+    };
+    return letter[kind] ?? 'x';
+  };
   /** A numeric value that has to match a production, or a TypeError. */
   const matching = (
     v: Any,
@@ -3922,9 +3943,21 @@ export function installDom(
         // a unit, or a function, Typed OM has no numeric value for
       }
     }
-    if (/^-?[a-z_][\w-]*$/i.test(v)) return new CSSKeywordValue(v);
+    if (/^-?[a-z_][\w-]*$/i.test(v)) {
+      // a colour's name is a colour, which Typed OM 1 has no class for,
+      // where `currentcolor` is a keyword
+      if (!/^currentcolor$/i.test(v) && str(call('color', v))) {
+        return styleValueOf(v);
+      }
+      return new CSSKeywordValue(v);
+    }
     return styleValueOf(v);
   };
+  /** The properties Typed OM 1 reifies no value of but as a base
+   *  `CSSStyleValue` (5.5): their lists and lines and numbers are no
+   *  class's, nor are a family's names. */
+  const UNREIFIED =
+    /^(?:font-family|transition-property|counter-(?:increment|reset|set)|grid-(?:row|column)-(?:start|end)|vertical-align|column-rule-width)$/;
   /** A value's top-level comma-separated parts. */
   const commaParts = (text: string): string[] => {
     const out: string[] = [];
@@ -4011,6 +4044,7 @@ export function installDom(
     if (
       SHORTHAND.test(name) ||
       LIST_VALUED.test(name) ||
+      UNREIFIED.test(name) ||
       name === 'transform' ||
       IMAGE_PROPERTY.test(name)
     ) {
@@ -4246,12 +4280,18 @@ export function installDom(
   /** The shorthands, whose value Typed OM reifies as a value as written
    *  (5.5). */
   const SHORTHAND =
-    /^(?:margin|padding|inset|inset-(?:block|inline)|border(?:-(?:top|right|bottom|left|block|inline|block-start|block-end|inline-start|inline-end))?|border-(?:color|style|width|radius|image)|border-(?:block|inline)-(?:color|style|width)|background|background-position|font|font-variant|font-synthesis|flex|flex-flow|grid|grid-template|grid-area|grid-row|grid-column|gap|grid-gap|place-(?:content|items|self)|transition|animation|list-style|outline|overflow|text-decoration|text-emphasis|text-wrap|white-space|columns|column-rule|mask|mask-border|offset|marker|container|contain-intrinsic-size|overscroll-behavior|scroll-(?:margin|padding)(?:-(?:block|inline))?|scroll-timeline|view-timeline|position-try|text-box|anchor-scope)$/;
+    /^(?:margin|padding|inset|inset-(?:block|inline)|border(?:-(?:top|right|bottom|left|block|inline|block-start|block-end|inline-start|inline-end))?|border-(?:color|style|width|radius|image)|border-(?:block|inline)-(?:color|style|width)|background|background-position|font|font-variant|font-synthesis|flex|flex-flow|grid|grid-template|grid-area|grid-row|grid-column|gap|grid-gap|place-(?:content|items|self)|transition|animation|list-style|outline|overflow|text-decoration|text-emphasis|text-wrap|white-space|columns|column-rule|mask|mask-border|offset|marker|container|contain-intrinsic-size|overscroll-behavior|scroll-(?:margin|padding)(?:-(?:block|inline))?|scroll-timeline|view-timeline|position-try|text-box)$/;
   /** A declared or specified value of a property as Typed OM reifies it:
    *  one value, or each of a list-valued property's. */
   const reifyDeclared = (name: string, text: string): Any[] => {
     const v = text.trim();
     if (name.startsWith('--')) return [unparsedOf(v)];
+    // a CSS-wide keyword is one whatever the property, a shorthand's too
+    if (/^(?:inherit|initial|unset|revert|revert-layer)$/i.test(v)) {
+      return [new CSSKeywordValue(v.toLowerCase())];
+    }
+    // what Typed OM 1 has no class for, every value a base CSSStyleValue
+    if (UNREIFIED.test(name) && !/var\(/i.test(v)) return [styleValueOf(v)];
     if (SHORTHAND.test(name)) {
       return [/var\(/i.test(v) ? unparsedOf(v) : styleValueOf(v)];
     }
@@ -4372,6 +4412,30 @@ export function installDom(
           // property's range, a calc() is what holds it (5.4)
           const text = String(v);
           const calc = v instanceof CSSUnitValue ? `calc(${text})` : text;
+          // what numbers the property takes, where that is known: the
+          // kinds its grammar has, and whether its range holds a negative
+          // one, which a calc() is then what holds
+          const taken = call(
+            'typedNumber',
+            name,
+            numericKinds(v),
+            v instanceof CSSUnitValue && v._value < 0,
+          );
+          if (taken === 'no') {
+            fail(`The value ${text} is not one ${name} takes.`);
+          }
+          if (taken === 'calc') return calc;
+          // a kind the property takes, as written where `el.style` takes
+          // it, and in a calc() where it is out of the property's range —
+          // a negative duration, a fraction of an integer
+          if (taken === 'yes') {
+            try {
+              parseStyle(op, name, text, list);
+              return text;
+            } catch {
+              return calc;
+            }
+          }
           if (
             call('blockSet', '', name, calc, '') === null ||
             // a length's property, a shorthand of lengths among them, takes
