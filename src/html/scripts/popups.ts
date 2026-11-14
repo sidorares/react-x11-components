@@ -60,6 +60,8 @@ import type { SetTimeout, UrlClass } from './platform.js';
 
 declare const setTimeout: SetTimeout;
 declare const URL: UrlClass;
+declare const TextEncoder: new () => { encode(text: string): Uint8Array };
+declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
 
 /** What the host's ops ask of a page's windows (`DomHost.windows`). */
 export interface WindowOps {
@@ -472,6 +474,39 @@ function maySend(from: ScriptRunner, to: WindowSlot, url: string): boolean {
     !/^javascript:/i.test(url) ||
     (!!to.runner && sameOriginDomain(from, to.runner))
   );
+}
+
+/**
+ * A window opened at a `javascript:` URL: its script runs in the window's
+ * `about:blank` a task later, where the document that opened it lets it
+ * (CSP 3, 4.2.4, "Should navigation request of type be blocked by Content
+ * Security Policy?", of the navigation's initiator), and a violation is the
+ * opener's to hear. The window opens whatever its policies say, as in every
+ * browser.
+ */
+function runOpenedAt(popup: Popup, url: string, from: ScriptRunner): void {
+  from.host.cspScan();
+  const source = `javascript:${javascriptSourceOf(url)}`;
+  if (!from.host.csp.inline('navigation', source, '', null)) return;
+  setTimeout(() => {
+    const there = popup.initial;
+    if (!there || popup.closed) return;
+    there.engine.call('__javascriptOpened', [url]);
+  }, 0);
+}
+
+/** The script a `javascript:` URL holds: what follows its scheme,
+ *  percent-decoded and read as UTF-8 (HTML, "evaluate a `javascript:` URL"). */
+function javascriptSourceOf(url: string): string {
+  const bytes: number[] = [];
+  const encoder = new TextEncoder();
+  for (const piece of url
+    .replace(/^javascript:/i, '')
+    .split(/(%[0-9a-f]{2})/i)) {
+    if (/^%[0-9a-f]{2}$/i.test(piece)) bytes.push(parseInt(piece.slice(1), 16));
+    else bytes.push(...encoder.encode(piece));
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
 /** The slot of a document, which is made for it the first time something
@@ -904,9 +939,14 @@ export function windowOps(
       make,
     );
   };
-  const open = (ask: PopupAsk): number => {
+  const open = (asked: PopupAsk): number => {
     const popups = runner.seams.popups;
     if (!popups) return 0;
+    // a window sent to a `javascript:` URL is opened at `about:blank`, and
+    // the URL's script runs there (HTML, "window open steps": a navigation
+    // of the new window, whose `javascript:` URL no host loads)
+    const javascript = /^javascript:/i.test(asked.url) ? asked.url : null;
+    const ask = javascript ? { ...asked, url: 'about:blank' } : asked;
     const alone = opensNoOpener(runner);
     // a tab is the host's, and carries no sandboxing flags, so a window that
     // has to keep them stays here, in a group of its own
@@ -931,6 +971,7 @@ export function windowOps(
       runner.seams,
       make,
     );
+    if (javascript) runOpenedAt(popup, javascript, runner);
     return slot.id;
   };
   return {

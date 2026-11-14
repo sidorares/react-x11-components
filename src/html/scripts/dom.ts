@@ -35917,6 +35917,9 @@ export function installDom(
     s: Session,
     url: string,
     initiator?: Any,
+    /** The document that sent it held it to its own policies already: a
+     *  window opened at the URL, which its opener's are asked of. */
+    held = false,
   ): void => {
     const owner = s.ctx.owner();
     // only a document of one origin-domain with it may run its script
@@ -35928,6 +35931,7 @@ export function installDom(
     // inline script whose text is the URL (CSP 3, 4.2.4, "Should navigation
     // request of type be blocked by Content Security Policy?")
     if (
+      !held &&
       cspOf?.policed &&
       call(
         'csp',
@@ -43449,6 +43453,14 @@ export function installDom(
       hostFollows: true,
     });
     return went === 'other' ? 'load' : 'done';
+  });
+  // this window opened at a `javascript:` URL, which the document that opened
+  // it held to its own policies (`popups.ts`): its script runs in this
+  // window's `about:blank`, as one `location` sends it to does
+  entry('__javascriptOpened', () => {
+    const [url] = input();
+    navigateToJavascript(pageSession.session, str(url), undefined, true);
+    return true;
   });
   // a frame of this realm's whose `src` became a `javascript:` URL: its
   // script runs in the frame's document, as a navigation to it does

@@ -4,6 +4,7 @@
 // is the smallest that shows a window: an `<Html>` for what it opened with, and
 // one for each document it goes to, in a box of this tree.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, test as nodeTest } from 'node:test';
@@ -460,6 +461,32 @@ test('the opener polls: another origin refuses it, and the callback answers it o
   assert.equal(await s.until('refused'), 'SecurityError');
   assert.equal(await s.until('home'), `${APP}callback done`);
   assert.equal(await s.until('closed'), 'true');
+});
+
+test('a window opened at a javascript: URL runs it in its about:blank, where the opener’s policy lets it, and a violation is the opener’s', async () => {
+  const run = "javascript:opener.postMessage('ran', '*')";
+  const hash = createHash('sha256').update(run).digest('base64');
+  const policed = (policy: string): string =>
+    `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${policy}"></head>` +
+    `<body style="margin:0"><div style="height:100px">page</div><script nonce="n">` +
+    `addEventListener('message', (e) => console.log('heard', e.data));` +
+    `document.addEventListener('securitypolicyviolation', (e) => console.log('refused', e.blockedURI, e.violatedDirective));` +
+    `addEventListener('mousedown', () => { window.open(${JSON.stringify(run)}); });` +
+    `</script></body></html>`;
+  const allowed = await scene(
+    policed(`script-src 'nonce-n' 'unsafe-hashes' 'sha256-${hash}'`),
+    {},
+  );
+  await allowed.press();
+  assert.equal(await allowed.until('heard'), 'ran');
+  // the host is handed the window at the address it shows, which no host
+  // could load a javascript: URL at
+  assert.equal(allowed.popups[0].url, 'about:blank');
+  const refused = await scene(policed(`script-src 'nonce-n'`), {});
+  await refused.press();
+  assert.equal(await refused.until('refused'), 'inline script-src-elem');
+  assert.equal(refused.popups.length, 1, 'the window opens all the same');
+  assert.ok(!refused.logs.some((l) => l.includes('heard')));
 });
 
 test('window.open answers at once with a document a page may write', async () => {
