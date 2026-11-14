@@ -82,6 +82,12 @@ import type {
 import type { ResourceClock, ResourceHop } from './resource-timing.js';
 
 declare const performance: { now(): number };
+/** A URL's fragment, `#` and all, or '' for none. */
+const hashOf = (url: string): string => {
+  const at = url.indexOf('#');
+  return at < 0 ? '' : url.slice(at);
+};
+
 /** The clock a page reads, which a resource's timing is stamped on. */
 const timingNow = (): number => performance.now();
 import { NO_WEBRTC, deferredConnection } from './rtc.js';
@@ -978,6 +984,11 @@ export class HtmlNetwork {
     // step 8; 4.4, "HTTP-redirect fetch")
     let referrer = metadata?.referrer;
     let policy = metadata?.referrerPolicy ?? '';
+    // the fragment the request carries on: a redirect's own, where its
+    // `Location` has one, else the one it had (Fetch 4.4, "HTTP-redirect
+    // fetch", step 13), which a navigation lands at and a response's URL
+    // never says
+    let fragment = hashOf(url);
     for (let hop = 0; ; hop += 1) {
       const sending =
         carrying &&
@@ -1028,9 +1039,12 @@ export class HtmlNetwork {
       }
       const location = response.headers.get('location');
       if (manual || !REDIRECTS.has(response.status) || location === null) {
+        const landed = response.url || at;
         return answered(
           response,
-          response.url || at,
+          metadata?.mode === 'navigate' && fragment && hop > 0
+            ? landed.split('#')[0] + fragment
+            : landed,
           hop > 0 || response.redirected,
         );
       }
@@ -1066,6 +1080,8 @@ export class HtmlNetwork {
         throw new TypeError('Failed to fetch: a redirect the page refuses.');
       }
       next = to;
+      const named = hashOf(next);
+      if (named) fragment = named;
       if (cors) {
         const tainted = redirectTainted([...before, at, next], cors.origin);
         // a name in a URL is sent only where the page could have sent it

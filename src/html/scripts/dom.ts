@@ -47509,6 +47509,19 @@ export function installDom(
       // have run and are listening (`revealOwed`)
       revealOwed = true;
       wantFrame();
+      // and at its fragment, where it was navigated to one and nothing has
+      // scrolled it yet (HTML 7.4.6.4, "try to scroll to the fragment", at
+      // the end of its parse): a step through the history or a reload puts
+      // back where it was instead
+      const at = String(call('location'));
+      if (
+        at.includes('#') &&
+        navigationTypeOf(pageArrival()) === 'navigate' &&
+        !G.scrollX &&
+        !G.scrollY
+      ) {
+        scrollToFragment(document, at);
+      }
     } else if (state === 'complete') {
       const ev = new Event('load');
       ev.isTrusted = true;
