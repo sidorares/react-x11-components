@@ -2062,6 +2062,23 @@ network off. A worker with nothing to do gives its thread up after `idleMs`, 30
 seconds by default, and starts again for the next thing it hears, so a site
 should keep nothing in its global, as the specification tells it not to.
 
+**A worker's errors are told as HTML has them.** A worker's script that does
+not come, or does not parse, or whose module graph does not come, parse or
+link, is a plain `error` event at its `Worker` or `SharedWorker`, and nothing
+at the worker's global. So is a classic worker's script served over HTTP(S)
+with a type that is no JavaScript type, `text/plain` among them; an
+`importScripts` of such a script throws a `NetworkError`. An exception nothing
+catches is an `ErrorEvent` at the worker's global first. Where its `onerror`
+returns true, or a listener cancels it, the `Worker` hears nothing. Otherwise
+the `Worker` hears it, and so does the window that made it where the `Worker`
+does not cancel it either. One thrown inside the global's `onerror` reaches the
+`Worker` too. A shared worker's runtime errors are its own and reach no
+`SharedWorker`. What a script another origin's `importScripts` brought threw,
+or why it did not parse, is muted: `importScripts` throws a `NetworkError`
+where it was called, located there. A same-origin import's `SyntaxError` is
+located in the imported script, at its file and line, and both follow a
+redirect to where the script came from.
+
 **A worker's global has a worker's interfaces.** `location` is a
 `WorkerLocation` and `navigator` a `WorkerNavigator`, each an interface of its
 own, and `self` is the global and stays so: an assignment to it changes

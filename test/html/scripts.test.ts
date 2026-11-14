@@ -2573,6 +2573,31 @@ test('a worker’s global has its own interfaces: a WorkerLocation, a WorkerNavi
   );
 });
 
+test('a worker whose script does not parse is a plain error at its Worker, and one its global handles reaches no Worker', async () => {
+  const blob = (src: string) =>
+    `URL.createObjectURL(new Blob([${JSON.stringify(src)}], { type: "application/javascript" }))`;
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function seen(t) { r.push(t); if (r.length === 3) document.getElementById("out").textContent = r.sort().join("|"); }' +
+      `var bad = new Worker(${blob('let x = ;')});` +
+      'bad.onerror = function (e) { seen("parse " + e.constructor.name); };' +
+      // handled at its global, by `onerror` returning true: told no further
+      `var handled = new Worker(${blob('onerror = function () { postMessage("handled"); return true; }; y();')});` +
+      'handled.onmessage = function (e) { seen(e.data); };' +
+      'handled.onerror = function () { seen("handled reached the Worker"); };' +
+      // not handled there: the Worker's, an ErrorEvent with what was thrown
+      `var thrown = new Worker(${blob('throw new Error("boom");')});` +
+      'thrown.onerror = function (e) { e.preventDefault(); seen("runtime " + e.constructor.name + " " + /boom/.test(e.message)); };' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    'handled|parse Event|runtime ErrorEvent true',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a data: worker runs on any page, at an origin of none, a secure context where its page is', async () => {
   // HTML 10.2.5.1: a dedicated worker's `data:` script is fetched whatever
   // its page's origin, and runs opaque; WebRTC's encoded-transform tests make

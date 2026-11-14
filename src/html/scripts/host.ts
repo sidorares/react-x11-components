@@ -543,7 +543,16 @@ export interface WorkerScope {
   close(): void;
   /** A script's source, fetched before this returns, or null. */
   importScript(url: string): string | null;
-  error(message: string, filename: string, line: number, column: number): void;
+  /** Where the last script `importScript` fetched came from in the end,
+   *  after its redirects: what says whose its errors are. */
+  importedUrl?(): string;
+  error(
+    message: string,
+    filename: string,
+    line: number,
+    column: number,
+    failed?: boolean,
+  ): void;
   /** Asks the page process of a data channel the page handed over. */
   rtc?(message: ChannelRelay): void;
   /** What a service worker's realm says to its registry. */
@@ -2271,7 +2280,7 @@ export interface Entries {
     code: string,
     url: string,
     muted?: boolean,
-  ): 'ran' | 'threw' | null;
+  ): 'ran' | 'threw' | 'muted' | null;
   /** A page's classic script, run as a script of its own with the element
    *  of `script`'s id its `currentScript` (`ScriptEngine.exec`): whether
    *  it ran to its end. */
@@ -5644,12 +5653,15 @@ export class DomHost {
         const url = text(a);
         const code = this.workerScope?.importScript(url) ?? null;
         if (code === null) return null;
-        const own = /^(?:data|blob):/i.test(url);
+        // whose it is, and so whether what it throws is muted, is where it
+        // landed, a redirect to another origin's making it that origin's
+        const landed = this.workerScope?.importedUrl?.() || url;
+        const own = /^(?:data|blob):/i.test(landed);
         return (
           this.entries?.runNested?.(
             code,
-            url,
-            !own && originOf(url) !== this._origin(),
+            landed,
+            !own && originOf(landed) !== this._origin(),
           ) ?? null
         );
       }

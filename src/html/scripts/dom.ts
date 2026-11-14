@@ -636,14 +636,12 @@ export function installDom(
   // updates page printed one for each update. An exception thrown while
   // one is being reported is told on the console alone.
   const report = (error: Any): void => {
+    const init = errorInit(error, 'Uncaught ');
     if (!reporting) {
       reporting = true;
       let handled = false;
       try {
-        const ev = new ErrorEvent('error', {
-          ...errorInit(error, 'Uncaught '),
-          cancelable: true,
-        });
+        const ev = new ErrorEvent('error', { ...init, cancelable: true });
         handled = !dispatch(windowTarget, ev);
       } catch {
       } finally {
@@ -651,7 +649,25 @@ export function installDom(
       }
       if (handled) return;
     }
+    // one a worker's global did not handle is its `Worker`'s, and so is one
+    // thrown by what handles it (HTML 10.2.4, "runtime script errors")
+    reportOut(init);
     bridge('log', 'error', `Uncaught ${describe(error).text}`);
+  };
+  /** Whether this realm is a dedicated worker's, whose errors its `Worker`
+   *  hears (`__becomeWorker`). */
+  let workerRealm = false;
+  const reportOut = (init: Any): void => {
+    if (!workerRealm) return;
+    bridge(
+      'workerErrorOut',
+      JSON.stringify([
+        str(init.message),
+        str(init.filename),
+        Number(init.lineno) || 0,
+        Number(init.colno) || 0,
+      ]),
+    );
   };
 
   /** Whether a script of another origin is running, as it starts: every name
@@ -682,7 +698,9 @@ export function installDom(
         reporting = false;
       }
     }
-    if (!handled) bridge('log', 'error', 'Uncaught Script error.');
+    if (handled) return;
+    reportOut({ message: 'Script error.', filename: '', lineno: 0, colno: 0 });
+    bridge('log', 'error', 'Uncaught Script error.');
   };
 
   // --- events ------------------------------------------------------------------
@@ -46578,20 +46596,44 @@ export function installDom(
 
   // what a worker's script threw that nothing there caught, to its `Worker`
   entry('__workerError', () => {
-    const [id, message, filename, lineno, colno] = input();
+    const [id, message, filename, lineno, colno, failed] = input();
     const targets = sharedWorkersOf.get(id) ?? [workers.get(id)];
     let told = false;
     for (const target of targets) {
       if (!target) continue;
-      const ev = new ErrorEvent('error', {
+      // a script that did not come or did not parse is a plain `error`
+      // (HTML 10.2.4, "run a worker", step 24)
+      if (failed) {
+        const ev = new Event('error');
+        ev.isTrusted = true;
+        dispatch(target, ev);
+        told = true;
+        continue;
+      }
+      const init = {
         message: str(message),
         filename: str(filename),
         lineno: Number(lineno) || 0,
         colno: Number(colno) || 0,
-        cancelable: true,
-      });
+      };
+      const ev = new ErrorEvent('error', { ...init, cancelable: true });
       ev.isTrusted = true;
-      dispatch(target, ev);
+      // one its `Worker` does not handle is this global's to report in turn
+      // (HTML 10.2.4, "runtime script errors", step 2)
+      if (dispatch(target, ev) && !reporting) {
+        reporting = true;
+        let handled = false;
+        try {
+          handled = !dispatch(
+            windowTarget,
+            new ErrorEvent('error', { ...init, error: null, cancelable: true }),
+          );
+        } catch {
+        } finally {
+          reporting = false;
+        }
+        if (!handled) reportOut(init);
+      }
       told = true;
     }
     return told;
@@ -46918,6 +46960,15 @@ export function installDom(
           G.__thrown = undefined;
           throw error;
         }
+        // another origin's script that threw or did not parse: a
+        // `NetworkError` of this call's, which says nothing of it (HTML
+        // 8.1.4.6, "rethrow errors" with muted errors)
+        if (ran === 'muted') {
+          throw new DOMException(
+            `Failed to execute 'importScripts' on 'WorkerGlobalScope': The script at '${href}' failed to load.`,
+            'NetworkError',
+          );
+        }
         if (ran !== 'ran') {
           throw new DOMException(
             `Failed to execute 'importScripts' on 'WorkerGlobalScope': The script at '${href}' failed to load.`,
@@ -46927,19 +46978,9 @@ export function installDom(
       }
     });
     // an error nothing here caught is the `Worker`'s too, where the page
-    // hears it
-    windowTarget.addEventListener('error', (ev: Any) => {
-      if (ev.defaultPrevented) return;
-      call(
-        'workerErrorOut',
-        JSON.stringify([
-          str(ev.message),
-          str(ev.filename),
-          Number(ev.lineno) || 0,
-          Number(ev.colno) || 0,
-        ]),
-      );
-    });
+    // hears it (`reportOut`), but a shared worker's, which no `SharedWorker`
+    // hears (HTML 10.2.4: its errors are reported to no owner)
+    workerRealm = !shared;
     return true;
   });
 
