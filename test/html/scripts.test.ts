@@ -2609,6 +2609,26 @@ test('a worker whose script does not parse is a plain error at its Worker, and o
   );
 });
 
+test('a worker starts a worker of its own, which posts to it and is terminated by it', async () => {
+  const inner =
+    'onmessage = function (e) { postMessage("inner heard " + e.data); };';
+  const outer =
+    `var w = new Worker(URL.createObjectURL(new Blob([${JSON.stringify(inner)}], { type: "application/javascript" })));` +
+    'w.onmessage = function (e) { postMessage(e.data + " in " + (self instanceof DedicatedWorkerGlobalScope)); w.terminate(); };' +
+    'w.postMessage("ping");';
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      `var w = new Worker(URL.createObjectURL(new Blob([${JSON.stringify(outer)}], { type: "application/javascript" })));` +
+      'w.onmessage = function (e) { document.getElementById("out").textContent = e.data; };' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 20000),
+    'inner heard ping in true',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a data: worker runs on any page, at an origin of none, a secure context where its page is', async () => {
   // HTML 10.2.5.1: a dedicated worker's `data:` script is fetched whatever
   // its page's origin, and runs opaque; WebRTC's encoded-transform tests make

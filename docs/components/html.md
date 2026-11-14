@@ -976,7 +976,8 @@ const net = useHtmlNetwork(url);
 map, `on…` attributes, timers, `fetch` and `XMLHttpRequest`, WHATWG
 streams, WebSockets, WebTransport, the DOM, a canvas a script draws on — or
 an `OffscreenCanvas`, in a worker as well — frames running in realms of
-their own and dedicated workers on threads of their own, 64 at once a page. It is the engine the example
+their own and dedicated workers on threads of their own, 64 at once a page,
+the workers a worker starts among them. It is the engine the example
 browser was built over — a `node:vm` context a document, a DOM inside it
 over the tree drawn here, and only primitives crossing between the two —
 and [the PRD](../prd-html-scripts.md) is its design. **Off unless it is
@@ -1017,6 +1018,11 @@ charset }` — the `<script>` is the request's `element`, and the root
   owner's cookies by default. A `SharedWorker` that names a shared worker
   already running with another `type`, `credentials`, `extendedLifetime` or
   `sameSiteCookies` connects to nothing and hears `error`, a task later.
+  A dedicated or a shared worker starts workers of its own, each a thread
+  of the page's process as the page's are, counted in the page's 64: what
+  one posts and throws is told to the worker that started it, and it ends
+  with that worker and stops with the page's document. A service worker
+  has no `Worker`, as in browsers.
   Each is a module of its own beside the script at the same URL. Another
   type, `type: 'javascript'` among them, is a `TypeError`, and an attribute
   but `type` a `SyntaxError` in an `import` and a `TypeError` in an

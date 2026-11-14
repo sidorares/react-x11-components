@@ -495,6 +495,27 @@ const engine = new ScriptEngine(host.bridge, {
   dynamicImport: !init.service,
 });
 host.entries = engine;
+// a dedicated or a shared worker's own workers (HTML 10.2.6.3, `Worker`
+// being `[Exposed=(Window,DedicatedWorker,SharedWorker)]`): threads of the
+// page's process, as its are, asked for and told of across this one's
+// channel
+if (!init.service) {
+  let children = 0;
+  host.workers = {
+    start(child) {
+      const id = ++children;
+      tell({ kind: 'nested', op: 'start', child: id, init: child });
+      return id;
+    },
+    refuse: () => ++children,
+    post(id, data) {
+      tell({ kind: 'nested', op: 'post', child: id, data });
+    },
+    end(id) {
+      tell({ kind: 'nested', op: 'end', child: id });
+    },
+  };
+}
 engine.call('__becomeWorker', {
   url: init.url,
   name: init.name,
@@ -585,6 +606,18 @@ port.on('message', (m: ToWorker) => {
     sockets.heard(m);
   } else if (m.kind === 'rtc') {
     host.rtcHeard(m);
+  } else if (m.kind === 'nested') {
+    // what this worker's own `Worker` said, by the number it knows it by
+    if (m.op === 'message') engine.call('__workerMessage', [m.child, m.data]);
+    else {
+      engine.call('__workerError', [
+        m.child,
+        m.message,
+        m.filename,
+        m.line,
+        m.column,
+      ]);
+    }
   }
 });
 
