@@ -74,3 +74,17 @@ test("iterations that accumulate each add the last frame's value, and the mode c
   );
   assert.deepEqual(out, ['25px', '5px', 'TypeError']);
 });
+
+test('a grid line goes over at the half-way point, and replaces the one under it where it would add', async () => {
+  const out = await inPage(
+    `e.style.gridRow = '1';
+     var a = e.animate({ gridRowStart: ['1', '5'] }, 100);
+     at(a, 25);
+     var early = getComputedStyle(e).gridRow;
+     a.cancel();
+     var b = e.animate({ gridRowStart: ['5', '5'] }, { duration: 100, composite: 'add' });
+     at(b, 50);
+     return [early, getComputedStyle(e).gridRow];`,
+  );
+  assert.deepEqual(out, ['1', '5']);
+});
