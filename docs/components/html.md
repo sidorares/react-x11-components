@@ -2918,6 +2918,12 @@ popovers hides those it is not in, and Escape hides the last one.
 `beforetoggle`, which can cancel a show, comes first, and one `toggle`
 comes in a task of its own for any number of changes before it runs.
 Taking a popover out of the document hides it.
+What is in the top layer computes to `overlay: auto`, and all else to
+`none`, a page's own `overlay` read back where it is `auto` or `none` and
+doing nothing (CSS Position 4, 3.2). A transition of `overlay` with
+`allow-discrete` holds it at `auto` to its end, so a popover hidden under
+one is still drawn in the top layer, in the place it had there; a closed
+dialog does not yet keep its modal styles and backdrop so.
 
 A link or a form whose `target` names one of the page's frames is loaded
 there; every other one still reaches `onLink` and `onSubmit`, which with

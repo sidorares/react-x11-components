@@ -1105,6 +1105,7 @@ function enterTopLayer(el: Element, kind: TopLayerKind): boolean {
 function leaveTopLayer(el: Element): boolean {
   const was = IN_TOP_LAYER.get(el)!;
   IN_TOP_LAYER.delete(el);
+  LEFT_TOP_LAYER.set(el, was.order);
   // the document's layer, wherever the element is now
   const layer = TOP_LAYERS.get(was.top);
   const i = layer ? layer.indexOf(el) : -1;
@@ -1272,8 +1273,14 @@ export function inTopLayer(el: Element): boolean {
 /** Where an element went into its document's top layer: a later one is
  *  drawn over an earlier one. 0 for one that is in none. */
 export function topLayerOrder(el: Element): number {
-  return IN_TOP_LAYER.get(el)?.order ?? 0;
+  return IN_TOP_LAYER.get(el)?.order ?? LEFT_TOP_LAYER.get(el) ?? 0;
 }
+
+/** Where an element that has left its document's top layer was in it: one
+ *  whose `overlay` a transition holds at `auto` is still drawn there, in
+ *  its place, until the transition ends (CSS Position 4, 3.2; HTML's
+ *  "request an element to be removed from the top layer"). */
+const LEFT_TOP_LAYER = new WeakMap<Element, number>();
 
 /** The elements of a document's top layer, first in first, by any node of
  *  the document — none for one with an empty layer. */

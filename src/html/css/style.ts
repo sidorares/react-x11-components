@@ -3286,6 +3286,11 @@ export function applyDeclaration(
       if (list !== undefined) style.backdropFilter = list;
       return;
     }
+    // a page's `overlay` is read and set aside: the user agent's sheet has
+    // `overlay: none !important` on every element, and puts what is in the
+    // top layer in it itself (CSS Position 4, 3.2)
+    case 'overlay':
+      return;
     case 'isolation': {
       const v = value.trim().toLowerCase();
       if (v === 'auto' || v === 'isolate') style.isolation = v;
@@ -10046,6 +10051,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   ],
   'backdrop-filter': ['backdropFilter'],
   isolation: ['isolation'],
+  // what a transition runs, `allow-discrete`, to keep a closing popover or
+  // dialog in the top layer to its end (CSS Position 4, 3.2)
+  overlay: ['overlay'],
   'mix-blend-mode': ['mixBlendMode'],
   'will-change': ['willChange', 'willChangeNames'],
   'view-transition-name': ['viewTransitionName'],
