@@ -29,12 +29,19 @@
 // grid axis's tracks and, in the stacking axis, one track from the start of
 // the stacking range to its end, which is what an absolutely positioned
 // box's lines 1 and 2 are there (8), and what the container's width at no
-// limit is read from where the lanes are rows. Not here: subgrids in the
-// lanes (an item that subgrids is laid out as a grid of its own), baseline
-// alignment, the intrinsic sizes of a `repeat(auto-fill, auto)` (it repeats
-// once), and fragmentation.
+// limit is read from where the lanes are rows.
+//
+// Subgrids go both ways. An item that is a grid with `subgrid` on the lanes'
+// axis takes the lanes it spans (`laneSubgrid`). And a grid lanes container
+// that is an item of a grid, or of grid lanes, subgrids its parent's tracks
+// on its lanes' axis and never its stacking one (3.2): its lanes are those
+// tracks, sized by the parent (`subgridAxisOf`), and its items size them
+// as a subgrid's do, one with no line at every start it could have
+// (`lanesSubgridItems`).
+//
+// Not here: baseline alignment down a lane, and fragmentation.
 import { gapOf, isPct, resolve } from '../css/values.js';
-import type { ComputedStyle, GridTrack } from '../css/style.js';
+import type { GridTrack } from '../css/style.js';
 import { AUTO } from '../css/values.js';
 import { Box, GRID_TRACKS, inOrder, isBlank } from './boxes.js';
 import {
@@ -57,10 +64,14 @@ import type { LayoutContext } from './block.js';
 import {
   autoMargins,
   extent,
+  fromParent,
   indexOfKept,
+  inherited,
   laneSubgrid,
   laneSubgridItems,
   laneSubgridPlaced,
+  lanesAreRows,
+  lanesSubgridItems,
   layoutAcross,
   layoutItem,
   leastHeight,
@@ -70,6 +81,7 @@ import {
   percentTrack,
   sizing,
   starts,
+  subgridAxisOf,
   trackList,
   tracksOf,
 } from './css-grid.js';
@@ -90,16 +102,6 @@ interface Placed {
   span: number;
   pos: number;
   outer: number;
-}
-
-/** Whether a grid lanes container's lanes are rows, its stacking axis the
- *  inline one: `row`, or `normal` with a row template and no column one
- *  (CSS Grid 3, 2.3). */
-export function lanesAreRows(style: ComputedStyle): boolean {
-  const direction = style.gridLanesDirection;
-  if (direction.startsWith('row')) return true;
-  if (direction.startsWith('column')) return false;
-  return style.gridColumns === null && style.gridRows !== null;
 }
 
 /**
@@ -135,8 +137,17 @@ export function layoutGridLanes(
   const definite = percentBaseInside(box);
   const own = Number.isFinite(definite);
   const least = own ? 0 : Math.max(leastHeight(box), USED_HEIGHT.get(box) ?? 0);
-  const colGap = gapOf(style.columnGap, contentWidth);
-  const rowGap = gapOf(style.rowGap, definite);
+  // A subgrid's lanes are its parent's tracks over its span, the parent's
+  // lines and their names, and its gap where its own is `normal` (CSS Grid
+  // 2, 9; CSS Grid 3, 3.2): a grid's, or the lanes of grid lanes.
+  const axis = rows ? 'rows' : 'cols';
+  const sub = subgridAxisOf(box, axis);
+  const colGap =
+    !rows && sub && style.columnGapNormal
+      ? sub.gap
+      : gapOf(style.columnGap, contentWidth);
+  const rowGap =
+    rows && sub && style.rowGapNormal ? sub.gap : gapOf(style.rowGap, definite);
   // the grid axis: its size, where it has one, and its gap; and the
   // stacking axis's gap
   const gridSize = rows ? definite : contentWidth;
@@ -248,24 +259,31 @@ export function layoutGridLanes(
   const given: (number | null)[] = [];
   const spanOf = (item: Item) => (rows ? item.rows : item.cols);
   const lay = (repetitions?: number) => {
-    const template = trackList(source, gridSize, gridGap, repetitions);
-    const explicit = Math.max(
-      template.tracks.length,
-      (rows ? areas?.rows : areas?.columns) ?? 0,
-    );
-    const lines = gridLines(
-      explicit,
-      template.names,
-      areas,
-      rows ? 'rows' : 'columns',
-    );
+    const template = sub
+      ? inherited(sub)
+      : trackList(source, gridSize, gridGap, repetitions);
+    const explicit = sub
+      ? sub.lines.tracks
+      : Math.max(
+          template.tracks.length,
+          (rows ? areas?.rows : areas?.columns) ?? 0,
+        );
+    const lines =
+      sub?.lines ??
+      gridLines(explicit, template.names, areas, rows ? 'rows' : 'columns');
     items.length = 0;
     given.length = 0;
     for (const child of boxes) {
       const s = child.style;
-      const [start, span] = rows
+      let [start, span] = rows
         ? placement(s.gridRowStart, s.gridRowEnd, lines)
         : placement(s.gridColumnStart, s.gridColumnEnd, lines);
+      if (sub) {
+        // a subgrid has the tracks it spans and no more, and an item past
+        // them is pulled back into them (CSS Grid 2, 9)
+        span = Math.min(span, Math.max(1, explicit));
+        if (start !== null) start = Math.min(start, explicit - span);
+      }
       given.push(start);
       items.push(itemOf(child, start ?? 0, span, rows));
     }
@@ -275,7 +293,6 @@ export function layoutGridLanes(
   // The items that subgrid the lanes, given them where they were placed —
   // an item placed by the lanes takes no names from them (3.2) — with
   // their tracks' sizing functions; their items are planned in them.
-  const axis = rows ? 'rows' : 'cols';
   const subgridded: boolean[] = [];
   const setUpSubgrids = (explicitNow: number, tracksNow: GridTrack[]) => {
     const autoTrack = rows ? style.gridAutoRows : style.gridAutoColumns;
@@ -304,12 +321,15 @@ export function layoutGridLanes(
   };
   setUpSubgrids(explicit, template.tracks);
   layOutAcross();
+  // and down row lanes, a subgrid's items as tall as they came to across,
+  // which its parent's rows are sized with
+  if (sub && rows) sub.items = lanesSubgridItems(box, sub, 'rows', true);
   // A repetition whose tracks its content sizes repeats as many times as
   // tracks as large as its hypothetical ones fit (3.1.1): the template with
   // the repetition as many times as the widest span needs, every item at
   // every start it could have, and each entry of it the largest of its
   // copies.
-  const repeat = source?.repeat;
+  const repeat = sub ? undefined : source?.repeat;
   if (
     repeat &&
     Number.isFinite(gridSize) &&
@@ -407,9 +427,15 @@ export function layoutGridLanes(
           style.justifyContent === 'stretch',
     });
   };
-  let sizes = rows
-    ? sizeLanes(definite, own ? definite : Infinity, least)
-    : sizeLanes(gridSize, contentWidth, leastWidthInside(box));
+  // a subgrid's lanes are where its parent sized them, where it has yet
+  const fromAbove = sub
+    ? fromParent(sub, gridGap, box, rows ? 'y' : 'x')
+    : null;
+  let sizes = fromAbove
+    ? fromAbove.sizes
+    : rows
+      ? sizeLanes(definite, own ? definite : Infinity, least)
+      : sizeLanes(gridSize, contentWidth, leastWidthInside(box));
   const sum = (list: number[], gap: number) => {
     let out = gap * Math.max(0, list.length - 1);
     for (const size of list) out += size;
@@ -420,8 +446,8 @@ export function layoutGridLanes(
   // to with their percentages `auto`, and the percentages are of that, as
   // a grid's are (CSS Grid 1, 7.2.1); and so is a percentage gap between
   // them
-  let content = used;
-  if (rows && !own) {
+  let content = fromAbove ? fromAbove.size : used;
+  if (rows && !own && !fromAbove) {
     const tall = Math.max(used, least);
     if (kept.some(percentTrack)) {
       sizes = sizeLanes(tall, tall, 0);
@@ -447,16 +473,18 @@ export function layoutGridLanes(
       ? definite
       : Math.max(own ? definite : least, used)
     : gridSize;
-  const lefts = starts(
-    sizes,
-    gridGap,
-    flowContent(
-      rows ? style.alignContentText : style.justifyContentText,
-      rows ? style.alignContent : style.justifyContent,
-      trackReverse,
-    ),
-    gridRoom,
-  );
+  const lefts = fromAbove
+    ? fromAbove.at
+    : starts(
+        sizes,
+        gridGap,
+        flowContent(
+          rows ? style.alignContentText : style.justifyContentText,
+          rows ? style.alignContent : style.justifyContent,
+          trackReverse,
+        ),
+        gridRoom,
+      );
 
   // the tie threshold: `normal` is 1em here, a percentage is of the grid
   // axis's content size (4.2)
@@ -687,7 +715,10 @@ export function layoutGridLanes(
       );
     }
     let across = 0;
-    if (crossStart || crossEnd) {
+    if (subgridded[index]) {
+      // a subgrid fills the lanes it spans, whatever aligns it (CSS Grid 2,
+      // 9)
+    } else if (crossStart || crossEnd) {
       // `auto` margins take the free space in the area first (CSS Grid 1,
       // 10.2)
       across = crossStart ? (area - crossOuter) * (crossEnd ? 0.5 : 1) : 0;

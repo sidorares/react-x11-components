@@ -111,6 +111,16 @@ export interface Item {
   shim?: number;
 }
 
+/** Whether a grid lanes container's lanes are rows, its stacking axis the
+ *  inline one: `row`, or `normal` with a row template and no column one
+ *  (CSS Grid 3, 2.3). */
+export function lanesAreRows(style: ComputedStyle): boolean {
+  const direction = style.gridLanesDirection;
+  if (direction.startsWith('row')) return true;
+  if (direction.startsWith('column')) return false;
+  return style.gridColumns === null && style.gridRows !== null;
+}
+
 /**
  * The first of a grid's items in row-major order: the one furthest to the
  * start of the first row that holds an item, which the grid's baseline is
@@ -763,7 +773,7 @@ function cutAt(
  * then hands down. Made afresh by each layout of the grid, before it lays
  * the subgrid out.
  */
-interface SubgridAxis {
+export interface SubgridAxis {
   /** The subgrid's lines: the grid's over its span, with their names and
    *  the subgrid's own (`subgridLines`). */
   lines: GridLines;
@@ -905,13 +915,10 @@ function planGrid(
     // its columns' items, which this grid's columns are sized with
     if (subgrid.cols) {
       const child = item.box;
-      subgrid.cols.items = planGrid(
-        child,
-        inFlow(child),
-        NaN,
-        percentBaseInside(child),
-        subgrid,
-      ).items;
+      subgrid.cols.items = child.style.gridLanes
+        ? lanesSubgridItems(child, subgrid.cols, 'cols')
+        : planGrid(child, inFlow(child), NaN, percentBaseInside(child), subgrid)
+            .items;
     }
   }
   // An `auto-fit` repetition no item is in collapses (7.2.3.2): it is out
@@ -973,7 +980,9 @@ export function laneSubgrid(
     axis === 'cols' ? style.gridColumns?.subgrid : style.gridRows?.subgrid;
   if (
     !style.grid ||
-    style.gridLanes ||
+    // grid lanes in grid lanes subgrid the lanes where theirs are on the
+    // same axis, and never in their stacking axis (CSS Grid 3, 3.2)
+    (style.gridLanes && lanesAreRows(style) !== (axis === 'rows')) ||
     !names ||
     contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
   ) {
@@ -992,15 +1001,84 @@ export function laneSubgrid(
     axis === 'cols' ? { cols: sub, rows: null } : { cols: null, rows: sub };
   SUBGRIDS.set(child, subgrid);
   if (axis === 'cols') {
-    sub.items = planGrid(
-      child,
-      inFlow(child),
-      NaN,
-      percentBaseInside(child),
-      subgrid,
-    ).items;
+    sub.items = style.gridLanes
+      ? lanesSubgridItems(child, sub, 'cols')
+      : planGrid(child, inFlow(child), NaN, percentBaseInside(child), subgrid)
+          .items;
   }
   return true;
+}
+
+/**
+ * A grid lanes subgrid's items in its lanes, which size its parent's tracks
+ * there (CSS Grid 2, 9): each where its line puts it, and one with none at
+ * every start it could have, since where it goes is only known once the
+ * items before it are laid out (CSS Grid 3, 3.4). Each that subgrids the
+ * lanes in turn is set up in them (`laneSubgrid`). Down row lanes, each
+ * is as tall as the subgrid's last layout made it (`heights`), which hands
+ * them on from there.
+ */
+export function lanesSubgridItems(
+  box: Box,
+  sub: SubgridAxis,
+  axis: 'cols' | 'rows',
+  heights = false,
+): Item[] {
+  const rows = axis === 'rows';
+  const lines = sub.lines;
+  const n = Math.max(1, lines.tracks);
+  const bare = gridLines(
+    n,
+    Array.from({ length: n + 1 }, () => []),
+    null,
+    rows ? 'rows' : 'columns',
+  );
+  const out: Item[] = [];
+  for (const child of inFlow(box)) {
+    if (!heights) resolveEdges(child, 0);
+    const s = child.style;
+    const [given, wanted] = rows
+      ? placement(s.gridRowStart, s.gridRowEnd, lines)
+      : placement(s.gridColumnStart, s.gridColumnEnd, lines);
+    const span = Math.min(wanted, n);
+    const start = given === null ? null : Math.min(given, n - span);
+    if (!heights) {
+      laneSubgrid(
+        child,
+        start === null ? bare : lines,
+        sub.defs,
+        start ?? 0,
+        span,
+        sub.gap,
+        axis,
+      );
+    }
+    const height = heights ? child.height : NaN;
+    const at = (p: number): Item => ({
+      box: child,
+      col: rows ? 0 : p,
+      cols: rows ? 1 : span,
+      row: rows ? p : 0,
+      rows: rows ? span : 1,
+      min: -1,
+      max: -1,
+      across: false,
+      before: 0,
+      after: 0,
+      height,
+    });
+    if (start !== null) out.push(at(start));
+    else for (let p = 0; p + span <= n; p += 1) out.push(at(p));
+  }
+  return out;
+}
+
+/** What a grid hands a subgrid of it on an axis, where it is one. */
+export function subgridAxisOf(
+  box: Box,
+  axis: 'cols' | 'rows',
+): SubgridAxis | null {
+  return SUBGRIDS.get(box)?.[axis] ?? null;
 }
 
 /** A lanes subgrid's items as items of the lanes, in their tracks from
@@ -1060,7 +1138,7 @@ function inFlow(box: Box): Box[] {
 
 /** A subgrid's track list on an axis it takes from its parent: the
  *  parent's tracks over its span, and its lines' names. */
-function inherited(axis: SubgridAxis): ReturnType<typeof trackList> {
+export function inherited(axis: SubgridAxis): ReturnType<typeof trackList> {
   return {
     tracks: axis.defs,
     names: axis.lines.names as string[][],
@@ -1086,8 +1164,15 @@ function subgridOf(
 ): Subgrid | null {
   const child = item.box;
   const style = child.style;
-  const across = style.gridColumns?.subgrid;
-  const down = style.gridRows?.subgrid;
+  // a grid lanes container subgrids its lanes and never its stacking axis
+  // (CSS Grid 3, 3.2)
+  const lanes = style.gridLanes
+    ? lanesAreRows(style)
+      ? 'rows'
+      : 'cols'
+    : null;
+  const across = lanes === 'rows' ? undefined : style.gridColumns?.subgrid;
+  const down = lanes === 'cols' ? undefined : style.gridRows?.subgrid;
   if (
     !style.grid ||
     (!across && !down) ||
@@ -1239,7 +1324,7 @@ function spanOf(
  * them moved in by half what its own gap is more than its parent's. Null
  * where the parent has not sized them yet.
  */
-function fromParent(
+export function fromParent(
   axis: SubgridAxis,
   gap: number,
   box: Box,
