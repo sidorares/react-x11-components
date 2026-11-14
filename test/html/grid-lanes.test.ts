@@ -238,6 +238,120 @@ metric(
   },
 );
 
+/** Each element under `#g` as its id, left, top, width and height from `#g`,
+ *  which has no border or padding, rounded; and `#g`'s width and height. */
+async function nested(
+  html: string,
+): Promise<{ at: Record<string, number[]>; size: number[] }> {
+  const { node } = await render(
+    '<style>body{margin:0;font:16px/20px sans-serif}</style>' + html,
+    600,
+  );
+  const el = view(node);
+  const g = boxOf(el, 'g');
+  const at: Record<string, number[]> = {};
+  const walk = (box: typeof g) => {
+    for (const child of box.children) {
+      const id = child.el?.attribs.id;
+      if (id) {
+        at[id] = [child.x - g.x, child.y - g.y, child.width, child.height].map(
+          Math.round,
+        );
+      }
+      walk(child);
+    }
+  };
+  walk(g);
+  const size = [g.width, g.height].map(Math.round);
+  cleanup();
+  return { at, size };
+}
+
+/** A grid lanes subgrid of a parent's columns 2 and 3: `w` placed in its
+ *  first lane, and `x` and `y` placed by it. */
+const LANES_SUBGRID =
+  '<div id="s" style="display:grid-lanes;grid-template-columns:subgrid;' +
+  'grid-column:2/4;fit-tolerance:0">' +
+  '<div id="w" style="grid-column:1;width:100px;height:10px"></div>' +
+  '<div id="x" style="width:80px;height:30px"></div>' +
+  '<div id="y" style="height:10px"></div></div>';
+
+/** Where `LANES_SUBGRID`'s items go, from a parent whose first column is
+ *  50px and whose gap is 10px: w sizes the parent's second column alone,
+ *  and x, which could go in either lane, both; x goes in the lower lane,
+ *  and y under w. */
+const IN_LANES_SUBGRID = {
+  s: [60, 0, 190, 30],
+  w: [60, 0, 100, 10],
+  x: [170, 0, 80, 30],
+  y: [60, 10, 100, 10],
+};
+
+metric(
+  "grid lanes subgrid a grid's columns, and their items size them",
+  async () => {
+    // CSS Grid 3, 3.2 and CSS Grid 2, 9: its lanes are the grid's columns
+    // over its span, and their gap the grid's, its own being `normal`
+    const { at, size } = await nested(
+      '<div id="g" style="display:inline-grid;' +
+        'grid-template-columns:50px auto auto;column-gap:10px">' +
+        '<div id="a" style="height:10px"></div>' +
+        LANES_SUBGRID +
+        '</div>',
+    );
+    assert.deepStrictEqual(size, [250, 30]);
+    const { a, ...rest } = at;
+    assert.deepStrictEqual(a, [0, 0, 50, 10]);
+    assert.deepStrictEqual(rest, IN_LANES_SUBGRID);
+  },
+);
+
+metric(
+  'grid lanes subgrid the lanes of grid lanes, and their items size them',
+  async () => {
+    const { at, size } = await nested(
+      '<div id="g" style="display:inline-grid-lanes;' +
+        'grid-template-columns:50px auto auto;column-gap:10px;' +
+        'fit-tolerance:0">' +
+        '<div id="a" style="height:10px"></div>' +
+        LANES_SUBGRID +
+        '<div id="b" style="height:10px"></div></div>',
+    );
+    assert.deepStrictEqual(size, [250, 30]);
+    const { a, b, ...rest } = at;
+    assert.deepStrictEqual(a, [0, 0, 50, 10]);
+    assert.deepStrictEqual(rest, IN_LANES_SUBGRID);
+    assert.deepStrictEqual(b, [0, 10, 50, 10], 'under a, the lowest lane');
+  },
+);
+
+metric(
+  "grid lanes subgrid a grid's rows where their lanes are rows",
+  async () => {
+    // w sizes the second row alone and x both; x goes in the lane that is
+    // shorter across, and y beside w, stretched down its lane
+    const { at, size } = await nested(
+      '<div id="g" style="display:inline-grid;' +
+        'grid-template-rows:20px auto auto;row-gap:10px">' +
+        '<div id="a"></div>' +
+        '<div id="s" style="display:grid-lanes;grid-template-rows:subgrid;' +
+        'grid-row:2/4;fit-tolerance:0">' +
+        '<div id="w" style="grid-row:1;width:10px;height:40px"></div>' +
+        '<div id="x" style="width:20px;height:30px"></div>' +
+        '<div id="y" style="width:10px"></div></div></div>',
+    );
+    assert.deepStrictEqual(size, [20, 110]);
+    const { a, ...rest } = at;
+    assert.deepStrictEqual(a, [0, 0, 20, 20]);
+    assert.deepStrictEqual(rest, {
+      s: [0, 30, 20, 80],
+      w: [0, 30, 10, 40],
+      x: [0, 80, 20, 30],
+      y: [10, 30, 10, 40],
+    });
+  },
+);
+
 const LOOK = {
   color: '#000000',
   fontFamily: 'sans-serif',
