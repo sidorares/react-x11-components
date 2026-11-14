@@ -11,10 +11,12 @@ import type { HtmlHandle } from '../index.js';
 import { ScriptEngine } from './engine.js';
 import { DomHost } from './host.js';
 import type { FetchRequest, FetchResponse, HostSeams } from './host.js';
+import type { Primitive } from './dom.js';
 import type { FromWorker, ToWorker, WorkerThreadData } from './workers.js';
 import { TransportProxy } from './transport-relay.js';
 import { SocketProxy } from './socket-relay.js';
 import { addKeySecret } from './subtle.js';
+import { FsError } from './opfs.js';
 import {
   MODULE_ACCEPT,
   judgeScript,
@@ -308,6 +310,23 @@ seams.fetchSync = (request, timeout) => {
   }
   if (answer.response) return answer.response;
   throw new Error(answer.failed ?? 'The request failed.');
+};
+
+/** The origin private file system's ops, which the page process holds
+ *  (`opfs.ts`): a window and its workers have one store, and an access
+ *  handle's reads are synchronous, so each is asked and slept on. */
+seams.opfs = (origin, op, a, b, c) => {
+  const id = ++syncSeq;
+  sync.postMessage({ id, opfs: [origin, op, a, b, c] });
+  const answer = waitFor(
+    (m): m is { id: number; value?: Primitive; error?: [string, string] } =>
+      (m as { id?: number }).id === id,
+    performance.now() + 60_000,
+  );
+  if (!answer)
+    throw new FsError('UnknownError', 'The file system did not answer.');
+  if (answer.error) throw new FsError(answer.error[0], answer.error[1]);
+  return answer.value;
 };
 
 /**

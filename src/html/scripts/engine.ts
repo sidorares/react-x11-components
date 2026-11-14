@@ -69,6 +69,7 @@ import { installEditing } from './editing.js';
 import { installEncodedTransform } from './encoded-transform.js';
 import { installSmil } from './smil.js';
 import { installTextTracks } from './text-tracks.js';
+import { installStorageManager } from './storage-manager.js';
 import { installCsp } from './csp-page.js';
 import { installClipboard } from './clipboard.js';
 import { installNotifications } from './notifications.js';
@@ -367,13 +368,14 @@ const INSTALL = `(function () {
   const textTracks = (${installTextTracks.toString()});
   const csp = (${installCsp.toString()});
   const smil = (${installSmil.toString()});
+  const storageManager = (${installStorageManager.toString()});
   const bridge = globalThis.__bridge;
   const named = globalThis.__named === true;
   const worker = globalThis.__worker === true;
   delete globalThis.__bridge;
   delete globalThis.__named;
   delete globalThis.__worker;
-  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, svgDom, webcrypto, transfers, clipboards, notifying, windowing, serviceWorkers, cacheStorage, uiEvents, pointers, editing, encoded, textTracks, csp, smil, named, worker);
+  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, svgDom, webcrypto, transfers, clipboards, notifying, windowing, serviceWorkers, cacheStorage, uiEvents, pointers, editing, encoded, textTracks, csp, smil, storageManager, named, worker);
 })()`;
 
 /**

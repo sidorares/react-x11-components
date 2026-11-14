@@ -44,6 +44,7 @@ import type {
   HtmlShownNotification,
 } from '../notifications.js';
 import type { ChannelRelay } from './peers.js';
+import { FsError, opfsOp, releaseOwner } from './opfs.js';
 import type { HtmlCacheAnswer, HtmlCacheAsk } from '../cache-storage.js';
 
 declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
@@ -209,7 +210,10 @@ type SyncAsk =
       mode?: FetchMode;
     }
   | { id: number; request: FetchRequest }
-  | { id: number; abort: true };
+  | { id: number; abort: true }
+  /** An op on the origin private file system (`opfs.ts`), which this
+   *  process holds for the worker's page and its workers alike. */
+  | { id: number; opfs: [string, string, string, string, string] };
 
 interface Running {
   thread: WorkerLike;
@@ -240,9 +244,13 @@ const WORKER_RESOURCE_LIMITS = {
   maxYoungGenerationSizeMb: 64,
 };
 
+let pageWorkersMade = 0;
+
 export class PageWorkers implements PageWorkersLike {
   private _running = new Map<number, Running>();
   private _seq = 0;
+  /** This set of workers' own, apart from every other page's. */
+  private readonly _uid = ++pageWorkersMade;
   private _disposed = false;
   private readonly _frozen = new SharedArrayBuffer(4);
   private readonly _stopped = new SharedArrayBuffer(4);
@@ -298,6 +306,9 @@ export class PageWorkers implements PageWorkersLike {
       eval: typeof source === 'string',
       resourceLimits: WORKER_RESOURCE_LIMITS,
     });
+    /** Who holds the file locks this worker takes (`opfs.ts`), let go as
+     *  its thread ends. */
+    const owner = `worker:${this._uid}:${id}`;
     const running: Running = {
       thread,
       up: false,
@@ -315,6 +326,7 @@ export class PageWorkers implements PageWorkersLike {
       this._seams.error(id, String(error?.message ?? error), init.url, 0, 0);
     });
     thread.on('exit', () => {
+      releaseOwner(owner);
       this._seams.exited?.(id);
       this._running.delete(id);
       this._ending.delete(running);
@@ -332,6 +344,22 @@ export class PageWorkers implements PageWorkersLike {
       Atomics.notify(word, 0);
     };
     port1.on('message', (m: SyncAsk) => {
+      if ('opfs' in m) {
+        const [origin, op, a, b, c] = m.opfs;
+        try {
+          answer({ id: m.id, value: opfsOp(origin, owner, op, a, b, c) });
+        } catch (error) {
+          const e = error as Partial<FsError>;
+          answer({
+            id: m.id,
+            error: [
+              error instanceof FsError ? e.kind! : 'UnknownError',
+              String(e.message ?? error),
+            ],
+          });
+        }
+        return;
+      }
       if ('abort' in m) {
         waited?.abort();
         return;

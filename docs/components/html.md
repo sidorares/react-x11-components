@@ -3764,6 +3764,52 @@ browser holds them: the later commit wins, record by record, and an upgrade
 in one tab is seen by the next `open` in another. A worker's IndexedDB is
 the worker's alone.
 
+### `navigator.storage` and the origin private file system
+
+`navigator.storage` is a secure context's `StorageManager`, in a window and in
+every kind of worker: `estimate()`, `persisted()`, `persist()` in a window, and
+`getDirectory()`, the root of the origin private file system (WHATWG File
+System). Its handles are Chrome's: `FileSystemFileHandle` and
+`FileSystemDirectoryHandle` with `getFileHandle`, `getDirectoryHandle`,
+`removeEntry` with `recursive`, `resolve`, `isSameEntry`, the async iteration of
+`entries`, `keys` and `values`, and Chrome's `remove()`, `move()` and
+`getUniqueId()`. `createWritable()` is a `FileSystemWritableFileStream` whose
+writes go to a copy of the file that its `close()` puts in place, all at once,
+and a dedicated worker's `createSyncAccessHandle()` reads and writes the file
+itself, synchronously.
+
+**It is the process's memory, by origin, and nothing else.** Nothing reaches a
+disk, so a file lasts as long as the process does, and `persisted()` and
+`persist()` both answer false. A window and its workers, of whatever kind, share
+one tree, since a worker's thread asks its page's process for every op: a file a
+window writes is read by a worker's sync access handle and the other way round.
+Two tabs of the example browser are two processes and two trees.
+
+**A handle is a path from the root**, as Chrome's is: one made for an entry that
+is then removed answers `NotFoundError`, and answers again if something is made
+at the same path; `move()` changes the path of the handle it is called on and of
+no other. A `File` from `getFile()` reads the file's bytes the first time
+something asks, and is `NotReadableError` where the file changed after it was
+made, and `NotFoundError` where it went. A handle crosses `postMessage` and
+IndexedDB as its kind and its path.
+
+**Locks are per file, by mode.** A writable is `siloed` by default, which any
+number share, or `exclusive`; a sync access handle is `readwrite` by default and
+alone, or `read-only` or `readwrite-unsafe`, which share with their own kind.
+Nothing shares a file with another kind of lock, and an entry with a lock on it,
+or a directory holding one, is not moved or removed:
+`NoModificationAllowedError`. A worker that ends lets its locks go, and so does
+a document that goes. `estimate()` counts the file system, IndexedDB in this
+realm and the page's `caches` in `usageDetails`; its `quota` is a fixed 10 GB.
+
+**An opaque origin has none of it**: a sandbox's `getDirectory()` is a
+`SecurityError`, and `estimate()`, `persisted()` and `persist()` reject with a
+`TypeError`.
+
+**What is not here.** Storage buckets (`navigator.storageBuckets`),
+`FileSystemObserver`, and a file system that survives the process, which a
+profile does not keep yet.
+
 ## Forms
 
 ```jsx

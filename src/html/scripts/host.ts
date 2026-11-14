@@ -189,6 +189,7 @@ import {
   requestLock,
 } from './page-channels.js';
 import type { ChannelEnd } from './page-channels.js';
+import { FsError, opfsOp, releaseOwner } from './opfs.js';
 import { ANIMATED, drawnWithin, svgAnswer, unitSize } from './svg-geometry.js';
 import { SVG_PROPERTIES } from '../css/svg-properties.js';
 import type { SvgMeasure } from './svg-geometry.js';
@@ -1036,6 +1037,10 @@ export interface HostSeams {
    *  worker's, whose page has a network to answer it with. Throws what it
    *  came to, a `TimeoutError` by name where `timeout` ms ran out. */
   fetchSync?(request: FetchRequest, timeout: number): FetchResponse;
+  /** An op on the origin private file system where this realm's store is
+   *  another thread's: a worker's, whose page holds it (`opfs.ts`). Throws
+   *  an `FsError` where the op failed. */
+  opfs?(origin: string, op: string, a: string, b: string, c: string): Primitive;
   userAgent: string;
   language: string;
   /** The label of the encoding the host decoded the document from. */
@@ -3551,6 +3556,7 @@ export class DomHost {
     for (const zlib of this._zlibs.values()) zlib.dispose();
     this._zlibs.clear();
     releaseClient(this._origin(), this._lockClient);
+    releaseOwner(this._lockClient);
     this._unwatchStorage?.();
     this._unwatchStorage = null;
     this._transportsMade?.dispose();
@@ -7302,6 +7308,10 @@ export class DomHost {
         return this._cookie(text(a), text(b), text(c));
       case 'idb':
         return this._idb(text(a), text(b), text(c));
+      case 'opfs':
+        return this._opfs(text(a), text(b), text(c), text(d));
+      case 'cacheUsage':
+        return this._cacheUsage();
       case 'timer': {
         const id = Number(a);
         const repeat = !!c;
@@ -11457,6 +11467,32 @@ export class DomHost {
     }
   }
 
+  /**
+   * The origin private file system (`opfs.ts`), by origin, its locks held by
+   * this document's `_lockClient` until it goes. A sandbox has none: every
+   * opaque origin would be the one tree of `null` (File System, 3.4,
+   * "locate an entry" over a storage bucket an opaque origin has not got).
+   */
+  private _opfs(op: string, a: string, b: string, c: string): Primitive {
+    if (op === 'opaque') return this.originless;
+    if (op === 'origin') return this.originless ? 'null' : this._origin();
+    if (this.originless) {
+      throw new DomError(
+        'SecurityError',
+        'Storage directory access is denied.',
+      );
+    }
+    try {
+      return this._seams.opfs
+        ? this._seams.opfs(this._origin(), op, a, b, c)
+        : opfsOp(this._origin(), this._lockClient, op, a, b, c);
+    } catch (error) {
+      if (error instanceof FsError)
+        throw new DomError(error.kind, error.message);
+      throw error;
+    }
+  }
+
   /** Locks are by origin, and every sandbox's would be the one table of `null`
    *  (Web Locks 3.2): a sandbox could read another's names and hold it up. */
   private _holdsLocks(): void {
@@ -12433,6 +12469,22 @@ export class DomHost {
   }
 
   /** What a worker's `caches` ask, in this page's store. */
+  /** What the Cache API holds for this origin, in bytes, for
+   *  `navigator.storage.estimate()`: a worker's caches are its page's, a
+   *  thread away, and count nothing here. */
+  private _cacheUsage(): number {
+    if (this._seams.caches || this.originless) return 0;
+    const store = this._cacheStore();
+    const origin = this._origin();
+    let size = 0;
+    for (const name of store.names(origin)) {
+      for (const entry of store.entries(origin, name)) {
+        size += store.body(origin, name, entry.id)?.length ?? 0;
+      }
+    }
+    return size;
+  }
+
   askCaches(origin: string, ask: HtmlCacheAsk): HtmlCacheAnswer {
     return askCaches(this._cacheStore(), origin, ask);
   }

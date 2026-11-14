@@ -5657,6 +5657,19 @@ list.
   read again as a transaction starts (`idbRefresh`), never while one of the
   realm's is under way (`active`), and nothing of it runs where the host
   keeps none, which is what holds the Interop area where it was.
+- **The origin private file system is the process's, and a worker asks for
+  it** (`storage-manager.ts` in the realm, `opfs.ts` on the host, the `opfs`
+  op). The tree and its locks are by origin at `opfs.ts`'s module scope, so a
+  window's realm reads them straight, and a worker's thread asks its page's
+  process on its synchronous port (`HostSeams.opfs`, `PageWorkers`), since a
+  sync access handle's `read()` cannot wait for a message. Three things are
+  load-bearing. **A handle is a kind and a path**, as Chrome's is, so
+  nothing is kept by handle: anything new a handle can do names its path to
+  the host. **A lock has an owner** — a document's `_lockClient`, or
+  `worker:<page>:<id>` — let go as the owner goes (`releaseOwner`), or a
+  worker that ended holds its file for the process's life. And **the
+  host's `text()` drops what is no string**, so every argument the realm
+  hands the op is made a string first, or an offset comes to 0.
 - **Run it on Bun too.** `test/html/scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its
