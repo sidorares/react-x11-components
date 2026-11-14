@@ -5693,7 +5693,16 @@ an item spanning several tracks grows the ones its content sizes, and the
 `fr` rows of a grid with a height or a `min-height` fill it, which puts a
 page's footer at the bottom. `justify-content` and `align-content` place
 the tracks, and `place-content` sets both — so `place-content: center`
-centres a page's one column. An item is stretched to its area or aligned in it by
+centres a page's one column. A grid whose `direction` is `rtl` runs its
+columns from its right: the first at its right edge, `start` and an `auto`
+start margin at the right of an area, and `left` and `right` in
+`justify-*` the physical sides; an absolutely positioned box's lines and
+`auto` edges are read the same way, and a gap's rules are drawn there. A
+subgrid whose `direction` is the other from its grid's takes the grid's
+columns over its span the other way round (CSS Grid 2, 9), its lines and
+their names with them.
+Grid lanes lay their lanes, or their stacking range, out from the right the
+same way. An item is stretched to its area or aligned in it by
 `justify-self`, `align-self` and its `auto` margins, and one that is not
 stretched is as wide as its content fits. `normal`, which is what an unset
 `align-items` is, stretches an item but an
@@ -5844,8 +5853,7 @@ start it could have. It subgrids nothing on its stacking axis, and grid
 lanes of rows in lanes of columns subgrid nothing at all. Not read yet: a
 grid that subgrids the stacking axis of the lanes it is in, which the
 specification turns into lanes of its own; the items' own baseline
-alignment; fragmentation; and `direction: rtl`, which no grid here reads
-either.
+alignment; and fragmentation.
 A table's borders collapse where it asks: one border along each edge of its
 grid, centred on it, chosen from the cells, rows, row groups, columns,
 column groups and the table that meet there as CSS 2.1 17.6.2.1 chooses —

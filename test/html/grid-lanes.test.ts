@@ -352,6 +352,37 @@ metric(
   },
 );
 
+metric(
+  'grid lanes that run right to left lay their lanes out from the right',
+  async () => {
+    // the first lane at the right edge, and row lanes stacked from there
+    const columns = await lanes(
+      'display:grid-lanes;direction:rtl;width:300px;' +
+        'grid-template-columns:100px 50px;column-gap:10px;fit-tolerance:0',
+      item('a', 'height:10px') +
+        item('b', 'height:20px') +
+        item('c', 'height:5px'),
+    );
+    assert.deepStrictEqual(columns.items, {
+      a: [200, 0, 100, 10],
+      b: [140, 0, 50, 20],
+      c: [200, 10, 100, 5],
+    });
+    const rows = await lanes(
+      'display:grid-lanes;direction:rtl;width:300px;' +
+        'grid-template-rows:20px 20px;row-gap:0;fit-tolerance:0',
+      item('a', 'width:30px') +
+        item('b', 'width:40px') +
+        item('c', 'width:10px'),
+    );
+    assert.deepStrictEqual(rows.items, {
+      a: [270, 0, 30, 20],
+      b: [260, 20, 40, 20],
+      c: [260, 0, 10, 20],
+    });
+  },
+);
+
 const LOOK = {
   color: '#000000',
   fontFamily: 'sans-serif',

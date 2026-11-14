@@ -67,6 +67,7 @@ import {
   fromParent,
   indexOfKept,
   inherited,
+  inlineAligned,
   laneSubgrid,
   laneSubgridItems,
   laneSubgridPlaced,
@@ -131,6 +132,10 @@ export function layoutGridLanes(
   inOrder(box, boxes);
 
   const rows = lanesAreRows(style);
+  // where the container runs right to left, its lanes, or its stacking
+  // range, are laid out from its right: placed as from the left here and
+  // each item mirrored (CSS Grid 1, 7.1)
+  const rtl = style.direction === 'rtl';
   const direction = style.gridLanesDirection;
   const fillReverse = direction.includes('fill-reverse');
   const trackReverse = direction.includes('track-reverse');
@@ -480,7 +485,13 @@ export function layoutGridLanes(
         gridGap,
         flowContent(
           rows ? style.alignContentText : style.justifyContentText,
-          rows ? style.alignContent : style.justifyContent,
+          rows
+            ? style.alignContent
+            : inlineAligned(
+                style.justifyContent,
+                style.justifyContentText,
+                rtl,
+              ),
           trackReverse,
         ),
         gridRoom,
@@ -646,25 +657,31 @@ export function layoutGridLanes(
     fillReverse ? shift + range : stackRoom - shift,
   );
   const holesAfter = gapsAfter(placed, n, lastEnd, stackGap);
+  // the width it mirrors its items in where it runs right to left: its
+  // content box, or with no limit on it, as far as its lanes or its
+  // stacking range reach
+  const mirror = rows
+    ? stackRoom
+    : Number.isFinite(contentWidth)
+      ? contentWidth
+      : n
+        ? lefts[n - 1] + sizes[n - 1]
+        : 0;
   placed.forEach((p, k) => {
     const { item, pos } = p;
     const child = item.box;
     const from = physical(p.start, p.span);
     const area = extent(sizes, lefts, from, p.span);
     // across: aligned in its area
+    const [left, right] = autoMargins(child, 'x');
     const [crossStart, crossEnd] = rows
       ? autoMargins(child, 'y')
-      : autoMargins(child, 'x');
+      : rtl
+        ? [right, left]
+        : [left, right];
     const crossOuter = rows
       ? child.height + child.marginTop + child.marginBottom
       : child.width + child.marginLeft + child.marginRight;
-    const selfAcross = rows
-      ? child.style.alignSelf === AUTO
-        ? style.alignItems
-        : child.style.alignSelf
-      : child.style.justifySelf === 'auto'
-        ? style.justifyItems
-        : child.style.justifySelf;
     const textAcross = rows
       ? child.style.alignSelf === AUTO
         ? style.alignItemsText
@@ -672,6 +689,17 @@ export function layoutGridLanes(
       : child.style.justifySelf === 'auto'
         ? style.justifyItemsText
         : child.style.justifySelfText;
+    const selfAcross = rows
+      ? child.style.alignSelf === AUTO
+        ? style.alignItems
+        : child.style.alignSelf
+      : inlineAligned(
+          child.style.justifySelf === 'auto'
+            ? style.justifyItems
+            : child.style.justifySelf,
+          textAcross,
+          rtl,
+        );
     // a row lane's item takes the percentages of its height of its row,
     // which is known now (4.4.1)
     const index = items.indexOf(item);
@@ -778,9 +806,15 @@ export function layoutGridLanes(
     const stack = fillReverse ? range - fromStart - size : fromStart;
     const crossLead = rows ? child.marginTop : child.marginLeft;
     const at = shift + stack;
-    const x = rows
+    let x = rows
       ? box.contentX + at
       : box.contentX + lefts[from] + crossLead + Math.max(0, across);
+    if (rtl) {
+      // its margin box mirrored in the container's width
+      const outer = child.width + child.marginLeft + child.marginRight;
+      x = 2 * box.contentX + mirror - (x - child.marginLeft) - outer;
+      x += child.marginLeft;
+    }
     const y = rows
       ? box.contentY + lefts[from] + crossLead + Math.max(0, across)
       : box.contentY + at;
@@ -811,6 +845,7 @@ export function layoutGridLanes(
     first,
     firsts: [...firsts],
     atNarrowest: 0,
+    mirror: rtl ? mirror : undefined,
     lanes: {
       cols: rows
         ? stacking
