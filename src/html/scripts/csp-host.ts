@@ -280,6 +280,29 @@ export class PageCsp<T = unknown> {
     return this.upgrades ? upgradedUrl(url) : url;
   }
 
+  /**
+   * The ancestors a document's `frame-ancestors` refuses, reported (CSP 3,
+   * 4.2.5, "Should navigation response to navigation request of type in
+   * target be blocked?"): each policy, enforced or reported, that names none
+   * of an ancestor's origin tells its report-uri, the document's address
+   * the blocked URI, and no page hears of it, since the document is never
+   * shown. Whether an enforced one refused it.
+   */
+  refusedAncestors(ancestors: readonly string[], url: string): boolean {
+    let refused = false;
+    for (const policy of this.policies) {
+      const list = policy.directives.get('frame-ancestors');
+      if (!list) continue;
+      const outside = ancestors.some(
+        (a) => a === 'null' || !matchesSourceList(list, a, url),
+      );
+      if (!outside) continue;
+      this._violate(policy, 'frame-ancestors', reportedUrl(url), '', null, {});
+      if (policy.disposition === 'enforce') refused = true;
+    }
+    return refused;
+  }
+
   /** The enforced policies' directives, for what asks `connect-src` of
    *  them (`connectAllowed`). */
   enforced(): CspPolicy[] {
@@ -511,3 +534,35 @@ declare const URL: new (
   url: string,
   base?: string,
 ) => { href: string; origin: string };
+
+/** Where a `report-to` group sends (Reporting API): a response's
+ *  `Reporting-Endpoints`, `group="url"` a member, and its `Report-To`, a
+ *  JSON object a group. */
+export function reportEndpointsOf(
+  headers: readonly (readonly [string, string])[],
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [name, value] of headers) {
+    const key = name.toLowerCase();
+    if (key === 'reporting-endpoints') {
+      for (const m of value.matchAll(/([A-Za-z0-9_-]+)\s*=\s*"([^"]*)"/g)) {
+        if (!out.has(m[1])) out.set(m[1], m[2]);
+      }
+    } else if (key === 'report-to') {
+      for (const piece of value.split(/(?<=\})\s*,\s*(?=\{)/)) {
+        try {
+          const group = JSON.parse(piece) as {
+            group?: string;
+            endpoints?: { url?: string }[];
+          };
+          const at = group.endpoints?.[0]?.url;
+          const nameOf = group.group ?? 'default';
+          if (at && !out.has(nameOf)) out.set(nameOf, at);
+        } catch {
+          // not a group
+        }
+      }
+    }
+  }
+  return out;
+}

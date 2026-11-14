@@ -288,7 +288,12 @@ import { PagePeers } from './peers.js';
 import type { ChannelRelay } from './peers.js';
 import { PageTransports } from './transports.js';
 import { PageSockets } from './sockets.js';
-import { PageCsp, cspNonceOf, runningScriptAt } from './csp-host.js';
+import {
+  PageCsp,
+  cspNonceOf,
+  reportEndpointsOf,
+  runningScriptAt,
+} from './csp-host.js';
 import type { CspViolation, CspWhere } from './csp-host.js';
 import { directiveFor, evalMatches } from '../csp.js';
 import type { CspPolicy } from '../csp.js';
@@ -9712,12 +9717,30 @@ export class DomHost {
     url: string,
     sandbox: number,
   ): 'frame-ancestors' | 'x-frame-options' | null {
-    return framingRefused(
+    const ancestors = this._ancestorOrigins(frame);
+    const refused = framingRefused(
       response.headers,
       url,
       sandbox & SB_ORIGIN ? 'null' : originOf(url) || 'null',
-      this._ancestorOrigins(frame),
+      ancestors,
     );
+    // what the document's own policies refuse of where it is framed, its
+    // report-only ones too, is reported by them as the document never is
+    if (/^https?:/i.test(url)) {
+      const endpoints = reportEndpointsOf(response.headers);
+      const own = new PageCsp<Element>({
+        url: () => url,
+        origin: () => originOf(url) || 'null',
+        referrer: () => this.url,
+        status: () => response.status,
+        tell: () => {},
+        send: (to, body, type) => this._sendReport(to, body, type),
+        endpoint: (group) => endpoints.get(group) ?? null,
+      });
+      own.addHeaders(response.headers);
+      own.refusedAncestors(ancestors, url);
+    }
+    return refused;
   }
 
   /**
