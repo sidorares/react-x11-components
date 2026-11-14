@@ -247,15 +247,26 @@ function mixSizes(
  * left as it is, and so are two keywords, which do not run. Null where
  * nothing was written so.
  */
+/** The sizes `interpolate-size: allow-keywords` lets a keyword run in,
+ *  each with the fields its keyword and its `calc-size()` are kept in. */
+const KEYWORD_SIZE_FIELDS = [
+  ['width', 'widthKeyword', 'widthSize'],
+  ['height', 'heightKeyword', 'heightSize'],
+  ['minWidth', 'minWidthKeyword', 'minWidthSize'],
+  ['minHeight', 'minHeightKeyword', 'minHeightSize'],
+  ['maxWidth', 'maxWidthKeyword', 'maxWidthSize'],
+  ['maxHeight', 'maxHeightKeyword', 'maxHeightSize'],
+] as const;
+
 export function keywordSizes(
   was: ComputedStyle,
   now: ComputedStyle,
 ): { was: Partial<ComputedStyle>; now: Partial<ComputedStyle> } | null {
   let out: { was: Partial<ComputedStyle>; now: Partial<ComputedStyle> } | null =
     null;
-  for (const axis of ['width', 'height'] as const) {
-    const keyField = axis === 'width' ? 'widthKeyword' : 'heightKeyword';
-    const sizeField = axis === 'width' ? 'widthSize' : 'heightSize';
+  for (const [axis, keyField, sizeField] of KEYWORD_SIZE_FIELDS) {
+    // `none`, a limit's, is no size a keyword stands for
+    if (was[axis] === 'none' || now[axis] === 'none') continue;
     const ends = [was, now].map((s) =>
       s[axis] === 'auto'
         ? { keyword: s[keyField], size: s[sizeField] }

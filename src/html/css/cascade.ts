@@ -9199,7 +9199,9 @@ export class Cascade {
         // a size between a length and a keyword, as a `calc-size()` of the
         // keyword, where `interpolate-size` lets it run (`keywordSizes`)
         if (
-          (prop === 'height' || prop === 'width') &&
+          /^(?:min-|max-)?(?:width|height|inline-size|block-size)$/.test(
+            prop,
+          ) &&
           base.interpolateSize === 'allow-keywords'
         ) {
           const pair = keywordSizes(
