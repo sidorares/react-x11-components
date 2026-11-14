@@ -3353,7 +3353,11 @@ export function installDom(
     const v = String(given);
     const legacy = /^:(before|after|first-line|first-letter)$/i.exec(v);
     if (legacy) return `::${legacy[1].toLowerCase()}`;
-    const named = v.replace(/^::[a-z-]+/i, (m) => m.toLowerCase());
+    // a functional one's argument trimmed, and closed where the selector
+    // ends first, as a selector is parsed: `::view-transition-group( a`
+    const named = v
+      .replace(/^::[a-z-]+/i, (m) => m.toLowerCase())
+      .replace(/^(::[a-z-]+)\(\s*([^()]*?)\s*\)?$/, '$1($2)');
     if (!PSEUDO_ELEMENTS.test(named)) {
       throw new DOMException(
         `'${v}' is not a valid pseudo-element selector.`,
