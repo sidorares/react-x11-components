@@ -80,6 +80,7 @@ import {
 import { svgPaint } from './shapes.js';
 import { parseBasicShape } from './basic-shape.js';
 import { parseObjectViewBox } from './object-view-box.js';
+import { parseTextTransform } from './text-transform.js';
 import {
   isShapeImage,
   namesShapeBox,
@@ -841,7 +842,11 @@ export interface ComputedStyle {
    *  `text-align`, which resets it. */
   alignBlocks: 'left' | 'right' | 'center' | null;
   textIndent: Len;
-  textTransform: 'none' | 'uppercase' | 'lowercase' | 'capitalize';
+  /** `text-transform` as it computes (`parseTextTransform`): `none`,
+   *  `math-auto`, or a case keyword, `full-width` and `full-size-kana`,
+   *  each at most once and in that order. One string, so two styles
+   *  transform alike where it is the same. */
+  textTransform: string;
   letterSpacing: number;
   wordSpacing: number;
   /** The shadows its text casts, front to back, as `boxShadow`'s are but
@@ -4571,15 +4576,8 @@ export function applyDeclaration(
       return;
     }
     case 'text-transform': {
-      const v = value.toLowerCase();
-      if (
-        v === 'uppercase' ||
-        v === 'lowercase' ||
-        v === 'capitalize' ||
-        v === 'none'
-      ) {
-        style.textTransform = v;
-      }
+      const v = parseTextTransform(value);
+      if (v !== undefined) style.textTransform = v;
       return;
     }
     case 'letter-spacing':

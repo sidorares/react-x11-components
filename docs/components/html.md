@@ -3153,8 +3153,7 @@ and a line feed between its rows, and nothing of what is `display: none`,
 hidden, inside a replaced element or in a closed `<details>`. An
 `<option>`'s text in a `<select>` counts, though a widget draws it, and so
 does a drawing's `<text>`. An element that is not rendered answers its text
-content. What `::first-line` and `::first-letter` transform, and a
-`text-transform` whose casing turns on the language (Turkish), are not in
+content. What `::first-line` and `::first-letter` transform is not in
 it. The `innerText` and `outerText` setters make a `<br>` of every line
 break, and `outerText` joins the text either side of it.
 
@@ -7504,8 +7503,12 @@ space is spaced through letter spacing, and a paragraph beside a float is
 spaced a line at a time that way on every engine; a line that does not
 wrap is aligned in its box as well, and one too long for it overflows its
 end),
-`text-indent`, `text-transform`, `letter-spacing` and `word-spacing` (the
-first is the text engine's; the second is spacing added to each space and
+`text-indent`, `text-transform` (a case, `full-width` and `full-size-kana`
+together in any order, and `math-auto`, which sets a text of one letter in
+its mathematical italic; a case is the language's where the element is in
+Dutch, Turkish, Azeri, Lithuanian or Greek, so `ijsland` capitalized in
+Dutch is `IJsland` and Greek capitals lose their tonos), `letter-spacing`
+and `word-spacing` (the first is the text engine's; the second is spacing added to each space and
 no-break space, so only text that asks for it is split into more runs),
 and a space that justification or `word-spacing` widens keeps the
 kerning it makes with the letters beside it, since spacing is in
