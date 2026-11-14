@@ -232,8 +232,14 @@ interface Running {
 
 /** How many workers one page may have running at once. A page that spawns
  *  without end would otherwise make a thread each time; past this the
- *  request is logged and dropped, as a browser caps a page's workers. */
-const MAX_WORKERS = 16;
+ *  request is logged and dropped, as a browser caps a page's workers.
+ *  Firefox allows 512 to a site and Chrome none this low; an idle thread
+ *  here is some 20 MB, so 64 is about a gigabyte and a half. Nothing
+ *  collects a worker its page can no longer reach, as a browser does, so
+ *  a page that makes one a test and ends none holds them all: WPT's
+ *  `transfer-datachannel` makes 37, and at 16 every test after the
+ *  sixteenth waited for a worker that never started. */
+const MAX_WORKERS = 64;
 
 /** What a worker's thread may hold, in megabytes of V8's old and young
  *  space. Node ends a thread that grows past it with
