@@ -3905,6 +3905,58 @@ test('an import map names the modules a page imports by name, by prefix and by s
   );
 });
 
+test('import.meta.resolve answers through the import map, and a later map changes nothing already resolved', async () => {
+  const doc = await hosted(
+    '<p id="out"></p>' +
+      '<script type="importmap">' +
+      JSON.stringify({ imports: { react: './vendor/react.js' } }) +
+      '</script>' +
+      '<script type="module">' +
+      'const r = [];' +
+      "r.push(import.meta.resolve('react'), import.meta.resolve('./x.js'));" +
+      "try { import.meta.resolve('nowhere') } catch (e) { r.push(e.constructor === TypeError) }" +
+      "r.push(HTMLScriptElement.supports('importmap'), HTMLScriptElement.supports('json'));" +
+      // a second map: `react` is the first's, and `./x.js` was resolved
+      "const s = document.createElement('script'); s.type = 'importmap';" +
+      "s.textContent = JSON.stringify({ imports: { react: './other.js', './x.js': './y.js', fresh: './fresh.js' } });" +
+      'document.head.append(s);' +
+      "r.push(import.meta.resolve('react'), import.meta.resolve('./x.js'), import.meta.resolve('fresh'));" +
+      "document.getElementById('out').textContent = r.join(' ');" +
+      '</script>',
+  );
+  await settled(doc, 'out', (text) => text !== '');
+  assert.equal(
+    doc.text('out'),
+    [
+      'https://example.test/dir/vendor/react.js',
+      'https://example.test/dir/x.js',
+      'true true false',
+      'https://example.test/dir/vendor/react.js',
+      'https://example.test/dir/x.js',
+      'https://example.test/dir/fresh.js',
+    ].join(' '),
+    doc.logs.join('\n'),
+  );
+});
+
+test('an import map with a src is an error, and one with a type spelled around is none', async () => {
+  const doc = await hosted(
+    '<p id="out"></p>' +
+      '<script type=" importmap">' +
+      JSON.stringify({ imports: { spaced: './spaced.js' } }) +
+      '</script>' +
+      '<script type="importmap" src="map.json" onerror="window.erred = true"></script>' +
+      '<script type="module">' +
+      'const r = [];' +
+      "try { import.meta.resolve('spaced'); r.push('mapped') } catch (e) { r.push(e.name) }" +
+      'setTimeout(() => { r.push(String(window.erred)); ' +
+      "document.getElementById('out').textContent = r.join(' ') }, 50);" +
+      '</script>',
+  );
+  await settled(doc, 'out', (text) => text !== '');
+  assert.equal(doc.text('out'), 'TypeError true', doc.logs.join('\n'));
+});
+
 test('two import()s whose modules share one are both linked, the shared one once', async () => {
   // linked at once, the second was handed a module the first was linking
   const doc = await hosted(

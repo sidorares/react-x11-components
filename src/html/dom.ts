@@ -101,9 +101,11 @@ export function scriptTypeOf(el: Element): string {
     const trimmed = type
       .replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '')
       .toLowerCase();
-    // `module` as it is written and with nothing around it, as every
-    // browser has it and WPT holds them to: ` module` is no type at all
-    return trimmed === 'module' && type.length !== 6
+    // `module` and `importmap` as they are written and with nothing around
+    // them, as every browser has it and WPT holds them to: ` module` is no
+    // type at all (whatwg/html#13012)
+    return (trimmed === 'module' || trimmed === 'importmap') &&
+      type.length !== trimmed.length
       ? type.toLowerCase()
       : trimmed;
   }
