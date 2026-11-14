@@ -139,7 +139,32 @@ export function makeFrame(
     root.columns = 0;
     box.style = root;
   }
-  const frame = new (box.constructor as typeof Box)('block', null, style);
+  // A grid's tracks are its frame's too (CSS Writing Modes 4, 7.3; CSS
+  // Grid 1, 7.1): the frame is the grid, laid out in the frame's axes,
+  // which are a horizontal grid's, its columns down the page and its rows
+  // across; and the root is a block around it. Where the root has a width
+  // of its own, which is the grid's block size, the frame is as tall as
+  // the root's content box, which its rows fill.
+  const grid = box.kind === 'flex' && box.style.grid;
+  if (grid) {
+    const own = box.style;
+    const to = style as unknown as Record<string, unknown>;
+    const from = own as unknown as Record<string, unknown>;
+    for (const field of GRID_CONTAINER_FIELDS) to[field] = from[field];
+    style.display = 'flex';
+    if (own.width !== 'auto' && !own.widthKeyword) style.height = { pct: 100 };
+    const root = copyStyle(own);
+    root.display = own.display === 'inline-flex' ? 'inline-block' : 'block';
+    root.grid = false;
+    root.gridLanes = false;
+    box.style = root;
+    box.kind = 'block';
+  }
+  const frame = new (box.constructor as typeof Box)(
+    grid ? 'flex' : 'block',
+    null,
+    style,
+  );
   // a list item's marker goes beside its first line, which is the frame's
   // and turned with it: none is drawn for it yet
   box.marker = null;
@@ -185,6 +210,40 @@ export function makeFrame(
   FRAME_ROOTS.set(frame, box);
   return frame;
 }
+
+/** What makes a box a grid container, which a vertical grid's frame takes
+ *  from its root (`makeFrame`): the templates, the implicit tracks and the
+ *  flow, the gaps and their rules, and the alignment of the tracks and of
+ *  the items. All of them logical, so none is turned. */
+const GRID_CONTAINER_FIELDS = [
+  'grid',
+  'gridLanes',
+  'gridColumns',
+  'gridRows',
+  'gridAreas',
+  'gridAutoFlow',
+  'gridAutoColumns',
+  'gridAutoColumnsWritten',
+  'gridAutoRows',
+  'gridAutoRowsWritten',
+  'gridLanesDirection',
+  'gridLanesPack',
+  'fitTolerance',
+  'columnGap',
+  'columnGapNormal',
+  'rowGap',
+  'rowGapNormal',
+  'justifyContent',
+  'justifyContentText',
+  'alignContent',
+  'alignContentText',
+  'justifyItems',
+  'justifyItemsText',
+  'alignItems',
+  'alignItemsText',
+  'columnRule',
+  'rowRule',
+] as const;
 
 type Side = 'Top' | 'Right' | 'Bottom' | 'Left';
 
@@ -493,6 +552,13 @@ export function allUpright(layout: TextLayoutLike): boolean {
  *  since is not put back twice. */
 const REFLECTED = new WeakMap<Box, number>();
 
+/** For a grid, or grid lanes, in a `vertical-lr` frame, the height its
+ *  rows, or its lanes' stacking, were put back across in (`reflectFrame`):
+ *  laid out from its content box's top, as `vertical-rl`'s, a row at
+ *  `[a, b]` of it is at `rows - b` to `rows - a` after, as a column of a
+ *  right-to-left grid is mirrored in `GridTracks.mirror`. */
+export const ROWS_MIRRORED = new WeakMap<Box, number>();
+
 /**
  * Put a `vertical-lr` frame's lines and blocks back in the order its block
  * axis runs, left to right: laid out down the frame as `vertical-rl`'s,
@@ -516,14 +582,19 @@ export function reflectFrame(
     // a block container's lines and blocks: a flex box's items, a table's
     // rows and an inline box's text are where their own layout put them,
     // and only what is in them is put back
+    // and a grid's items, which it places from its rows, and grid lanes',
+    // which they stack, down the frame
+    const grid = box.kind === 'flex' && box.style.grid;
     const container =
       box.kind === 'block' ||
       box.kind === 'table-cell' ||
-      box.kind === 'table-caption';
+      box.kind === 'table-caption' ||
+      grid;
     if (container && REFLECTED.get(box) !== box.layoutSerial) {
       REFLECTED.set(box, box.layoutSerial);
       const top = box.contentY;
       const bottom = top + (box === frame ? extent : box.contentHeight);
+      if (grid) ROWS_MIRRORED.set(box, bottom - top);
       if (box.lines) {
         // what is on a line is moved with it (`moveLine`)
         for (const line of box.lines) {
@@ -570,6 +641,14 @@ export function frameOf(box: Box): Box | null {
     if (FRAME_ROOTS.has(at)) return at;
   }
   return null;
+}
+
+/** Whether a box is, or is laid out in, a frame that is put back across
+ *  after its layout (`reflectFrame`): a `vertical-lr` flow's. */
+export function putBackAcross(box: Box): boolean {
+  if (!framed.any) return false;
+  const frame = FRAME_ROOTS.has(box) ? box : frameOf(box);
+  return frame !== null && reflects(frameTurn(frame));
 }
 
 /** Whether a box is laid out in a frame: a grid or a flex box in a vertical

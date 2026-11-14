@@ -127,6 +127,7 @@ import {
   frameOf,
   frameTurn,
   framed,
+  ROWS_MIRRORED,
   turnsUp,
   uprightCells,
 } from './layout/writing.js';
@@ -5574,6 +5575,16 @@ function gapSegments(
       const flip = (x: number) => 2 * box.contentX + mirror - x;
       for (const piece of columns) piece.at = flip(piece.at);
       for (const piece of across) {
+        [piece.from, piece.to] = [flip(piece.to), flip(piece.from)];
+        [piece.fromGap, piece.toGap] = [piece.toGap, piece.fromGap];
+      }
+    }
+    // and rows put back across a `vertical-lr` frame from its bottom
+    const down = ROWS_MIRRORED.get(box);
+    if (down !== undefined) {
+      const flip = (y: number) => 2 * box.contentY + down - y;
+      for (const piece of across) piece.at = flip(piece.at);
+      for (const piece of columns) {
         [piece.from, piece.to] = [flip(piece.to), flip(piece.from)];
         [piece.fromGap, piece.toGap] = [piece.toGap, piece.fromGap];
       }

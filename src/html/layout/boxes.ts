@@ -3538,13 +3538,33 @@ const MAX_DEPTH = 512;
 
 /** The writing mode a box's content is laid out in: its own, but for a
  *  table's rows and row groups, to which `writing-mode` does not apply and
- *  whose cells are in the table's (CSS Writing Modes 4, 3.1). */
+ *  whose cells are in the table's (CSS Writing Modes 4, 3.1), and for a
+ *  subgrid, which is laid out in its grid's axes and has no frame of its
+ *  own (`subgridsIn`), whose items are in its grid's. */
 function flowModeAround(box: Box): ComputedStyle['writingMode'] {
   let at: Box | null = box;
-  while (at && (at.kind === 'table-row' || at.kind === 'table-row-group')) {
+  while (
+    at &&
+    (at.kind === 'table-row' ||
+      at.kind === 'table-row-group' ||
+      (at.parent && subgridsIn(at.style, at.parent)))
+  ) {
     at = at.parent;
   }
   return (at ?? box).style.writingMode;
+}
+
+/** Whether a box of this style in `into` subgrids it on an axis: a grid
+ *  with `subgrid` in a grid, which takes its tracks from it whatever its
+ *  writing mode, and is laid out in its axes, never in a frame of its own
+ *  (`makeFrame`). */
+function subgridsIn(style: ComputedStyle, into: Box): boolean {
+  return (
+    style.grid &&
+    !!(style.gridColumns?.subgrid || style.gridRows?.subgrid) &&
+    into.kind === 'flex' &&
+    into.style.grid
+  );
 }
 
 /** What of a `<foreignObject>`'s own style is the drawing's, and none of
@@ -4514,19 +4534,24 @@ class Builder {
       style.writingMode !== 'horizontal-tb' &&
       (kind === 'table-cell' ||
         kind === 'table-caption' ||
-        (kind === 'block' && !style.grid)) &&
+        (kind === 'block' && !style.grid) ||
+        // and a grid, or grid lanes, whose frame is the grid (`makeFrame`),
+        // but for a subgrid, whose tracks would be its parent's across
+        // writing modes
+        (kind === 'flex' && style.grid && !subgridsIn(style, into))) &&
       flowModeAround(into) === 'horizontal-tb'
     ) {
       this._orthogonal.push(box);
     } else if (
       style.writingMode === 'horizontal-tb' &&
-      kind === 'block' &&
-      !style.grid &&
+      ((kind === 'block' && !style.grid) ||
+        (kind === 'flex' && style.grid && !subgridsIn(style, into))) &&
       holdsTurnBack(flowModeAround(into)) &&
       this._inOrthogonal(into)
     ) {
-      // and a horizontal one in such a flow's frame, whose own frame turns
-      // back what that one turned (`makeFrame`'s `back`)
+      // and a horizontal one, a block or a grid, in such a flow's frame,
+      // whose own frame turns back what that one turned (`makeFrame`'s
+      // `back`)
       this._turnBack.set(box, flowModeAround(into));
       this._orthogonal.push(box);
     }

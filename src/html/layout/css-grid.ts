@@ -79,6 +79,7 @@ import {
 import type { LaidUnder, LayoutContext } from './block.js';
 import type { FontsLike } from './inline.js';
 import { firstBaselineIn } from './inline.js';
+import { putBackAcross } from './writing.js';
 import { gridLines, placement, subgridLines } from './grid-lines.js';
 import type { GridLines } from './grid-lines.js';
 import { sizeTracks } from './tracks.js';
@@ -164,6 +165,10 @@ function alignBaselines(
   items: Item[],
   style: ComputedStyle,
   cyclic: (item: Item) => boolean,
+  /** Whether the grid's items are put back across after it is laid out
+   *  (`reflectFrame`), each whole: the baseline that meets the others' is
+   *  then as far from its bottom as it is from its top here. */
+  across = false,
 ): void {
   const rows = new Map<number, { item: Item; offset: number }[]>();
   for (const item of items) {
@@ -181,10 +186,9 @@ function alignBaselines(
       continue;
     }
     const found = firstBaselineIn(child);
+    const at = found === null ? child.y + child.height : found;
     const offset =
-      (found === null ? child.y + child.height : found) -
-      child.y +
-      child.marginTop;
+      (across ? child.y + child.height - at : at - child.y) + child.marginTop;
     const list = rows.get(item.row);
     if (list) list.push({ item, offset });
     else rows.set(item.row, [{ item, offset }]);
@@ -194,6 +198,48 @@ function alignBaselines(
     for (const { offset } of list) lowest = Math.max(lowest, offset);
     for (const { item, offset } of list) item.shim = lowest - offset;
   }
+}
+
+/** Whether a style's own start, along the page's `x` axis or its `y` one,
+ *  is at its right or its bottom: its direction along its lines, which a
+ *  vertical mode runs down and `sideways-lr` up, and across them its lines'
+ *  order, right to left but in the `-lr` modes. */
+function startsHigh(style: ComputedStyle, x: boolean): boolean {
+  const mode = style.writingMode;
+  const rtl = style.direction === 'rtl';
+  if (mode === 'horizontal-tb') return x && rtl;
+  if (!x) return rtl !== (mode === 'sideways-lr');
+  return mode !== 'vertical-lr' && mode !== 'sideways-lr';
+}
+
+/**
+ * Whether `self-start` or `self-end`, which an alignment's text ends in,
+ * is the other end of the grid's inline axis, or its block axis, from
+ * `start` or `end` (CSS Box Alignment 3, 4.1): the item's own start is at
+ * the other end of that axis from the grid's, by its direction or its
+ * writing mode. The axes are the page's, so a grid in a frame compares as
+ * one on the page does.
+ */
+function selfAgainst(
+  text: string,
+  item: ComputedStyle,
+  grid: ComputedStyle,
+  inline: boolean,
+): boolean {
+  if (!/self-(?:start|end)$/.test(text)) return false;
+  const x = inline === (grid.writingMode === 'horizontal-tb');
+  return startsHigh(item, x) !== startsHigh(grid, x);
+}
+
+/** An alignment's start for its end and its end for its start. */
+function otherEnd<T extends string>(keyword: T): T {
+  return (
+    keyword === 'flex-start'
+      ? 'flex-end'
+      : keyword === 'flex-end'
+        ? 'flex-start'
+        : keyword
+  ) as T;
 }
 
 /**
@@ -383,16 +429,25 @@ export function layoutGrid(
   } => {
     // the items aligned by their baselines in each row, as they were laid
     // out last, each moved down to meet the others
-    alignBaselines(items, style, (item) => {
-      // an item whose height turns on a row its content sizes, which its
-      // baseline would size in turn, takes no part (CSS Grid 1, 11.5)
-      if (!percentOwn(item.box)) return false;
-      for (let r = item.row; r < item.row + item.rows && r < rowCount; r += 1) {
-        const { min, max } = sizing(rowDefs[r], definite);
-        if (typeof min !== 'number' || typeof max !== 'number') return true;
-      }
-      return false;
-    });
+    alignBaselines(
+      items,
+      style,
+      (item) => {
+        // an item whose height turns on a row its content sizes, which its
+        // baseline would size in turn, takes no part (CSS Grid 1, 11.5)
+        if (!percentOwn(item.box)) return false;
+        for (
+          let r = item.row;
+          r < item.row + item.rows && r < rowCount;
+          r += 1
+        ) {
+          const { min, max } = sizing(rowDefs[r], definite);
+          if (typeof min !== 'number' || typeof max !== 'number') return true;
+        }
+        return false;
+      },
+      putBackAcross(box),
+    );
     // the rows against a height: percentages of it, or `auto` without one
     // — and those from the cut on the sizes they were, their items left
     // out
@@ -550,17 +605,34 @@ export function layoutGrid(
     const area = extent(widths, lefts, item.col, item.cols);
     const tall = extent(heights, tops, item.row, item.rows);
     const subgrid = SUBGRIDS.get(child);
-    const justify = inlineAligned(
+    const justifyText =
+      child.style.justifySelf === 'auto'
+        ? style.justifyItemsText
+        : child.style.justifySelfText;
+    let justify = inlineAligned(
       child.style.justifySelf === 'auto'
         ? style.justifyItems
         : child.style.justifySelf,
-      child.style.justifySelf === 'auto'
-        ? style.justifyItemsText
-        : child.style.justifySelfText,
+      justifyText,
       rtl,
     );
-    const align =
+    if (selfAgainst(justifyText, child.style, style, true)) {
+      justify = otherEnd(justify);
+    }
+    let align =
       child.style.alignSelf === AUTO ? style.alignItems : child.style.alignSelf;
+    if (
+      selfAgainst(
+        child.style.alignSelf === AUTO
+          ? style.alignItemsText
+          : child.style.alignSelfText,
+        child.style,
+        style,
+        false,
+      )
+    ) {
+      align = otherEnd(align);
+    }
     const outerWidth = child.width + child.marginLeft + child.marginRight;
     const outerHeight = child.height + child.marginTop + child.marginBottom;
     // `auto` margins take the free space in the area first (CSS Grid 1,
