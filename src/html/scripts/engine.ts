@@ -68,6 +68,7 @@ import { installPointers } from './pointers.js';
 import { installEditing } from './editing.js';
 import { installEncodedTransform } from './encoded-transform.js';
 import { installTextTracks } from './text-tracks.js';
+import { installCsp } from './csp-page.js';
 import { installClipboard } from './clipboard.js';
 import { installNotifications } from './notifications.js';
 import { installWindows } from './windows.js';
@@ -348,13 +349,14 @@ const INSTALL = `(function () {
   const editing = (${installEditing.toString()});
   const encoded = (${installEncodedTransform.toString()});
   const textTracks = (${installTextTracks.toString()});
+  const csp = (${installCsp.toString()});
   const bridge = globalThis.__bridge;
   const named = globalThis.__named === true;
   const worker = globalThis.__worker === true;
   delete globalThis.__bridge;
   delete globalThis.__named;
   delete globalThis.__worker;
-  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, svgDom, webcrypto, transfers, clipboards, notifying, windowing, serviceWorkers, cacheStorage, uiEvents, pointers, editing, encoded, textTracks, named, worker);
+  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, svgDom, webcrypto, transfers, clipboards, notifying, windowing, serviceWorkers, cacheStorage, uiEvents, pointers, editing, encoded, textTracks, csp, named, worker);
 })()`;
 
 /**

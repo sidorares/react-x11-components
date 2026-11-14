@@ -50,6 +50,7 @@ import type { installPointers } from './pointers.js';
 import type { installEditing } from './editing.js';
 import type { installEncodedTransform } from './encoded-transform.js';
 import type { installTextTracks } from './text-tracks.js';
+import type { installCsp } from './csp-page.js';
 import type { installClipboard } from './clipboard.js';
 import type { installNotifications } from './notifications.js';
 import type { installWindows, WindowInternals } from './windows.js';
@@ -103,6 +104,7 @@ export function installDom(
   editingApi: typeof installEditing,
   encodedTransform: typeof installEncodedTransform,
   textTracksApi: typeof installTextTracks,
+  cspApi: typeof installCsp,
   namedAccess: boolean,
   inWorker: boolean,
 ): void {
@@ -111,6 +113,11 @@ export function installDom(
   'use strict';
   type Any = any;
   const G: Any = globalThis;
+  /** The realm's own `Function` and `eval`, taken before a policy can put a
+   *  guard over them (`csp-page.ts`): what compiles the facade's own code,
+   *  and an `on…` attribute's, which a policy holds to other rules. */
+  const NativeFunction: Any = Function;
+  const NativeEval: Any = eval;
   /** How a page's callback is called with the `this` its specification
    *  gives, taken before any page code runs: a call as a method of what
    *  holds it hands the page the holder, and `fn.call` and a spread are
@@ -137,6 +144,13 @@ export function installDom(
   /** An op's answer, or the host's error thrown as a `DOMException`. */
   /** A media element's text tracks (`text-tracks.ts`), once installed. */
   let textTracksOf: Any = null;
+  /** The page's half of its Content Security Policy (`csp-page.ts`), once
+   *  installed: the violation event and the guards on string
+   *  compilation. */
+  let cspOf: Any = null;
+  /** What the policies said of each element's `on…` attributes, by its
+   *  name and text: asked once, as the handler is compiled once. */
+  const cspHeld = new WeakMap<object, Map<string, boolean>>();
   /** Whether the attribute being set is one `setAttributeNS` gave a
    *  namespace: a `src` of another namespace's loads no media element. */
   let settingInNamespace = false;
@@ -1432,6 +1446,19 @@ export function installDom(
     const cache = globalError ? compiledGlobalErrors : compiled;
     const name = `on${type.toLowerCase()}`;
     const key = `${name}\u0000${text}`;
+    // none where the document's policies refuse the attribute (HTML
+    // 8.1.8.1, step 3.9: "Should element's inline behavior be blocked?"),
+    // asked once an element and a text
+    if (cspOf && cspOf.policed) {
+      let held = cspHeld.get(target);
+      if (!held) cspHeld.set(target, (held = new Map()));
+      let allowed = held.get(key);
+      if (allowed === undefined) {
+        allowed = call('csp', 'attr', target._id, text, name) === true;
+        held.set(key, allowed);
+      }
+      if (!allowed) return null;
+    }
     let fn = cache.get(key);
     if (!fn) {
       const params = globalError
@@ -1441,8 +1468,10 @@ export function installDom(
         // the body alone first, so that nothing in it reaches past it,
         // and then the function its source text says it is (HTML 8.1.8.1,
         // "getting the current value of the event handler", step 3.10)
-        void new Function(...params.split(', '), text);
-        fn = new Function(`return function ${name}(${params}) {\n${text}\n}`)();
+        void new NativeFunction(...params.split(', '), text);
+        fn = new NativeFunction(
+          `return function ${name}(${params}) {\n${text}\n}`,
+        )();
       } catch (error) {
         report(error);
         fn = () => {};
@@ -7505,7 +7534,11 @@ export function installDom(
           .split(',')
           .filter(Boolean),
       text: () => String(call('styleText', el._id) ?? ''),
-      setText: (text) => el.setAttribute('style', text),
+      setText: (text) => {
+        // CSSOM's, which no policy on inline style holds back
+        call('styleByCssom', el._id, str(text));
+        el.setAttribute('style', text);
+      },
       rule: null,
     });
 
@@ -11838,7 +11871,7 @@ export function installDom(
     const win = windowOfDocument(doc);
     if (!win) return undefined;
     try {
-      return new Function(
+      return new NativeFunction(
         'window',
         'self',
         'document',
@@ -11846,8 +11879,10 @@ export function installDom(
         'top',
         'frames',
         ...FRAME_OWN,
-        // a direct `eval`, which hands back what the script came to
-        `return eval(arguments[${6 + FRAME_OWN.length}]);`,
+        'eval',
+        // a direct `eval`, which hands back what the script came to: the
+        // realm's own, which a guard over the global's is not
+        `return eval(arguments[${7 + FRAME_OWN.length}]);`,
       ).call(
         win,
         win,
@@ -11857,6 +11892,7 @@ export function installDom(
         win.top,
         win,
         ...FRAME_OWN.map((name) => win[name]),
+        NativeEval,
         code,
       );
     } catch (error) {
@@ -21133,10 +21169,12 @@ export function installDom(
   const NONCE: Reflection = (attr) =>
     accessor(
       function () {
-        return nonces.get(this) ?? attrValue(this, attr) ?? '';
+        return nonces.get(this) ?? str(call('nonce', this._id) ?? '');
       },
       function (v) {
         nonces.set(this, str(v));
+        // and the host's, which a policy reads
+        call('setNonce', this._id, str(v));
       },
     );
   /** What `tabIndex` is where it says nothing (HTML 6.6.3): 0 for what a
@@ -27853,7 +27891,7 @@ export function installDom(
    *  global keeps the window's methods as its own there. */
   const inheritsGlobals = ((): boolean => {
     try {
-      return new Function('return typeof dispatchEvent')() === 'function';
+      return new NativeFunction('return typeof dispatchEvent')() === 'function';
     } catch {
       return false;
     }
@@ -33750,7 +33788,43 @@ export function installDom(
     // `clipboard` and `serviceWorker` are left out rather than undefined:
     // a page asks for them with `in`, and takes one that is there for one
     // it can use
-    sendBeacon: () => false,
+    // a POST the page does not wait for (Beacon, 3.2): `keepalive`, with
+    // its cookies, and by CORS only where its body's type is not one a form
+    // could send
+    sendBeacon(url: Any, data: Any = null): boolean {
+      if (arguments.length < 1) {
+        throw new TypeError(
+          "Failed to execute 'sendBeacon' on 'Navigator': 1 argument required, but only 0 present.",
+        );
+      }
+      let target: string;
+      try {
+        target = new URL(str(url), document.baseURI).href;
+      } catch {
+        throw new TypeError(
+          `Failed to execute 'sendBeacon' on 'Navigator': Invalid URL`,
+        );
+      }
+      if (!/^https?:/i.test(target)) {
+        throw new TypeError(
+          "Failed to execute 'sendBeacon' on 'Navigator': Beacons are only supported over HTTP(S).",
+        );
+      }
+      const type = data instanceof Blob ? str(data.type).toLowerCase() : '';
+      const plain =
+        !type ||
+        /^(application\/x-www-form-urlencoded|multipart\/form-data|text\/plain)\b/.test(
+          type,
+        );
+      void fetch(target, {
+        method: 'POST',
+        body: data ?? null,
+        keepalive: true,
+        credentials: 'include',
+        mode: plain ? 'no-cors' : 'cors',
+      }).catch(() => {});
+      return true;
+    },
     javaEnabled: () => false,
     userActivation: new UserActivation(ACTIVATION_KEY),
     permissions: madePermissions(),
@@ -35850,6 +35924,20 @@ export function installDom(
     if (call('javascriptAllowed', owner._id, initiator?._id ?? 0) !== true) {
       return;
     }
+    // nor where the policies of the document that asked refuse it, as
+    // inline script whose text is the URL (CSP 3, 4.2.4, "Should navigation
+    // request of type be blocked by Content Security Policy?")
+    if (
+      cspOf?.policed &&
+      call(
+        'csp',
+        'nav',
+        `javascript:${javascriptSource(url)}`,
+        initiator?._id ?? 0,
+      ) !== true
+    ) {
+      return;
+    }
     setTimer(
       () => {
         if (!s.ctx.active() || s.ctx.owner() !== owner) return;
@@ -36164,6 +36252,9 @@ export function installDom(
     let url = action
       ? String(call('resolve', action))
       : String(call('location'));
+    // nowhere its document's policies refuse to send a form (`form-action`,
+    // CSP 3, 6.3.1), which falls back to no other directive
+    if (cspOf?.policed && call('csp', 'form', url, form._id) !== true) return;
     // a frame of this document's that the target names is navigated as
     // its own session has it, as the page's is
     const framed = /^(|_self)$/i.test(target) ? null : namedFrame(target);
@@ -36935,7 +37026,9 @@ export function installDom(
       // host seam takes one in place of the page's
       evaluate: (source) => {
         try {
-          return (0, eval)(source);
+          // the realm's own: a policy holds the URL to `script-src-elem`,
+          // and never to `'unsafe-eval'`
+          return NativeEval(source);
         } catch (error) {
           report(error);
           return undefined;
@@ -40995,12 +41088,18 @@ export function installDom(
         configurable: true,
         enumerable: false,
       });
+    // where the document's policies let WebAssembly be compiled
+    // (`'wasm-unsafe-eval'`): a refusal rejects with a `CompileError`
     const compile = (bytes: Any): Promise<Any> =>
-      new Promise((ok) => ok(new Module(bytes)));
+      new Promise((ok) => {
+        cspOf?.ensureWasm();
+        ok(new Module(bytes));
+      });
     const instantiate = (source: Any, imports?: Any): Promise<Any> =>
       new Promise((ok) => {
         if (source instanceof Module) ok(new Instance(source, imports));
         else {
+          cspOf?.ensureWasm();
           const module = new Module(source);
           ok({ module, instance: new Instance(module, imports) });
         }
@@ -41354,11 +41453,16 @@ export function installDom(
       true,
     );
   });
+  // a string handed to one is compiled as script, which a policy without
+  // `'unsafe-eval'` refuses: the timer is then never set (HTML 8.6, the
+  // timer initialization steps)
+  const stringRefused = (fn: Any): boolean =>
+    typeof fn !== 'function' && !!cspOf && !cspOf.compiles(str(fn));
   define('setTimeout', (fn: Any, ms?: Any, ...args: Any[]) =>
-    setTimer(fn, ms, args, false),
+    stringRefused(fn) ? ++timerSeq : setTimer(fn, ms, args, false),
   );
   define('setInterval', (fn: Any, ms?: Any, ...args: Any[]) =>
-    setTimer(fn, ms, args, true),
+    stringRefused(fn) ? ++timerSeq : setTimer(fn, ms, args, true),
   );
   define('clearTimeout', clearTimer);
   define('clearInterval', clearTimer);
@@ -41834,6 +41938,30 @@ export function installDom(
     for (const name of Object.getOwnPropertyNames(made.interfaces)) {
       define(name, made.interfaces[name]);
     }
+  }
+
+  // --- Content Security Policy ------------------------------------------------
+  //
+  // The page's half (`csp-page.ts`): `SecurityPolicyViolationEvent`, fired
+  // where the host says, and the guards on `eval`, `Function` and
+  // WebAssembly a policy puts on, which ask the host whether to throw.
+  {
+    cspOf = cspApi({
+      Event,
+      host: call,
+      fire: (target: Any, event: Any) => {
+        event.isTrusted = true;
+        dispatch(target, event);
+      },
+      global: G,
+      nativeEval: NativeEval,
+      nativeFunction: NativeFunction,
+    });
+    define(
+      'SecurityPolicyViolationEvent',
+      cspOf.interfaces.SecurityPolicyViolationEvent,
+    );
+    cspOf.policyChanged(str(call('csp', 'said') ?? ''));
   }
 
   // --- WebRTC and media capture -------------------------------------------------
@@ -42630,7 +42758,8 @@ export function installDom(
     // with the window as `this`, strict or not (HTML 8.6, the timer
     // initialization steps' thisArg), never the record it is kept in
     if (typeof timer.fn === 'function') reflectApply(timer.fn, G, timer.args);
-    else (0, eval)(str(timer.fn));
+    // asked of the policies as it was set (`stringRefused`)
+    else NativeEval(str(timer.fn));
     return true;
   });
 
@@ -43485,7 +43614,7 @@ export function installDom(
     if (!win) return false;
     const own = FRAME_OWN;
     try {
-      new Function(
+      new NativeFunction(
         'window',
         'self',
         'document',
@@ -43895,6 +44024,28 @@ export function installDom(
     const [url] = input();
     const blob = blobUrls.get(str(url));
     return blob instanceof Blob ? str(blob.type) : null;
+  });
+
+  // a violation of the document's Content Security Policy (CSP 3, 5.3): at
+  // its element where that is connected, else at the document, or a
+  // worker's global
+  entry('__cspViolation', () => {
+    const [json, id] = input();
+    const el = id ? wrap(id) : null;
+    const target =
+      el && el.isConnected
+        ? el
+        : inWorker
+          ? windowTarget
+          : (el?.ownerDocument ?? document);
+    cspOf?.violation(str(json), target);
+    return true;
+  });
+  // what the document's policies hold string compilation to now
+  entry('__cspPolicy', () => {
+    const [said] = input();
+    cspOf?.policyChanged(str(said));
+    return true;
   });
 
   // a plain event at an element: a script's `load` or `error`; and at a

@@ -339,6 +339,9 @@ function waitFor<T>(
 const host = new DomHost(new Document([]), seams, init.url);
 // a blob URL's script has no response to say a policy, and has its owner's
 host.referrerPolicy = referrerPolicyOf(init.referrerPolicy);
+// and its policies, which one fetched has from its response's headers
+// instead (`importScript`)
+if (/^(blob|data):/i.test(init.url)) host.csp.addHeaders(init.csp ?? []);
 /** What the worker's own script is to Fetch (HTML 10.2.5.1). */
 const OWN_SCRIPT = {
   destination: init.service
@@ -353,19 +356,33 @@ const importScript = (
   type?: ValueModule,
   own = false,
 ): string | null => {
+  // an import is held to the worker's own policies (CSP 3, 4.1.2): its own
+  // script was held to its owner's as it was asked for
+  if (!own && !host.csp.request({ url, destination: type ? type : 'script' })) {
+    return null;
+  }
   sync.postMessage({
     url,
     ...(type ? { type } : {}),
     ...(own ? OWN_SCRIPT : {}),
   });
   const answer = waitFor(
-    (m): m is { source: string | null; policy?: string } =>
-      !('id' in (m as object)),
+    (
+      m,
+    ): m is {
+      source: string | null;
+      policy?: string;
+      csp?: [string, string][];
+    } => !('id' in (m as object)),
     performance.now() + 60_000,
   );
   // what the worker's own script's response says its requests' referrers
-  // are made under, which an import's has no say in
-  if (own) host.referrerPolicy = referrerPolicyOf(answer?.policy);
+  // are made under, and its Content Security Policies, which an import's
+  // has no say in
+  if (own) {
+    host.referrerPolicy = referrerPolicyOf(answer?.policy);
+    if (!/^(blob|data):/i.test(url)) host.csp.addHeaders(answer?.csp ?? []);
+  }
   return answer?.source ?? null;
 };
 host.workerScope = {

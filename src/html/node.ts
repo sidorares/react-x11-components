@@ -93,6 +93,7 @@ import {
   namespaceOf,
   scriptTypeOf,
   scriptUrlOf,
+  styleGateOf,
 } from './dom.js';
 import type { Document, HtmlChange, SheetRef } from './dom.js';
 import { directionHolder } from './direction.js';
@@ -3670,6 +3671,9 @@ export class HtmlViewNode extends Node {
     this._cascade.reducedMotion = reducedMotion;
     const scripting = props.scripting ?? false;
     this._cascade.scripting = scripting;
+    this._cascade.styleGate = scripting
+      ? styleGateOf(this._source.document)
+      : null;
     // The faces this width and scheme declare: a `@font-face` may sit in a
     // `@media` block like any rule.
     const cssWidth = width / this._scale;

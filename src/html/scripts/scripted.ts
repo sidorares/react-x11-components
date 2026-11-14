@@ -571,7 +571,9 @@ async function loadedScript(
   const r = result as ScriptAnswer | null | undefined;
   if (!r || r.kind !== 'script') return null;
   const text = await scriptText(r, fallback, utf8);
-  return text === null ? null : { text, url: r.url, headers: r.headers };
+  return text === null
+    ? null
+    : { text, url: r.url, headers: r.headers, redirects: r.redirects };
 }
 
 type ScriptAnswer = {
@@ -581,6 +583,7 @@ type ScriptAnswer = {
   charset?: string;
   url?: string;
   headers?: [string, string][];
+  redirects?: string[];
 };
 
 /** A script's text from what `onResource` answered: bytes in what the

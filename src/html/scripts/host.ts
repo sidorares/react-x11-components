@@ -125,6 +125,7 @@ import {
   tagOf,
   typeNameOf,
   setSheetDisabled,
+  setStyleGate,
   xmlTree,
 } from '../dom.js';
 import {
@@ -281,7 +282,8 @@ import { PagePeers } from './peers.js';
 import type { ChannelRelay } from './peers.js';
 import { PageTransports } from './transports.js';
 import { PageSockets } from './sockets.js';
-import { connectAllowed, parseCsp } from '../csp.js';
+import { PageCsp, cspNonceOf } from './csp-host.js';
+import type { CspViolation, CspWhere } from './csp-host.js';
 import type { CspPolicy } from '../csp.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
 import { publicSuffixList, publicSuffixNow } from '../cookies.js';
@@ -468,6 +470,10 @@ export interface WorkerInit {
   /** Its owner's referrer policy, which a worker whose script is a blob
    *  URL's has, as it has no response to say one (HTML 10.2.5.1). */
   referrerPolicy?: string;
+  /** Its owner's Content Security Policies, as the headers that would say
+   *  them, which a worker whose script is a blob's or a `data:` URL's has
+   *  (CSP 3, 4.2.1). */
+  csp?: [string, string][];
   /** A shared worker's (HTML 10.2.6.4), whose global takes connections
    *  rather than messages of its own. */
   shared?: boolean;
@@ -480,6 +486,8 @@ export interface WorkerInit {
  *  ended by the number `start` answered. */
 export interface PageWorkersLike {
   start(init: WorkerInit): number;
+  /** A number for a worker refused before it was started. */
+  refuse?(): number;
   post(id: number, data: string): void;
   end(id: number): void;
   /** Tells a worker's thread of a data channel the page handed it. */
@@ -2435,6 +2443,12 @@ export class DomHost {
       _seams.permissions?.watch?.((name) => this._permissionMoved(name)) ??
       null;
     this.top = top ?? this.url;
+    // a `<style>`'s text is its policies' to allow, as the scan meets it
+    setStyleGate(document, {
+      sheet: (el, text) => this._styleAllowed(el, text, 'style'),
+      attribute: (el, text) => this._styleAllowed(el, text, 'style attribute'),
+      base: (el, href) => this._baseAllowed(el, href),
+    });
     // what another document of the origin does to its storage, which this
     // one hears as a `storage` event
     this._unwatchStorage =
@@ -2657,6 +2671,32 @@ export class DomHost {
   private readonly _opaqueOwn = {};
   /** What `document.referrer` reads. */
   referrer = '';
+  /** The document's Content Security Policies, and what it asks of them
+   *  (`csp-host.ts`): a request, inline content, a string compiled. */
+  readonly csp: PageCsp<Element> = new PageCsp<Element>({
+    url: () => this.url,
+    // `'self'` is the origin of the document's address, a sandbox's as much
+    // as any (CSP 3, 6.7.2.7; WPT's `frame-src-sandboxed-allowed`)
+    origin: () => this._cspSelf(),
+    referrer: () => this.referrer,
+    status: () => (/^https?:/i.test(this.url) ? 200 : 0),
+    tell: (v, target) => this._tellViolation(v, target),
+    send: (url, body, type) => this._sendReport(url, body, type),
+    endpoint: (group) => this.reportEndpoints.get(group) ?? null,
+    // at once where nothing of the page's is running, so the next script is
+    // guarded, and else once what runs has returned: an entry entered
+    // inside another would take the input the outer one has yet to read
+    changed: (said) => {
+      const tell = () => {
+        if (!this._disposed) this.entries?.call('__cspPolicy', [said]);
+      };
+      if (this.entries?.running) void Promise.resolve().then(tell);
+      else tell();
+    },
+  });
+  /** Where a `report-to` group sends, from the response's
+   *  `Reporting-Endpoints` and `Report-To`. */
+  reportEndpoints = new Map<string, string>();
   /**
    * The policy its requests' referrers are made under where a request names
    * none (HTML, a policy container's referrer policy): the one its response
@@ -2804,6 +2844,9 @@ export class DomHost {
       doc.children,
     );
     if (!base) return doc === this.document ? own : fallback;
+    if (doc === this.document && !this._baseAllowed(base, base.attribs.href)) {
+      return fallback;
+    }
     try {
       return new URL(base.attribs.href.trim(), fallback).href;
     } catch {
@@ -2874,11 +2917,19 @@ export class DomHost {
    * in, which select a source as the parser's insertion would have them
    * (4.8.11.5), as a list of ids.
    */
+  private _noncesSwept = false;
   parserInserted(): { body: boolean; media: string } | null {
     // what the parser put before the body holds the document's rendering
     this._renderBlocking.parsed();
     const made = this._seams.handle.parserMade?.();
     this._noteAutofocus(made ?? [], false);
+    if (made?.length && this._policed(this.document)) this._judgeMade(made);
+    // and the first time, what the parser made before the page's scripts
+    // began, its nonces hidden as theirs are
+    if (!this._noncesSwept) {
+      this._noncesSwept = true;
+      this._hideNonces(this.document.children);
+    } else if (made?.length) this._hideNonces(made);
     if (this._disposed) return null;
     // the first time, the media the parser made before the page's scripts
     // began, which select a source before the first of them runs
@@ -3601,6 +3652,7 @@ export class DomHost {
     copyMadeAsHtml(node, clone);
     this._cloneShadows(node, clone, deep);
     this._copiedScripts(node, clone, deep);
+    this._copiedNonces(node, clone, deep);
     const owner = this._ownerOf(node);
     if (owner !== this.document) this._owners.set(clone, owner);
     this._imagesMade([clone]);
@@ -3611,6 +3663,53 @@ export class DomHost {
       if (type) markXmlDocument(clone as unknown as Document, type);
     }
     return clone;
+  }
+
+  /** A copy's nonces, which are the elements' slots and no attribute (HTML
+   *  2.6.3, the cloning steps), and its `style` attributes, which a copy of
+   *  an element its document styled may have whatever the document's
+   *  policies say of inline style: the two trees are alike, so their
+   *  elements are found in the same order. */
+  private _copiedNonces(node: AnyNode, copy: AnyNode, deep: boolean): void {
+    if (!this.csp.policies.length) return;
+    const all = deep
+      ? DomUtils.findAll(() => true, [node])
+      : node instanceof Element
+        ? [node]
+        : [];
+    const to = deep
+      ? DomUtils.findAll(() => true, [copy])
+      : copy instanceof Element
+        ? [copy]
+        : [];
+    for (let i = 0; i < all.length && i < to.length; i += 1) {
+      const nonce = this._nonceSlot.get(all[i]);
+      if (nonce !== undefined) this._nonceSlot.set(to[i], nonce);
+      const style = to[i].attribs.style;
+      if (style !== undefined) this._styleByCssom.set(to[i], style);
+    }
+  }
+
+  /** Each element's cryptographic nonce (HTML 2.6.3), where it is no longer
+   *  its attribute's: hidden from it, or set by a script. */
+  private _nonceSlot = new WeakMap<Element, string>();
+  /** An element's nonce as CSP reads it: its slot's, or its attribute's,
+   *  and none where it is not nonceable (`cspNonceOf`). */
+  nonceOf(el: Element): string {
+    return cspNonceOf(el, this._nonceSlot.get(el));
+  }
+  /** The nonces of elements connected to a document whose policies a
+   *  response's header brought, hidden from their attributes (HTML 2.6.3,
+   *  "becomes browsing-context connected"): what a style rule or a
+   *  dangling markup injection could read is gone, and the slot keeps it. */
+  private _hideNonces(nodes: readonly AnyNode[]): void {
+    if (!this.csp.policies.some((p) => p.source === 'header')) return;
+    for (const el of DomUtils.findAll((e) => !!e.attribs.nonce, [...nodes])) {
+      // what is in a node that is listed too is met twice, and hidden once
+      if (!el.attribs.nonce || !this._inDocument(el)) continue;
+      this._nonceSlot.set(el, el.attribs.nonce);
+      el.attribs.nonce = '';
+    }
   }
 
   /** A copy's scripts, which a script made, so `async` is forced on in
@@ -4425,6 +4524,19 @@ export class DomHost {
       // declaration ended: CodeMirror appends `visibility: hidden` to it
       case 'styleText':
         return declarationText(this._element(a).attribs.style);
+      // an element's nonce, and one a script sets without its attribute
+      case 'nonce': {
+        const el = this._element(a);
+        return this._nonceSlot.get(el) ?? el.attribs.nonce ?? '';
+      }
+      // a `style` CSSOM is about to write (`cssText`), which no policy
+      // holds back
+      case 'styleByCssom':
+        this._styleByCssom.set(this._element(a), text(b));
+        return null;
+      case 'setNonce':
+        this._nonceSlot.set(this._element(a), text(b));
+        return null;
       case 'setStyle': {
         const el = this._element(a);
         const oldValue = el.attribs.style ?? null;
@@ -4432,6 +4544,10 @@ export class DomHost {
         if (written === null) return null;
         if (written) el.attribs.style = written;
         else delete el.attribs.style;
+        // what CSSOM wrote is no inline content a policy holds back (CSP
+        // 3, 4.2.3 is asked of the attribute as markup or `setAttribute`
+        // sets it)
+        if (written) this._styleByCssom.set(el, written);
         this._changed(el, 'attributes', 'style', oldValue);
         return null;
       }
@@ -5070,6 +5186,30 @@ export class DomHost {
             "A worker's script is its own origin's.",
           );
         }
+        // its script is the document's to fetch, so its policies' to allow
+        // (`worker-src`, CSP 3, 6.1.?): a worker refused is its `error`, a
+        // task later, and no thread
+        if (!init.service) {
+          this.cspScan();
+          const csp = {
+            url: String(init.url),
+            destination: init.shared ? 'sharedworker' : 'worker',
+          };
+          if (!this.csp.request(csp)) {
+            const id = this.workers.refuse?.() ?? -1;
+            setTimeout(() => {
+              if (this._disposed) return;
+              this.entries?.call('__workerError', [
+                id,
+                `Refused to create a worker from '${csp.url}' because it violates the document's Content Security Policy.`,
+                csp.url,
+                0,
+                0,
+              ]);
+            }, 0);
+            return id;
+          }
+        }
         return this.workers.start({
           ...init,
           source: typeof b === 'string' ? b : null,
@@ -5077,6 +5217,12 @@ export class DomHost {
           secure: this._secureContext(),
           keySecrets: keySecrets(this._keySecret()),
           referrerPolicy: this.documentReferrerPolicy(),
+          csp: this.csp.policies.map((p): [string, string] => [
+            p.disposition === 'enforce'
+              ? 'content-security-policy'
+              : 'content-security-policy-report-only',
+            p.text,
+          ]),
         });
       }
       case 'workerPost':
@@ -7350,6 +7496,11 @@ export class DomHost {
       case 'notification':
         this._notificationOp(text(a), Number(b), text(c));
         return null;
+      // a page's question of its policies (`csp-page.ts`): whether a string
+      // may be compiled, WebAssembly, an `on…` attribute or a `javascript:`
+      // URL run, and what the guards are held to
+      case 'csp':
+        return this._cspOp(text(a), b, c, d);
       case 'featureAllowed':
         return this._featureAllowed(text(a));
       // whether the document's media may not play now: its frame says so
@@ -7611,6 +7762,23 @@ export class DomHost {
     oldValue: string | null,
   ): void {
     if (type === 'attributes') {
+      // a `nonce` set is the element's nonce (HTML 2.6.3)
+      if (name === 'nonce' && target instanceof Element) {
+        this._nonceSlot.set(target, target.attribs.nonce ?? '');
+      }
+      // an `on…` attribute is judged as it is set (HTML 8.1.8.1, the event
+      // handler content attributes' change steps)
+      if (
+        name &&
+        name.length > 2 &&
+        name.charCodeAt(0) === 111 &&
+        name.charCodeAt(1) === 110 &&
+        this.csp.policies.length &&
+        target instanceof Element &&
+        target.attribs[name] !== undefined
+      ) {
+        this._handlerAllowed(target, name, target.attribs[name]);
+      }
       this._tell(target, {
         type,
         target: target as Element,
@@ -7786,6 +7954,7 @@ export class DomHost {
       this._pointerLost(parent, removed);
       this._renderBlocking.removed();
     }
+    if (added.length) this._hideNonces(added);
     // a policy a `<meta>` brings is the document's once the element is in
     // its head, and stays when it goes (HTML, the `http-equiv` "Content
     // security policy" state)
@@ -8488,10 +8657,20 @@ export class DomHost {
     for (const el of this._sheetsChanged) {
       const state = this._sheets.get(el);
       if (!state) continue;
+      // what the policies said of the sheet as it was, which holds for what
+      // CSSOM makes of it (`_styleAllowed`)
+      const before = this._policed(el)
+        ? this._styleAllowed(el, DomUtils.textContent(el), 'style')
+        : true;
       const removed = el.children.slice();
       for (const kid of removed) DomUtils.removeElement(kid);
       const written = new Text(state.rules.join('\n'));
       DomUtils.appendChild(el, written);
+      const asked = this._styleAsked.get(el);
+      if (asked) {
+        asked.text = written.data;
+        asked.allowed = before;
+      }
       this._tell(el, {
         type: 'childList',
         target: el,
@@ -8735,6 +8914,18 @@ export class DomHost {
    * its own where it has. Nothing is loaded for it.
    */
   private _javascriptSent(frame: Element, url: string): void {
+    // the policies of the document that sent it hold its script to
+    // `script-src-elem`, as inline script whose text is the URL (CSP 3,
+    // 4.2.4)
+    this.cspScan(frame);
+    // its text decoded, as the engines hash it
+    let source = url;
+    try {
+      source = decodeURIComponent(url);
+    } catch {
+      // as it is
+    }
+    if (!this.csp.inline('navigation', source, '', frame)) return;
     const doc = this._frames.get(frame);
     const holder = documentHolding(frame);
     if (!doc || !this._reaches(frame)) return;
@@ -9000,6 +9191,13 @@ export class DomHost {
     // the page in itself without end (HTML 7.8.1, the iframe's "process the
     // iframe attributes", an ancestor's URL)
     if (src && src.split('#')[0] === this.url.split('#')[0]) src = null;
+    // nor one its document's policies refuse (`frame-src`, CSP 3, 4.2.4): it
+    // shows nothing of what it was sent to, and still hears its `load`
+    const destination = frameDestination(frame);
+    if (src && !/^about:/i.test(src)) {
+      this.cspScan(frame);
+      if (!this.csp.request({ url: src, destination }, frame)) src = null;
+    }
     // read as the address is set, since a page may revoke it as soon as it
     // has (URL's "blob URL entry", which a parsed URL keeps)
     const blob = src && /^blob:/i.test(src) ? this._blobResponse(src) : null;
@@ -9065,9 +9263,22 @@ export class DomHost {
             new AbortController().signal,
             this._frameSandbox(frame),
           );
+    const asked = src;
     landed
       .then((response) => {
         if (this._disposed || this._frameLoads.get(frame) !== serial) return;
+        // where redirects took it is held to the policies too
+        if (
+          response.url &&
+          response.url !== asked &&
+          !this.csp.request({ url: asked, destination }, frame, [response.url])
+        ) {
+          release(response);
+          this._unloadFrameDocument(frame);
+          this._blankFrame(frame);
+          loaded();
+          return;
+        }
         // no content is no navigation (HTML 7.4.2.3.3): the frame goes on
         // showing what it was, and hears no `load`
         if (response.status === 204 || response.status === 205) {
@@ -9770,7 +9981,131 @@ export class DomHost {
     if (!code) return;
     this.inert.add(el);
     if (attribs.nomodule !== undefined || scriptForOther(el)) return;
+    if (!this._inlineAllowed(el, code, true)) return;
     exec.call(this.entries, code, this.url, this.idOf(el));
+  }
+
+  /** What the policies said of each `<style>`'s text, kept: the scan asks
+   *  again at every revision of the document. */
+  private _styleAsked = new WeakMap<
+    Element,
+    { text: string; attribute: string; allowed: boolean; allows: boolean }
+  >();
+  /** What the policies said of each element's `on…` attributes, by their
+   *  name and value: judged once, as each is set. */
+  private _handlersJudged = new WeakMap<Element, Map<string, boolean>>();
+  /** Whether an `on…` attribute's value may be an element's handler
+   *  (`script-src-attr`), told once a name and a value. */
+  private _handlerAllowed(el: Element, name: string, value: string): boolean {
+    if (!this._policed(el)) return true;
+    let judged = this._handlersJudged.get(el);
+    if (!judged) this._handlersJudged.set(el, (judged = new Map()));
+    const key = `${name}\u0000${value}`;
+    let allowed = judged.get(key);
+    if (allowed === undefined) {
+      this.cspScan(el);
+      allowed = this.csp.inline('script attribute', value, '', el, {
+        sourceFile: this.url,
+      });
+      judged.set(key, allowed);
+    }
+    return allowed;
+  }
+  /** The `on…` attributes of what the parser made, judged as they were set
+   *  there. */
+  private _judgeMade(made: readonly AnyNode[]): void {
+    const seen = new WeakSet<AnyNode>();
+    const walk = (node: AnyNode): void => {
+      if (!(node instanceof Element) || seen.has(node)) return;
+      seen.add(node);
+      for (const name in node.attribs) {
+        if (name.length > 2 && name.startsWith('on')) {
+          this._handlerAllowed(node, name, node.attribs[name]);
+        }
+      }
+      if (tagOf(node) !== 'template')
+        for (const kid of node.children) walk(kid);
+    };
+    for (const node of made) walk(node);
+  }
+
+  /** What the policies said of each `<base>`'s `href`, kept. */
+  private _baseAsked = new WeakMap<
+    Element,
+    { href: string; allowed: boolean }
+  >();
+  /** Whether a `<base href>` may be the document's base (`base-uri`, CSP 3,
+   *  6.3.1.1): resolved against the document's address. */
+  private _baseAllowed(el: Element, href: string): boolean {
+    if (!this._policed(el)) return true;
+    const asked = this._baseAsked.get(el);
+    if (asked && asked.href === href) return asked.allowed;
+    let url: string;
+    try {
+      url = new URL(href.trim(), this.creator ?? this.url).href;
+    } catch {
+      return true;
+    }
+    this.cspScan(el);
+    const allowed = this.csp.allowsUrl('base-uri', url, el, {
+      sourceFile: this.url,
+    });
+    this._baseAsked.set(el, { href, allowed });
+    return allowed;
+  }
+  /** The `style` attribute each element's CSSOM last wrote. */
+  private _styleByCssom = new WeakMap<Element, string>();
+  /** Whether a `<style>`'s text may style the document (HTML 4.2.6,
+   *  "update a style block"; `style-src-elem`), or an element's `style`
+   *  attribute (`style-src-attr`): what CSSOM wrote there may. */
+  private _styleAllowed(
+    el: Element,
+    text: string,
+    type: 'style' | 'style attribute',
+  ): boolean {
+    if (!this._policed(el)) return true;
+    const attribute = type === 'style attribute';
+    if (attribute && this._styleByCssom.get(el) === text) return true;
+    let asked = this._styleAsked.get(el);
+    if (!asked) {
+      asked = { text: '', attribute: '', allowed: true, allows: true };
+      this._styleAsked.set(el, asked);
+      asked.text = asked.attribute = '\u0000';
+    }
+    if (attribute ? asked.attribute === text : asked.text === text) {
+      return attribute ? asked.allows : asked.allowed;
+    }
+    this.cspScan(el);
+    const allowed = this.csp.inline(
+      type,
+      text,
+      attribute ? '' : this.nonceOf(el),
+      el,
+      { sourceFile: this.url },
+    );
+    if (attribute) {
+      asked.attribute = text;
+      asked.allows = allowed;
+    } else {
+      asked.text = text;
+      asked.allowed = allowed;
+    }
+    return allowed;
+  }
+
+  /** Whether the document's policies let an inline script run (HTML
+   *  4.12.1.1, "prepare the script element", step 19). */
+  private _inlineAllowed(el: Element, code: string, dynamic = false): boolean {
+    this.cspScan(el);
+    // `dynamic` for one a script put in, which `'strict-dynamic'` trusts
+    return this.csp.inline(
+      'script',
+      code,
+      this.nonceOf(el),
+      el,
+      { sourceFile: this.url },
+      dynamic,
+    );
   }
 
   /**
@@ -9797,8 +10132,9 @@ export class DomHost {
     }
     this.inert.add(el);
     if (attribs.nomodule !== undefined || scriptForOther(el)) return;
+    if (!this._inlineAllowed(el, code)) return;
     const made = this.parserInserted();
-    if (made) this.entries?.call('__mutated', made.body);
+    if (made) this.entries?.call('__mutated', [made.body, made.media]);
     const outer = this.writing;
     this.writing = el;
     try {
@@ -10326,34 +10662,157 @@ export class DomHost {
     return this._socketsMade;
   }
 
-  /** The document's Content Security Policies, by their text, in the
-   *  order they were met: a policy stays once a `<meta>` brought it, as a
-   *  browser keeps it after the element goes (HTML, the `http-equiv`
-   *  "Content security policy" state). */
-  private _csp = new Map<string, CspPolicy>();
   /** The policy a `<meta http-equiv="Content-Security-Policy">` brings,
-   *  kept. */
+   *  kept (HTML, the `http-equiv` "Content security policy" state): once an
+   *  element, and for good once it was in its head. */
   private _noteCsp(node: AnyNode): void {
     if (
       node instanceof Element &&
       node.name === 'meta' &&
       (node.attribs['http-equiv'] ?? '').trim().toLowerCase() ===
-        'content-security-policy'
+        'content-security-policy' &&
+      node.attribs.content !== undefined
     ) {
-      const text = node.attribs.content ?? '';
-      if (!this._csp.has(text)) this._csp.set(text, parseCsp(text));
+      this.csp.addMeta(node, node.attribs.content);
     }
   }
-  /** The document's policies: those a script's `<meta>`s brought as they
-   *  were put in its head, and those the parser's are in it now. */
-  private _cspPolicies(): CspPolicy[] {
+  /** The `<meta>` policies the parser has put in the head: those before
+   *  `upTo` where a check is about an element, since a policy the parser
+   *  has not reached yet holds nothing back. */
+  cspScan(upTo: AnyNode | null = null): void {
+    // the whole head was looked at since the tree last changed
+    const at = treeGeneration();
+    if (this._cspScanned === at) return;
     const head = DomUtils.findOne(
       (e) => e.name === 'head',
       this.document.children,
       true,
     );
-    for (const child of head?.children ?? []) this._noteCsp(child);
-    return [...this._csp.values()];
+    if (!head) return;
+    // what holds `upTo` in the head, which a policy after it does not reach
+    let stop: AnyNode | null = upTo;
+    while (stop && stop.parent !== head) stop = stop.parent;
+    for (const child of head.children) {
+      if (stop && child === stop) return;
+      this._noteCsp(child);
+    }
+    this._cspScanned = at;
+  }
+  private _cspScanned = -1;
+  /** Whether the document has a policy, the parser's `<meta>`s in its
+   *  head looked for where it has none yet. */
+  private _policed(upTo: AnyNode): boolean {
+    if (this.csp.policies.length) return true;
+    this.cspScan(upTo);
+    return this.csp.policies.length > 0;
+  }
+  /** The document's enforced policies, those the parser's `<meta>`s are in
+   *  it now. */
+  private _cspPolicies(): CspPolicy[] {
+    this.cspScan();
+    return this.csp.enforced();
+  }
+
+  /** The origin `'self'` stands for: the address's, or its creator's for
+   *  an `about:` document, whatever a sandbox made of the document's. */
+  private _cspSelf(): string {
+    // an `about:blank` or `srcdoc` is of what made it: a popup's opener, a
+    // frame's parent
+    if (this.url.startsWith('about:')) {
+      if (this.creator) return originOf(this.creator) || 'null';
+      if (this.frameParent) return this.frameParent._cspSelf();
+    }
+    return originOf(this.url) || 'null';
+  }
+
+  /** A violation told to the page a task later (CSP 3, 5.3, step 2): at its
+   *  element, which the page fires it at where it is in its document, or at
+   *  the document. */
+  private _tellViolation(v: CspViolation, target: Element | null): void {
+    const id = target ? this.idOf(target) : 0;
+    // what the document refused before its realm came is told once it has
+    const tell = (tries: number): void => {
+      if (this._disposed) return;
+      if (!this.entries) {
+        if (tries < 500) setTimeout(() => tell(tries + 1), 10);
+        return;
+      }
+      this.entries.call('__cspViolation', [JSON.stringify(v), id]);
+    };
+    setTimeout(() => tell(0), 0);
+  }
+
+  /** A report posted, as the browser's own request: credentialed for the
+   *  document's own origin alone, and held to no policy (CSP 3, 5.3). */
+  private _sendReport(url: string, body: string, type: string): void {
+    if (this._disposed) return;
+    const controller = new AbortController();
+    void Promise.resolve()
+      .then(() =>
+        this._seams.fetch(
+          {
+            url,
+            method: 'POST',
+            headers: [['content-type', type]],
+            body,
+            credentials: 'same-origin',
+            mode: 'no-cors',
+            destination: 'report',
+            client: this.url,
+          },
+          controller.signal,
+        ),
+      )
+      .then(
+        (response) => release(response),
+        () => {},
+      );
+  }
+
+  /** A page's question of its policies. */
+  private _cspOp(
+    kind: string,
+    a: Primitive,
+    b: Primitive,
+    c: Primitive,
+  ): Primitive {
+    const text = (v: Primitive): string => (typeof v === 'string' ? v : '');
+    this.cspScan();
+    const where = this._cspWhere();
+    switch (kind) {
+      case 'said':
+        return this.csp.said;
+      case 'eval':
+        return this.csp.compile(text(a), where);
+      case 'wasm':
+        return this.csp.compile(null, where);
+      case 'attr': {
+        const node = this._node(a);
+        if (!(node instanceof Element)) {
+          return this.csp.inline('script attribute', text(b), '', null, where);
+        }
+        return this._handlerAllowed(node, text(c), text(b));
+      }
+      case 'form': {
+        const node = this._node(b);
+        const el = node instanceof Element ? node : null;
+        return this.csp.allowsUrl('form-action', text(a), el, where);
+      }
+      case 'nav': {
+        // no element where the document itself was sent there
+        const node = b ? this._node(b) : null;
+        const el = node instanceof Element ? node : null;
+        return this.csp.inline('navigation', text(a), '', el, where);
+      }
+      default:
+        return true;
+    }
+  }
+
+  /** Where a violation a script caused comes from, for its report: none
+   *  is known here yet. */
+  private _cspWhere(): CspWhere {
+    return {};
   }
 
   /** The policy the last `<meta name="referrer">` that said one brought,
@@ -11201,11 +11660,6 @@ export class DomHost {
     this._checkRequest(request);
     const until = performance.now() + timeout;
     const send = (plain: FetchRequest): FetchResponse => {
-      if (!connectAllowed(this._cspPolicies(), plain.url, this._origin())) {
-        throw new TypeError(
-          `${plain.url} is refused by the document's Content Security Policy.`,
-        );
-      }
       const left = until - performance.now();
       if (this._seams.fetchSync) return this._seams.fetchSync(plain, left);
       const network = this._seams.syncNetwork;
@@ -11242,6 +11696,14 @@ export class DomHost {
       this.entries?.call('__media', [id, load, kind, ...args]);
     };
     const run = async (): Promise<void> => {
+      // held to `media-src` before it is asked for (CSP 3, 4.1.2)
+      const destination = tagOf(el) === 'audio' ? 'audio' : 'video';
+      this.cspScan(el);
+      if (!this.csp.request({ url, destination }, el)) {
+        // never from inside the op that asked
+        setTimeout(() => tell('failed'), 0);
+        return;
+      }
       let response: FetchResponse;
       try {
         // from its start, as a browser asks for a media resource, so the
@@ -11498,7 +11960,21 @@ export class DomHost {
     let referrer = this._referrerSource(request.referrerSource);
     let policy =
       referrerPolicyOf(request.referrerPolicy) || this.documentReferrerPolicy();
+    this.cspScan();
     for (;;) {
+      // held to the document's policies at each hop, and reported by the URL
+      // it was first asked for (CSP 3, 4.1.2; Fetch 4.4, step 15)
+      if (
+        !this.csp.request(
+          { url: request.url, destination: request.destination ?? '' },
+          null,
+          hop.url === request.url ? [] : [hop.url],
+        )
+      ) {
+        throw new TypeError(
+          `${hop.url} is refused by the document's Content Security Policy.`,
+        );
+      }
       const own = page !== 'null' && originOf(hop.url) === page;
       if (own && (tainting === null || tainting === 'basic')) {
         tainting = 'basic';

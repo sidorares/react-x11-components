@@ -260,6 +260,12 @@ export class PageWorkers implements PageWorkersLike {
     private readonly _background: boolean = false,
   ) {}
 
+  /** A worker's number, for one that is never started: refused before its
+   *  script was asked for. */
+  refuse(): number {
+    return ++this._seq;
+  }
+
   start(init: WorkerInit): number {
     const id = ++this._seq;
     if (this._disposed) return id;
@@ -546,7 +552,11 @@ export class PageWorkers implements PageWorkersLike {
     destination = 'script',
     mode: FetchMode = 'no-cors',
     own = false,
-  ): Promise<string | null | { source: string | null; policy: string }> {
+  ): Promise<
+    | string
+    | null
+    | { source: string | null; policy: string; csp?: [string, string][] }
+  > {
     // a `data:` script is read here, whatever the mode: Fetch hands a data:
     // URL to its scheme fetch before it asks whose it is (4.1, "main fetch")
     if (/^data:/i.test(url)) {
@@ -563,7 +573,13 @@ export class PageWorkers implements PageWorkersLike {
       const source =
         response.status >= 200 && response.status < 300 ? response.body : null;
       return own
-        ? { source, policy: referrerPolicyOfHeaders(response.headers) }
+        ? {
+            source,
+            policy: referrerPolicyOfHeaders(response.headers),
+            csp: response.headers.filter(([k]) =>
+              /^content-security-policy(-report-only)?$/i.test(k),
+            ),
+          }
         : source;
     } catch {
       return null;

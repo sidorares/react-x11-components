@@ -54,6 +54,7 @@ import { ScriptEngine } from './engine.js';
 import { DomHost, trustworthy, wholeBytes } from './host.js';
 import { corsSetting, judgeScript } from './script-origin.js';
 import type { LoadedScript, ModuleType, ValueModule } from './script-origin.js';
+import type { CspRequest } from '../csp.js';
 import { SB_ORIGIN, sandboxOfPolicy } from './sandbox.js';
 import { referrerPolicyOf, referrerPolicyOfHeaders } from '../referrer.js';
 import { PageWorkers } from './workers.js';
@@ -338,6 +339,31 @@ export class ScriptRunner {
         ? _link.parent.host.documentReferrerPolicy()
         : referrerPolicyOfHeaders(headers);
     if (_link?.frame) this.host.frameParent = _link.parent.host;
+    // its Content Security Policies: its response's, or, for a document of
+    // no response of its own, those of the one that made it (CSP 3, 4.2.1;
+    // HTML's policy container)
+    const local = /^(about:(blank|srcdoc)\b|blob:|data:)/i.test(url);
+    if (local && _link) this.host.csp.inherit(_link.parent.host.csp);
+    else if (local && popup?.creatorCsp && slot?.auxiliary) {
+      this.host.csp.inherit(popup.creatorCsp);
+    } else this.host.csp.addHeaders(headers);
+    this.host.reportEndpoints = reportEndpointsOf(headers);
+    // a document laid out before its realm came has its sheets scanned
+    // again, now that its policies say what of them may style it
+    const styled = [
+      'style-src',
+      'style-src-elem',
+      'style-src-attr',
+      'default-src',
+      'base-uri',
+    ];
+    if (
+      this.host.csp.policies.some((p) =>
+        styled.some((d) => p.directives.has(d)),
+      )
+    ) {
+      _options.handle.refresh?.();
+    }
     // the host's to know, and never the facade's: it decides what a realm is
     // handed, and what is refused it
     // and of another origin-domain where one of the two set
@@ -653,6 +679,17 @@ export class ScriptRunner {
     signal: AbortSignalLike,
     id: number | undefined,
   ): Promise<FetchResponse> {
+    // a worker's script and the modules its graph imports are fetched under
+    // the document that started it (HTML 8.1.5.1, "fetch a module worker
+    // script graph": its outside settings), so its policies hold them to
+    // `worker-src`, and tell what they refuse here
+    const destination = request.destination ?? '';
+    if (destination === 'worker' || destination === 'sharedworker') {
+      this.host.cspScan();
+      if (!this.host.csp.request({ url: request.url, destination })) {
+        throw new TypeError('Failed to fetch');
+      }
+    }
     const client =
       (id === undefined ? null : this._workerClients.get(id)) ??
       this.host.serviceClient;
@@ -678,7 +715,20 @@ export class ScriptRunner {
         };
       }
     }
-    return this._options.fetch(request, signal);
+    const response = await this._options.fetch(request, signal);
+    // and where it landed (CSP 3, 4.1.3)
+    if (
+      (destination === 'worker' || destination === 'sharedworker') &&
+      response.url &&
+      response.url !== request.url &&
+      !this.host.csp.request({ url: request.url, destination }, null, [
+        response.url,
+      ])
+    ) {
+      void response.chunks?.[Symbol.asyncIterator]().return?.();
+      throw new TypeError('Failed to fetch');
+    }
+    return response;
   }
 
   /**
@@ -886,6 +936,22 @@ export class ScriptRunner {
         this._delayed();
       }, 0);
       return;
+    }
+    // inline, it runs only where the document's policies let it (step 19:
+    // "Should element's inline behavior be blocked?")
+    if (request.src === null && request.element.attribs.src === undefined) {
+      this.host.cspScan(request.element);
+      if (
+        !this.host.csp.inline(
+          'script',
+          request.text,
+          this.host.nonceOf(request.element),
+          request.element,
+          { sourceFile: this.host.url },
+        )
+      ) {
+        return;
+      }
     }
     const queued: Queued = {
       request,
@@ -1548,9 +1614,27 @@ export class ScriptRunner {
         referrerPolicyOf(referring?.attribs.referrerpolicy) ||
         this.host.documentReferrerPolicy(),
     };
+    // held to the document's policies before it is asked for, and where it
+    // landed after (CSP 3, 4.1.2 and 4.1.3): a module's imports by the nonce
+    // of the script they are imported from, and as no parser's
+    const csp: CspRequest = {
+      url,
+      destination:
+        type === 'javascript' ? 'script' : type === 'css' ? 'style' : type,
+      nonce:
+        element || referring ? this.host.nonceOf((element ?? referring)!) : '',
+      integrity: element?.attribs.integrity ?? '',
+      parserInserted: !!element && !!parserDocumentOf(element),
+    };
+    this.host.cspScan(element);
+    if (!this.host.csp.request(csp, element)) return null;
     const loaded = await this._options
       .load(url, element, cors, type === 'javascript' ? undefined : type, asker)
       .catch(() => null);
+    const through = laterHops(url, loaded);
+    if (through.length && !this.host.csp.request(csp, element, through)) {
+      return null;
+    }
     return judgeScript(loaded, url, origin, mode, module, type);
   }
 
@@ -1602,4 +1686,45 @@ function consoleValue(json: string): ConsoleValue | null {
   } catch {
     return null;
   }
+}
+
+/** The addresses a script came by after the one asked for: those its
+ *  redirects went through, and where it landed. */
+function laterHops(asked: string, loaded: LoadedScript | null): string[] {
+  if (!loaded || typeof loaded === 'string') return [];
+  const final = loaded.url ?? asked;
+  if (loaded.redirects?.length) return [...loaded.redirects.slice(1), final];
+  return final === asked ? [] : [final];
+}
+
+/** Where a `report-to` group sends (Reporting API): a response's
+ *  `Reporting-Endpoints`, `group="url"` a member, and its `Report-To`, a
+ *  JSON object a group. */
+function reportEndpointsOf(
+  headers: readonly (readonly [string, string])[],
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [name, value] of headers) {
+    const key = name.toLowerCase();
+    if (key === 'reporting-endpoints') {
+      for (const m of value.matchAll(/([A-Za-z0-9_-]+)\s*=\s*"([^"]*)"/g)) {
+        if (!out.has(m[1])) out.set(m[1], m[2]);
+      }
+    } else if (key === 'report-to') {
+      for (const piece of value.split(/(?<=\})\s*,\s*(?=\{)/)) {
+        try {
+          const group = JSON.parse(piece) as {
+            group?: string;
+            endpoints?: { url?: string }[];
+          };
+          const at = group.endpoints?.[0]?.url;
+          const nameOf = group.group ?? 'default';
+          if (at && !out.has(nameOf)) out.set(nameOf, at);
+        } catch {
+          // not a group
+        }
+      }
+    }
+  }
+  return out;
 }
