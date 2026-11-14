@@ -8197,7 +8197,10 @@ function applyFlexShorthand(
 const AUTO_TRACK: GridTrack = { min: 'auto', max: 'auto' };
 
 /** One track's sizing, or null for what is not one. */
-function parseGridTrack(token: string, ctx: UnitContext): GridTrack | null {
+export function parseGridTrack(
+  token: string,
+  ctx: UnitContext,
+): GridTrack | null {
   const t = token.trim().toLowerCase();
   if (!t) return null;
   if (t === 'auto') return AUTO_TRACK;
@@ -8207,13 +8210,20 @@ function parseGridTrack(token: string, ctx: UnitContext): GridTrack | null {
   const fn = /^(minmax|fit-content)\((.*)\)$/s.exec(t);
   if (fn) {
     if (fn[1] === 'fit-content') {
-      const fit = parseLength(fn[2].trim(), ctx);
-      if (fit === null || fit === AUTO) return null;
-      if (typeof fit === 'number' && fit < 0) return null;
+      const fit = trackLength(fn[2].trim(), ctx);
+      if (fit === null) return null;
       return { min: AUTO, max: { fit } };
     }
-    const [a, b] = splitCommas(fn[2]).map((p) => p.trim());
-    if (a === undefined || b === undefined) return null;
+    const args = splitCommas(fn[2]).map((p) => p.trim());
+    if (args.length !== 2) return null;
+    const [a, b] = args;
+    // a breadth, never a function of the two (CSS Grid 1, 7.2)
+    if (
+      /^(minmax|fit-content)\(/i.test(a) ||
+      /^(minmax|fit-content)\(/i.test(b)
+    ) {
+      return null;
+    }
     const min = parseGridTrack(a, ctx);
     const max = parseGridTrack(b, ctx);
     // an `fr` is no minimum
@@ -8225,9 +8235,20 @@ function parseGridTrack(token: string, ctx: UnitContext): GridTrack | null {
       return null;
     return { min: min.min, max: max.max };
   }
-  const len = parseLength(token.trim(), ctx);
-  if (len === null || len === AUTO) return null;
+  const len = trackLength(token.trim(), ctx);
+  if (len === null) return null;
   return { min: len, max: len };
+}
+
+/** A track's length or percentage: none below nought as written, where a
+ *  calculation that comes to less is nought when it computes (CSS Values
+ *  4, 10.12). */
+function trackLength(text: string, ctx: UnitContext): Len | null {
+  const len = parseLength(text, ctx);
+  if (len === null || len === AUTO) return null;
+  if (isMathFunction(text)) return len;
+  if (typeof len === 'number') return len < 0 ? null : len;
+  return len.pct < 0 ? null : len;
 }
 
 /**
@@ -8238,7 +8259,7 @@ function parseGridTrack(token: string, ctx: UnitContext): GridTrack | null {
  * `minmax(0,1.25fr)minmax(0,1fr)`, which was one part and no track list.
  * Undefined where a bracket or a quote is not closed.
  */
-function trackParts(value: string): string[] | undefined {
+export function trackParts(value: string): string[] | undefined {
   const out: string[] = [];
   const text = value.trim();
   let i = 0;
@@ -8274,16 +8295,16 @@ function trackParts(value: string): string[] | undefined {
 
 /** The names in a bracketed group of line names, or undefined for a part
  *  that is not one or names what no line may be called. */
-function lineNames(part: string): string[] | undefined {
+export function lineNames(part: string): string[] | undefined {
   if (!part.startsWith('[') || !part.endsWith(']')) return undefined;
   const names = part.slice(1, -1).trim().split(/\s+/).filter(Boolean);
   return names.every(isLineName) ? names : undefined;
 }
 
 /** A `<custom-ident>` a grid line may take: not `span` nor `auto`. */
-function isLineName(word: string): boolean {
+export function isLineName(word: string): boolean {
   return (
-    /^-?[a-zA-Z_\u0080-\uffff][\w\u0080-\uffff-]*$/.test(word) &&
+    /^(?:--|-?[a-zA-Z_\u0080-\uffff])[\w\u0080-\uffff-]*$/.test(word) &&
     !/^(span|auto|inherit|initial|unset|default)$/i.test(word)
   );
 }
@@ -8294,7 +8315,7 @@ function isLineName(word: string): boolean {
  * whose count the width decides, and the names of the lines between them.
  * Undefined for a list that is none.
  */
-function parseGridTemplate(
+export function parseGridTemplate(
   value: string,
   ctx: UnitContext,
 ): GridTemplate | undefined {
@@ -8318,16 +8339,23 @@ function parseGridTemplate(
     top: boolean,
     written: WrittenPart[],
   ): boolean => {
+    let named = false;
     for (const part of parts) {
       if (part.startsWith('[')) {
+        // two groups side by side are one group written wrongly
+        if (named) return false;
+        named = true;
         const group = lineNames(part);
         if (!group) return false;
         (top && pending ? pending : names[names.length - 1]).push(...group);
         written.push({ names: group });
         continue;
       }
+      named = false;
       const repeat = /^repeat\((.*)\)$/is.exec(part);
       if (repeat) {
+        // a repetition holds tracks and names, and no repetition
+        if (!top) return false;
         const [count, ...rest] = splitCommas(repeat[1]);
         const inner: GridTrack[] = [];
         const innerNames: string[][] = [[]];
@@ -8423,7 +8451,7 @@ function fixedTrack(track: GridTrack): boolean {
  * `repeat()`s of them, by a count or one by `auto-fill`. Undefined for
  * anything else.
  */
-function parseSubgrid(value: string): SubgridNames | undefined {
+export function parseSubgrid(value: string): SubgridNames | undefined {
   const out: SubgridNames = { names: [], fill: null };
   const parts = value.trim() ? trackParts(value) : [];
   if (!parts) return undefined;
@@ -8463,7 +8491,7 @@ function parseSubgrid(value: string): SubgridNames | undefined {
  * or `column` first and then `fill-reverse` and `track-reverse`, each at
  * most once, in either order. Null for anything else.
  */
-function lanesDirection(value: string): string | null {
+export function lanesDirection(value: string): string | null {
   const words = value.trim().toLowerCase().split(/\s+/);
   if (words.length === 1 && words[0] === 'normal') return 'normal';
   const [axis, ...rest] = words;
@@ -8493,7 +8521,7 @@ const LANE_WORDS = new Set([
  * The other axis's template, and every template where it is `none`, is
  * none. Null for anything else.
  */
-function lanesShorthand(
+export function lanesShorthand(
   value: string,
   ctx: UnitContext,
 ): {
@@ -8559,7 +8587,7 @@ function lanesShorthand(
  * word or a run of dots, every row as wide as the first and every name a
  * rectangle. Undefined where they are not.
  */
-function parseAreas(strings: string[]): GridAreas | undefined {
+export function parseAreas(strings: string[]): GridAreas | undefined {
   const grid: (string | null)[][] = [];
   for (const quoted of strings) {
     const cells: (string | null)[] = [];
@@ -8605,9 +8633,9 @@ function parseAreas(strings: string[]): GridAreas | undefined {
 
 /**
  * `grid-template`'s rows and columns either side of a slash (7.4): the
- * rows as track list, or as the strings of `grid-template-areas`, each
- * string's row the size after it or `auto`, with the names of the lines
- * before and after it. Undefined for no value.
+ * rows as track list and the columns as another, or the rows as the
+ * strings of `grid-template-areas` (`templateRows`) and the columns, where
+ * there is a slash, as a list with no `repeat()`. Undefined for no value.
  */
 function parseTemplateShorthand(
   value: string,
@@ -8620,62 +8648,90 @@ function parseTemplateShorthand(
     }
   | undefined {
   const parts = splitTopLevelSlash(value);
-  if (parts.length !== 2) return undefined;
-  const columnsNone = parts[1].trim().toLowerCase() === 'none';
-  const columns = columnsNone ? null : parseGridTemplate(parts[1], ctx);
-  if (columns === undefined) return undefined;
+  if (parts.length > 2) return undefined;
   if (!/["']/.test(parts[0])) {
-    const rows =
-      parts[0].trim().toLowerCase() === 'none'
+    if (parts.length !== 2) return undefined;
+    const axis = (part: string) =>
+      part.trim().toLowerCase() === 'none'
         ? null
-        : parseGridTemplate(parts[0], ctx);
-    return rows === undefined ? undefined : { rows, columns, areas: null };
+        : parseGridTemplate(part, ctx);
+    const rows = axis(parts[0]);
+    const columns = axis(parts[1]);
+    if (rows === undefined || columns === undefined) return undefined;
+    return { rows, columns, areas: null };
   }
-  // the strings' form takes no `repeat()` for its columns
-  if (columns?.repeat) return undefined;
-  const pieces = trackParts(parts[0]);
-  if (!pieces) return undefined;
+  // the strings' form, whose columns are an explicit list: no `none`, no
+  // `subgrid` and no `repeat()`
+  let columns: GridTemplate | null = null;
+  if (parts.length === 2) {
+    if (/^\s*(none|subgrid)\b|repeat\(/i.test(parts[1])) return undefined;
+    const list = parseGridTemplate(parts[1], ctx);
+    if (!list) return undefined;
+    columns = list;
+  }
+  const template = templateRows(parts[0]);
+  if (!template) return undefined;
+  const areas = parseAreas(template.strings);
+  if (!areas) return undefined;
   const tracks: GridTrack[] = [];
-  const names: string[][] = [[]];
+  for (const size of template.sizes) {
+    const track = size === null ? AUTO_TRACK : parseGridTrack(size, ctx);
+    if (!track) return undefined;
+    tracks.push(track);
+  }
+  return {
+    rows: { tracks, names: template.lines, repeat: null },
+    columns,
+    areas,
+  };
+}
+
+/**
+ * The rows of `grid-template`'s strings' form (CSS Grid 1, 7.4): `[
+ * <line-names>? <string> <track-size>? <line-names>? ]+`. Each string a
+ * row, with the size right after it, or none for `auto`, and the names of
+ * the lines between: one group before the first row and one after the
+ * last, and two between two rows, which are one line's. Undefined where
+ * the pieces are not that, a size anywhere but after a string, or a third
+ * group of names, among them.
+ */
+export function templateRows(
+  value: string,
+):
+  | { lines: string[][]; sizes: (string | null)[]; strings: string[] }
+  | undefined {
+  const pieces = trackParts(value);
+  if (!pieces?.length) return undefined;
+  const lines: string[][] = [[]];
+  const sizes: (string | null)[] = [];
   const strings: string[] = [];
-  // after a string, and before its size, if it has one
-  let open = false;
+  // groups of names since the last string or size, and whether a size may
+  // come next, which it may only right after a string
+  let groups = 0;
+  let sized = true;
   for (const piece of pieces) {
     if (piece.startsWith('[')) {
       const group = lineNames(piece);
-      if (!group) return undefined;
-      if (open) {
-        tracks.push(AUTO_TRACK);
-        names.push([]);
-        open = false;
-      }
-      names[names.length - 1].push(...group);
+      if (!group || groups >= (strings.length ? 2 : 1)) return undefined;
+      groups += 1;
+      sized = true;
+      lines[lines.length - 1].push(...group);
       continue;
     }
     if (/^["']/.test(piece)) {
-      if (open) {
-        tracks.push(AUTO_TRACK);
-        names.push([]);
-      }
       strings.push(piece);
-      open = true;
+      sizes.push(null);
+      lines.push([]);
+      groups = 0;
+      sized = false;
       continue;
     }
-    if (!open) return undefined;
-    const track = parseGridTrack(piece, ctx);
-    if (!track) return undefined;
-    tracks.push(track);
-    names.push([]);
-    open = false;
+    if (sized || /^repeat\(/i.test(piece)) return undefined;
+    sizes[sizes.length - 1] = piece;
+    sized = true;
   }
-  if (open) {
-    tracks.push(AUTO_TRACK);
-    names.push([]);
-  }
-  const areas = parseAreas(strings);
-  if (!areas) return undefined;
-  if (columns && columns.tracks.length !== areas.columns) return undefined;
-  return { rows: { tracks, names, repeat: null }, columns, areas };
+  if (!strings.length || groups > 1) return undefined;
+  return { lines, sizes, strings };
 }
 
 /**
@@ -8683,7 +8739,7 @@ function parseTemplateShorthand(
  * name, in either order; or `span` with a number, a name or both.
  * Undefined for a value that is none of them.
  */
-function parseGridLine(value: string | undefined): GridLine | undefined {
+export function parseGridLine(value: string | undefined): GridLine | undefined {
   if (value === undefined) return null;
   const words = value.trim().split(/\s+/).filter(Boolean);
   if (words.length === 1 && words[0].toLowerCase() === 'auto') return null;

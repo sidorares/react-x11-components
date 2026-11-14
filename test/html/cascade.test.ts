@@ -1854,8 +1854,9 @@ test('a @supports test of subgrid is answered', () => {
       false,
     );
   }
-  // and a template it does not name is entered as before
-  assert.strictEqual(supportsCondition('(grid-template-rows: masonry)'), null);
+  // and one the grammar refuses is not, as in Chrome: `masonry` is grid
+  // lanes' old name, which no track list takes
+  assert.strictEqual(supportsCondition('(grid-template-rows: masonry)'), false);
 });
 
 test('the names that would style an element are the ones some rule would match it with', async () => {
