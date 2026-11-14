@@ -5874,6 +5874,17 @@ direction. `@supports` answers a grid property by the same grammar, and
 the cascade reads `grid-template`'s strings with it: a strings' form with
 no slash is taken, and one with `none` or a `repeat()` for its columns, or
 a third group of names between rows, is not.
+The alignment properties, the gaps and the flex properties are held to
+their grammars the same way (`align-specified.ts`), and so is a `style`
+attribute or a rule as CSSOM reads it, which leaves out what its
+property does not take. `first baseline` reads as `baseline`, `legacy`
+before its side, and a unitless zero as `0px`. A place shorthand sets
+its justify value from its align value where it gives none, and sets
+`start` where that is a baseline `justify-content` does not take. `flex`
+sets its three longhands and reads as all three, so `none` is `0 0 auto`
+and a factor alone has a basis of `0%`. `flex-flow` leaves out a `row`
+and a `nowrap`, and `flex-wrap: wrap balance` reads as `balance`. The
+gaps' old names, `grid-gap` and its kin, take what the gaps do.
 Items a row aligns by their first baselines — `align-self` or `align-items`
 `baseline` — meet the lowest of their row's, an item spanning rows meeting
 its first row's, and are not stretched; the row is sized with what that

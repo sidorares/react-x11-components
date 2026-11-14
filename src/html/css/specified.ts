@@ -35,6 +35,12 @@ import {
   gridShorthand,
   gridSpecified,
 } from './grid-specified.js';
+import {
+  ALIGN_SPECIFIED,
+  alignLonghands,
+  alignShorthand,
+  alignSpecified,
+} from './align-specified.js';
 import { closingParen } from './vars.js';
 import { MARKER_LONGHANDS, SVG_PROPERTIES } from './svg-properties.js';
 import type { UnitContext } from './values.js';
@@ -80,6 +86,10 @@ export function specifiedValue(
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
     return gridSpecified(name, word);
+  }
+  // box alignment's, the gaps' and flex layout's (`align-specified.ts`)
+  if (ALIGN_SPECIFIED.has(name) && !/(?<![\w-])calc-size\(/i.test(value)) {
+    return alignSpecified(name, value, specifiedValue);
   }
   // SVG's properties (`svg-properties.ts`), and `marker`, which is one
   // value for all three of its longhands
@@ -899,6 +909,8 @@ export function expandShorthand(
   if (snap) return snap;
   const grid = gridLonghands(name, value);
   if (grid) return grid;
+  const align = alignLonghands(name, value, specifiedValue);
+  if (align) return align;
   if (name === 'animation') return animationLonghandsOf(value);
   if (name === 'marker') return MARKER_LONGHANDS.map((side) => [side, value]);
   if (name === 'position-try') {
@@ -959,6 +971,8 @@ export function composeShorthand(
   if (snap !== null) return snap;
   const grid = gridShorthand(name, longhand);
   if (grid !== null) return grid;
+  const align = alignShorthand(name, longhand);
+  if (align !== null) return align;
   if (name === 'marker') {
     const sides = MARKER_LONGHANDS.map(longhand);
     if (sides.some((v) => v === null)) return '';
