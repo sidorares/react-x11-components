@@ -49,6 +49,10 @@ export interface HeldClock {
   /** One frame: the clock moves on by a frame and the steps due by then
    *  are taken. False when none was waiting. */
   frame(): Promise<boolean>;
+  /** The clock moves on by `ms` and takes none of the steps that come due:
+   *  a frame a busy thread runs late, for what is read before it runs. The
+   *  next `frame()` takes them. */
+  pass(ms: number): void;
   /** Frames until nothing asks for another, and how many it took — for an
    *  animation that ends, which the dashes, the window and the blink do
    *  not. */
@@ -93,6 +97,9 @@ export function holdClock(t: TestContext, clock: AnimationClock): HeldClock {
         for (const step of due) step();
       });
       return true;
+    },
+    pass(ms) {
+      time += ms;
     },
     async finish() {
       let frames = 0;

@@ -8571,7 +8571,17 @@ export class HtmlViewNode extends Node {
       // option, it has the option's style (CSS Anchor Positioning 1, 6.2)
       const backdrop = this._backdropOf(tree, element);
       if (backdrop) {
-        const read = this._placedStyle(backdrop) ?? backdrop.style;
+        // and where its element animates, worked out at this moment, as a
+        // `::before`'s is: its box has the last frame's style, and a frame
+        // a busy thread runs late left a read after a transition's end
+        // with the value before it
+        const read =
+          this._placedStyle(backdrop) ??
+          (this._timedNow(element)
+            ? this._atNow(element, () =>
+                cascade.backdropStyleFor(element, style),
+              )
+            : backdrop.style);
         return cssomStyle(read, this._scale, this._usedBox(backdrop, read));
       }
       // and one of an element in no top layer has the style it would be

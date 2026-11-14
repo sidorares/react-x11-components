@@ -53,6 +53,7 @@ import {
   SCRIPTS_CONTAINED,
   ScriptEngine,
   namedAccessWorks,
+  taskClock,
 } from '../../src/html/scripts/engine.js';
 import { DomHost } from '../../src/html/scripts/host.js';
 import { PageWorkers } from '../../src/html/scripts/workers.js';
@@ -4230,7 +4231,11 @@ test("a page's stacks hold its own frames, and none of the facade's or the host'
   at(frames('replaced')[0]);
 });
 
-test('a module that throws, runs away or does not parse is reported, and the page goes on', async () => {
+test('a module that throws, runs away or does not parse is reported, and the page goes on', async (t) => {
+  // the page's time held: only the ceiling stops a task, and only the module
+  // that runs away runs into it. Counted on the wall clock, a task a busy
+  // runner stalls for the page's 200ms is stopped too, and told
+  t.mock.method(taskClock, 'now', () => 0);
   const doc = await hosted(
     '<p id="out"></p><script>' +
       'var seen = [];' +
@@ -4252,9 +4257,9 @@ test('a module that throws, runs away or does not parse is reported, and the pag
       timeout: 200,
     },
   );
-  await settle(200);
+  const text = await settled(doc, 'out', (s) => s !== '' && s !== 'after');
   assert.equal(doc.timeouts, 1, 'the runaway module was stopped');
-  const out = doc.text('out').split(' | ');
+  const out = text.split(' | ');
   assert.ok(
     out.includes('Error from a module'),
     `the page's own error: ${out}`,
@@ -5368,6 +5373,29 @@ test("a page's appended VP9 is a clip for the player where it plays that, and is
   assert.deepEqual(JSON.parse(asked!), [false, 320, 180, 1, 0, 2]);
 });
 
+/** What a clip page has heard (`APPENDS`' `r`), logged again until `done`
+ *  holds of it, or three seconds. The page writes it out on a timer of
+ *  20ms once its stream has ended, and the element's `error` comes in a
+ *  task that another, queued before the timer, queues in turn: a thread too
+ *  busy to run that one in time runs the timer before the `error`. */
+async function heardUntil(
+  doc: Hosted,
+  done: (heard: (string | number | boolean)[]) => boolean,
+): Promise<(string | number | boolean)[]> {
+  const read = () => {
+    doc.run('console.log(JSON.stringify(r))');
+    return JSON.parse(doc.logs.at(-1)!.slice('log: '.length)) as (
+      string | number | boolean
+    )[];
+  };
+  let heard = read();
+  for (let i = 0; i < 150 && !done(heard); i += 1) {
+    await settle(20);
+    heard = read();
+  }
+  return heard;
+}
+
 /** Until `ok`, or three seconds. */
 async function holds(ok: () => boolean): Promise<void> {
   for (let i = 0; i < 150 && !ok(); i += 1) await settle(20);
@@ -5430,8 +5458,12 @@ test('bytes that are no WebM fail what they were appended to, and end the stream
     network: true,
     canPlayType: VP9_MP4_PLAYS,
   });
-  const text = await settled(doc, 'out', (t) => t !== '');
-  const heard = JSON.parse(text!) as string[];
+  const heard = await heardUntil(
+    doc,
+    (h) =>
+      h.includes('sourceended:ended') &&
+      h.some((e) => String(e).startsWith('error')),
+  );
   assert.ok(heard.includes('sourceended:ended'), heard.join(' '));
   assert.ok(
     heard.some((h) => String(h).startsWith('error')),
@@ -12576,6 +12608,10 @@ test('a <link> or a <base> is what it was made as: the parser’s in a drawing i
   const SHEET = '#probe{color:rgb(0,0,255)}';
   const blue = 'rgb(0, 0, 255)';
   const SVG = 'http://www.w3.org/2000/svg';
+  // read once each sheet's `<link>` has told its `load` or its `error`,
+  // since its sheet is answered a moment after it is asked for and applied
+  // after that; and 30ms on, the time a sheet would have taken to come to
+  // something, for a `<link>` that is no sheet's
   const answer = async (run: string, markup = ''): Promise<string> => {
     const doc = await hosted(
       `<!DOCTYPE html><html><head></head><body><p id="probe">p</p>${markup}` +
@@ -12586,9 +12622,13 @@ test('a <link> or a <base> is what it was made as: the parser’s in a drawing i
         `var link=function(){var l=document.createElement("link");` +
         `l.rel="stylesheet";l.href="s.css";return l};` +
         `addEventListener("load",function(){${run};` +
-        `setTimeout(function(){out.textContent=[document.styleSheets.length,` +
+        `Promise.all(Array.prototype.map.call(document.styleSheets,function(s){` +
+        `var l=s.ownerNode;return l.localName!=="link"?null:new Promise(function(told){` +
+        `l.addEventListener("load",told);l.addEventListener("error",told)})})` +
+        `).then(function(){setTimeout(function(){` +
+        `out.textContent=[document.styleSheets.length,` +
         `getComputedStyle(probe).color===${JSON.stringify(blue)},` +
-        `document.baseURI.replace(/.*\\/\\/[^/]*/,"")].join("|")},30)});` +
+        `document.baseURI.replace(/.*\\/\\/[^/]*/,"")].join("|")},30)})});` +
         `</script></body></html>`,
       { sheets: { 's.css': SHEET } },
     );
@@ -17440,29 +17480,48 @@ test('an animation plays and pauses through pending tasks and its ready promise,
   );
 });
 
-test('a ::backdrop runs its transitions from its starting style, as a ::before does, and comes to where they end', async () => {
+test('a ::backdrop runs its transitions from its starting style, as a ::before does, and comes to where they end', async (t) => {
   // CSS Transitions 2, 3.1; WPT css-anchor-position/popover-anchor-backdrop-transition
+  const clock = holdClock(t, animationClock);
+  // what is read is logged, since a change to the document would have the
+  // animated element built again, its backdrop's box with it
   const doc = await hosted(
-    '<style>::backdrop{transition:opacity 1s step-end;opacity:1}' +
-      '@starting-style{::backdrop{opacity:0}}' +
+    '<style>::backdrop{transition:opacity 1s step-end,background-color 1s linear;' +
+      'opacity:1;background-color:rgb(0,0,200)}' +
+      '@starting-style{::backdrop{opacity:0;background-color:rgb(0,0,0)}}' +
       '#p::before{content:"x";transition:opacity 1s step-end;opacity:1}' +
       '@starting-style{#p::before{opacity:0}}</style>' +
-      '<div id="p" popover>a</div><p id="out"></p><script>' +
-      'var p = document.getElementById("p"), r = [];' +
-      'p.showPopover();' +
-      'r.push(getComputedStyle(p, "::backdrop").opacity);' +
-      'setTimeout(function () {' +
-      '  r.push(getComputedStyle(p, "::backdrop").opacity, getComputedStyle(p, "::before").opacity);' +
-      "  document.getElementById('out').textContent = r.join('|');" +
-      '}, 1300);</script>',
+      '<div id="p" popover>a</div><script>' +
+      'var p = document.getElementById("p");' +
+      'function read() { console.log(getComputedStyle(p, "::backdrop").opacity +' +
+      '  "|" + getComputedStyle(p, "::before").opacity); }' +
+      'p.showPopover(); read();</script>',
   );
-  assert.equal(
-    await settled(doc, 'out', (t) => t !== ''),
-    // the backdrop's box is restyled at the frames a ::before's is, though it
-    // is in none of its element's blocks: it stood at its starting style
-    '0|1|1',
-    doc.logs.join('\n'),
+  assert.equal(doc.logs.at(-1), 'log: 0|0', 'from their starting styles');
+  const view = doc.view as unknown as {
+    _tree: unknown;
+    _backdropOf(tree: unknown, el: DocElement): { style: ComputedStyle } | null;
+  };
+  const drawn = () => view._backdropOf(view._tree, doc.byId('p'))!.style;
+  // past the frame a transition no paint has shown starts at, and on to
+  // half way: the frames restyle the backdrop's box, though it is in none of
+  // its element's blocks, where it stood at its starting style
+  while (clock.time < 500 && (await clock.frame()));
+  const between = drawn().backgroundColor;
+  assert.ok(
+    between !== '#000000' && between !== '#0000c8',
+    `a frame on its way: ${between}`,
   );
+  // and past their ends, before the frame that draws them there has run, as
+  // on a thread too busy to run it in time: a read is at its own time, a
+  // `::backdrop`'s as a `::before`'s, where the backdrop's was its box's,
+  // from the last frame
+  clock.pass(2000);
+  doc.run('read()');
+  assert.equal(doc.logs.at(-1), 'log: 1|1', 'read at the time of the read');
+  await clock.finish();
+  assert.equal(drawn().opacity, 1, 'drawn at its end');
+  assert.equal(drawn().backgroundColor, '#0000c8');
 });
 
 test('CSS numeric values are made, added, converted and parsed as CSS Typed OM has them', async () => {
