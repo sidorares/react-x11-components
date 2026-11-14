@@ -55,6 +55,7 @@ import type { installTextTracks } from './text-tracks.js';
 import type { installStorageManager } from './storage-manager.js';
 import type { installCsp } from './csp-page.js';
 import type { installWorklets } from './worklets.js';
+import type { installTrustedTypes } from './trusted-types.js';
 import type { installClipboard } from './clipboard.js';
 import type { installNotifications } from './notifications.js';
 import type { installWindows, WindowInternals } from './windows.js';
@@ -113,6 +114,7 @@ export function installDom(
   storageManagerApi: typeof installStorageManager,
   pathDataApi: typeof installPathData,
   workletsApi: typeof installWorklets,
+  trustedTypesApi: typeof installTrustedTypes,
   namedAccess: boolean,
   inWorker: boolean,
 ): void {
@@ -159,6 +161,21 @@ export function installDom(
    *  installed: the violation event and the guards on string
    *  compilation. */
   let cspOf: Any = null;
+  /** Trusted Types (`trusted-types.ts`), once installed. */
+  let ttOf: Any = null;
+  /** What a sink that takes HTML, script or a script's URL is handed, as
+   *  the string it takes, where the document may require Trusted Types. */
+  /** Whether `toggleAttribute` is setting the attribute. */
+  let togglingAttribute = false;
+  /** Whether an element's attribute sinks are this realm's to hold to
+   *  Trusted Types: its node document is the realm's, or has no window. */
+  const ttHoldsHere = (el: Any): boolean => {
+    const owner = el.ownerDocument;
+    return !owner || owner === document || owner.defaultView == null;
+  };
+  function trustedString(v: Any, type: string, sink: string): string {
+    return ttOf?.required ? ttOf.comply(v, type, sink) : str(v);
+  }
   /** What the policies said of each element's `on…` attributes, by its
    *  name and text: asked once, as the handler is compiled once. */
   const cspHeld = new WeakMap<object, Map<string, boolean>>();
@@ -7491,14 +7508,27 @@ export function installDom(
       return String(call('html', this._id, false));
     }
     set innerHTML(v: Any) {
-      call('setHtml', this._id, v === null ? '' : str(v));
+      call(
+        'setHtml',
+        this._id,
+        trustedString(
+          v === null ? '' : v,
+          'TrustedHTML',
+          'ShadowRoot innerHTML',
+        ),
+      );
       upgradeParsed(this);
     }
     getHTML(options?: Any): string {
       return getHTML(this, options);
     }
     setHTMLUnsafe(html: Any): void {
-      call('setHtml', this._id, str(html), true);
+      call(
+        'setHtml',
+        this._id,
+        trustedString(html, 'TrustedHTML', 'ShadowRoot setHTMLUnsafe'),
+        true,
+      );
       upgradeParsed(this);
     }
     get activeElement(): Any {
@@ -8294,6 +8324,23 @@ export function installDom(
           'InvalidCharacterError',
         );
       }
+      // what a Trusted Types sink takes, where the document requires them:
+      // an event handler's, a frame's `srcdoc`, a script's `src`. Asked of
+      // the element's node document's global (Trusted Types 4.1.3), which is
+      // this realm's for its own document and one with no window of its own,
+      // a DOMParser's: one moved into another window's document is that
+      // window's to hold. And never of `toggleAttribute`, whose empty value
+      // no browser holds to it (WPT's `Element-toggleAttribute`)
+      if (ttOf?.required && !togglingAttribute && ttHoldsHere(this)) {
+        const sink = ttOf.sinkOfAttribute(
+          this.localName,
+          this.namespaceURI ?? HTML_NS,
+          n,
+          null,
+          this.constructor?.name ?? 'Element',
+        );
+        if (sink) value = trustedString(value, sink[0], sink[1]);
+      }
       // before it is set, so that a handler finds the attribute it replaces
       if (n.startsWith('on')) handlerAttributeChanged(this, n.slice(2), true);
       if (n.startsWith('aria-')) ariaReferenceChanged(this, n);
@@ -8374,7 +8421,14 @@ export function installDom(
     toggleAttribute(name: Any, force?: boolean): boolean {
       const has = this.hasAttribute(name);
       const on = force === undefined ? !has : !!force;
-      if (on && !has) this.setAttribute(name, '');
+      if (on && !has) {
+        togglingAttribute = true;
+        try {
+          this.setAttribute(name, '');
+        } finally {
+          togglingAttribute = false;
+        }
+      }
       if (!on && has) this.removeAttribute(name);
       return on;
     }
@@ -8382,25 +8436,44 @@ export function installDom(
       return String(call('html', this._id, false));
     }
     set innerHTML(v: Any) {
-      call('setHtml', this._id, v === null ? '' : str(v));
+      call(
+        'setHtml',
+        this._id,
+        trustedString(v === null ? '' : v, 'TrustedHTML', 'Element innerHTML'),
+      );
       upgradeParsed(this);
     }
     getHTML(options?: Any): string {
       return getHTML(this, options);
     }
     setHTMLUnsafe(html: Any): void {
-      call('setHtml', this._id, str(html), true);
+      call(
+        'setHtml',
+        this._id,
+        trustedString(html, 'TrustedHTML', 'Element setHTMLUnsafe'),
+        true,
+      );
       upgradeParsed(this);
     }
     get outerHTML(): string {
       return String(call('html', this._id, true));
     }
     set outerHTML(v: Any) {
-      call('adjacent', this._id, 'beforebegin', str(v));
+      call(
+        'adjacent',
+        this._id,
+        'beforebegin',
+        trustedString(v === null ? '' : v, 'TrustedHTML', 'Element outerHTML'),
+      );
       call('remove', this._id);
     }
     insertAdjacentHTML(where: Any, html: Any): void {
-      call('adjacent', this._id, str(where).toLowerCase(), str(html));
+      call(
+        'adjacent',
+        this._id,
+        str(where).toLowerCase(),
+        trustedString(html, 'TrustedHTML', 'Element insertAdjacentHTML'),
+      );
     }
     insertAdjacentText(where: Any, text: Any): void {
       this.insertAdjacentElement(where, document.createTextNode(text));
@@ -10162,10 +10235,56 @@ export function installDom(
       }
       return text;
     }
+    // what a script's text is set through, each a sink of Trusted Types.
+    // The text goes to the host itself: `Node.prototype.textContent` answers
+    // by the node's own kind, this one, so `super.textContent` would call
+    // this setter again
     set text(v: Any) {
-      this.textContent = str(v);
+      call(
+        'setText',
+        this._id,
+        trustedString(v, 'TrustedScript', 'HTMLScriptElement text'),
+      );
+    }
+    override get textContent(): Any {
+      return call('text', this._id);
+    }
+    override set textContent(v: Any) {
+      call(
+        'setText',
+        this._id,
+        v === null
+          ? ''
+          : scriptTextChecked
+            ? str(v)
+            : trustedString(
+                v,
+                'TrustedScript',
+                'HTMLScriptElement textContent',
+              ),
+      );
+    }
+    override get innerText(): Any {
+      return super.innerText;
+    }
+    override set innerText(v: Any) {
+      const text =
+        v === null
+          ? ''
+          : trustedString(v, 'TrustedScript', 'HTMLScriptElement innerText');
+      // HTMLElement's setter empties the element through `textContent`
+      // before it puts the fragment in, which is no second sink
+      scriptTextChecked = true;
+      try {
+        super.innerText = text;
+      } finally {
+        scriptTextChecked = false;
+      }
     }
   }
+  /** Whether a script's text being set has been held to Trusted Types
+   *  already, by `innerText`. */
+  let scriptTextChecked = false;
   // true in a script a script made until it is set, as the attribute's
   // absence alone would not say (HTML 4.12.1, "force async"): set false,
   // the script runs in the order it went in, which Google's module loader
@@ -21808,7 +21927,16 @@ export function installDom(
      *  the document — it is refused. */
     write(...parts: Any[]): void {
       notXml(this, 'write');
-      const text = parts.map((p) => str(p)).join('');
+      // each part a TrustedHTML's string, or all of them together held to
+      // Trusted Types as one (HTML 8.4.3, "document write steps")
+      const text =
+        ttOf?.required && !parts.every((p) => ttOf.isHTML(p))
+          ? trustedString(
+              parts.map((p) => str(p)).join(''),
+              'TrustedHTML',
+              'Document write',
+            )
+          : parts.map((p) => str(p)).join('');
       if (this === document && WINDOWS?.blank()) {
         WINDOWS.write(this, text);
         return;
@@ -22845,6 +22973,11 @@ export function installDom(
       return at ? at.getBoundingClientRect() : new DOMRect();
     }
     createContextualFragment(html: Any): Any {
+      html = trustedString(
+        html,
+        'TrustedHTML',
+        'Range createContextualFragment',
+      );
       const start = this.startContainer;
       let context = start;
       while (context && !(context instanceof Element)) {
@@ -27863,6 +27996,11 @@ export function installDom(
    *  `createHTMLDocument` makes one — HTML only, and its scripts never run. */
   class DOMParser {
     parseFromString(markup: Any, type: Any): Any {
+      markup = trustedString(
+        markup,
+        'TrustedHTML',
+        'DOMParser parseFromString',
+      );
       const kind = str(type);
       if (kind === 'text/html') {
         return wrap(Number(call('parseDocument', str(markup))));
@@ -43064,6 +43202,10 @@ export function installDom(
       global: G,
       nativeEval: NativeEval,
       nativeFunction: NativeFunction,
+      trustedScript: (value: Any) => ttOf?.scriptData(value),
+      trustedComply: (value: Any, sink: string) =>
+        ttOf.comply(value, 'TrustedScript', sink),
+      trustedRequired: () => !!ttOf?.required,
     });
     define(
       'SecurityPolicyViolationEvent',
@@ -43089,6 +43231,32 @@ export function installDom(
     let paint: Any = null;
     Object.defineProperty(cssNamespace, 'paintWorklet', {
       get: () => (paint ??= worklets.make('paint')),
+      configurable: true,
+      enumerable: true,
+    });
+  }
+
+  // --- Trusted Types ------------------------------------------------------------
+  //
+  // `trustedTypes` and the types its policies make (`trusted-types.ts`), in
+  // a window and in a worker, as WindowOrWorkerGlobalScope has them.
+  {
+    const handlerOn = (proto: Any, name: string): boolean =>
+      !!proto && name in proto;
+    const tt = trustedTypesApi({
+      host: call,
+      eventHandler: (name: string) =>
+        handlerOn(G.HTMLElement?.prototype, name) ||
+        handlerOn(G.HTMLBodyElement?.prototype, name) ||
+        handlerOn(G.HTMLMediaElement?.prototype, name),
+    });
+    for (const name of Object.getOwnPropertyNames(tt.interfaces)) {
+      define(name, (tt.interfaces as Any)[name]);
+    }
+    ttOf = tt;
+    tt.policyChanged(str(call('csp', 'said') ?? ''));
+    Object.defineProperty(G, 'trustedTypes', {
+      get: () => tt.factory,
       configurable: true,
       enumerable: true,
     });
@@ -45222,6 +45390,7 @@ export function installDom(
   entry('__cspPolicy', () => {
     const [said] = input();
     cspOf?.policyChanged(str(said));
+    ttOf?.policyChanged(str(said));
     return true;
   });
 

@@ -11195,6 +11195,20 @@ export class DomHost {
       }
       case 'style':
         return this._styleSheetAllowed(this._element(a));
+      // a string a Trusted Types sink takes (`trusted-types.ts`)
+      case 'ttSink':
+        return this.csp.allowsSink(text(a), text(b));
+      // a Trusted Types policy's name (`trusted-types.ts`)
+      case 'tt': {
+        let created: unknown = [];
+        try {
+          created = JSON.parse(text(b));
+        } catch {}
+        return this.csp.allowsPolicy(
+          text(a),
+          Array.isArray(created) ? created.map(String) : [],
+        );
+      }
       case 'nav': {
         // no element where the document itself was sent there
         const node = b ? this._node(b) : null;

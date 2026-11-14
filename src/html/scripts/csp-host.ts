@@ -242,6 +242,14 @@ export class PageCsp<T = unknown> {
     this.policies.push(...policies);
     let said = this._said.includes('p') ? this._said : `${this._said}p`;
     for (const p of policies) {
+      // a policy, enforced or reported, that requires Trusted Types of the
+      // sinks that take script (Trusted Types, 4.4)
+      if (
+        !said.includes('t') &&
+        p.directives.get('require-trusted-types-for')?.includes("'script'")
+      ) {
+        said += 't';
+      }
       const list = directiveFor(p.directives, 'script-src');
       if (!list) continue;
       if (!said.includes('e') && !evalMatches(list, false)) said += 'e';
@@ -305,6 +313,61 @@ export class PageCsp<T = unknown> {
       if (policy.disposition === 'enforce') refused = true;
     }
     return refused;
+  }
+
+  /**
+   * Whether a sink may take a string no policy made, telling a violation
+   * where not (Trusted Types, "Does sink type require trusted types?" and
+   * "Should sink type mismatch violation be blocked by Content Security
+   * Policy?"): every policy that requires Trusted Types refuses it, and an
+   * enforced one keeps it out. Its sample is the sink's name and the
+   * string's first 40 characters.
+   */
+  allowsSink(sink: string, value: string): boolean {
+    let allowed = true;
+    for (const policy of this.policies) {
+      const list = policy.directives.get('require-trusted-types-for');
+      if (!list?.includes("'script'")) continue;
+      this._violate(
+        policy,
+        'require-trusted-types-for',
+        'trusted-types-sink',
+        `${sink}|${value.slice(0, SAMPLE_LENGTH)}`,
+        null,
+        {},
+      );
+      if (policy.disposition === 'enforce') allowed = false;
+    }
+    return allowed;
+  }
+
+  /**
+   * Whether a Trusted Types policy of a name may be made, telling a
+   * violation where not (Trusted Types, "Should Trusted Type policy
+   * creation be blocked by Content Security Policy?"): each policy with a
+   * `trusted-types` directive names it, or says `*`, and a name made before
+   * is made again only under `'allow-duplicates'`. Its sample is the name.
+   */
+  allowsPolicy(name: string, created: readonly string[]): boolean {
+    let allowed = true;
+    for (const policy of this.policies) {
+      const list = policy.directives.get('trusted-types');
+      if (!list) continue;
+      const again =
+        created.includes(name) && !list.includes("'allow-duplicates'");
+      const named = list.includes('*') || list.includes(name);
+      if (named && !again) continue;
+      this._violate(
+        policy,
+        'trusted-types',
+        'trusted-types-policy',
+        name.slice(0, SAMPLE_LENGTH),
+        null,
+        {},
+      );
+      if (policy.disposition === 'enforce') allowed = false;
+    }
+    return allowed;
   }
 
   /** The enforced policies' directives, for what asks `connect-src` of

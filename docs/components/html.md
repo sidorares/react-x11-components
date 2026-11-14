@@ -3540,8 +3540,32 @@ scope. The guard is asked by the page's realm, which a page can talk round
 (`Object.getPrototypeOf(async function () {}).constructor` is not guarded), so
 it holds the page's own code to its policy and is no boundary against it.
 
-Not here yet: `trusted-types` and `require-trusted-types-for`, a top-level
-navigation upgraded by `upgrade-insecure-requests`, a navigation's
+**Trusted Types are held to where a policy requires them**
+(`src/html/scripts/trusted-types.ts`): `trustedTypes`, in a window and a
+worker, makes policies whose callbacks make a `TrustedHTML`, a
+`TrustedScript` or a `TrustedScriptURL`, each holding the string its
+callback answered where no page can change it, and told apart by that alone
+(`isHTML` and its kin); a `default` policy is made once, and
+`getAttributeType` and `getPropertyType` answer the sinks the specification
+names. A policy's name is held to the document's `trusted-types` directives,
+`*`, `'allow-duplicates'` and all, and one they refuse is a `TypeError` and a
+violation whose sample is the name. Where a policy, enforced or reported,
+says `require-trusted-types-for 'script'`, a sink that takes HTML, script or
+a script's URL takes a value of its type as the string it holds, and a
+string as what the default policy makes of it, handed the type and the
+sink's name; where that is nothing, the violation's sample is the sink's name
+and the string, and an enforced policy makes it a `TypeError`. The sinks
+held so are `innerHTML`, `outerHTML`, `insertAdjacentHTML` and
+`setHTMLUnsafe`, `document.write`, `DOMParser.parseFromString`,
+`Range.createContextualFragment`, a script's `text`, `textContent` and
+`innerText`, and an attribute the specification types — an event handler's,
+an `<iframe>`'s `srcdoc`, a script's `src` — however it is set. `eval` and `Function`
+take a `TrustedScript` as its string and a string as the default policy's
+answer, before `script-src` is asked. A string timer, a worker's URL and a
+`javascript:` navigation are not held to them yet.
+
+Not here yet: a top-level navigation upgraded by
+`upgrade-insecure-requests`, a navigation's
 redirects held to `form-action`, `navigate-to`, and a policy for an `<object>`
 or an `<embed>`'s plug-in, which no document here has.
 
