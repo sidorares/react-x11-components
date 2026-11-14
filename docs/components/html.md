@@ -2484,13 +2484,31 @@ object's `composite`, `easing` and `offset`, then its own animatable
 properties in code-point order, a page's getter for any other name never
 called — the animation and transition properties, `contain`, `direction`,
 `text-combine-upright`, `text-orientation`, `unicode-bidi`, `will-change`,
-`writing-mode`, a name the style has no property of and a dashed one. A finished animation that fills
-is removed once later ones on its element cover every property it sets
-(5.5), which tells `remove`, so a page that fades a panel in and out with a
-new animation each time does not keep them all; `persist()` keeps one.
-`getComputedStyle` reads an element a script animates at that moment rather
-than at the last frame, and `getAnimations()` and `document.timeline`
-answer from the realm's animations. Under `animate={false}` one that fills
+`writing-mode`, a name the style has no property of and a dashed one. A
+keyframe's `composite` is its enum, a TypeError where it is none, and a
+property-indexed list of them is repeated over the frames as its easings
+are; each easing is read as CSS reads it, escapes and all, once every frame
+has been, so a bad one throws after a page's getters have all been called.
+What a frame's property is given is kept as a string, whether or not the
+property takes it, where a browser drops what it does not: nothing here
+says whether a value is valid for any property, so one that is not is kept
+and does nothing. A finished animation that fills is removed once later
+ones on its element cover every property it sets (5.5), a shorthand
+counted as its longhands, which tells `remove`, so a page that fades a
+panel in and out with a new animation each time does not keep them all;
+`persist()` keeps one. That is done after the call that made one
+replaceable and at each frame, never during the call: `b.finish()` leaves
+`a` active until the next microtask. Two that end at the same moment finish
+by timers of their own here, where a browser finishes both in one update,
+so one is replaced only once the other's timer has run. `getComputedStyle`
+reads an element a script animates at that moment rather than at the last
+frame, and one no effect targets any more at once. `getAnimations()` lists
+the element's own, a pseudo-element's where `pseudoElement` names one —
+CSS 2's single-colon four taken as theirs, and a SyntaxError for what names
+none — and with `subtree` its pseudo-elements' and its descendants';
+`document.getAnimations()` and a shadow root's list those whose targets are
+in them and no other tree; and `document.timeline` answers from the realm's
+animations. Under `animate={false}` one that fills
 forwards is drawn at its end and any other not at all, as a CSS animation
 at rest is.
 
