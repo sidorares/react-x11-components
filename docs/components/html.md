@@ -7763,6 +7763,12 @@ addition to kerning, while the text of an element with its own
 `letter-spacing` is shaped apart from its neighbours, as a browser
 shapes it (on ntk's engine; CoreText drops a spaced glyph's pairs),
 `white-space` (including
+collapsed white space with a line break in it, which is a space but where a
+zero width space is beside it, or the characters either side of it are both
+East Asian full-width, wide or half-width and not Hangul, as CSS Text 3,
+4.1.2 has it, so a line break in the source between two Chinese or Japanese
+characters is no space between them — inside one text, since across two the
+other side is not known yet;
 `pre` and `pre-wrap`, on an element as well as on its block: a `nowrap`
 element's text stays together, at its hyphens as well as its spaces, and
 `pre`'s spaces take their room at a

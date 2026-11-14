@@ -5524,7 +5524,7 @@ class Builder {
         ws === 'pre-line'
           ? data.replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n')
           : COLLAPSIBLE.test(data)
-            ? data.replace(/[\t\n\r\f ]+/g, ' ')
+            ? collapseWhiteSpace(data)
             : data;
       // A space at the start of a line goes, and so does one after another
       // space, across element boundaries (CSS 2.1 16.6.1): `<p>\n  Hi` has
@@ -7214,6 +7214,49 @@ export function isBlank(text: string): boolean {
 }
 
 const BLANK = /^[ \t\n\r\f]*$/;
+
+/**
+ * White space collapsed as CSS Text 3, 4.1.1 and 4.1.2 have it: each run of
+ * it one space, but for a run that holds a segment break, which goes where
+ * a zero width space is beside it, and where the characters either side of
+ * it are both full-width, wide or half-width and neither is Hangul — a line
+ * break in the source between two Chinese or Japanese characters is no
+ * space between them. Next to the start or the end of the text the
+ * character there is not known, and the run is a space.
+ */
+function collapseWhiteSpace(data: string): string {
+  // most text holds nothing that could take a segment break away
+  if (!MAY_JOIN.test(data)) return data.replace(/[\t\n\r\f ]+/g, ' ');
+  return data.replace(/[\t\n\r\f ]+/g, (run, at: number) => {
+    if (!/[\n\r]/.test(run)) return ' ';
+    const before = data.codePointAt(
+      at - 1 - (isLowSurrogate(data, at - 1) ? 1 : 0),
+    );
+    const after = data.codePointAt(at + run.length);
+    if (before === undefined || after === undefined) return ' ';
+    if (before === 0x200b || after === 0x200b) return '';
+    return removesSegmentBreak(before) && removesSegmentBreak(after) ? '' : ' ';
+  });
+}
+
+function isLowSurrogate(text: string, at: number): boolean {
+  const c = text.charCodeAt(at);
+  return c >= 0xdc00 && c <= 0xdfff;
+}
+
+/** What is East Asian full-width, wide or half-width (UAX #11), and not
+ *  Hangul: either side of a segment break that goes. */
+const EAST_ASIAN_WIDE =
+  /[\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff\ua000-\ua4cf\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff01-\uff60\uffe0-\uffe6\uff61-\uff9f\uffe8-\uffee\u{16fe0}-\u{18aff}\u{1b000}-\u{1b2ff}\u{20000}-\u{3fffd}]/u;
+const HANGUL = /\p{sc=Hangul}/u;
+/** What a text has to hold for a segment break in it to go: a zero width
+ *  space, or anything East Asian, a surrogate pair among it. */
+const MAY_JOIN = /[\u200b\u2e80-\uffee\ud800-\udbff]/;
+
+function removesSegmentBreak(cp: number): boolean {
+  const ch = String.fromCodePoint(cp);
+  return EAST_ASIAN_WIDE.test(ch) && !HANGUL.test(ch);
+}
 
 /** White space that collapsing would change: anything but a lone space.
  *  Most of a document's text has none, and is its own collapsed form. */
