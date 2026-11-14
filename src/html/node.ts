@@ -6663,7 +6663,10 @@ export class HtmlViewNode extends Node {
         return;
       }
     }
-    if (!this._animating()) {
+    // and an element no script animates any more is styled again now: a
+    // frame would restyle it, and a page that reads it before then reads
+    // what no animation gives it (`_timedNow` asks the scripts)
+    if (!this._animating() || !this._scripts.has(element)) {
       this._invalidate(Stale.Boxes, new Set([element]), true);
       return;
     }

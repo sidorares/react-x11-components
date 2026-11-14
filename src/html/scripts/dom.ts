@@ -2790,6 +2790,16 @@ export function installDom(
             ? Array.from(v as Iterable<Any>)
             : v;
       }
+      // a composite is an enum, converted as it is read: what is none of
+      // its values is a TypeError there, before the easing is read
+      if (key === 'composite' && members.composite !== undefined) {
+        const list = Array.isArray(members.composite)
+          ? members.composite
+          : [members.composite];
+        members.composite = Array.isArray(members.composite)
+          ? list.map(keyframeComposite)
+          : keyframeComposite(members.composite);
+      }
     }
     const names = Object.keys(obj)
       .filter((name) => animatableProperty(name) !== null)
@@ -2807,6 +2817,17 @@ export function installDom(
       } else values[name] = String(v);
     }
     return { members, values };
+  };
+
+  /** A keyframe's `composite`, as its IDL enum takes it. */
+  const keyframeComposite = (given: Any): string => {
+    const v = String(given);
+    if (v === 'replace' || v === 'add' || v === 'accumulate' || v === 'auto') {
+      return v;
+    }
+    throw new TypeError(
+      `Failed to read the 'composite' property from 'BaseKeyframe': The provided value '${v}' is not a valid enum value of type CompositeOperationOrAuto.`,
+    );
   };
 
   const keyframesOf = (given: Any): Any[] => {
@@ -2862,7 +2883,10 @@ export function installDom(
       const composites = listOf(given.composite);
       frames.forEach((frame, i) => {
         if (easings.length) frame.easing = easings[i % easings.length];
-        if (i < composites.length) frame.composite = composites[i];
+        // a list shorter than the frames is repeated, as the easings are
+        if (composites.length) {
+          frame.composite = composites[i % composites.length];
+        }
       });
     }
     // a property's value is a string, whatever it was given as
@@ -2873,6 +2897,11 @@ export function installDom(
           frame[name] = String(value);
         }
       }
+    }
+    // and an easing is read once every frame is, so a bad one throws after
+    // all of a page's getters have been called
+    for (const frame of frames) {
+      if (frame.easing !== undefined) frame.easing = easingOf(frame.easing).css;
     }
     let last = -Infinity;
     for (const { offset } of frames) {
@@ -3309,6 +3338,30 @@ export function installDom(
     });
   };
 
+  /** The pseudo-elements an effect can name, and the functional ones by
+   *  their name before the parenthesis. */
+  const PSEUDO_ELEMENTS =
+    /^::(?:before|after|marker|backdrop|placeholder|selection|first-line|first-letter|file-selector-button|target-text|spelling-error|grammar-error|details-content|checkmark|picker-icon|column|scroll-marker|scroll-marker-group|view-transition|(?:view-transition-(?:group|image-pair|old|new|group-children)|part|highlight|picker|scroll-button|slotted)\([^()]*\))$/;
+  /**
+   * A pseudo-element selector as an effect or `getAnimations()` takes it
+   * (Web Animations 1, 6.6 and 6.7): CSS 2's single-colon four as their
+   * double-colon selves, and a SyntaxError for what selects no
+   * pseudo-element.
+   */
+  const pseudoSelector = (given: Any): string => {
+    const v = String(given);
+    const legacy = /^:(before|after|first-line|first-letter)$/i.exec(v);
+    if (legacy) return `::${legacy[1].toLowerCase()}`;
+    const named = v.replace(/^::[a-z-]+/i, (m) => m.toLowerCase());
+    if (!PSEUDO_ELEMENTS.test(named)) {
+      throw new DOMException(
+        `'${v}' is not a valid pseudo-element selector.`,
+        'SyntaxError',
+      );
+    }
+    return named;
+  };
+
   class KeyframeEffect extends AnimationEffect {
     _target: Any;
     _pseudo: string | null;
@@ -3353,7 +3406,7 @@ export function installDom(
       this._target = target ?? null;
       this._pseudo =
         options && typeof options === 'object' && options.pseudoElement
-          ? String(options.pseudoElement)
+          ? pseudoSelector(options.pseudoElement)
           : null;
       this._frames = keyframesOf(keyframes);
       this._timing = timingOf(options);
@@ -3399,7 +3452,7 @@ export function installDom(
       return this._pseudo;
     }
     set pseudoElement(pseudo: Any) {
-      this._pseudo = pseudo === null ? null : String(pseudo);
+      this._pseudo = pseudo === null ? null : pseudoSelector(pseudo);
       this._framesJson = null;
       this._animation?._changed();
     }
@@ -4571,6 +4624,8 @@ export function installDom(
     /** A time as the page reads it: a percentage on a progress-based
      *  timeline. */
     _out(v: number | null): Any {
+      // no time is -0, which a reversed animation's arithmetic comes to
+      if (v !== null) v += 0;
       return v === null ? null : this._finite() ? percentOf(v) : v;
     }
     /** A time a page sets, as the model computes with it (Web Animations
@@ -4599,6 +4654,8 @@ export function installDom(
         return pct.value;
       }
       if (v instanceof CSSNumericValue) {
+        // a number is milliseconds, as a double is
+        if (v instanceof CSSUnitValue && v.unit === 'number') return v.value;
         let ms: Any;
         try {
           ms = v.to('ms');
@@ -7344,6 +7401,13 @@ export function installDom(
     override get nodeName(): string {
       return '#document-fragment';
     }
+    /** The animations of what is in the tree (DocumentOrShadowRoot). */
+    getAnimations(): Any[] {
+      return animationsOf(document, true).filter((a) => {
+        const on = a.effect?.target;
+        return !!on?.isConnected && on.getRootNode() === this;
+      });
+    }
     get pointerLockElement(): Any {
       return null;
     }
@@ -8783,8 +8847,19 @@ export function installDom(
       animation.play();
       return animation;
     }
+    /** Its animations (Web Animations 1, 6.7): the element's own, or a
+     *  pseudo-element's where `pseudoElement` names one, and with `subtree`
+     *  its pseudo-elements' and its descendants'. */
     getAnimations(options?: Any): Any[] {
-      return animationsOf(this, !!options?.subtree);
+      const subtree = !!options?.subtree;
+      const given = options?.pseudoElement;
+      const pseudo =
+        given === undefined || given === null ? null : pseudoSelector(given);
+      return animationsOf(this, subtree || pseudo !== null).filter((a) => {
+        const of = a.effect?.pseudoElement ?? null;
+        if (pseudo !== null) return a.effect?.target === this && of === pseudo;
+        return subtree || of === null;
+      });
     }
     /** A view transition of what the element holds (CSS View Transitions
      *  2, 2.2): the document's, where it is the root element. */
@@ -20751,8 +20826,13 @@ export function installDom(
       }
       return found;
     }
+    /** The animations of what is in it, and not of what is in a frame, in a
+     *  shadow tree or in no document (Web Animations 1, 6.8). */
     getAnimations(): Any[] {
-      return animationsOf(this, true);
+      return animationsOf(document, true).filter((a) => {
+        const on = a.effect?.target;
+        return !!on?.isConnected && on.getRootNode() === this;
+      });
     }
     startViewTransition(...args: Any[]): Any {
       if (!(this instanceof Document)) {
