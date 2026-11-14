@@ -10106,13 +10106,17 @@ export class DomHost {
           this._frameDone(frame);
           return;
         }
-        // a frame whose document could not be had still hears `load`, as
-        // a browser's showing its error page does
+        // a frame whose document could not be had shows an error page,
+        // of no origin, and still hears `load`, as Chromium's does: its
+        // document is no longer the page's to reach (WPT's
+        // fetch/h1-parsing, a response no parser reads)
+        if (this._disposed || this._frameLoads.get(frame) !== serial) return;
+        const why = String((error as Error)?.message ?? error);
         this._seams.log(
           'error',
-          `The frame's ${src} could not be loaded: ${String((error as Error)?.message ?? error)}`,
+          `The frame's ${src} could not be loaded: ${why}`,
         );
-        loaded();
+        this._frameErrorPage(frame, 'could not be reached.', src, loaded);
       });
   }
 
@@ -10216,11 +10220,22 @@ export class DomHost {
       'error',
       `Refused to display '${url}' in a frame: its ${why} forbids it.`,
     );
+    this._frameErrorPage(frame, 'refused to connect.', url, loaded);
+  }
+
+  /** The error page a frame shows for what it could not show: a document
+   *  of no origin, its scripts off, which the page cannot reach into. */
+  private _frameErrorPage(
+    frame: Element,
+    what: string,
+    url: string,
+    loaded: () => void,
+  ): void {
     const host = /^[a-z]+:\/\/([^/]*)/i.exec(url)?.[1] ?? url;
     this._frameLoaded(
       frame,
       this._documentOf(
-        `<!doctype html><body style="font:14px sans-serif;color:#666;margin:16px">${escapeText(host)} refused to connect.`,
+        `<!doctype html><body style="font:14px sans-serif;color:#666;margin:16px">${escapeText(host)} ${what}`,
         true,
       ),
       'about:blank',
