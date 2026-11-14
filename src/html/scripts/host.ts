@@ -145,6 +145,7 @@ import {
   ALIGN_SPECIFIED as ALIGN_ONLY_SPECIFIED,
 } from '../css/align-specified.js';
 import { BOX_SHORTHANDS, BOX_SPECIFIED } from '../css/box-specified.js';
+import { GRID_SHORTHANDS, GRID_SPECIFIED } from '../css/grid-specified.js';
 import { borderDeclared, collapseBorders } from '../css/borders-specified.js';
 import { eventPath, retarget, shadowIncludingHolds } from './event-path.js';
 import { NO_MODIFIERS } from '../dom-events.js';
@@ -1769,12 +1770,17 @@ const NODE_READS = new Set([
 
 /** The properties a block's declarations are held to the grammars of as
  *  CSSOM reads them, and the shorthands it writes back from their
- *  longhands: box alignment's, the gaps', flex layout's and a box's
- *  sides'. */
-const ALIGN_SPECIFIED = new Set([...ALIGN_ONLY_SPECIFIED, ...BOX_SPECIFIED]);
-const ALIGN_SHORTHANDS: Record<string, string[]> = {
+ *  longhands: box alignment's, the gaps', flex layout's, a box's sides'
+ *  and a grid's. */
+const ALIGN_SPECIFIED = new Set([
+  ...ALIGN_ONLY_SPECIFIED,
+  ...BOX_SPECIFIED,
+  ...GRID_SPECIFIED,
+]);
+const ALIGN_SHORTHANDS: Record<string, readonly string[]> = {
   ...ALIGN_ONLY_SHORTHANDS,
   ...BOX_SHORTHANDS,
+  ...GRID_SHORTHANDS,
 };
 
 /** A declaration block as CSSOM serializes one (6.7.2), which is what a
@@ -1847,23 +1853,26 @@ function withAlignShorthands(
     // the text a block keeps, which the cascade reads, says only a box's
     // sides as their shorthand: an alignment shorthand would drop both its
     // halves where the cascade refuses one, as Chromium's refuses
-    // `align-content: last baseline`
-    const shorthand = Object.keys(
-      stored ? BOX_SHORTHANDS : ALIGN_SHORTHANDS,
-    ).find((s) => ALIGN_SHORTHANDS[s].includes(d.prop));
-    const names = shorthand ? ALIGN_SHORTHANDS[shorthand] : null;
-    const parts = names?.map((n) => decls.find((e) => e.prop === n));
-    if (shorthand && parts!.every((p) => p && p.important === d.important)) {
+    // `align-content: last baseline`. Of the shorthands a longhand is in,
+    // the one with the most longhands is tried first, and the next where
+    // its value makes none: `grid`, then `grid-template` (CSSOM 6.7.2)
+    const shorthands = Object.keys(stored ? BOX_SHORTHANDS : ALIGN_SHORTHANDS)
+      .filter((s) => ALIGN_SHORTHANDS[s].includes(d.prop))
+      .sort((a, b) => ALIGN_SHORTHANDS[b].length - ALIGN_SHORTHANDS[a].length);
+    const composed = shorthands.find((shorthand) => {
+      const names = ALIGN_SHORTHANDS[shorthand];
+      const parts = names.map((n) => decls.find((e) => e.prop === n));
+      if (!parts.every((p) => p && p.important === d.important)) return false;
       const value = composeShorthand(
         shorthand,
         (n) => decls.find((e) => e.prop === n)?.value ?? null,
       );
-      if (value) {
-        out.push({ prop: shorthand, value, important: d.important });
-        for (const n of names!) said.add(n);
-        continue;
-      }
-    }
+      if (!value) return false;
+      out.push({ prop: shorthand, value, important: d.important });
+      for (const n of names) said.add(n);
+      return true;
+    });
+    if (composed) continue;
     out.push(d);
   }
   return out;
