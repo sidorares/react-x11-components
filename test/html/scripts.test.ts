@@ -9555,6 +9555,24 @@ test('a frame’s document is held to the policies its own response says, and ne
   assert.equal(text('a', 'x'), 'no');
 });
 
+test('a srcdoc frame’s view asks for what it draws under its parent’s referrer policy, which it has no response of its own to say', async () => {
+  const { asked } = await hostedFrames(
+    '<!doctype html><html><head><meta name="referrer" content="no-referrer"></head><body>' +
+      '<iframe srcdoc="<img src=&quot;https://example.test/in-srcdoc.png&quot;><script>1</script>"></iframe>' +
+      '</body></html>',
+    {},
+  );
+  const end = Date.now() + 5000;
+  const found = () =>
+    asked.find((r) => r.url === 'https://example.test/in-srcdoc.png');
+  while (!found() && Date.now() < end) {
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+  }
+  assert.equal(found()?.referrerPolicy, 'no-referrer');
+  // and from the page's address, as Referrer Policy has a srcdoc's referrer
+  assert.equal(found()?.client, PAGE);
+});
+
 test('a frame taken out aborts its navigation as it goes, rejects the traversals on their way, and its destination says nothing after', async () => {
   // HTML, "inform the navigation API about child navigable destruction"
   const { text } = await hostedFrames(
@@ -19622,8 +19640,11 @@ async function hostedFrames(
   logs: string[];
   runner: () => ScriptRunner;
   result: Awaited<ReturnType<typeof renderX11>>;
+  /** What a frame's view asked for. */
+  asked: ResourceRequest[];
 }> {
   const logs: string[] = [];
+  const asked: ResourceRequest[] = [];
   const seams: ScriptsOptions = {
     userAgent: 'test',
     language: 'en-US',
@@ -19688,7 +19709,16 @@ async function hostedFrames(
     const frames = (): FrameContext | null => {
       const parent = scripts.runner?.();
       return parent
-        ? { parent, seams, look: { onResource: () => null } }
+        ? {
+            parent,
+            seams,
+            look: {
+              onResource: (request: ResourceRequest) => {
+                asked.push(request);
+                return null;
+              },
+            },
+          }
         : null;
     };
     const holder = frames();
@@ -19728,7 +19758,7 @@ async function hostedFrames(
     const el = document && findById(document, id);
     return el ? textOf(el) : '';
   };
-  return { text, logs, runner: page, result };
+  return { text, logs, runner: page, result, asked };
 }
 
 /** What `read` answers once `done` holds of it, or by `ms`. */
