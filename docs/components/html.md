@@ -2661,7 +2661,15 @@ script that scrolls, or that changes what the source holds, reads the
 time it had, as an animation on it is drawn. Their times, and an
 animation's on them, are
 `CSSUnitValue` percentages — `CSS.percent()`, `CSSNumericValue.parse()` and
-the rest of Typed OM's numbers are there, and an element's
+the rest of Typed OM's numbers are there, each with the type its units make,
+added and multiplied as CSS Typed OM 1, 4.3.3 has them and a TypeError where
+they do not go together, its sum value what `to()` and `toSum()` convert
+through, and a `calc()` parsed as Chrome reifies one, a `CSSMathSum` even
+where it comes to one term. The transform components are there as well,
+`CSSTranslate` to `CSSMatrixComponent` in a `CSSTransformValue`, each
+argument held to the type its function takes and each component its
+matrix; and `CSSStyleValue.parse()` reifies a value for a property it
+takes, a transform list its components. So is an element's
 `computedStyleMap()`, which reifies its computed values: a number, a
 dimension or a percentage a `CSSUnitValue`, a name a `CSSKeywordValue`, and
 anything else a `CSSStyleValue` that reads as written. They are computed

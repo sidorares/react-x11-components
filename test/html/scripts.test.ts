@@ -17731,7 +17731,7 @@ test('CSS numeric values are made, added, converted and parsed as CSS Typed OM h
   );
   assert.equal(
     await settled(doc, 'out', (t) => t !== ''),
-    '10%|3px|1000|CSSMathSum|calc(30% + 40px)|2|true|100%|6px|true|false|SyntaxError|TypeError',
+    '10%|3px|1000|CSSMathSum|calc(30% + 40px)|2|false|calc(100%)|6px|true|false|SyntaxError|TypeError',
   );
 });
 
