@@ -1294,6 +1294,8 @@ function cssomAt(
     'word-spacing': px(style.wordSpacing, scale),
     'text-align': style.textAlign,
     'text-transform': style.textTransform,
+    'text-autospace': style.textAutospace,
+    'text-autospace-size': String(style.textAutospaceSize),
     'font-variant': fontVariantText(style),
     'text-decoration-line': style.textDecorationLine || 'none',
     'text-decoration-color': cssomColor(

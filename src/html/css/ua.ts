@@ -170,6 +170,10 @@ listing, plaintext, pre, xmp {
   margin: 1em 0;
 }
 code, kbd, samp, tt { font-family: ${mono}; }
+/* as Chrome's sheet has them: text set to its columns is not spaced */
+code, kbd, listing, plaintext, pre, samp, textarea, tt, xmp {
+  text-autospace: no-autospace;
+}
 
 b, strong { font-weight: bold; }
 i, em, cite, var, dfn, address { font-style: italic; }

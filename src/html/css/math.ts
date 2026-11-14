@@ -750,6 +750,7 @@ const EXPECTED: Record<string, Expected> = {
   'z-index': NUMBER_ONLY,
   order: NUMBER_ONLY,
   'flex-grow': NUMBER_ONLY,
+  'text-autospace-size': NUMBER_ONLY,
   'flex-shrink': NUMBER_ONLY,
   'math-depth': NUMBER_ONLY,
   'font-weight': NUMBER_ONLY,
