@@ -33,6 +33,8 @@ export interface CspDeps {
   trustedScript?(value: unknown): string | undefined;
   trustedComply?(value: unknown, sink: string): string;
   trustedRequired?(): boolean;
+  /** A task of the realm's, which a page cannot see or cancel. */
+  later(fn: () => void): void;
 }
 
 export function installCsp(deps: CspDeps) {
@@ -190,7 +192,146 @@ export function installCsp(deps: CspDeps) {
       composed: true,
     });
     fire(target, ev);
+    // and a report of it, which every observer of the realm's hears,
+    // whatever the policy says of where it is sent (CSP 3, 5.3, step 3;
+    // Reporting API, "visible to ReportingObservers")
+    queueReport('csp-violation', String(v.documentURI ?? ''), {
+      blockedURL: v.blockedURI === undefined ? null : String(v.blockedURI),
+      columnNumber: Number(v.columnNumber) || null,
+      disposition: String(v.disposition ?? 'enforce'),
+      documentURL: String(v.documentURI ?? ''),
+      effectiveDirective: String(v.effectiveDirective ?? ''),
+      lineNumber: Number(v.lineNumber) || null,
+      originalPolicy: String(v.originalPolicy ?? ''),
+      referrer: String(v.referrer ?? ''),
+      sample: String(v.sample ?? ''),
+      sourceFile: v.sourceFile ? String(v.sourceFile) : null,
+      statusCode: Number(v.statusCode) || 0,
+    });
   };
+
+  // --- the Reporting API --------------------------------------------------------
+  //
+  // What a document's observers hear (Reporting API 1, 3): a report of each
+  // violation, its body a plain object of CSPViolationReportBody's members,
+  // handed to each observer that takes its type in a task after it was
+  // queued, with what else was queued for it by then. The realm keeps the
+  // last 100 for an observer that asks for what came before it.
+  const TOKEN = Object.freeze(Object.create(null));
+  const REPORTS = new WeakMap<object, Any>();
+  class Report {
+    constructor(token: Any = undefined) {
+      if (token !== TOKEN) throw new TypeError('Illegal constructor');
+    }
+    get type(): string {
+      const r = REPORTS.get(this);
+      if (!r) throw new TypeError('Illegal invocation');
+      return r.type;
+    }
+    get url(): string {
+      const r = REPORTS.get(this);
+      if (!r) throw new TypeError('Illegal invocation');
+      return r.url;
+    }
+    get body(): Any {
+      const r = REPORTS.get(this);
+      if (!r) throw new TypeError('Illegal invocation');
+      return r.body;
+    }
+    toJSON(): Any {
+      const r = REPORTS.get(this);
+      if (!r) throw new TypeError('Illegal invocation');
+      return { type: r.type, url: r.url, body: r.body };
+    }
+  }
+  const BUFFER: Any[] = [];
+  const observing = new Set<Any>();
+  const OBSERVERS = new WeakMap<object, Any>();
+  const deliver = (o: Any): void => {
+    if (o.scheduled) return;
+    o.scheduled = true;
+    deps.later(() => {
+      o.scheduled = false;
+      const reports = o.queue;
+      o.queue = [];
+      if (!reports.length) return;
+      try {
+        o.callback.call(o.self, reports, o.self);
+      } catch (error) {
+        // a callback's throw is the page's, reported as an uncaught one
+        deps.later(() => {
+          throw error;
+        });
+      }
+    });
+  };
+  const takes = (o: Any, report: Any): boolean =>
+    !o.types || o.types.includes(REPORTS.get(report).type);
+  const queueReport = (type: string, url: string, body: Any): void => {
+    const report = new Report(TOKEN);
+    REPORTS.set(report, { type, url, body });
+    BUFFER.push(report);
+    if (BUFFER.length > 100) BUFFER.shift();
+    for (const o of observing) {
+      if (!takes(o, report)) continue;
+      o.queue.push(report);
+      deliver(o);
+    }
+  };
+  class ReportingObserver {
+    constructor(callback: Any, options: Any = undefined) {
+      if (typeof callback !== 'function') {
+        throw new TypeError(
+          "Failed to construct 'ReportingObserver': parameter 1 is not of type 'Function'.",
+        );
+      }
+      const types =
+        options === undefined || options === null || options.types === undefined
+          ? null
+          : Array.from(options.types, (t: Any) => String(t));
+      OBSERVERS.set(this, {
+        self: this,
+        callback,
+        types,
+        buffered: !!options?.buffered,
+        queue: [],
+        scheduled: false,
+      });
+    }
+    observe(): void {
+      const o = OBSERVERS.get(this);
+      if (!o) throw new TypeError('Illegal invocation');
+      if (observing.has(o)) return;
+      observing.add(o);
+      if (!o.buffered) return;
+      o.buffered = false;
+      for (const report of BUFFER) if (takes(o, report)) o.queue.push(report);
+      if (o.queue.length) deliver(o);
+    }
+    disconnect(): void {
+      const o = OBSERVERS.get(this);
+      if (!o) throw new TypeError('Illegal invocation');
+      observing.delete(o);
+    }
+    takeRecords(): Any[] {
+      const o = OBSERVERS.get(this);
+      if (!o) throw new TypeError('Illegal invocation');
+      const reports = o.queue;
+      o.queue = [];
+      return reports;
+    }
+  }
+  for (const C of [Report, ReportingObserver]) {
+    for (const key of Object.getOwnPropertyNames(C.prototype)) {
+      if (key === 'constructor') continue;
+      const d = Object.getOwnPropertyDescriptor(C.prototype, key) as Any;
+      Object.defineProperty(C.prototype, key, { ...d, enumerable: true });
+    }
+    Object.defineProperty(C.prototype, Symbol.toStringTag, {
+      value: C.name,
+      configurable: true,
+    });
+  }
 
   // --- string compilation -----------------------------------------------------
 
@@ -344,7 +485,7 @@ export function installCsp(deps: CspDeps) {
     !guarded || host('csp', 'eval', source) === true;
 
   return {
-    interfaces: { SecurityPolicyViolationEvent },
+    interfaces: { SecurityPolicyViolationEvent, Report, ReportingObserver },
     compiles,
     violation,
     policyChanged,

@@ -3562,6 +3562,12 @@ for the document's own origin alone, and held to no policy. A document refused w
 `frame-ancestors` names none of the origins it is framed in is reported by
 its own policies, a report-only one too, though it is never shown and no
 page hears of it.
+Every violation is also a report a `ReportingObserver` hears (Reporting
+API), whatever the policy says of where reports are sent: a `Report` of type
+`csp-violation`, its `body` a plain object of CSPViolationReportBody's
+members, null where no script was running to say a place, handed to each
+observer of its type in a task with what else was queued for it, and kept,
+the last 100 of them, for an observer made with `buffered: true`.
 
 **A violation says where it was caused** (CSP 3, 5.3): where the page's code
 is running, by its innermost frame of its own — its script's address, and the
