@@ -220,6 +220,10 @@ export function layoutGrid(
   // the axes it takes from the grid it is an item of, where it is a
   // subgrid of that grid (CSS Grid 2, 9), which that grid's layout says
   const sub = SUBGRIDS.get(box) ?? null;
+  // Its columns run from its start edge, the right where it runs right to
+  // left (CSS Grid 1, 7.1): they are sized and placed from there, and its
+  // items placed in them mirrored.
+  const rtl = style.direction === 'rtl';
   /** Whether an item comes to less at its narrowest than at its widest, with
    *  no rows yet: the first of what a sizing of the columns asks it. */
   const wrapsNarrower = (child: Box): boolean => {
@@ -308,7 +312,12 @@ export function layoutGrid(
     });
     return {
       widths: sizes,
-      lefts: starts(sizes, colGap, style.justifyContent, contentWidth),
+      lefts: starts(
+        sizes,
+        colGap,
+        inlineAligned(style.justifyContent, style.justifyContentText, rtl),
+        contentWidth,
+      ),
     };
   };
   let widths: number[];
@@ -326,7 +335,7 @@ export function layoutGrid(
     for (const item of items) {
       const cols = SUBGRIDS.get(item.box)?.cols;
       if (!cols) continue;
-      cols.placed = spanOf(widths, lefts, item.col, item.cols);
+      cols.placed = placedFor(cols, spanOf(widths, lefts, item.col, item.cols));
       cols.gap = colGap;
     }
   };
@@ -512,6 +521,13 @@ export function layoutGrid(
     child.percentHeightBase = tall;
     layoutItem(item, extent(widths, lefts, item.col, item.cols), ctx, tall);
   }
+  // the width the columns are mirrored in where they run right to left:
+  // the grid's content box, or with no limit on it, as far as they reach
+  const mirror = Number.isFinite(contentWidth)
+    ? contentWidth
+    : widths.length
+      ? lefts[widths.length - 1] + widths[widths.length - 1]
+      : 0;
   GRID_TRACKS.set(box, {
     cols: tracksOf(widths, lefts, keepCols),
     rows: tracksOf(heights, tops, keepRows),
@@ -519,6 +535,7 @@ export function layoutGrid(
     rowLines: plan.rowLines,
     first: firstItem(items),
     atNarrowest,
+    mirror: rtl ? mirror : undefined,
     lanes: {
       cols: widths.map((w, i) => [lefts[i], lefts[i] + w]),
       rows: heights.map((h, i) => [tops[i], tops[i] + h]),
@@ -533,23 +550,31 @@ export function layoutGrid(
     const area = extent(widths, lefts, item.col, item.cols);
     const tall = extent(heights, tops, item.row, item.rows);
     const subgrid = SUBGRIDS.get(child);
-    const justify =
+    const justify = inlineAligned(
       child.style.justifySelf === 'auto'
         ? style.justifyItems
-        : child.style.justifySelf;
+        : child.style.justifySelf,
+      child.style.justifySelf === 'auto'
+        ? style.justifyItemsText
+        : child.style.justifySelfText,
+      rtl,
+    );
     const align =
       child.style.alignSelf === AUTO ? style.alignItems : child.style.alignSelf;
     const outerWidth = child.width + child.marginLeft + child.marginRight;
     const outerHeight = child.height + child.marginTop + child.marginBottom;
     // `auto` margins take the free space in the area first (CSS Grid 1,
     // 10.2), and an item with them is not stretched
+    // at its start and its end, which are its right and its left in a grid
+    // that runs right to left
     const [left, right] = autoMargins(child, 'x');
+    const [atStart, atEnd] = rtl ? [right, left] : [left, right];
     const [top, bottom] = autoMargins(child, 'y');
     let dx = 0;
     if (subgrid?.cols) {
       // a subgrid is stretched across its area, whatever aligns it
-    } else if (left || right) {
-      dx = (area - outerWidth) * (left && right ? 0.5 : left ? 1 : 0);
+    } else if (atStart || atEnd) {
+      dx = (area - outerWidth) * (atStart && atEnd ? 0.5 : atStart ? 1 : 0);
     } else if (justify === 'center') dx = (area - outerWidth) / 2;
     else if (justify === 'flex-end') dx = area - outerWidth;
     let dy = 0;
@@ -651,9 +676,18 @@ export function layoutGrid(
         child.kind === 'table' ? Math.max(height, child.height) : height;
       centreButton(child);
     }
+    // `dx` from its area's start, which is its right where it runs right
+    // to left
     moveTo(
       child,
-      box.contentX + lefts[item.col] + child.marginLeft + Math.max(0, dx),
+      rtl
+        ? box.contentX +
+            mirror -
+            lefts[item.col] -
+            Math.max(0, dx) -
+            outerWidth +
+            child.marginLeft
+        : box.contentX + lefts[item.col] + child.marginLeft + Math.max(0, dx),
       box.contentY + tops[item.row] + child.marginTop + Math.max(0, dy),
     );
   }
@@ -782,6 +816,10 @@ export interface SubgridAxis {
   defs: GridTrack[];
   /** The grid's gap along the axis. */
   gap: number;
+  /** Whether the subgrid's columns run the other way from its parent's,
+   *  its `direction` being the other (CSS Grid 2, 9): its lines, tracks
+   *  and items are its parent's over its span the other way round. */
+  flipped: boolean;
   /** The grid's tracks over the span once it has sized them: their sizes,
    *  and where each starts from where the first does. */
   placed: { sizes: number[]; at: number[] } | null;
@@ -990,10 +1028,20 @@ export function laneSubgrid(
     return false;
   }
   const which = axis === 'cols' ? 'columns' : 'rows';
+  const flipped = axis === 'cols' && runsAgainst(child);
   const sub: SubgridAxis = {
-    lines: subgridLines(lines, from, span, names, style.gridAreas, which),
-    defs: defs.slice(from, from + span),
+    lines: subgridLines(
+      lines,
+      from,
+      span,
+      names,
+      style.gridAreas,
+      which,
+      flipped,
+    ),
+    defs: spanned(defs, from, span, flipped),
     gap,
+    flipped,
     placed: null,
     items: null,
   };
@@ -1123,8 +1171,8 @@ export function laneSubgridPlaced(
 ): void {
   const sub = SUBGRIDS.get(child)?.[axis];
   if (!sub) return;
-  sub.defs = defs.slice(from, from + span);
-  sub.placed = spanOf(sizes, at, from, span);
+  sub.defs = spanned(defs, from, span, sub.flipped);
+  sub.placed = placedFor(sub, spanOf(sizes, at, from, span));
   sub.gap = gap;
 }
 
@@ -1188,13 +1236,25 @@ function subgridOf(
     span: number,
     gap: number,
     which: 'columns' | 'rows',
-  ): SubgridAxis => ({
-    lines: subgridLines(lines, from, span, names, style.gridAreas, which),
-    defs: defs.slice(from, from + span),
-    gap,
-    placed: null,
-    items: null,
-  });
+  ): SubgridAxis => {
+    const flipped = which === 'columns' && runsAgainst(child);
+    return {
+      lines: subgridLines(
+        lines,
+        from,
+        span,
+        names,
+        style.gridAreas,
+        which,
+        flipped,
+      ),
+      defs: spanned(defs, from, span, flipped),
+      gap,
+      flipped,
+      placed: null,
+      items: null,
+    };
+  };
   return {
     cols: across
       ? axis(across, colLines, cols, item.col, item.cols, colGap, 'columns')
@@ -1247,12 +1307,13 @@ function throughSubgrid(item: Item, axis: 'cols' | 'rows'): Item[] {
   const spanOfItem = (it: Item) => (across ? it.cols : it.rows);
   const n = across ? item.cols : item.rows;
   const at = across ? item.col : item.row;
-  const edgeBefore = across
-    ? box.marginLeft + box.borderLeft + box.padLeft
-    : box.marginTop + box.borderTop + box.padTop;
-  const edgeAfter = across
-    ? box.marginRight + box.borderRight + box.padRight
-    : box.marginBottom + box.borderBottom + box.padBottom;
+  // across, its start is its right in a grid that runs right to left
+  const [edgeBefore, edgeAfter] = across
+    ? inlineEdges(box)
+    : [
+        box.marginTop + box.borderTop + box.padTop,
+        box.marginBottom + box.borderBottom + box.padBottom,
+      ];
   const style = box.style;
   const gap = across
     ? style.columnGapNormal
@@ -1273,7 +1334,9 @@ function throughSubgrid(item: Item, axis: 'cols' | 'rows'): Item[] {
       after: it.after + (end === n ? edgeAfter : half),
     };
     if (across) {
-      moved.col = at + start;
+      // in the parent's columns, the other way round where they run the
+      // other way
+      moved.col = at + (sub.flipped ? n - end : start);
       moved.cols = span;
       moved.row = -1;
     } else {
@@ -1297,6 +1360,70 @@ function throughSubgrid(item: Item, axis: 'cols' | 'rows'): Item[] {
     }
   }
   return out;
+}
+
+/** A subgrid's margin, border and padding at the start and at the end of
+ *  its own columns: its left and its right, or its right and its left where
+ *  it runs right to left. */
+function inlineEdges(box: Box): [number, number] {
+  const left = box.marginLeft + box.borderLeft + box.padLeft;
+  const right = box.marginRight + box.borderRight + box.padRight;
+  return box.style.direction === 'rtl' ? [right, left] : [left, right];
+}
+
+/** Whether a grid item's columns run the other way from its grid's: its
+ *  `direction` is the other one. */
+function runsAgainst(child: Box): boolean {
+  const parent = child.parent?.style.direction ?? 'ltr';
+  return child.style.direction !== parent;
+}
+
+/** The parent's tracks a subgrid spans, the other way round where it
+ *  runs the other way. */
+function spanned(
+  defs: GridTrack[],
+  from: number,
+  span: number,
+  flipped: boolean,
+): GridTrack[] {
+  const out = defs.slice(from, from + span);
+  return flipped ? out.reverse() : out;
+}
+
+/** Where a subgrid's tracks are, from its own start: where its parent
+ *  placed them, from the far end of its span where it runs the other way. */
+function placedFor(
+  sub: SubgridAxis,
+  placed: { sizes: number[]; at: number[] },
+): { sizes: number[]; at: number[] } {
+  if (!sub.flipped || !placed.sizes.length) return placed;
+  const n = placed.sizes.length;
+  const reach = placed.at[n - 1] + placed.sizes[n - 1];
+  const sizes: number[] = [];
+  const at: number[] = [];
+  for (let t = n - 1; t >= 0; t -= 1) {
+    sizes.push(placed.sizes[t]);
+    at.push(reach - placed.at[t] - placed.sizes[t]);
+  }
+  return { sizes, at };
+}
+
+/**
+ * An alignment keyword across a grid, read from its start to its end:
+ * `left` and `right` are the physical sides, which in a grid that runs right
+ * to left are its end and its start (CSS Box Alignment 3, 4.1), where every
+ * other keyword is already one of the two. `text` is the value as written.
+ */
+export function inlineAligned(
+  keyword: string,
+  text: string,
+  rtl: boolean,
+): string {
+  if (!rtl) return keyword;
+  const word = text.trim().split(/\s+/).pop();
+  if (word === 'left') return 'flex-end';
+  if (word === 'right') return 'flex-start';
+  return keyword;
 }
 
 /** Where `count` tracks from `from` are: their sizes, and where each
@@ -1334,14 +1461,13 @@ export function fromParent(
   if (!placed?.sizes.length) return null;
   const { sizes, at } = placed;
   const n = sizes.length;
-  const before =
+  const [before, after] =
     dir === 'x'
-      ? box.marginLeft + box.borderLeft + box.padLeft
-      : box.marginTop + box.borderTop + box.padTop;
-  const after =
-    dir === 'x'
-      ? box.marginRight + box.borderRight + box.padRight
-      : box.marginBottom + box.borderBottom + box.padBottom;
+      ? inlineEdges(box)
+      : [
+          box.marginTop + box.borderTop + box.padTop,
+          box.marginBottom + box.borderBottom + box.padBottom,
+        ];
   const size = Math.max(0, at[n - 1] + sizes[n - 1] - before - after);
   const half = (gap - axis.gap) / 2;
   const out = { sizes: [] as number[], at: [] as number[], size };

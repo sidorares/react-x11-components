@@ -10529,14 +10529,20 @@ function gridArea(
   if (!tracks) return null;
   const style = box.style;
   const pad = containingRect(containing, ctx);
+  // columns that run right to left are from the grid's right, their lines
+  // and its padding edges read from there
+  const mirror = tracks.mirror;
   const [x, width] = areaSpan(
     style.gridColumnStart,
     style.gridColumnEnd,
-    tracks.cols,
+    mirror === undefined
+      ? tracks.cols
+      : tracks.cols.map(([a, b]) => [mirror - b, mirror - a]),
     tracks.colLines,
     containing.contentX,
     pad.x,
     pad.width,
+    mirror !== undefined,
   );
   const [y, height] = areaSpan(
     style.gridRowStart,
@@ -10553,7 +10559,9 @@ function gridArea(
 /** One axis of a grid area: its start and its size in document
  *  coordinates. A line is a track's start where it starts one and a
  *  track's end where it ends one, so a gap is in neither; a line by name
- *  is the one the placement would take. */
+ *  is the one the placement would take. Where the tracks run from the
+ *  right (`rtl`), a track's start is its right, and so is the padding
+ *  edge an `auto` start takes. */
 function areaSpan(
   start: GridLine,
   end: GridLine,
@@ -10562,6 +10570,7 @@ function areaSpan(
   origin: number,
   edge: number,
   size: number,
+  rtl = false,
 ): [number, number] {
   const count = tracks.length;
   // a line the grid has, or null for auto, a span and one it has not
@@ -10591,15 +10600,21 @@ function areaSpan(
     to = t <= count ? t : null;
   }
   if (from !== null && to !== null && to < from) [from, to] = [to, from];
+  const startOf = (t: number) => (rtl ? tracks[t][1] : tracks[t][0]);
+  const endOf = (t: number) => (rtl ? tracks[t][0] : tracks[t][1]);
   const a =
     from === null
-      ? edge
-      : origin + (from < count ? tracks[from][0] : tracks[from - 1][1]);
+      ? rtl
+        ? edge + size
+        : edge
+      : origin + (from < count ? startOf(from) : endOf(from - 1));
   const b =
     to === null || to === from
-      ? edge + size
-      : origin + (to >= 1 ? tracks[to - 1][1] : tracks[0][0]);
-  return [a, Math.max(0, b - a)];
+      ? rtl
+        ? edge
+        : edge + size
+      : origin + (to >= 1 ? endOf(to - 1) : startOf(0));
+  return rtl ? [b, Math.max(0, a - b)] : [a, Math.max(0, b - a)];
 }
 
 /** A containing block's rectangle, in document coordinates. */

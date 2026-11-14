@@ -5551,24 +5551,34 @@ function gapSegments(
   const grid = box.style.grid ? GRID_TRACKS.get(box) : undefined;
   if (grid) {
     const { cols, rows, areas } = grid.lanes;
-    return {
-      columns: gridRuleSegments(
-        cols,
-        rows,
-        areas,
-        box.style.columnRule.break,
-        box.contentX,
-        box.contentY,
-      ),
-      rows: gridRuleSegments(
-        rows,
-        cols,
-        areas.map(([c, cs, r, rs]) => [r, rs, c, cs]),
-        box.style.rowRule.break,
-        box.contentY,
-        box.contentX,
-      ),
-    };
+    const columns = gridRuleSegments(
+      cols,
+      rows,
+      areas,
+      box.style.columnRule.break,
+      box.contentX,
+      box.contentY,
+    );
+    const across = gridRuleSegments(
+      rows,
+      cols,
+      areas.map(([c, cs, r, rs]) => [r, rs, c, cs]),
+      box.style.rowRule.break,
+      box.contentY,
+      box.contentX,
+    );
+    // columns that run right to left are from the grid's right: each piece
+    // is worked out from there and drawn mirrored, its two ends swapped
+    const mirror = grid.mirror;
+    if (mirror !== undefined) {
+      const flip = (x: number) => 2 * box.contentX + mirror - x;
+      for (const piece of columns) piece.at = flip(piece.at);
+      for (const piece of across) {
+        [piece.from, piece.to] = [flip(piece.to), flip(piece.from)];
+        [piece.fromGap, piece.toGap] = [piece.toGap, piece.fromGap];
+      }
+    }
+    return { columns, rows: across };
   }
   if (box.style.columns) {
     const columns: RuleSegment[] = [];

@@ -2203,3 +2203,72 @@ test("an absolute child of a grid stands, where nothing places it, at the grid's
   assert.deepEqual(at('base'), [8, 4]);
   assert.deepEqual(at('last'), [58, 4]);
 });
+
+metric(
+  'a grid that runs right to left lays its columns out from its right',
+  async () => {
+    // CSS Grid 1, 7.1: the first column at the right edge, the next to its
+    // left; `start` is the right, `left` the physical left, and so are an
+    // auto margin at the start and an absolutely positioned box's lines
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div id="g" style="display:grid;direction:rtl;width:300px;' +
+        'position:relative;grid-template-columns:100px 50px;' +
+        'column-gap:10px;justify-items:start">' +
+        '<div id="a" style="width:20px;height:10px"></div>' +
+        '<div id="b" style="width:20px;height:10px;justify-self:left"></div>' +
+        '<div id="c" style="width:20px;height:10px;margin-right:auto"></div>' +
+        '<div id="d" style="height:10px;justify-self:stretch"></div>' +
+        '<div id="p" style="position:absolute;grid-column:2 / 3;top:0;' +
+        'bottom:0;left:0;right:0"></div>' +
+        '<div id="q" style="position:absolute;grid-column:2;top:0;' +
+        'bottom:0;left:0;right:0"></div></div>',
+    );
+    const el = view(node);
+    const at = (id: string) => {
+      const b = boxOf(el, id);
+      return [b.x, b.y, b.width].map(Math.round);
+    };
+    assert.deepStrictEqual(at('a'), [280, 0, 20], 'at its column start');
+    assert.deepStrictEqual(at('b'), [140, 0, 20], 'at its column left');
+    assert.deepStrictEqual(
+      at('c'),
+      [200, 10, 20],
+      'pushed to its end by an auto margin at the start',
+    );
+    assert.deepStrictEqual(at('d'), [140, 10, 50], 'stretched across');
+    assert.deepStrictEqual(
+      at('p'),
+      [140, 0, 50],
+      "its containing block the column's area",
+    );
+    // an `auto` end is the padding edge at the end, its left (9.1)
+    assert.deepStrictEqual(at('q'), [0, 0, 190], 'to the end padding edge');
+  },
+);
+
+metric(
+  "a subgrid that runs the other way from its grid takes the grid's columns the other way round",
+  async () => {
+    // CSS Grid 2, 9: an rtl subgrid's first column is its ltr grid's last
+    // over its span, and an item that sizes the subgrid's last column, the
+    // grid's first, sizes it there
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div id="g" style="display:grid;width:300px;' +
+        'grid-template-columns:auto 100px 30px;justify-content:start">' +
+        '<div id="s" style="display:grid;direction:rtl;grid-column:1 / 4;' +
+        'grid-template-columns:subgrid">' +
+        '<div id="x" style="grid-column:1;height:10px"></div>' +
+        '<div id="y" style="grid-column:3;width:40px;height:10px"></div>' +
+        '</div></div>',
+    );
+    const el = view(node);
+    const at = (id: string) => {
+      const b = boxOf(el, id);
+      return [b.x, b.width].map(Math.round);
+    };
+    assert.deepStrictEqual(at('x'), [140, 30], "the grid's last column");
+    assert.deepStrictEqual(at('y'), [0, 40], "the grid's first, as wide as y");
+  },
+);

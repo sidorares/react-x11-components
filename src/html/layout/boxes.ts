@@ -819,6 +819,12 @@ export interface GridTracks {
    *  collapsed — and each item's area in them, as its first column, how
    *  many, its first row and how many: what a gap's rules are drawn along
    *  and broken by (CSS Gap Decorations 1). */
+  /** For a grid whose columns run right to left (`direction: rtl`), the
+   *  width they are mirrored in: `cols`, and `lanes.cols`, are from the
+   *  grid's start edge, its content box's right, and a column at `[a, b]`
+   *  is drawn from `mirror - b` to `mirror - a` from its left; none for
+   *  one that runs left to right. */
+  mirror?: number;
   lanes: {
     cols: [number, number][];
     rows: [number, number][];

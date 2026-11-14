@@ -51,21 +51,23 @@ export function subgridLines(
   own: SubgridNames | undefined,
   ownAreas: GridAreas | null,
   axis: 'rows' | 'columns',
+  flipped = false,
 ): GridLines {
   const lines = span + 1;
   const local = subgridNames(own, lines);
+  // a subgrid whose columns run the other way has the parent's lines over
+  // its span the other way round (CSS Grid 2, 9)
+  const parentLine = (l: number) => from + (flipped ? span - l : l);
   const names: string[][] = [];
   for (let l = 0; l < lines; l += 1) {
-    names.push([...(parent.names[from + l] ?? []), ...local[l]]);
+    names.push([...(parent.names[parentLine(l)] ?? []), ...local[l]]);
   }
   const areas: AreaSpan[] = [];
   for (const [name, start, end] of parent.areas) {
     if (start >= from + span || end <= from) continue;
-    areas.push([
-      name,
-      Math.max(start, from) - from,
-      Math.min(end, from + span) - from,
-    ]);
+    const a = Math.max(start, from) - from;
+    const b = Math.min(end, from + span) - from;
+    areas.push(flipped ? [name, span - b, span - a] : [name, a, b]);
   }
   areas.push(...areaSpans(ownAreas, axis));
   return linesNamed(span, names, areas);
