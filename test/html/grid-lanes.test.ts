@@ -209,6 +209,35 @@ metric('auto-fit collapses the lanes no item can need', async () => {
   });
 });
 
+metric(
+  'a subgrid takes the lanes it spans, and its items size them',
+  async () => {
+    // CSS Grid 3, 3.2: x sizes the second lane and y the third, beside what
+    // a, placed by the lanes, makes of all three
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/20px sans-serif}</style>' +
+        '<div id="g" style="display:inline-grid-lanes;' +
+        'grid-template-columns:auto auto auto;column-gap:10px">' +
+        '<div id="a" style="width:50px;height:10px"></div>' +
+        '<div id="s" style="display:grid;grid-template-columns:subgrid;' +
+        'grid-column:2/4;column-gap:10px">' +
+        '<div id="x" style="width:80px;height:10px"></div>' +
+        '<div id="y" style="height:10px"></div></div></div>',
+      600,
+    );
+    const el = view(node);
+    const g = boxOf(el, 'g');
+    const at = (id: string) => {
+      const b = boxOf(el, id);
+      return [b.x - g.x, b.width].map(Math.round);
+    };
+    assert.strictEqual(Math.round(g.width), 200, 'lanes of 50, 80 and 50');
+    assert.deepStrictEqual(at('s'), [60, 140]);
+    assert.deepStrictEqual(at('x'), [60, 80]);
+    assert.deepStrictEqual(at('y'), [150, 50], 'stretched across its lane');
+  },
+);
+
 const LOOK = {
   color: '#000000',
   fontFamily: 'sans-serif',

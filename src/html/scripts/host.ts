@@ -162,7 +162,11 @@ import {
   cssomShorthands,
   cssomStyle,
 } from '../computed.js';
-import { declaredProperties, fontQuery } from '../css/style.js';
+import {
+  declaredProperties,
+  fieldsOfProperty,
+  fontQuery,
+} from '../css/style.js';
 import type { ComputedStyle, FontQuery, RootLook } from '../css/style.js';
 import type { CanvasText } from '../canvas-text.js';
 import type { DocumentFontFace, FontMatch, WebFonts } from '../fonts.js';
@@ -4575,6 +4579,10 @@ export class DomHost {
         return declarationPriority(text(a), text(b));
       case 'blockNames':
         return declarationNames(text(a));
+      // the style fields a property sets, joined by commas, a shorthand's
+      // its longhands': what replacing an animation counts properties by
+      case 'longhands':
+        return fieldsOfProperty(text(a)).join(',');
       case 'blockText':
         return declarationText(text(a));
       case 'blockSet':

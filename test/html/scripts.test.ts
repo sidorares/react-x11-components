@@ -12103,8 +12103,11 @@ test("a computed style and a rule's style are CSSStyleDeclarations, the one read
       '<p id="out"></p><script>' +
       "var e = document.getElementById('e'), cs = getComputedStyle(e), r = [];" +
       'r.push(cs instanceof CSSStyleDeclaration, cs.parentRule, cs.cssText, cs.length > 100, cs.item(0) === cs[0], "color" in cs);' +
-      // as in Chrome: setProperty on one changes nothing and throws nothing
-      "cs.setProperty('color', 'blue'); cs.removeProperty('color'); r.push(cs.color);" +
+      // setProperty and removeProperty on one throw, as Chromium's do (WPT's
+      // cssom/getComputedStyle-basic), and change nothing
+      "try { cs.setProperty('color', 'blue'); } catch (x) { r.push(x.name); }" +
+      "try { cs.removeProperty('color'); } catch (x) { r.push(x.name); }" +
+      'r.push(cs.color);' +
       "try { cs.color = 'blue'; } catch (x) { r.push(x.name); }" +
       "try { cs.cssText = 'color: blue'; } catch (x) { r.push(x.name); }" +
       'var sheet = document.styleSheets[0], rule = sheet.cssRules[0], st = rule.style;' +
@@ -12126,6 +12129,8 @@ test("a computed style and a rule's style are CSSStyleDeclarations, the one read
     true,
     true,
     true,
+    'NoModificationAllowedError',
+    'NoModificationAllowedError',
     'rgb(255, 0, 0)',
     'NoModificationAllowedError',
     'NoModificationAllowedError',

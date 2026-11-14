@@ -23,14 +23,18 @@ import type { Animations } from './css/animation.js';
 import { RANGE_END, RANGE_START } from './css/triggers.js';
 import type { RangeEdge } from './css/triggers.js';
 import { composeShorthand } from './css/specified.js';
-import { fontVariantText, urlOf } from './css/style.js';
+import { fontVariantPartText, fontVariantText, urlOf } from './css/style.js';
+import type { CounterChange } from './css/content.js';
+import type { FilterFunction } from './css/filter.js';
 import type {
   BackgroundRepeat,
   ClipPath,
   ComputedStyle,
   ContentSize,
   GapRule,
+  GridAreas,
   GridLine,
+  GridTrack,
   SizeOf,
   TimelineRef,
 } from './css/style.js';
@@ -964,6 +968,8 @@ const FROM_A_BOX: ReadonlySet<string> = new Set(
     'inline-size',
     'block-size',
     'transform',
+    'transform-origin',
+    'perspective-origin',
     ...SIDES,
     'margin',
     'padding',
@@ -1200,7 +1206,10 @@ function cssomAt(
           )
           .join(', ')
       : 'none',
-    'white-space': style.whiteSpace,
+    'white-space':
+      style.breakSpaces && style.whiteSpace === 'pre-wrap'
+        ? 'break-spaces'
+        : style.whiteSpace,
     direction: style.direction,
     'writing-mode': style.writingMode,
     'text-orientation': style.textOrientation,
@@ -1278,6 +1287,10 @@ function cssomAt(
         : cssomTransform(style.transform, scale);
   // and the transforms of their own, as they compute (CSS Transforms 2,
   // 5): what is left at its initial value at the end left out
+  // an origin resolves against the box where there is one, as Chrome
+  // answers it in pixels, and is its lengths as computed where not
+  out['transform-origin'] = originText(style.transformOrigin, box, scale);
+  out['perspective-origin'] = originText(style.perspectiveOrigin, box, scale);
   out.translate = translateText(style.translate, scale);
   out.rotate = rotateText(style.rotate);
   out.scale = scaleText(style.scale);
@@ -1535,6 +1548,121 @@ function ruleText(rule: GapRule, style: ComputedStyle, scale: number): string {
 }
 
 /** A corner's shape as it computes, whichever keyword it was written as. */
+/** A `transform-origin` or a `perspective-origin`: each length against the
+ *  box's border box where it has one. */
+function originText(
+  [x, y]: readonly [Len, Len],
+  box: UsedBox | null,
+  scale: number,
+): string {
+  if (!box) return `${len(x, scale)} ${len(y, scale)}`;
+  const at = (l: Len, base: number): string =>
+    typeof l === 'object'
+      ? px((l.pct / 100) * base + (l.px ?? 0), scale)
+      : len(l, scale);
+  return `${at(x, box.width)} ${at(y, box.height)}`;
+}
+
+/** A `filter` list as Chrome writes it: an amount as a number, a turn in
+ *  degrees, a shadow's colour first. */
+function filterText(
+  list: readonly FilterFunction[] | null,
+  style: ComputedStyle,
+  scale: number,
+): string {
+  if (!list) return 'none';
+  return list
+    .map((f) => {
+      switch (f.fn) {
+        case 'hue-rotate':
+          return `hue-rotate(${num(f.angle)}deg)`;
+        case 'blur':
+          return `blur(${px(f.radius, scale)})`;
+        case 'drop-shadow':
+          return `drop-shadow(${cssomColor(f.color, null, style.color, style.colorSource)} ${px(f.x, scale)} ${px(f.y, scale)} ${px(f.blur, scale)})`;
+        case 'url':
+          return urlText(f.url);
+        default:
+          return `${f.fn}(${num(f.amount)})`;
+      }
+    })
+    .join(' ');
+}
+
+/** One track size of `grid-auto-rows` or `-columns`. */
+function trackText(track: GridTrack, scale: number): string {
+  const size = (v: GridTrack['max']): string =>
+    typeof v === 'string'
+      ? v
+      : typeof v === 'number' || 'pct' in v
+        ? len(v, scale)
+        : 'fr' in v
+          ? `${num(v.fr)}fr`
+          : `fit-content(${len(v.fit, scale)})`;
+  const { min, max } = track;
+  if (typeof max === 'object' && max !== null && 'fit' in max) return size(max);
+  if (
+    min === 'auto' &&
+    typeof max === 'object' &&
+    max !== null &&
+    'fr' in max
+  ) {
+    return size(max);
+  }
+  const lo = size(min);
+  const hi = size(max);
+  return lo === hi ? lo : `minmax(${lo}, ${hi})`;
+}
+
+/** `grid-template-areas`' strings again, a `.` for each cell no area has. */
+function areasText(areas: GridAreas | null): string {
+  if (!areas) return 'none';
+  const cells = Array.from({ length: areas.rows }, () =>
+    Array.from({ length: areas.columns }, () => '.'),
+  );
+  for (const [name, { rows, columns }] of areas.areas) {
+    for (let r = rows[0]; r < rows[1]; r++) {
+      for (let c = columns[0]; c < columns[1]; c++) cells[r][c] = name;
+    }
+  }
+  return cells.map((row) => `"${row.join(' ')}"`).join(' ');
+}
+
+/** A `counter-reset`, `-increment` or `-set`: each name and its number. */
+function countersText(list: readonly CounterChange[] | null): string {
+  if (!list) return 'none';
+  return list
+    .map((c) => {
+      const name = c.reversed ? `reversed(${c.name})` : c.name;
+      return c.counted ? name : `${name} ${c.value}`;
+    })
+    .join(' ');
+}
+
+/** A string as CSSOM serializes one. */
+function stringText(text: string): string {
+  return `"${text.replace(/[\\"]/g, '\\$&').replace(/\n/g, '\\a ')}"`;
+}
+
+/** `font-feature-settings` from the features a style holds, as Chrome
+ *  writes it: each tag once, the last it was given, in the tags' order,
+ *  and its number where it is not 1. */
+function featureSettingsText(held: string): string {
+  if (!held) return 'normal';
+  const last = new Map<string, string>();
+  for (const pair of held.split(',')) {
+    const [tag, n] = pair.split('=');
+    last.set(tag, n);
+  }
+  return [...last.keys()]
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    .map((tag) => {
+      const n = last.get(tag);
+      return n === '1' ? stringText(tag) : `${stringText(tag)} ${n}`;
+    })
+    .join(', ');
+}
+
 function cornerShapeText(k: number): string {
   if (k === Infinity) return 'superellipse(infinity)';
   if (k === -Infinity) return 'superellipse(-infinity)';
@@ -1896,6 +2024,60 @@ const SHORTHANDS: Record<string, Composer> = {
   'grid-column': (_, style) =>
     gridAxisText(style.gridColumnStart, style.gridColumnEnd),
   'grid-area': (_, style) => gridAreaText(style),
+  // and the longhands a style holds that a page seldom reads, composed as
+  // they are read (the background longhands' comment above says why)
+  'grid-row-start': (_, style) => gridLineText(style.gridRowStart),
+  'grid-row-end': (_, style) => gridLineText(style.gridRowEnd),
+  'grid-column-start': (_, style) => gridLineText(style.gridColumnStart),
+  'grid-column-end': (_, style) => gridLineText(style.gridColumnEnd),
+  'grid-auto-rows': (_, style, scale) => trackText(style.gridAutoRows, scale),
+  'grid-auto-columns': (_, style, scale) =>
+    trackText(style.gridAutoColumns, scale),
+  'grid-template-areas': (_, style) => areasText(style.gridAreas),
+  'grid-row-gap': (all) => all['row-gap'],
+  'grid-column-gap': (all) => all['column-gap'],
+  filter: (_, style, scale) => filterText(style.filter, style, scale),
+  'backdrop-filter': (_, style, scale) =>
+    filterText(style.backdropFilter, style, scale),
+  'counter-reset': (_, style) => countersText(style.counterReset),
+  'counter-increment': (_, style) => countersText(style.counterIncrement),
+  'counter-set': (_, style) => countersText(style.counterSet),
+  quotes: (_, style) =>
+    typeof style.quotes === 'string'
+      ? style.quotes
+      : style.quotes.map(stringText).join(' '),
+  'overflow-wrap': (_, style) => style.overflowWrap,
+  'word-wrap': (_, style) => style.overflowWrap,
+  'white-space-collapse': (_, style) =>
+    style.whiteSpace === 'pre' || style.whiteSpace === 'pre-wrap'
+      ? 'preserve'
+      : style.whiteSpace === 'pre-line'
+        ? 'preserve-breaks'
+        : 'collapse',
+  'page-break-inside': (_, style) => style.breakInside,
+  'font-kerning': (_, style) =>
+    style.fontKerning === 'kern=1'
+      ? 'normal'
+      : style.fontKerning === 'kern=0'
+        ? 'none'
+        : 'auto',
+  'font-feature-settings': (_, style) =>
+    featureSettingsText(style.fontFeatureSettings),
+  'font-variant-ligatures': (_, style) =>
+    fontVariantPartText(style, 'ligatures'),
+  'font-variant-caps': (_, style) => fontVariantPartText(style, 'caps'),
+  'font-variant-numeric': (_, style) => fontVariantPartText(style, 'numeric'),
+  'font-variant-position': (_, style) => fontVariantPartText(style, 'position'),
+  'list-style-image': (_, style) => {
+    const url = style.listStyleImage ? urlOf(style.listStyleImage) : null;
+    return url === null ? 'none' : urlText(url);
+  },
+  'touch-action': (_, style) => style.touchActionText,
+  appearance: (_, style) => style.appearanceText,
+  'scrollbar-color': (_, style) =>
+    style.scrollbarThumbColor === null || style.scrollbarTrackColor === null
+      ? 'auto'
+      : `${cssomColor(style.scrollbarThumbColor, null, style.color, style.colorSource)} ${cssomColor(style.scrollbarTrackColor, null, style.color, style.colorSource)}`,
   columns: (_, style, scale) =>
     [
       style.columnWidth === null ? '' : px(style.columnWidth, scale),
