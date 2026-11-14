@@ -146,6 +146,7 @@ import {
   TEXT_RAISES,
   TEXT_SHIFTS,
   TRANSITION_IMAGES,
+  TRANSITION_KEYS,
   inlineFade,
   textFade,
 } from './layout/boxes.js';
@@ -9838,8 +9839,12 @@ function settleLayers(box: Box, list: Box[]): void {
 export function stacksLayers(box: Box): boolean {
   const style = box.style;
   if (style.position === 'fixed' || style.position === 'sticky') return true;
-  // and one in the top layer, absolute or not (CSS Position 4, 3.3)
+  // and one in the top layer, absolute or not (CSS Position 4, 3.3), and a
+  // scope's `::view-transition`, which stands in for the top layer in it
   if (box.topLayer) return true;
+  if (box.pseudo === 'view-transition') {
+    if (TRANSITION_KEYS.get(box) === 'view-transition') return true;
+  }
   if (style.opacity < 1) return true;
   // and a filter, which is applied to the group (Filter Effects 1, 2), and
   // a backdrop filter (Filter Effects 2, 2)
@@ -10098,6 +10103,14 @@ function byZIndex(a: Box, b: Box): number {
  *  opacity's, which is painted in the document's order whatever `z-index`
  *  it was given. */
 export function layerOf(box: Box): number {
+  // a scope's `::view-transition` is drawn over all its scope holds, as the
+  // document's is over the document from the top layer (CSS View
+  // Transitions 2, 4)
+  if (box.pseudo === 'view-transition' && !box.topLayer) {
+    if (TRANSITION_KEYS.get(box) === 'view-transition') {
+      return Number.MAX_SAFE_INTEGER;
+    }
+  }
   const style = box.style;
   const z = style.zIndex;
   if (z === 'auto') return 0;
