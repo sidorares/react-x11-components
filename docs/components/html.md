@@ -5985,6 +5985,12 @@ sets its three longhands and reads as all three, so `none` is `0 0 auto`
 and a factor alone has a basis of `0%`. `flex-flow` leaves out a `row`
 and a `nowrap`, and `flex-wrap: wrap balance` reads as `balance`. The
 gaps' old names, `grid-gap` and its kin, take what the gaps do.
+A box's margins, paddings and insets are held the same way
+(`box-specified.ts`): a margin and an inset take a length, a percentage and
+`auto`, and a padding one not below nought and no `auto`. `margin`,
+`padding` and `inset` set their four sides and read back as few as say them,
+their block and inline forms set two the same way, and none of them is said
+where a side holds a `var()`.
 Items a row aligns by their first baselines — `align-self` or `align-items`
 `baseline` — meet the lowest of their row's, an item spanning rows meeting
 its first row's, and are not stretched; the row is sized with what that

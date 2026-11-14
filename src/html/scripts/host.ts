@@ -139,7 +139,11 @@ import {
   withoutHighlights,
   withoutPseudoElements,
 } from '../css/specified.js';
-import { ALIGN_SHORTHANDS, ALIGN_SPECIFIED } from '../css/align-specified.js';
+import {
+  ALIGN_SHORTHANDS as ALIGN_ONLY_SHORTHANDS,
+  ALIGN_SPECIFIED as ALIGN_ONLY_SPECIFIED,
+} from '../css/align-specified.js';
+import { BOX_SHORTHANDS, BOX_SPECIFIED } from '../css/box-specified.js';
 import { borderDeclared, collapseBorders } from '../css/borders-specified.js';
 import { eventPath, retarget, shadowIncludingHolds } from './event-path.js';
 import { NO_MODIFIERS } from '../dom-events.js';
@@ -1762,6 +1766,16 @@ const NODE_READS = new Set([
   'vtRemaining',
 ]);
 
+/** The properties a block's declarations are held to the grammars of as
+ *  CSSOM reads them, and the shorthands it writes back from their
+ *  longhands: box alignment's, the gaps', flex layout's and a box's
+ *  sides'. */
+const ALIGN_SPECIFIED = new Set([...ALIGN_ONLY_SPECIFIED, ...BOX_SPECIFIED]);
+const ALIGN_SHORTHANDS: Record<string, string[]> = {
+  ...ALIGN_ONLY_SHORTHANDS,
+  ...BOX_SHORTHANDS,
+};
+
 /** A declaration block as CSSOM serializes one (6.7.2), which is what a
  *  browser writes into a `style` attribute it changes: each declaration
  *  ended with a `;`, so that text appended to it is a declaration of its
@@ -1769,7 +1783,7 @@ const NODE_READS = new Set([
 function serializeDeclarations(
   declarations: readonly { prop: string; value: string; important: boolean }[],
 ): string {
-  return collapseBorders(declarations)
+  return collapseBorders(withAlignShorthands([...declarations], true))
     .map((d) => `${d.prop}: ${d.value}${d.important ? ' !important' : ''};`)
     .join(' ');
 }
@@ -1822,15 +1836,20 @@ const ALIGN_LONGHAND = new Set(Object.values(ALIGN_SHORTHANDS).flat());
  *  "serialize a CSS declaration block"). */
 function withAlignShorthands(
   decls: { prop: string; value: string; important: boolean }[],
+  stored = false,
 ): { prop: string; value: string; important: boolean }[] {
   if (!decls.some((d) => ALIGN_LONGHAND.has(d.prop))) return decls;
   const out: { prop: string; value: string; important: boolean }[] = [];
   const said = new Set<string>();
   for (const d of decls) {
     if (said.has(d.prop)) continue;
-    const shorthand = Object.keys(ALIGN_SHORTHANDS).find((s) =>
-      ALIGN_SHORTHANDS[s].includes(d.prop),
-    );
+    // the text a block keeps, which the cascade reads, says only a box's
+    // sides as their shorthand: an alignment shorthand would drop both its
+    // halves where the cascade refuses one, as Chromium's refuses
+    // `align-content: last baseline`
+    const shorthand = Object.keys(
+      stored ? BOX_SHORTHANDS : ALIGN_SHORTHANDS,
+    ).find((s) => ALIGN_SHORTHANDS[s].includes(d.prop));
     const names = shorthand ? ALIGN_SHORTHANDS[shorthand] : null;
     const parts = names?.map((n) => decls.find((e) => e.prop === n));
     if (shorthand && parts!.every((p) => p && p.important === d.important)) {
