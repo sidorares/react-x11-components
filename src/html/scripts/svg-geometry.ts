@@ -10,7 +10,7 @@
 import { Element, Text } from 'domhandler';
 import type { AnyNode } from 'domhandler';
 
-import { multiply } from '../css/transform.js';
+import { invert, mapPoint, multiply } from '../css/transform.js';
 import type { Matrix } from '../css/transform.js';
 
 export interface Box {
@@ -746,6 +746,186 @@ function textBox(el: Element, measure: SvgMeasure): Box | null {
   };
   place(el);
   return pen.box;
+}
+
+/** The runs of a text element's text, each with the element that holds it
+ *  and the box it takes up, in the text's user units, as `textBox` places
+ *  them: what a point over the text is over. */
+function textRuns(
+  el: Element,
+  measure: SvgMeasure,
+): Array<{ el: Element; box: Box }> {
+  const out: Array<{ el: Element; box: Box }> = [];
+  const pen = { x: 0, y: 0 };
+  const anchorOf = (at: Element): string => {
+    for (let up: AnyNode | null = at; up; up = up.parent) {
+      if (up instanceof Element) {
+        const a = attr(up, 'text-anchor');
+        if (a) return a;
+      }
+    }
+    return 'start';
+  };
+  const place = (at: Element): void => {
+    const em = measure.fontSize(at);
+    const x = attr(at, 'x');
+    const y = attr(at, 'y');
+    if (x !== undefined) pen.x = numbers(x)[0] ?? 0;
+    if (y !== undefined) pen.y = numbers(y)[0] ?? 0;
+    pen.x += length(attr(at, 'dx')?.split(/[\s,]+/)[0], em, 0);
+    pen.y += length(attr(at, 'dy')?.split(/[\s,]+/)[0], em, 0);
+    for (const kid of at.children) {
+      if (kid instanceof Text) {
+        const data = kid.data.replace(/\s+/g, ' ');
+        if (!data.trim()) continue;
+        const run = measure.text(at, data.trim());
+        const anchor = anchorOf(at);
+        const start =
+          anchor === 'middle'
+            ? pen.x - run.width / 2
+            : anchor === 'end'
+              ? pen.x - run.width
+              : pen.x;
+        out.push({
+          el: at,
+          box: {
+            x: start,
+            y: pen.y - run.ascent,
+            width: run.width,
+            height: run.ascent + run.descent,
+          },
+        });
+        pen.x += run.width;
+      } else if (kid instanceof Element && !measure.hidden(kid)) place(kid);
+    }
+  };
+  place(el);
+  return out;
+}
+
+/** The shapes a point can be over, by `pointer-events` (SVG 2, 15.6): what
+ *  a value asks of a painted fill and stroke, and of `visibility`. */
+const POINTER: Record<
+  string,
+  { fill: 0 | 1 | 2; stroke: 0 | 1 | 2; visible: boolean }
+> = {
+  // 2 is where it is painted, 1 whatever it is painted with
+  visiblepainted: { fill: 2, stroke: 2, visible: true },
+  auto: { fill: 2, stroke: 2, visible: true },
+  visiblefill: { fill: 1, stroke: 0, visible: true },
+  visiblestroke: { fill: 0, stroke: 1, visible: true },
+  visible: { fill: 1, stroke: 1, visible: true },
+  painted: { fill: 2, stroke: 2, visible: false },
+  fill: { fill: 1, stroke: 0, visible: false },
+  stroke: { fill: 0, stroke: 1, visible: false },
+  all: { fill: 1, stroke: 1, visible: false },
+};
+const SHAPES = /^(rect|circle|ellipse|line|polyline|polygon|path)$/;
+
+/**
+ * The element of an inline `<svg>` drawn topmost at a point, CSS pixels
+ * from the corner of its content box, by its geometry and its
+ * `pointer-events` (SVG 2, 15.6): a shape's fill by its rule and its stroke
+ * by its width, a text's runs, an image's rectangle. Null where the point is
+ * over no element of it.
+ */
+export function svgElementAt(
+  svg: Element,
+  x: number,
+  y: number,
+  measure: SvgMeasure,
+): Element | null {
+  const outer = measure.box(svg);
+  // matrices to the drawing's own corner rather than the document's
+  const own: SvgMeasure = {
+    ...measure,
+    box: (at) =>
+      at === svg && outer
+        ? { x: 0, y: 0, width: outer.width, height: outer.height }
+        : measure.box(at),
+  };
+  let hit: Element | null = null;
+  const visit = (el: Element): void => {
+    for (const kid of el.children) {
+      if (!(kid instanceof Element)) continue;
+      const name = tag(kid);
+      if (NEVER_DRAWN.test(name)) continue;
+      if (attr(kid, 'display') === 'none' || measure.hidden(kid)) continue;
+      const pe = (
+        inheritedProperty(kid, 'pointer-events') ?? 'visiblepainted'
+      ).toLowerCase();
+      if (pe === 'none') {
+        // what it holds may answer for itself
+        if (name === 'g' || name === 'a' || name === 'svg' || name === 'switch')
+          visit(kid);
+        continue;
+      }
+      if (name === 'g' || name === 'a' || name === 'svg' || name === 'switch') {
+        visit(kid);
+        continue;
+      }
+      const rule = POINTER[pe] ?? POINTER.visiblepainted;
+      const visibility = (
+        inheritedProperty(kid, 'visibility') ?? 'visible'
+      ).toLowerCase();
+      const m = screenCtmOf(kid, own);
+      const inv = m && invert(m);
+      if (!inv) continue;
+      const [px, py] = mapPoint(inv, x, y);
+      if (SHAPES.test(name)) {
+        const seen = !rule.visible || visibility === 'visible';
+        if (!seen) continue;
+        const fill = (inheritedProperty(kid, 'fill') ?? 'black').toLowerCase();
+        const stroke = (
+          inheritedProperty(kid, 'stroke') ?? 'none'
+        ).toLowerCase();
+        const fills = rule.fill === 1 || (rule.fill === 2 && fill !== 'none');
+        const strokes =
+          rule.stroke === 1 || (rule.stroke === 2 && stroke !== 'none');
+        if (
+          (fills && pointInFill(kid, measure, px, py)) ||
+          (strokes && pointInStroke(kid, measure, px, py))
+        ) {
+          hit = kid;
+        }
+      } else if (name === 'text') {
+        for (const run of textRuns(kid, measure)) {
+          const b = run.box;
+          const runVisible =
+            (
+              inheritedProperty(run.el, 'visibility') ?? 'visible'
+            ).toLowerCase() === 'visible';
+          if (rule.visible && !runVisible) continue;
+          if (
+            px >= b.x &&
+            px <= b.x + b.width &&
+            py >= b.y &&
+            py <= b.y + b.height
+          ) {
+            hit = run.el;
+          }
+        }
+      } else if (
+        name === 'image' ||
+        name === 'foreignobject' ||
+        name === 'use'
+      ) {
+        if (rule.visible && visibility !== 'visible') continue;
+        const b = bboxOf(kid, measure);
+        if (
+          b &&
+          px >= b.x &&
+          px <= b.x + b.width &&
+          py >= b.y &&
+          py <= b.y + b.height
+        ) {
+          hit = kid;
+        }
+      }
+    }
+  };
+  visit(svg);
+  return hit;
 }
 
 /** `getBBox` (SVG 2, 8.10): what an element takes up in its own user units,
