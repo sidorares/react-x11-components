@@ -1253,7 +1253,10 @@ function cssomAt(
     'object-fit': style.objectFit,
     'object-position': `${len(style.objectPositionX, scale)} ${len(style.objectPositionY, scale)}`,
     'text-align-last': style.textAlignLast,
-    'text-indent': len(style.textIndent, scale),
+    'text-indent':
+      len(style.textIndent, scale) +
+      (style.textIndentHanging ? ' hanging' : '') +
+      (style.textIndentEachLine ? ' each-line' : ''),
     'text-justify': style.textJustify,
     'text-overflow': style.textOverflow,
     'tab-size': style.tabSizeIsLength

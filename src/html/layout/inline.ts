@@ -752,7 +752,10 @@ function linesOf(
     style.textAlign !== 'justify' &&
     lastAlign !== 'justify' &&
     alignShift(style.textAlign, rtl) !== alignShift(lastAlign, rtl);
-  const indent = blockIndent(block, options.width);
+  const indents = blockIndents(block, options.width);
+  const indent = indents.first;
+  // whether any line is indented, which no one layout of all of them can do
+  const indented = !!(indents.first || indents.forced || indents.soft);
 
   let hasAtomics = false;
   let hasEdges = false;
@@ -804,7 +807,7 @@ function linesOf(
   // Inline boxes' edges as spacers in one layout, where the engine left
   // every edge on the line of the content it belongs to (`layoutSpaced`);
   // the lines a piece at a time, below, where it did not.
-  if (spaced && !floated && !indent && !alignedApart && !restyled && !apart) {
+  if (spaced && !floated && !indented && !alignedApart && !restyled && !apart) {
     const laid = layoutSpaced(
       items,
       base,
@@ -831,7 +834,7 @@ function linesOf(
     !hasEdges &&
     !raised &&
     !floated &&
-    !indent &&
+    !indented &&
     !alignedApart &&
     !restyled &&
     !strutted &&
@@ -862,7 +865,7 @@ function linesOf(
     !hasEdges &&
     !raised &&
     !floated &&
-    !indent &&
+    !indented &&
     !alignedApart &&
     !restyled &&
     !strutted &&
@@ -1192,7 +1195,7 @@ function linesOf(
       levels,
     );
     if (!line) {
-      open = openLine(0);
+      open = openLine(last ? indents.forced : indents.soft);
       placeDeferred();
       return;
     }
@@ -1209,7 +1212,9 @@ function linesOf(
     lines.push(line);
     widest = Math.max(widest, line.width);
     y += line.height;
-    open = openLine(0);
+    // the next line's indent: after a forced break where `each-line` says
+    // so, and every line but those under `hanging`
+    open = openLine(last ? indents.forced : indents.soft);
     placeDeferred();
   };
 
@@ -1385,9 +1390,13 @@ function linesOf(
     // text's line was as short as the paragraph's
     // (and its lines all aligned alike, which the last is not where
     // `text-align-last` sets it apart)
+    // (and no line of it indented, which `each-line` and `hanging` ask of
+    // lines after the first)
     const tailIsPlain =
       !alignedApart &&
       !onFirst &&
+      !indents.forced &&
+      !indents.soft &&
       !strutted &&
       !apart &&
       segment.nextIndex >= items.length &&
@@ -1790,7 +1799,16 @@ function linesOf(
     // the breaks `text-wrap: pretty` would make instead, which the lines
     // are made again with (`layoutLines`): a line's room is the band's
     // here, and no float narrows it
-    if (pretty && !hasAtomics && !floated && fonts) {
+    // and none where a line after the first is indented, which it would
+    // set at the first's room
+    if (
+      pretty &&
+      !hasAtomics &&
+      !floated &&
+      fonts &&
+      !indents.forced &&
+      !indents.soft
+    ) {
       const at = prettyAgain(items, lines, fonts, base, style, pretty, indent);
       if (at) PRETTY_AGAIN.set(result, at);
     }
@@ -7607,14 +7625,32 @@ function lastAlignOf(
  * not its element's first formatted line (CSS 2.1 16.1). An anonymous
  * block's is only where the block is its parent's first child: the text
  * after a `<div>` in a `<span>`, or after a paragraph in a `<div>`, starts
- * a line of no indent.
+ * a line of no indent — but for `each-line`, which a block-level box ends
+ * a line for as a forced break does, and `hanging`, which indents every
+ * line but those that would be (CSS Text 3, 7.1).
  */
 function blockIndent(block: Box, width: number): number {
-  if (!block.el && block.parent && block.parent.children[0] !== block) {
-    return 0;
-  }
-  return indentOf(block.style, width);
+  return blockIndents(block, width).first;
 }
+
+/** What `text-indent` gives a block's first line, a line after a forced
+ *  break, and a line after a soft wrap. */
+function blockIndents(
+  block: Box,
+  width: number,
+): { first: number; forced: number; soft: number } {
+  const style = block.style;
+  const raw = indentOf(style, width);
+  if (!raw) return NO_INDENTS;
+  const each = style.textIndentEachLine;
+  const hanging = style.textIndentHanging;
+  const opens =
+    !!block.el || !block.parent || block.parent.children[0] === block;
+  const pick = (would: boolean): number => (would !== hanging ? raw : 0);
+  return { first: pick(opens || each), forced: pick(each), soft: pick(false) };
+}
+
+const NO_INDENTS = { first: 0, forced: 0, soft: 0 };
 
 function indentOf(style: ComputedStyle, width: number): number {
   const indent = style.textIndent;

@@ -39,6 +39,7 @@ import {
   trimValue,
 } from './values.js';
 import type { FontSizeBasis, Len, Pct, UnitContext } from './values.js';
+import { textIndentParts } from './text-indent.js';
 import { CALC_SIZE, calcSizeOf } from './calc-size.js';
 import { joinFamilies, parseUrl, readFamilies } from './parse.js';
 import type { FamilyName } from './parse.js';
@@ -852,6 +853,12 @@ export interface ComputedStyle {
    *  `text-align`, which resets it. */
   alignBlocks: 'left' | 'right' | 'center' | null;
   textIndent: Len;
+  /** `text-indent`'s `hanging` (CSS Text 3, 7.1): every line indented but
+   *  those that would be. Inherited with `text-indent`. */
+  textIndentHanging: boolean;
+  /** Its `each-line`: a line after a forced break, or after a block-level
+   *  box in the inline content, indented as well as the first. */
+  textIndentEachLine: boolean;
   /** `text-transform` as it computes (`parseTextTransform`): `none`,
    *  `math-auto`, or a case keyword, `full-width` and `full-size-kana`,
    *  each at most once and in that order. One string, so two styles
@@ -1790,6 +1797,8 @@ export const INHERITED = [
   'blockEllipsis',
   'alignBlocks',
   'textIndent',
+  'textIndentHanging',
+  'textIndentEachLine',
   'textTransform',
   'textAutospace',
   'textAutospaceSize',
@@ -1966,6 +1975,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     textJustify: 'auto',
     alignBlocks: null,
     textIndent: 0,
+    textIndentHanging: false,
+    textIndentEachLine: false,
     textTransform: 'none',
     wordSpaceTransform: 'none',
     textAutospace: 'normal',
@@ -2391,6 +2402,8 @@ export function inherit(
   out.blockEllipsis = parent.blockEllipsis;
   out.alignBlocks = parent.alignBlocks;
   out.textIndent = parent.textIndent;
+  out.textIndentHanging = parent.textIndentHanging;
+  out.textIndentEachLine = parent.textIndentEachLine;
   out.textTransform = parent.textTransform;
   out.textAutospace = parent.textAutospace;
   out.textAutospaceSize = parent.textAutospaceSize;
@@ -4618,8 +4631,13 @@ export function applyDeclaration(
       return;
     }
     case 'text-indent': {
-      const len = parseLength(value, ctx);
-      if (len !== null && len !== AUTO) style.textIndent = len;
+      const read = textIndentParts(value);
+      if (!read) return;
+      const len = parseLength(read.length, ctx);
+      if (len === null || len === AUTO) return;
+      style.textIndent = len;
+      style.textIndentHanging = read.hanging;
+      style.textIndentEachLine = read.eachLine;
       return;
     }
     case 'word-space-transform': {
@@ -10245,7 +10263,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'text-align': ['textAlign', 'alignBlocks'],
   'text-align-last': ['textAlignLast'],
   'text-justify': ['textJustify'],
-  'text-indent': ['textIndent'],
+  'text-indent': ['textIndent', 'textIndentHanging', 'textIndentEachLine'],
   'text-transform': ['textTransform'],
   'word-space-transform': ['wordSpaceTransform'],
   'text-autospace': ['textAutospace'],

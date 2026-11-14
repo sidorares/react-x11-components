@@ -33,6 +33,7 @@ import {
   shapeThresholdSpecified,
 } from './shape-outside.js';
 import { parseDecorationInset } from './decoration-inset.js';
+import { textIndentParts } from './text-indent.js';
 import {
   parseTextTransform,
   parseWordSpaceTransform,
@@ -283,6 +284,23 @@ export function specifiedValue(
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
     return /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(word) ? word : null;
+  }
+  // a length or a percentage with `hanging` and `each-line` after it, in
+  // that order (CSS Text 3, 7.1); a lone length is a length's to read
+  if (name === 'text-indent') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    const read = textIndentParts(word);
+    if (!read) return null;
+    if (!read.hanging && !read.eachLine) return undefined;
+    if (!/^[+-]?(?:\d|\.\d)|^calc\(|^0$/i.test(read.length)) return null;
+    return [
+      read.length,
+      read.hanging && 'hanging',
+      read.eachLine && 'each-line',
+    ]
+      .filter(Boolean)
+      .join(' ');
   }
   // its keywords each at most once, in the order CSS Text 3, 2.1 gives them
   if (name === 'text-transform') {
