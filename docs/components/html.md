@@ -5863,7 +5863,10 @@ lengths, percentages, `fr`s, `auto`, `minmax()`, `fit-content()`, and
 `repeat()` by a count or by what fits, an `auto-fit` repetition that no item
 is in collapsing with the gaps beside it — and those past the template from
 `grid-auto-columns` and `grid-auto-rows`, with gaps of lengths or
-percentages of the grid's size along them.
+percentages of the grid's size along them. A grid with no height of its
+own is as tall as its rows come to with their percentages `auto`, and its
+percentage rows are then of that height, running past the grid or leaving
+room in it, which stays that tall (CSS Grid 1, 7.2.1).
 It places its items by line, span, line name or the area
 `grid-template-areas` names, or in order into the first cells free, along
 the rows or down the columns by `grid-auto-flow`, `dense` or not — in

@@ -813,6 +813,46 @@ metric(
   },
 );
 
+metric(
+  'a grid with no height stays as tall as its rows were with their percentages auto',
+  async () => {
+    // CSS Grid 1, 7.2.1, and WPT's grid-percentage-rows-indefinite-height:
+    // what the rows come to with the percentages resolved runs past the
+    // grid or leaves room in it, and the grid was as tall as they were
+    const grid = (id: string, rows: string, items: string) =>
+      `<div id="${id}" style="display:grid;padding:5px;` +
+      `grid-template-rows:${rows}">${items}</div>`;
+    const tall = (n: number) => `<div style="height:${n}px"></div>`;
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        grid('short', '60%', `<div id="a">${tall(25)}</div>`) +
+        grid('long', '140%', `<div id="b">${tall(25)}</div>`) +
+        grid(
+          'two',
+          'auto 60%',
+          `<div>${tall(25)}</div><div id="c" style="grid-row:2"></div>`,
+        ),
+    );
+    const el = view(node);
+    const height = (id: string) => boxOf(el, id).height;
+    assert.deepStrictEqual(
+      [height('short'), height('a')],
+      [35, 15],
+      '60% of 25, in a grid 25 tall',
+    );
+    assert.deepStrictEqual(
+      [height('long'), height('b')],
+      [35, 35],
+      '140% of 25, running past it',
+    );
+    assert.deepStrictEqual(
+      [height('two'), height('c')],
+      [35, 15],
+      'an auto row of 25 and 60% of that',
+    );
+  },
+);
+
 test('a grid item with a ratio is sized by it, and justify-items: normal starts an image', async () => {
   // An item with an aspect-ratio and a height was as wide as its column,
   // and `normal` stretched an image across it, where CSS Grid 1, 6.2 sizes
