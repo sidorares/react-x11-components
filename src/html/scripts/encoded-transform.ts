@@ -20,6 +20,14 @@
 // has it pass: a frame its own `readable` gave, in the order it gave them,
 // each once. A clone, a copy and a frame of another's are dropped there, as
 // are a frame written twice and one older than the last written.
+//
+// `createEncodedStreams()` on a sender or a receiver is Chrome's API from
+// before the specification, which WPT's `tentative` tests still hold it to:
+// the same frames, read and written by the page's own realm, whose window is
+// the transform's worker (`streamsFor`; `PAGE` in `peers.ts`). Its writable
+// takes any frame of the realm's, a receiver's frame on a sender among them,
+// leaves the data the page holds as it was, and is an `OperationError` for a
+// frame written already. A frame's `setMetadata()` is Chrome's too.
 
 /** What `installDom` hands this. */
 export interface EncodedTransformDeps {
@@ -53,6 +61,14 @@ export interface EncodedTransformInternals {
   interfaces: Record<string, unknown>;
   /** Whether a value is an `RTCRtpScriptTransform`. */
   isTransform(value: unknown): boolean;
+  /** The legacy streams of a sender or a receiver, `createEncodedStreams()`'s:
+   *  the transform's number, which the host puts on the side, and the
+   *  streams. Throws where the side has made them already. */
+  streamsFor(
+    owner: unknown,
+    side: 'sender' | 'receiver',
+    kind: 'audio' | 'video',
+  ): { n: number; streams: { readable: unknown; writable: unknown } };
   /** Puts a transform on a side: throws where it was ever on another. `owner` is the sender or the receiver, `tx` the host's
    *  number for its transceiver. */
   attach(
@@ -253,6 +269,22 @@ export function installEncodedTransform(
   /** What `getMetadata()` answers: a copy, with the frame's times from
    *  this realm's time origin. */
   const metadataOf = (s: Any): Any => copyMetadata(s.metadata, s.kind);
+  /** `setMetadata()`, Chrome's: the fields of the frame's kind that the
+   *  dictionary has, as the constructor's `metadata` sets them. */
+  const setMetadata = (s: Any, given: Any, name: string): void => {
+    if (given === null || typeof given !== 'object') {
+      throw new TypeError(
+        `Failed to execute 'setMetadata' on '${name}': parameter 1 is not an object.`,
+      );
+    }
+    const metadata = copyMetadata(s.metadata, s.kind);
+    for (const key of Object.keys(given)) {
+      if (FIELDS[s.kind].includes(key) && given[key] !== undefined) {
+        metadata[key] = copyValue(given[key]);
+      }
+    }
+    s.metadata = metadata;
+  };
 
   class RTCEncodedVideoFrame {
     constructor(originalFrame: Any, options: Any = {}) {
@@ -278,6 +310,9 @@ export function installEncodedTransform(
     getMetadata(): Any {
       return metadataOf(frameSlot(this, 'video'));
     }
+    setMetadata(metadata: Any): void {
+      setMetadata(frameSlot(this, 'video'), metadata, 'RTCEncodedVideoFrame');
+    }
   }
   class RTCEncodedAudioFrame {
     constructor(originalFrame: Any, options: Any = {}) {
@@ -299,6 +334,9 @@ export function installEncodedTransform(
     }
     getMetadata(): Any {
       return metadataOf(frameSlot(this, 'audio'));
+    }
+    setMetadata(metadata: Any): void {
+      setMetadata(frameSlot(this, 'audio'), metadata, 'RTCEncodedAudioFrame');
     }
   }
   /** An interface's members as Web IDL has them: enumerable, and its
@@ -473,19 +511,47 @@ export function installEncodedTransform(
     );
   };
 
-  /** A transform posted to this realm, a worker's: its transformer, told
-   *  as `rtctransform` (3.3, "Operations"). */
-  const arrived = (n: number, options: Any): void => {
-    const { ReadableStream, WritableStream } = D.streams();
-    making = true;
-    let transformer: Any;
-    let made: Any;
-    try {
-      transformer = new (RTCRtpScriptTransformer as Any)();
-      made = new (RTCTransformEvent as Any)('rtctransform');
-    } finally {
-      making = false;
+  /** A legacy writable's write: any frame of this realm's goes on, once. */
+  const writeLegacy = (s: Any, chunk: Any): void => {
+    const f = slots.get(chunk);
+    if (!f || f.what !== 'frame') {
+      throw new TypeError(
+        'Encoded streams write RTCEncodedVideoFrame and RTCEncodedAudioFrame objects alone.',
+      );
     }
+    const data = f.data;
+    // a frame written is the stack's from then on, though the buffer the
+    // page read from it is still the page's
+    if (f.written || detached(data)) {
+      throw new DOMException(
+        'The encoded frame has already been written.',
+        'OperationError',
+      );
+    }
+    f.written = true;
+    const bytes = new Uint8Array(data).slice();
+    if (!s.attached) return;
+    call(
+      'rtcTfAsk',
+      s.n,
+      'write',
+      JSON.stringify({
+        k: f.kind,
+        y: f.type,
+        d: D.base64OfBytes(bytes),
+        m: f.metadata,
+      }),
+    );
+  };
+
+  /** A transformer's state, its streams made: what each frame it is told
+   *  of is enqueued on, and what `write` does with what is written. */
+  const transformerState = (
+    n: number,
+    options: Any,
+    write: (s: Any, chunk: Any) => void,
+  ): Any => {
+    const { ReadableStream, WritableStream } = D.streams();
     const s: Any = {
       what: 'transformer',
       n,
@@ -514,9 +580,25 @@ export function installEncodedTransform(
     );
     s.writable = new WritableStream({
       write(chunk: Any) {
-        writeEncoded(s, chunk);
+        write(s, chunk);
       },
     });
+    return s;
+  };
+
+  /** A transform posted to this realm, a worker's: its transformer, told
+   *  as `rtctransform` (3.3, "Operations"). */
+  const arrived = (n: number, options: Any): void => {
+    making = true;
+    let transformer: Any;
+    let made: Any;
+    try {
+      transformer = new (RTCRtpScriptTransformer as Any)();
+      made = new (RTCTransformEvent as Any)('rtctransform');
+    } finally {
+      making = false;
+    }
+    const s = transformerState(n, options, writeEncoded);
     slots.set(transformer, s);
     transformers.set(n, s);
     slots.set(made, { what: 'transformEvent', transformer });
@@ -624,6 +706,30 @@ export function installEncodedTransform(
   }
   webIdl(RTCRtpScriptTransform);
 
+  /** The senders and receivers that made their legacy streams. */
+  const streamsMade = new WeakSet<object>();
+  const streamsFor = (
+    owner: Any,
+    side: 'sender' | 'receiver',
+    kind: 'audio' | 'video',
+  ): Any => {
+    if (streamsMade.has(owner)) {
+      throw new DOMException(
+        'The encoded streams have already been created.',
+        'InvalidStateError',
+      );
+    }
+    streamsMade.add(owner);
+    const n = ++transforms;
+    const s = transformerState(n, undefined, writeLegacy);
+    // on its side from now on, as the host is told in the same op
+    s.attached = true;
+    s.side = side;
+    s.kind = kind;
+    transformers.set(n, s);
+    return { n, streams: { readable: s.readable, writable: s.writable } };
+  };
+
   const isTransform = (v: Any): boolean => slots.get(v)?.what === 'transform';
   const attach = (
     transform: Any,
@@ -653,6 +759,7 @@ export function installEncodedTransform(
       RTCEncodedAudioFrame,
     },
     isTransform,
+    streamsFor,
     attach,
     isFrame: (v: Any) => slots.get(v)?.what === 'frame',
     partsOf: (frame: Any) => {

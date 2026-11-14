@@ -776,6 +776,30 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     if (value === null) call('rtcTransform', s.tx.id, side, 0, 0);
   };
 
+  /**
+   * `createEncodedStreams()`, Chrome's API from before WebRTC Encoded
+   * Transform, which WPT's `tentative` tests hold it to: the side's frames
+   * read and written by the page itself, through streams of its own realm.
+   * The host puts them on the side as it would a worker's transform, with
+   * the page's realm for the worker. A second call is an
+   * `InvalidStateError`.
+   */
+  const encodedStreams = (
+    owner: Any,
+    s: Any,
+    side: 'sender' | 'receiver',
+  ): Any => {
+    const encoded: Any = D.encoded;
+    const made = encoded.streamsFor(
+      owner,
+      side,
+      s.tx.kind === 'audio' ? 'audio' : 'video',
+    );
+    // the page's own realm, as `peers.ts` numbers it
+    call('rtcTransform', s.tx.id, side, made.n, -1);
+    return made.streams;
+  };
+
   class RTCRtpSender {
     constructor(token: Any = undefined) {
       if (token !== TOKEN) throw illegalConstructor();
@@ -797,6 +821,9 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     }
     set transform(value: Any) {
       setTransform(this, slotOf(this, 'sender'), 'sender', value);
+    }
+    createEncodedStreams(): Any {
+      return encodedStreams(this, slotOf(this, 'sender'), 'sender');
     }
     static getCapabilities(kind: Any): Any {
       if (arguments.length < 1) {
@@ -1216,6 +1243,9 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     }
     set transform(value: Any) {
       setTransform(this, slotOf(this, 'receiver'), 'receiver', value);
+    }
+    createEncodedStreams(): Any {
+      return encodedStreams(this, slotOf(this, 'receiver'), 'receiver');
     }
     get jitterBufferTarget(): Any {
       return slotOf(this, 'receiver').jitterBufferTarget;

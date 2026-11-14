@@ -1616,9 +1616,16 @@ them, and to another peer the host can reach.
   is not. A frame's times are the worker's `performance.now()`, whose
   origin is when the page made the worker.
   Frames clone, with `structuredClone` and across a thread, but not for
-  storage. Not here: SFrame; and Chrome's `createEncodedStreams()`,
-  whose frames are not detached as they are written and which nothing
-  standardizes.
+  storage. Chrome's `createEncodedStreams()` from before the
+  specification is here too, since WPT's `tentative` tests still hold a
+  browser to it: a sender's or a receiver's frames on a `readable` and a
+  `writable` of the page's own, its window standing for the worker. It
+  takes any frame of the page's, a received one written to a sender among
+  them, leaves the buffer the page read from a frame as it was, and is an
+  `OperationError` for a frame written twice; a second call is an
+  `InvalidStateError`. A frame has Chrome's `setMetadata()` as well. Its streams
+  cannot be handed to a worker, since a stream does not transfer here.
+  Not here: SFrame.
 - **A sender of several encodings sends simulcast**, a stream an
   encoding. Each is encoded on its own, scaled down by its
   `scaleResolutionDownBy`, or to fit its `scaleResolutionDownTo` either way

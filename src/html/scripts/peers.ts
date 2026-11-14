@@ -24,7 +24,10 @@
 // across the worker's thread to its realm's transformer (`tf`, `frame`), and
 // goes on only once the worker writes it back (`tfAsk`, `write`), which this
 // side hands to the seam. What the worker's realm asks of a transform it has
-// not been told of goes nowhere.
+// not been told of goes nowhere. The streams `createEncodedStreams()` makes
+// are a transform whose worker is the page's own realm (`PAGE`): told a
+// microtask later, since it is told from inside the page's op, and asked
+// here.
 //
 // **What a connection tells waits for the description being applied.**
 // A stack may gather a candidate or move a transport while
@@ -128,7 +131,12 @@ function frameOfWire(v: unknown): RTCEncodedFrameLike | null {
   };
 }
 
-/** A transform put on a side of a transceiver: its worker's. */
+/** The worker a transform is the page's own realm's: the streams
+ *  `createEncodedStreams()` made, which the page reads and writes itself. */
+const PAGE = -1;
+
+/** A transform put on a side of a transceiver: its worker's, or the
+ *  page's (`PAGE`). */
 interface Transform {
   tf: number;
   tx: number;
@@ -406,13 +414,7 @@ export class PagePeers {
           // a sender's transform hears the rids it may ask a key frame of
           for (const on of this._transforms.values()) {
             if (on.tx === Number(a) && on.side === 'sender') {
-              this._seams.toWorker?.(on.worker, {
-                kind: 'rtc',
-                op: 'tf',
-                tf: on.tf,
-                e: 'rids',
-                v: t.transceiver.rids?.() ?? [],
-              });
+              this._toTransform(on, 'rids', t.transceiver.rids?.() ?? []);
             }
           }
         }
@@ -534,7 +536,12 @@ export class PagePeers {
         );
         return null;
       case 'rtcTfAsk':
-        // a worker's: of a transform of its, to the page process
+        // a worker's: of a transform of its, to the page process; the
+        // page's, of the streams it made, done here
+        if (this._transforms.get(Number(a))?.worker === PAGE) {
+          this._transformAsked(PAGE, Number(a), text(b), json(c));
+          return null;
+        }
         this._seams.toPage?.({
           kind: 'rtc',
           op: 'tfAsk',
@@ -598,13 +605,7 @@ export class PagePeers {
   ): void {
     const t = this._transceivers.get(tx);
     const tell = (to: Transform, e: string, v: unknown = null) =>
-      this._seams.toWorker?.(to.worker, {
-        kind: 'rtc',
-        op: 'tf',
-        tf: to.tf,
-        e,
-        v,
-      });
+      this._toTransform(to, e, v);
     for (const [n, on] of this._transforms) {
       if (n === tf || (on.tx === tx && on.side === side)) {
         this._transforms.delete(n);
@@ -631,6 +632,23 @@ export class PagePeers {
     });
   }
 
+  /** What becomes of a transform, told to the realm whose it is: a worker's
+   *  across its thread, and the page's own a microtask later, since it is
+   *  told from inside the op that put the streams on their side. */
+  private _toTransform(on: Transform, e: string, v: unknown = null): void {
+    if (on.worker === PAGE) {
+      queueMicrotask(() => this._tell('__rtcTf', [on.tf, e, v]));
+      return;
+    }
+    this._seams.toWorker?.(on.worker, {
+      kind: 'rtc',
+      op: 'tf',
+      tf: on.tf,
+      e,
+      v,
+    });
+  }
+
   /** What a worker asked of a transform of its. */
   private _transformAsked(worker: number, tf: number, e: string, v: unknown) {
     const on = this._transforms.get(tf);
@@ -645,15 +663,7 @@ export class PagePeers {
     } else if (e === 'pli') {
       void (t.requestKeyFrame?.() ?? Promise.resolve())
         .catch(() => {})
-        .then(() =>
-          this._seams.toWorker?.(worker, {
-            kind: 'rtc',
-            op: 'tf',
-            tf,
-            e: 'settled',
-            v,
-          }),
-        );
+        .then(() => this._toTransform(on, 'settled', v));
     }
   }
 
