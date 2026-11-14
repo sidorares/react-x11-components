@@ -32805,7 +32805,14 @@ export function installDom(
   ): DeclarationBlock => ({
     value,
     priority: () => '',
-    set: () => {},
+    // `setProperty` and `removeProperty` of a computed style throw, as its
+    // `cssText` does (CSSOM 6.7, the readonly flag)
+    set: () => {
+      throw new DOMException(
+        'These styles are computed, and therefore read-only.',
+        'NoModificationAllowedError',
+      );
+    },
     names,
     text: () => '',
     setText: () => {
@@ -33052,7 +33059,14 @@ export function installDom(
         if (/^\d+$/.test(key)) return items()[Number(key)];
         readProperty(key);
         const name = computedName(key);
-        return animated(name, values[name] ?? shorthand(key));
+        // a property a style has reads '' where nothing answers for it, as
+        // it does of an element in no document, and never undefined
+        return animated(
+          name,
+          values[name] ??
+            shorthand(key) ??
+            (isStyleProperty(key) ? '' : undefined),
+        );
       },
       read,
       () => {
