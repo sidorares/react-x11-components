@@ -6403,6 +6403,18 @@ changed after it is `border-width: 2px 1px 1px; border-style: solid;
 border-color: currentcolor; border-image: none`. `background-color` is a
 colour as a border's is.
 
+The background layers' properties are kept a layer at a time
+(`backgrounds-specified.ts`), and a list with one layer that is none of the
+property's is not kept at all: `background-attachment`, `background-origin`
+and `background-clip`, whose `border-area` and `text` are written in that
+order; `background-repeat` as short as it goes, `repeat no-repeat` as
+`repeat-x`; `background-size` with its second value `auto` where it is left
+out and `auto auto` as `auto`, neither below nought; `background-position`
+across then down, a side before its offset and an axis it leaves out
+`center`, so `top 17px right 18px` is `right 18px top 17px`; and
+`background-position-x` and `-y` on their own axes, logical sides among them.
+`background-image` and the `background` shorthand are kept as written.
+
 **`corner-shape`** (CSS Borders 4) draws a corner's radii in another curve:
 `round`, `squircle`, `bevel`, `scoop`, `notch`, `square`, or
 `superellipse()` of a number or an infinity — 1 for round, 2 for a
