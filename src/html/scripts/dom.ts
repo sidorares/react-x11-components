@@ -1698,6 +1698,7 @@ export function installDom(
         } else if (result === false) event.preventDefault();
       }
     } catch (error) {
+      event._threw = true;
       report(error);
     }
   };
@@ -1741,10 +1742,20 @@ export function installDom(
         event._passive = l.passive;
         try {
           if (typeof l.fn === 'function') l.fn.call(self, event);
-          else if (typeof l.fn?.handleEvent === 'function') {
-            l.fn.handleEvent(event);
+          else {
+            // a callback interface's `handleEvent` is looked up as it is
+            // called, and one that is no function a TypeError (Web IDL
+            // 3.11, "call a user object's operation")
+            const handleEvent = l.fn.handleEvent;
+            if (typeof handleEvent !== 'function') {
+              throw new TypeError('handleEvent is not a function.');
+            }
+            handleEvent.call(l.fn, event);
           }
         } catch (error) {
+          // DOM's "legacy-output did throw", which IndexedDB aborts a
+          // transaction on (`fireAtRequest`)
+          event._threw = true;
           report(error);
         }
         event._passive = false;
@@ -33921,6 +33932,19 @@ export function installDom(
     }));
     return runPath(path, event, false);
   };
+  /** An event fired at a request a transaction answers: a listener that
+   *  throws aborts the transaction with an `AbortError` once the dispatch
+   *  is over (IndexedDB 3, 5.6 and 5.7, "fire a success event" and "fire an
+   *  error event"), and nothing then counts as having cancelled it. */
+  const fireAtRequest = (tx: Any, targets: Any[], event: Any): boolean => {
+    event._threw = false;
+    const go = fireAt(targets, event);
+    if (!event._threw) return go;
+    if (tx && !tx._finished) {
+      tx._abort(new DOMException('An event listener threw.', 'AbortError'));
+    }
+    return false;
+  };
   /** `on…` properties for the events a class fires. */
   const handlers = (Class: Any, types: string[]): void => {
     for (const type of types) {
@@ -34490,7 +34514,8 @@ export function installDom(
         request._done = true;
         request._result = undefined;
         request._error = error;
-        const go = fireAt(
+        const go = fireAtRequest(
+          this,
           [request, this, this._db],
           new Event('error', { bubbles: true, cancelable: true }),
         );
@@ -34500,7 +34525,7 @@ export function installDom(
       request._done = true;
       request._result = result;
       request._error = null;
-      fireAt([request], new Event('success'));
+      fireAtRequest(this, [request], new Event('success'));
     }
     _schedule(): void {
       if (this._scheduled || this._finished) return;
@@ -35381,7 +35406,8 @@ export function installDom(
               new Event('error', { bubbles: true, cancelable: true }),
             );
           };
-          fireAt(
+          fireAtRequest(
+            tx,
             [request],
             new IDBVersionChangeEvent('upgradeneeded', {
               oldVersion: old,
