@@ -7706,6 +7706,15 @@ export function installDom(
   }
   /** A property's name as an attribute of a block names it: `cssFloat` is
    *  `float`, a word JavaScript once kept for itself. */
+  /** A style of CSS properties (CSSOM 6.7): what `el.style`, a rule's
+   *  `style` and `getComputedStyle` are, where `CSSStyleDeclaration` is
+   *  any declaration block, a `@page` rule's and a `@position-try` one's
+   *  among them. */
+  class CSSStyleProperties extends CSSStyleDeclaration {
+    constructor() {
+      super();
+    }
+  }
   const blockProperty = (key: string): string =>
     key === 'cssFloat' ? 'float' : cssName(kebab(key));
   /** The names of the properties a style has, once a page looks for one. */
@@ -7730,7 +7739,7 @@ export function installDom(
    * either.
    */
   const writableStyle = (block: DeclarationBlock): Any => {
-    const target = Object.create(CSSStyleDeclaration.prototype);
+    const target = Object.create(CSSStyleProperties.prototype);
     const index = (key: Any): number =>
       typeof key === 'string' && /^(?:0|[1-9]\d*)$/.test(key) ? +key : -1;
     const style = new Proxy(target, {
@@ -18525,11 +18534,19 @@ export function installDom(
     static readonly SUPPORTS_RULE = 12;
     _type = 0;
     _text: string;
-    parentStyleSheet: Any;
-    parentRule: Any = null;
+    _parentSheet: Any;
+    _parent: Any = null;
+    // made by a sheet alone (Web IDL: no constructor)
     constructor(text: string, sheet: Any) {
+      if (typeof text !== 'string') throw new TypeError('Illegal constructor');
       this._text = text;
-      this.parentStyleSheet = sheet;
+      this._parentSheet = sheet;
+    }
+    get parentStyleSheet(): Any {
+      return this._parentSheet;
+    }
+    get parentRule(): Any {
+      return this._parent;
     }
     get cssText(): string {
       return this._text;
@@ -18538,6 +18555,24 @@ export function installDom(
     set cssText(_v: Any) {}
     get type(): number {
       return this._type;
+    }
+  }
+  class CSSGroupingRule extends CSSRule {
+    get cssRules(): Any {
+      return ruleList(
+        JSON.parse(String(call('cssRules', blockOf(this._text)))),
+        this.parentStyleSheet,
+        this,
+      );
+    }
+    insertRule(): number {
+      throw new DOMException(
+        'A rule inside another is not edited here.',
+        'NotSupportedError',
+      );
+    }
+    deleteRule(): void {
+      this.insertRule();
     }
   }
   /** The pseudo-elements a selector may end in, which a page's query does
@@ -18632,7 +18667,7 @@ export function installDom(
     );
     return v.replace(/\u0000(\d+)\u0000/g, (_, i: string) => kept[Number(i)]);
   };
-  class CSSStyleRule extends CSSRule {
+  class CSSStyleRule extends CSSGroupingRule {
     override _type = 1;
     get selectorText(): string {
       return serializeSelector(preludeOf(this._text), this.parentStyleSheet);
@@ -18675,22 +18710,22 @@ export function installDom(
       this.style.cssText = v;
     }
   }
-  class CSSGroupingRule extends CSSRule {
-    get cssRules(): Any {
-      return ruleList(
-        JSON.parse(String(call('cssRules', blockOf(this._text)))),
-        this.parentStyleSheet,
-        this,
-      );
+  /** An `@namespace` rule (CSSOM 6.4.5): its prefix, '' for the default
+   *  namespace's, and its URL. */
+  class CSSNamespaceRule extends CSSRule {
+    override _type = 10;
+    _parts(): { prefix: string; url: string } {
+      const m =
+        /^@namespace\s+(?:([\w-]+)\s+)?(?:url\(\s*)?["']?([^"')]*)["']?\s*\)?/i.exec(
+          this._text,
+        );
+      return { prefix: m?.[1] ?? '', url: m?.[2] ?? '' };
     }
-    insertRule(): number {
-      throw new DOMException(
-        'A rule inside another is not edited here.',
-        'NotSupportedError',
-      );
+    get namespaceURI(): string {
+      return this._parts().url;
     }
-    deleteRule(): void {
-      this.insertRule();
+    get prefix(): string {
+      return this._parts().prefix;
     }
   }
   /** An at-rule's prelude with its name left out: a condition. */
@@ -19305,7 +19340,7 @@ export function installDom(
   };
   /** An `@page` rule (CSSOM 6.4.6): its page selector, which a page may
    *  set, and its descriptors. */
-  class CSSPageRule extends CSSRule {
+  class CSSPageRule extends CSSGroupingRule {
     override _type = 6;
     _style: Any = null;
     get selectorText(): string {
@@ -19656,6 +19691,7 @@ export function installDom(
     keyframes: CSSKeyframesRule,
     'position-try': CSSPositionTryRule,
     page: CSSPageRule,
+    namespace: CSSNamespaceRule,
   };
   const AT_RULE_TYPES: Record<string, number> = {
     charset: 2,
@@ -19666,7 +19702,7 @@ export function installDom(
     // what a `@keyframes` holds is keyframes
     if (parent instanceof CSSKeyframesRule) {
       const rule = new CSSKeyframeRule(text, sheet);
-      rule.parentRule = parent;
+      rule._parent = parent;
       return rule;
     }
     const at = /^@(?:-[a-z]+-)?([a-z-]+)/i.exec(text);
@@ -19674,7 +19710,7 @@ export function installDom(
     const Rule = RULE_CLASSES[kind] ?? (at ? CSSRule : CSSStyleRule);
     const rule = new Rule(text, sheet);
     if (Rule === CSSRule) rule._type = AT_RULE_TYPES[kind] ?? 0;
-    rule.parentRule = parent;
+    rule._parent = parent;
     return rule;
   };
   const ruleList = (texts: string[], sheet: Any, parent: Any): Any => {
@@ -19696,7 +19732,14 @@ export function installDom(
     return rules[0];
   };
 
-  class CSSStyleSheet {
+  /** A style sheet of any language (CSSOM 6.1.1): the attributes a CSS
+   *  one has as well, which are its, on its prototype. */
+  class StyleSheet {
+    constructor() {
+      if (new.target === StyleSheet) throw new TypeError('Illegal constructor');
+    }
+  }
+  class CSSStyleSheet extends StyleSheet {
     /** The `<style>` or `<link>` it is the sheet of, or none. */
     _owner: Any = null;
     /** Its rules, where they are not the host's: a constructed sheet's, or
@@ -19715,10 +19758,17 @@ export function installDom(
     /** The number the host has it by, from the first time a shadow root
      *  adopts it (`tellSheet`). */
     _adopted = 0;
-    readonly parentStyleSheet = null;
-    readonly ownerRule = null;
-    readonly type = 'text/css';
+    get parentStyleSheet(): Any {
+      return null;
+    }
+    get ownerRule(): Any {
+      return null;
+    }
+    get type(): string {
+      return 'text/css';
+    }
     constructor(options: Any = {}) {
+      super();
       const media = options?.media;
       this._media =
         media === undefined || media === null
@@ -19919,7 +19969,101 @@ export function installDom(
       }
     }
   }
-  const StyleSheet = CSSStyleSheet;
+  /**
+   * The CSSOM's interfaces in Web IDL's shape: each attribute and operation
+   * on the prototype, enumerable and asking what it is called on, an
+   * operation's `length` its required arguments and a TypeError for fewer;
+   * `CSSRule`'s constants on its prototype as on itself; and a style
+   * sheet's attributes `StyleSheet`'s.
+   */
+  const CSSOM_REQUIRED: Record<string, number> = {
+    getPropertyValue: 1,
+    getPropertyPriority: 1,
+    setProperty: 2,
+    removeProperty: 1,
+    item: 1,
+    insertRule: 1,
+    deleteRule: 1,
+    replace: 1,
+    replaceSync: 1,
+    appendMedium: 1,
+    deleteMedium: 1,
+    appendRule: 1,
+    findRule: 1,
+  };
+  for (const key of [
+    'type',
+    'href',
+    'ownerNode',
+    'parentStyleSheet',
+    'title',
+    'media',
+    'disabled',
+  ]) {
+    const d = Object.getOwnPropertyDescriptor(CSSStyleSheet.prototype, key);
+    if (!d) continue;
+    delete (CSSStyleSheet.prototype as Any)[key];
+    Object.defineProperty(StyleSheet.prototype, key, d);
+  }
+  (CSSRule as Any).MARGIN_RULE = 9;
+  for (const name of Object.getOwnPropertyNames(CSSRule)) {
+    if (!/^[A-Z_]+$/.test(name)) continue;
+    const value = (CSSRule as Any)[name];
+    for (const on of [CSSRule, CSSRule.prototype]) {
+      Object.defineProperty(on, name, {
+        value,
+        writable: false,
+        enumerable: true,
+        configurable: false,
+      });
+    }
+  }
+  const cssomInterface = (Interface: Any): void => {
+    idlAttributes(Interface);
+    const proto = Interface.prototype;
+    for (const key of Object.getOwnPropertyNames(proto)) {
+      if (key === 'constructor' || key.startsWith('_')) continue;
+      const d = Object.getOwnPropertyDescriptor(proto, key);
+      if (!d || typeof d.value !== 'function') continue;
+      const fn = d.value;
+      const required = CSSOM_REQUIRED[key] ?? 0;
+      const op = function (this: Any, ...args: Any[]): Any {
+        if (!(this instanceof Interface)) {
+          throw new TypeError('Illegal invocation');
+        }
+        if (args.length < required) {
+          throw new TypeError(
+            `Failed to execute '${key}': ${required} argument${required === 1 ? '' : 's'} required, but only ${args.length} present.`,
+          );
+        }
+        return fn.apply(this, args);
+      };
+      Object.defineProperty(op, 'name', { value: key });
+      Object.defineProperty(op, 'length', { value: required });
+      Object.defineProperty(proto, key, { ...d, value: op, enumerable: true });
+    }
+  };
+  for (const Interface of [
+    StyleSheet,
+    CSSStyleSheet,
+    CSSRuleList,
+    StyleSheetList,
+    MediaList,
+    CSSStyleDeclaration,
+    CSSRule,
+    CSSStyleRule,
+    CSSGroupingRule,
+    CSSConditionRule,
+    CSSMediaRule,
+    CSSSupportsRule,
+    CSSImportRule,
+    CSSFontFaceRule,
+    CSSKeyframesRule,
+    CSSKeyframeRule,
+    CSSNamespaceRule,
+  ]) {
+    cssomInterface(Interface);
+  }
 
   /** The sheet of a `<style>` or a `<link>`: one object for as long as the
    *  element is. */
@@ -33345,7 +33489,7 @@ export function installDom(
     read: () => void,
     keys: () => string[],
   ): Any => {
-    const target = Object.create(CSSStyleDeclaration.prototype);
+    const target = Object.create(CSSStyleProperties.prototype);
     const style = new Proxy(target, {
       get(t, key) {
         if (typeof key === 'string' && !(key in t)) {
@@ -41714,6 +41858,8 @@ export function installDom(
     CSSPositionTryDescriptors,
     CSSPageRule,
     CSSPageDescriptors,
+    CSSNamespaceRule,
+    CSSStyleProperties,
   };
   // and their interfaces with it, which a page tells a service worker by
   if (serviceWorkersOn) Object.assign(classes, SW.interfaces);
