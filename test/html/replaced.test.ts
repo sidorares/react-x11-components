@@ -955,6 +955,7 @@ test("a source's type is one the decoders here read, parameters and case aside",
     'image/jpg',
     'image/gif',
     'image/svg+xml',
+    'image/bmp',
     '',
   ]) {
     assert.ok(decodesImageType(type), `${type || 'none'} decodes`);
@@ -967,7 +968,7 @@ test("a source's type is one the decoders here read, parameters and case aside",
     else delete g.Bun;
   });
   delete g.Bun;
-  for (const type of ['image/avif', 'image/bmp', 'image/jxl', 'webp']) {
+  for (const type of ['image/avif', 'image/jxl', 'webp']) {
     assert.ok(!decodesImageType(type), `${type} does not, under Node`);
   }
   // `Bun.Image`, found as core's ladder finds it: BMP everywhere, and AVIF

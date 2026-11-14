@@ -14,8 +14,11 @@
 // fixed offsets, or a JPEG's segments walked by their lengths up to its
 // frame header. A size this says that the decoder disagrees with is not an
 // error: the decoded one wins, and the boxes laid out from this are built
-// again. A module of its own, with nothing imported, so that all of it is
+// again. A module of its own, with nothing imported but the BMP reader's
+// own headers (`bmp.ts`, which imports nothing), so that all of it is
 // asserted with no display.
+
+import { bmpSize } from './bmp.js';
 
 /** A raster's size, in its pixels. */
 export interface HeaderSize {
@@ -26,7 +29,8 @@ export interface HeaderSize {
 /**
  * The size an image's header says, or null where the bytes are no format
  * read here or are cut short of the size: PNG's IHDR, a JPEG's frame header
- * (SOF0 to SOF15), WebP's VP8, VP8L or VP8X chunk, GIF's logical screen.
+ * (SOF0 to SOF15), WebP's VP8, VP8L or VP8X chunk, GIF's logical screen,
+ * a BMP's info header.
  *
  * `orientation` is the EXIF Orientation of a JPEG, 1 to 8, as the decoder
  * reads it: one that turns a quarter (5 to 8) swaps the two sides, since
@@ -42,7 +46,8 @@ export function headerSize(
     pngSize(bytes) ??
     jpegSize(bytes, orientation) ??
     webpSize(bytes) ??
-    gifSize(bytes);
+    gifSize(bytes) ??
+    bmpSize(bytes);
   return size && size.width > 0 && size.height > 0 ? size : null;
 }
 

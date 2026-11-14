@@ -19,6 +19,7 @@ import { decodeStylesheet } from './css/decode.js';
 import type { DecodedStylesheet } from './css/decode.js';
 import { svgFromBytes } from './svg.js';
 import type { IntrinsicSize } from './svg.js';
+import { decodeBmp } from './bmp.js';
 import { GifCanvas, readGif } from './gif.js';
 import { AnimatedImage, gifAnimation, webpAnimation } from './animated.js';
 import { readAnimatedWebP } from './webp.js';
@@ -872,6 +873,9 @@ function decodeImage(bytes: Uint8Array): ImageLike | Promise<ImageLike> | null {
         data: canvas.at(0),
       });
     }
+    // a BMP, which the ladder reads only under Bun (`bmp.ts`)
+    const bmp = decodeBmp(bytes);
+    if (bmp) return makeImage(bmp);
     return imageDecoder.decode(bytes);
   } catch {
     return null;
