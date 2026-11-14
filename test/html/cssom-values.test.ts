@@ -178,3 +178,32 @@ test('a sheet the document adopts styles it in the task that adopted it', async 
   );
   assert.deepEqual(out, ['rgb(0, 128, 0)', 'rgb(255, 0, 0)', true]);
 });
+
+test('a grid shorthand in cssText is its longhands, read back as the longest shorthand they make', async () => {
+  // WPT's css/css-grid/parsing/grid-shorthand-serialization: `cssText`
+  // keeps `grid` as its six longhands, as `el.style.grid` does, and writes
+  // `grid` back where they make one and `grid-template` where they make
+  // only that
+  const out = await inPage(
+    '<div id="e"></div>',
+    `var e = document.getElementById('e'), r = [];
+     function read(text) {
+       e.style.cssText = text;
+       return [e.style.grid, e.style.gridTemplate, e.style.gridAutoFlow,
+         e.style.gridTemplateRows, e.style.cssText].join(' | ');
+     }
+     r.push(read('grid: auto-flow / 10px; grid-template-rows: 20px'));
+     r.push(read('grid: 30px 40px / 50px 60px; grid-auto-flow: column'));
+     r.push(read('grid: auto-flow 1px / 2px; grid-auto-columns: 3px'));
+     return r;`,
+  );
+  assert.deepEqual(out, [
+    '20px / 10px | 20px / 10px | row | 20px | grid: 20px / 10px;',
+    ' | 30px 40px / 50px 60px | column | 30px 40px | ' +
+      'grid-template: 30px 40px / 50px 60px; grid-auto-rows: auto; ' +
+      'grid-auto-columns: auto; grid-auto-flow: column;',
+    // the auto columns declared again stand where they were last declared
+    ' | none / 2px | row | none | grid-template: none / 2px; ' +
+      'grid-auto-rows: 1px; grid-auto-flow: row; grid-auto-columns: 3px;',
+  ]);
+});

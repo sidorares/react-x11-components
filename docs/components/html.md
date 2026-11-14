@@ -5993,7 +5993,13 @@ would copy, and so do `grid-template` and `grid`: `grid` reads as a
 template where its flow is `row` and its implicit tracks `auto`, as one
 axis's template and the other `auto-flow` where that axis has none, and
 as nothing otherwise; `grid-lanes` the same over its template, areas and
-direction. `@supports` answers a grid property by the same grammar, and
+direction. A `style` attribute, a rule and `cssText` hold them the same
+way as CSSOM reads them, a shorthand there its longhands, and write them
+back through the shorthand of the most longhands they make, `grid`, then
+`grid-template` and the rest: `grid: 30px 40px / 50px 60px;
+grid-auto-flow: column` is `grid-template: 30px 40px / 50px 60px;
+grid-auto-rows: auto; grid-auto-columns: auto; grid-auto-flow: column`.
+`@supports` answers a grid property by the same grammar, and
 the cascade reads `grid-template`'s strings with it: a strings' form with
 no slash is taken, and one with `none` or a `repeat()` for its columns, or
 a third group of names between rows, is not.

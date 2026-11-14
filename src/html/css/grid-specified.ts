@@ -253,6 +253,11 @@ const LONGHANDS_OF: Record<string, string[]> = {
   ],
 };
 
+/** Each shorthand's longhands, which a declaration block is read back
+ *  through (`withAlignShorthands` in the script host). */
+export const GRID_SHORTHANDS: Readonly<Record<string, readonly string[]>> =
+  LONGHANDS_OF;
+
 /**
  * `grid-template`'s rows, columns and areas from a value of it, each
  * canonical (CSS Grid 1, 7.4): `none`; two track lists either side of a
