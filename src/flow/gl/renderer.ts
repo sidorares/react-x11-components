@@ -9,11 +9,18 @@
 // a handful of draw calls over buffers already on the GPU. The **overlay** —
 // the background, the grid, the selection, the minimap and the controls — is
 // pinned to the pane, is a few dozen boxes, and is packed every frame.
-import type { FlowFrameStats, FlowRect, XYPosition } from '../types.js';
+import type {
+  FlowFrameStats,
+  FlowGlBodyFrame,
+  FlowGlTexture,
+  FlowRect,
+  XYPosition,
+} from '../types.js';
 import type { FlowScene } from '../scene.js';
 import { BOX_STRIDE, LINE_STRIDE, ScenePacker, TRI_STRIDE } from './pack.js';
 import type {
   DrawRange,
+  PackedBody,
   PackedScene,
   PackLayer,
   DrawnLabel,
@@ -30,6 +37,8 @@ import {
   LINE_FRAGMENT,
   LINE_VERTEX,
   linkProgram,
+  TEX_FRAGMENT,
+  TEX_VERTEX,
   TRI_FRAGMENT,
   TRI_VERTEX,
 } from './shaders.js';
@@ -81,6 +90,23 @@ export interface FlowGlFrame {
    * a dragged node.
    */
   lifted?: FlowScene | null;
+  /**
+   * Draws the GL bodies in view into their textures — before anything of
+   * the frame is drawn, with the surface's framebuffer bound and put back
+   * after — and answers every texture there is to draw, by node id. Left
+   * out, a body's place in its card is drawn as the card. `moving` is the
+   * frame's: a zoom gesture under way, which a body sits out.
+   */
+  bodies?: (
+    inView: readonly GlBodyRequest[],
+    moving: boolean,
+  ) => ReadonlyMap<string, FlowGlTexture>;
+}
+
+/** A GL body in view this frame, and the texture it is wanted at. */
+export interface GlBodyRequest {
+  id: string;
+  frame: FlowGlBodyFrame;
 }
 
 const UNIFORMS = [
@@ -97,8 +123,17 @@ export const now = (): number => globals.performance?.now() ?? Date.now();
 
 const ZERO: XYPosition = { x: 0, y: 0 };
 
+/** A GL body's side in device pixels: what its texture is asked for at, and
+ *  what the quad is drawn texel for pixel at. */
+function bodyPixels(logical: number, scale: number): number {
+  return Math.max(1, Math.round(logical * scale));
+}
+
 /** GL's own name for "which VAO is bound", which the table may not carry. */
 const VERTEX_ARRAY_BINDING = 0x85b5;
+/** …and for the framebuffer bound: the Cocoa surface's is one of its own,
+ *  not 0, and a body's draw binds another. */
+const FRAMEBUFFER_BINDING = 0x8ca6;
 
 /** One layer: a packer, the three buffers its streams go into, and what it
  *  last packed. */
@@ -186,6 +221,9 @@ export class FlowGlRenderer {
   private readonly box: Program;
   private readonly tri: Program;
   private readonly grid: Program;
+  /** The GL bodies' program, linked by the first frame that draws one: a
+   *  graph with none links what it did. */
+  private tex: Program | null = null;
   private readonly vao: unknown;
   /** The vertex array bound when a draw began, bound again when it ends. */
   private previousVao: unknown = null;
@@ -310,7 +348,10 @@ export class FlowGlRenderer {
     }
     const drawStart = now();
 
-    this.begin(target, atlas);
+    // The bodies first, each into its own framebuffer: what they bind and
+    // set is theirs, and `begin` sets everything the graph draws with again.
+    const textures = this.bodyTextures(frame, target);
+    this.begin(target, atlas, textures !== null);
     const over = this.overlay.packed!;
     let calls = this.ranges(
       over.ranges.slice(0, over.split),
@@ -338,6 +379,7 @@ export class FlowGlRenderer {
         frame.zoom ?? 1,
         frame.phase,
         target,
+        textures,
       );
     };
     half(this.world, true);
@@ -356,6 +398,121 @@ export class FlowGlRenderer {
     this.end();
     const packs = [world, lifted, over].filter((p) => p != null);
     return this.stats(packStart, drawStart, bytes, calls, packs, rebuilt);
+  }
+
+  /**
+   * The GL bodies in view, drawn by their owners into their textures
+   * (`frame.bodies`), or null where the frame has none: no callback, no
+   * body packed, or none on screen. A body packed in the overscan and not in
+   * the view is not asked for anything — a pan that brings it in asks then.
+   *
+   * The framebuffer bound when the surface's frame began is bound again
+   * whatever a body did, a throw included: on macOS it is the surface's own
+   * IOSurface target, and the graph drawn into a body's would be nowhere.
+   */
+  private bodyTextures(
+    frame: FlowGlFrame,
+    target: FlowGlTarget,
+  ): ReadonlyMap<string, FlowGlTexture> | null {
+    if (!frame.bodies) return null;
+    const zoom = frame.zoom ?? 1;
+    const s = target.scale;
+    const left = target.origin.x;
+    const top = target.origin.y;
+    const right = left + target.width / s;
+    const bottom = top + target.height / s;
+    const inView: GlBodyRequest[] = [];
+    for (const layer of [this.world, this.lifted]) {
+      const packed = layer.packed;
+      if (!packed || packed.bodies.length === 0 || !layer.scene) continue;
+      // the zoom the layer was built at: what its boxes are measured in
+      const built = layer.scene.viewport.zoom;
+      for (const body of packed.bodies) {
+        const r = body.rect;
+        const x = r.x * zoom + frame.offset.x;
+        const y = r.y * zoom + frame.offset.y;
+        if (
+          x >= right ||
+          y >= bottom ||
+          x + r.width * zoom <= left ||
+          y + r.height * zoom <= top
+        ) {
+          continue;
+        }
+        inView.push({
+          id: body.id,
+          frame: {
+            width: bodyPixels(r.width, s),
+            height: bodyPixels(r.height, s),
+            scale: s * built,
+            zoom: built,
+          },
+        });
+      }
+    }
+    if (inView.length === 0) return null;
+    const gl = this.gl;
+    const surface = gl.getParameter(FRAMEBUFFER_BINDING);
+    try {
+      return frame.bodies(inView, frame.moving ?? false);
+    } finally {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, surface ?? null);
+    }
+  }
+
+  /** One GL body's texture in its card; false where it has none. */
+  private drawBody(
+    body: PackedBody,
+    textures: ReadonlyMap<string, FlowGlTexture>,
+    offset: XYPosition,
+    zoom: number,
+    target: FlowGlTarget,
+  ): boolean {
+    const texture = textures.get(body.id);
+    if (!texture) return false;
+    const gl = this.gl;
+    if (!this.tex) {
+      this.tex = linkProgram(gl, TEX_VERTEX, TEX_FRAGMENT, [
+        ...UNIFORMS,
+        'u_rect',
+        'u_size',
+        'u_texture',
+      ]);
+      gl.useProgram(this.tex.program);
+      // unit 1: the label atlas has unit 0 for the whole frame
+      gl.uniform1i(this.tex.uniforms.u_texture, 1);
+    }
+    const tex = this.tex;
+    this.uniforms(tex, offset, zoom, target);
+    const r = body.rect;
+    gl.uniform4f(tex.uniforms.u_rect, r.x, r.y, r.width, r.height);
+    // Texel for pixel where the texture is the size its box is drawn at;
+    // stretched over the box where it is not — a zoom gesture, or a body
+    // still showing what it drew at another size.
+    const s = target.scale;
+    const exact =
+      zoom === 1 &&
+      texture.width === bodyPixels(r.width, s) &&
+      texture.height === bodyPixels(r.height, s);
+    gl.uniform2f(
+      tex.uniforms.u_size,
+      exact ? texture.width : 0,
+      exact ? texture.height : 0,
+    );
+    this.corners();
+    for (const location of [
+      ATTRIBUTES.a_i0,
+      ATTRIBUTES.a_i1,
+      ATTRIBUTES.a_i2,
+      ATTRIBUTES.a_i3,
+    ]) {
+      gl.disableVertexAttribArray(location);
+    }
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, texture.texture);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.activeTexture(gl.TEXTURE0);
+    return true;
   }
 
   /**
@@ -467,8 +624,22 @@ export class FlowGlRenderer {
     };
   }
 
-  private begin(target: FlowGlTarget, atlas?: LabelAtlas): void {
+  private begin(
+    target: FlowGlTarget,
+    atlas?: LabelAtlas,
+    afterBodies = false,
+  ): void {
     const gl = this.gl;
+    if (afterBodies) {
+      // What a body may have left set that the graph's draws would trip on:
+      // a map leaves its stencil test, its scissor and a face cull behind,
+      // and a texture unit other than the atlas's active.
+      gl.disable(gl.STENCIL_TEST);
+      gl.disable(gl.SCISSOR_TEST);
+      gl.disable(gl.CULL_FACE);
+      gl.colorMask(true, true, true, true);
+      gl.activeTexture(gl.TEXTURE0);
+    }
     if (atlas) {
       atlas.bind(gl, !this.atlasBound);
       this.atlasBound = true;
@@ -493,9 +664,17 @@ export class FlowGlRenderer {
     zoom: number,
     phase: number,
     target: FlowGlTarget,
+    textures?: ReadonlyMap<string, FlowGlTexture> | null,
   ): number {
     let calls = 0;
     for (const range of ranges) {
+      if (range.kind === 'body') {
+        const body = layer.packed?.bodies[range.first];
+        if (!body || !textures) continue;
+        this.scissor(undefined, target);
+        if (this.drawBody(body, textures, offset, zoom, target)) calls++;
+        continue;
+      }
       this.scissor(range.scissor, target);
       if (range.kind === 'grid') {
         if (!scene.grid) continue;
@@ -697,6 +876,7 @@ export class FlowGlRenderer {
     for (const program of [this.line, this.box, this.tri, this.grid]) {
       gl.deleteProgram(program.program);
     }
+    if (this.tex) gl.deleteProgram(this.tex.program);
     gl.deleteVertexArray(this.vao);
   }
 }

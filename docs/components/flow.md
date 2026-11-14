@@ -274,6 +274,87 @@ the focus, not the node. Three things follow, and all three are the point:
 `<textarea>` measures itself at `rows` lines, and yoga will not shrink a flex
 item below its own measurement unless it is told it may.
 
+### `glBody` — GL in the pane's own context
+
+A body that draws with GL — a live map, a 3D view — is a third answer, on the
+GL renderer (`renderer="gl"`). The type hands the pane an object that draws
+into a texture of its own, in the pane's GL context; the pane draws that
+texture as a quad in the card, in the graph's own paint order:
+
+```jsx
+import { useGlMapLayer } from '@react-x11/components/maps';
+
+const london = useGlMapLayer({ sources, mapStyle, defaultCamera });
+const nodeTypes = useMemo(
+  () => ({
+    map: {
+      headerHeight: 26,
+      glBody: ({ node }) => (node.id === 'london' ? london : null),
+      // the 2D renderer's: mounted only where GL is not drawing
+      render: () => <Map sources={sources} renderer="retained" />,
+    },
+  }),
+  [london],
+);
+
+<Flow renderer="gl" nodeTypes={nodeTypes} … />;
+```
+
+`glBody` is called every GL frame the node is in view, with the node, so it
+is a lookup into bodies the app keeps — the same object for as long as the
+node has that body — and not a constructor. What it returns is
+`FlowGlBody`, a structural interface:
+
+| Member            | When the pane calls it                                                                                                                                                                                                                                                                                                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `attach(host)`    | The first frame it is drawn in. `host.requestFrame()` is how it asks for another: a tile landed, a label is fading in.                                                                                                                                                                                                                                  |
+| `draw(gl, frame)` | Inside the pane's GL frame, before anything of the graph: draw into a framebuffer of your own, `frame.width × frame.height` device pixels, and answer `{ texture, width, height }` (RGBA, premultiplied, row 0 at the bottom), or `null` to leave the card's fill there. Called when it asked, when its size changed, and the first time it is in view. |
+| `pointer(event)`  | A press below the header, its drag and release, motion, and the wheel, in body-local graph units. Answer `true` to take it.                                                                                                                                                                                                                             |
+| `detach()`        | The pane stopped drawing it: its node left the graph, its type stopped naming it, or the surface went. Let go of what you made in the pane's context.                                                                                                                                                                                                   |
+
+What follows from it being part of the graph rather than over it:
+
+- **It is in the paint order.** The texture is drawn after its card's fill
+  and before its title, its handles and every card above it — so a selected
+  node's outline, a dragged card and an edge into the node all land where
+  the 2D renderer puts them. A `render` body cannot do that for a GL
+  surface: a `<Map renderer="gl">` mounted through `render` gets a
+  `<glarea>` of its own, among the pane's surface's children, and core
+  does not stack a surface among another surface's children. On macOS
+  every GL layer shares one depth, under the overlay that holds the bodies
+  — the map is drawn every frame and never seen, its body box's
+  background over it — and on X11 it is a child window nothing orders
+  against the bodies' panes.
+- **A pan costs it nothing.** The texture moves with the world; no body is
+  drawn. The state a body leaves behind is put back by the pane — the
+  framebuffer it found bound, the stencil and scissor tests, the active
+  texture unit — and a body may rely on nothing the pane left set.
+- **It zooms with the pane.** `frame.scale` is device pixels per **graph
+  unit** — the display's scale times the zoom — so a body that lays itself
+  out `width / scale` by `height / scale` of its own units is in graph
+  units, as a `render` body is, and twice the zoom is the same picture at
+  twice the pixels. Through a zoom gesture the texture is stretched with the
+  world and no body is drawn, whatever it asked for, as mounted bodies sit
+  a zoom out; once the zoom rests each is drawn again at its new size.
+- **Input reaches it in its own units.** A press in the body is offered to
+  `pointer`; one it takes is a gesture whose drag and release go to it too,
+  and the node does not move. The header strip still drags the node, and a
+  press a body declines — a map that does not move — is the node's, as on a
+  card. A wheel it takes does not zoom the pane.
+- **The 2D renderer has no GL.** There the node is what its other seams say:
+  `render` mounted, or `paint` painted, or a card with a title bar and an
+  empty body. So `render` mounting a `<Map>` is the natural fallback for a
+  type whose `glBody` draws one, and nothing of it is mounted while GL draws
+  — or is loading — and a graph whose only bodies are GL bodies keeps its GL
+  surface on XQuartz, where a mounted body could not be seen over one.
+
+A body that throws from `draw` is drawn as its card from then on, with a
+warning in development; the graph and every other body draw on.
+
+`npm run examples:flow-map` is two live maps of London in a graph; `--glarea`
+mounts each as a `<Map renderer="gl">` through `render` instead, to see the
+difference.
+
 ## Resizing
 
 `resizable` on a node (or `nodesResizable` on the pane) grows eight grips on
@@ -587,6 +668,9 @@ commits and gesture settles.
 `npm run examples:flow` is a build-pipeline editor with both kinds of node
 side by side — drawn `task` cards and a mounted, resizable `options` node made
 of real checkboxes, buttons and a textarea.
+
+`npm run examples:flow-map` is a graph with two live maps for cards, drawn
+by the graph's own GL surface (`glBody`, above).
 
 `npm run examples:flow-stress` is the one to reach for when changing how the
 pane draws: scene buttons (lattices of 200 and 2,000 nodes, 300 nodes and 745

@@ -117,6 +117,8 @@ import type {
   FlowEdge,
   FlowBodyBudget,
   FlowFrameStats,
+  FlowGlBody,
+  FlowGlBodyPointer,
   FlowNode,
   FlowNodeData,
   FlowNodeType,
@@ -398,7 +400,10 @@ type Gesture =
       startY: number;
       origin: FlowRect;
     }
-  | { kind: 'minimap' };
+  | { kind: 'minimap' }
+  /** A press a GL body took (`FlowGlBody.pointer`): its drag and release
+   *  are the body's too. */
+  | { kind: 'body'; id: string; body: FlowGlBody };
 
 /** What the pointer is over, for hover styling and for the cursor a press
  * would produce. */
@@ -558,6 +563,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
   // --- interaction --------------------------------------------------------
   private _gesture: Gesture | null = null;
   private _hover: HoverState = NO_HOVER;
+  /** The GL body the pointer was last over with no button down, and its
+   *  node — told `'leave'` when the pointer goes. */
+  private _bodyHover: { id: string; body: FlowGlBody } | null = null;
   /** Where a drag is putting each node it moves. Read in preference to
    * `node.position`, so the pane is never a frame behind the pointer even
    * when the app applies the changes it is being sent. Cleared on release,
@@ -1338,11 +1346,115 @@ export class FlowGraphNode extends Node implements FlowInstance {
     return { x: p.x, y: p.y, width: entry.width, height: entry.height };
   }
 
-  /** The strip a `render` node keeps for its title and for dragging. Zero
-   * for a node whose body the pane draws itself. */
+  /** The strip a `render` or a GL body node keeps for its title and for
+   * dragging. Zero for a node whose body the pane draws itself. */
   private _headerHeight(entry: NodeEntry): number {
-    if (!entry.type?.render) return 0;
-    return entry.type.headerHeight ?? NODE_HEADER;
+    if (!entry.type?.render && !this._glBodied(entry)) return 0;
+    return entry.type!.headerHeight ?? NODE_HEADER;
+  }
+
+  /**
+   * Whether this node's body is its type's `glBody`, drawn by the GL
+   * renderer in its card — rather than its `render` mounted over it or its
+   * `paint`, which are the 2D renderer's. `<Flow>` says whether GL is drawing
+   * or on its way (`glBodies`); the bare element answers for itself.
+   */
+  private _glBodied(entry: NodeEntry): boolean {
+    if (entry.type?.glBody == null) return false;
+    const on = this.props.glBodies as boolean | undefined;
+    return on ?? this.props.renderer === 'gl';
+  }
+
+  /**
+   * The GL body a node has, asked of its type (`FlowNodeType.glBody`) —
+   * what the GL surface draws, and what input over the body is forwarded
+   * to. Null for a node with none, and for one that is gone.
+   */
+  glBodyOf(id: string): FlowGlBody | null {
+    const entry = this._byId.get(id);
+    if (!entry || entry.node.hidden || !this._glBodied(entry)) return null;
+    return (
+      entry.type!.glBody!({
+        node: entry.node,
+        selected: entry.node.selected ?? false,
+        zoom: this._viewport().zoom,
+      }) ?? null
+    );
+  }
+
+  /** Where a node's GL body is in the window, logical pixels: the card less
+   *  its title bar and an inset — the scene's `glBodyRect`. */
+  private _glBodyRect(entry: NodeEntry): FlowRect | null {
+    const card = this._screenRect(entry);
+    const zoom = this._viewport().zoom;
+    const inset = NODE_BODY_INSET * zoom;
+    const header = this._headerHeight(entry) * zoom;
+    const width = card.width - inset * 2;
+    const height = card.height - header - inset;
+    if (width <= 1 || height <= 1) return null;
+    return { x: card.x + inset, y: card.y + header, width, height };
+  }
+
+  /** The GL body under a point, when the GL renderer is drawing it: the
+   *  topmost node there, and the point in its body's graph units. */
+  private _glBodyAt(
+    x: number,
+    y: number,
+  ): { id: string; body: FlowGlBody; x: number; y: number } | null {
+    if (!this._gl) return null;
+    const entry = this._nodeAt(x, y);
+    if (!entry || !this._glBodied(entry)) return null;
+    const rect = this._glBodyRect(entry);
+    if (!rect || !rectContains(rect, { x, y })) return null;
+    const body = this.glBodyOf(entry.node.id);
+    if (!body?.pointer) return null;
+    const zoom = this._viewport().zoom;
+    return {
+      id: entry.node.id,
+      body,
+      x: (x - rect.x) / zoom,
+      y: (y - rect.y) / zoom,
+    };
+  }
+
+  /** An event for a GL body, in its graph units — measured from where its
+   *  node is now, which a drag of the map does not move. */
+  private _toBody(
+    id: string,
+    type: FlowGlBodyPointer['type'],
+    ev: {
+      x: number;
+      y: number;
+      button?: number;
+      detail?: number;
+      shiftKey?: boolean;
+      ctrlKey?: boolean;
+      altKey?: boolean;
+      metaKey?: boolean;
+    },
+  ): FlowGlBodyPointer {
+    const entry = this._byId.get(id);
+    const rect = entry ? this._glBodyRect(entry) : null;
+    const zoom = this._viewport().zoom;
+    return {
+      type,
+      x: rect ? (ev.x - rect.x) / zoom : 0,
+      y: rect ? (ev.y - rect.y) / zoom : 0,
+      button: ev.button,
+      detail: ev.detail,
+      shiftKey: ev.shiftKey,
+      ctrlKey: ev.ctrlKey,
+      altKey: ev.altKey,
+      metaKey: ev.metaKey,
+    };
+  }
+
+  /** Tell the body the pointer was over that it has gone. */
+  private _leaveBody(): void {
+    const was = this._bodyHover;
+    if (!was) return;
+    this._bodyHover = null;
+    was.body.pointer?.({ type: 'leave', x: 0, y: 0 });
   }
 
   private _resizable(entry: NodeEntry): boolean {
@@ -1388,7 +1500,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * its card draw a title bar rather than a centred label, and what
    * `_emitBodies` reports a box for. */
   private _mounted(entry: NodeEntry): boolean {
-    return entry.type?.render != null && this._viewport().zoom >= RENDER_ZOOM;
+    return (
+      entry.type?.render != null &&
+      this._viewport().zoom >= RENDER_ZOOM &&
+      !this._glBodied(entry)
+    );
   }
 
   /**
@@ -1451,6 +1567,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       type: entry.type,
       header: this._headerHeight(entry),
       mounted: this._mounted(entry),
+      glBody: this._glBodied(entry),
       connectable: this._connectable(entry),
       grips: this._grips(entry),
     };
@@ -2260,7 +2377,19 @@ export class FlowGraphNode extends Node implements FlowInstance {
       }
     }
 
-    // 4. a node
+    // 4. a GL body, which may take the press for itself — a map pans by it
+    // — and otherwise leaves it to its node, as a card's padding does
+    const inBody = this._glBodyAt(x, y);
+    if (inBody && inBody.body.pointer!(this._toBody(inBody.id, 'down', ev))) {
+      // the pointer it was over, if another: a press is no leave of its own
+      if (this._bodyHover?.id !== inBody.id) this._leaveBody();
+      this._gesture = { kind: 'body', id: inBody.id, body: inBody.body };
+      ev.capturePointer();
+      ev.preventDefault();
+      return;
+    }
+
+    // 5. a node
     const entry = ev.button === 1 ? this._nodeAt(x, y) : null;
     if (entry) {
       const additive = ev.shiftKey || ev.ctrlKey;
@@ -2302,7 +2431,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       return;
     }
 
-    // 5. an edge
+    // 6. an edge
     if (ev.button === 1) {
       const edge = this._edgeAt(x, y);
       if (edge) {
@@ -2321,7 +2450,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       }
     }
 
-    // 6. the empty pane: a box selection, or a pan
+    // 7. the empty pane: a box selection, or a pan
     const boxSelect =
       ev.button === 1 &&
       (ev.shiftKey || this._bool('selectionOnDrag', false)) &&
@@ -2402,6 +2531,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
         this.setCenter(p.x, p.y);
         return;
       }
+      case 'body':
+        gesture.body.pointer?.(this._toBody(gesture.id, 'drag', ev));
+        return;
     }
   }
 
@@ -2409,6 +2541,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const gesture = this._gesture;
     this._gesture = null;
     if (!gesture) return;
+
+    if (gesture.kind === 'body') {
+      gesture.body.pointer?.(this._toBody(gesture.id, 'up', ev));
+      return;
+    }
 
     if (gesture.kind === 'drag') {
       const to = this._dragTo;
@@ -2904,6 +3041,21 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   private _wheelDispatch(ev: WheelEvent): void {
     this._sync();
+    // Over a GL body that takes it, the wheel is the body's: a map zooms.
+    const inBody = this._glBodyAt(ev.x, ev.y);
+    if (inBody) {
+      const wheel = ev as WheelEvent & { smooth?: boolean };
+      const taken = inBody.body.pointer!({
+        ...this._toBody(inBody.id, 'wheel', ev),
+        deltaX: ev.deltaX,
+        deltaY: ev.deltaY,
+        smooth: wheel.smooth === true,
+      });
+      if (taken) {
+        ev.preventDefault();
+        return;
+      }
+    }
     const zooming = ev.ctrlKey || this._bool('zoomOnScroll', true);
     if (zooming) {
       // X delivers a notch as ±48; e^(48·0.002) is about a 10% step, which
@@ -2922,6 +3074,14 @@ export class FlowGraphNode extends Node implements FlowInstance {
   override defaultMouseMove(ev: MouseEvent): void {
     if (this.props.disabled || this._gesture) return;
     this._sync();
+    // A GL body hears the pointer cross it — a map's markers hover — and
+    // the node under it still lights up as it would over a card.
+    const inBody = this._glBodyAt(ev.x, ev.y);
+    if (inBody?.id !== this._bodyHover?.id) this._leaveBody();
+    if (inBody) {
+      this._bodyHover = { id: inBody.id, body: inBody.body };
+      inBody.body.pointer!(this._toBody(inBody.id, 'move', ev));
+    }
     const handle = this._bool('nodesConnectable', true)
       ? this._handleAt(ev.x, ev.y)
       : null;
@@ -2953,6 +3113,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
   }
 
   override defaultMouseLeave(): void {
+    this._leaveBody();
     if (this._hover === NO_HOVER) return;
     const damage = this._hoverDamage(this._hover);
     this._hover = NO_HOVER;
