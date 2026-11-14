@@ -66,6 +66,7 @@ import {
   HtmlViewNode,
   TOUCH_SLOP_PX,
   registerHtmlView,
+  snapClock,
 } from './node.js';
 import type {
   DocumentInteraction,
@@ -2606,12 +2607,12 @@ function isTouch(ev: { nativeEvent?: unknown }): boolean {
 /** What a finger's speed as it lets go is read across. */
 const FLING_WINDOW_MS = 100;
 
-/** A clock for a finger's speed. */
+/** A clock for a finger's speed: the one its fling and its snap are
+ *  stepped on (`snapClock`), so a test that holds it holds the whole
+ *  gesture, and a finger moved a frame apart on a slow runner is not read
+ *  as one that stopped before it lifted. */
 function nowMs(): number {
-  return (
-    (globalThis as { performance?: { now(): number } }).performance?.now() ??
-    Date.now()
-  );
+  return snapClock.now();
 }
 
 /** The link an element is in, or null. */
