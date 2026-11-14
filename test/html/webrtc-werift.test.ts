@@ -1596,6 +1596,36 @@ test('a received video track’s settings are the size of what it last decoded, 
   }
 });
 
+test('a connection whose peer goes away is disconnected once it has heard nothing past werift’s consent checks, and an idle one is not', async () => {
+  const logs = await run(`
+    ${CALL}
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.createDataChannel('idle');
+    var states = [];
+    pc1.oniceconnectionstatechange = function () { states.push(pc1.iceConnectionState); };
+    await call(pc1, pc2);
+    await wait('connected', function () { return pc1.iceConnectionState === 'connected'; });
+    var transport = pc1.sctp.transport.iceTransport;
+    var told = [];
+    transport.onstatechange = function () { told.push(transport.state); };
+    // nothing is sent, and the consent checks keep it connected
+    await new Promise(function (r) { setTimeout(r, 9000); });
+    log('idle', pc1.iceConnectionState, states.join(','));
+    var gone = Date.now();
+    pc2.close();
+    await wait('disconnected', function () { return pc1.iceConnectionState === 'disconnected'; }, 20000);
+    var took = Date.now() - gone;
+    log('gone', pc1.iceConnectionState, transport.state, told.join(','), took >= 6000 && took < 15000);
+    pc1.close();
+  `);
+  for (const line of [
+    'idle|connected|checking,connected',
+    'gone|disconnected|disconnected|disconnected|true',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
 test('abs-capture-time an app adds to its offer is answered and sent, and a receiver’s sources carry the capture time; offered by default it is not', async () => {
   const logs = await run(`
     ${CALL}

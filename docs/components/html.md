@@ -1965,7 +1965,12 @@ the connection `gathering` until the last candidate in the new credentials
 and `complete` after it, where werift stays `complete` and gathers again as
 the answer commits the restart; and `restartIce()` holds until an answer
 leaves no old credentials, so a restart's offer rolled back leaves one to
-make. A transport's state and the connection's are both set before either's
+make. A connected transport that hears nothing on its pair for seven
+seconds is `disconnected`, and so is the connection, and it is connected
+again as anything comes: werift never says `disconnected`, and checks
+consent every four to six seconds, so an idle connection hears its peer
+more often than that. It fails only as consent expires, 30 seconds on. A
+transport's state and the connection's are both set before either's
 event fires, as WebRTC 1.0 has them. A transceiver no
 m-section has has no transport. `setLocalDescription()` with no description
 sets the last offer or answer made while nothing has changed since (WebRTC
