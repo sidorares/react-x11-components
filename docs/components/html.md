@@ -2653,7 +2653,16 @@ until its animations are over, when it is finished.
   and is placed where it is, animated from where it was by a `@keyframes`
   of its own, and the images fade — across where it has both, out or in
   where it has one. The old image draws its picture; the new image draws its element
-  as it is now, at every paint, at its size or stretched to the image's.
+  as it is now, at every paint. Each is a replaced element whose natural
+  size is its element's border box, so `object-fit`, `object-position` and
+  `object-view-box` fit the picture to the image's box as they fit an
+  `<img>`'s, what the element drew past its border box scaled with it; a
+  picture that is scaled is drawn over whole pixels, its edges rounded, as
+  a browser snaps a replaced element's content. Its own `overflow` is
+  `visible`, so `object-fit: none` in a smaller box shows all of its
+  element, and an `overflow` that clips cuts the picture at the image's
+  padding box, or its overflow clip edge with `overflow-clip-margin`,
+  rounded as its corners are.
   An element the tree draws is a hole where it is laid out, to the
   pointer as much as to the eye: `elementFromPoint` over it is what is
   behind it, or the pseudo-element over it, which is its originating
@@ -6044,6 +6053,23 @@ the default, or at its own ratio, within it, over the whole of it
 an SVG with only a `viewBox` sized from its ratio — and `object-position`
 places it on the pixel grid, in the middle unless it says otherwise, and
 by its lengths even when it is stretched; what falls past the box is cut.
+`object-view-box` (CSS Images 5, 6.6) takes a rectangle out of an image, a
+canvas, a video's poster or a drawing in an `<object>` — `inset()`,
+`rect()` or `xywh()`, its percentages of the natural size — and that is
+then the natural size: layout sizes the element from it, `object-fit` and
+`object-position` fit and place it, and the rest of the image is drawn
+around it, cut by the content box and by nothing else, as browsers draw
+it. A view box of no area, or of less than none, is none, and content with
+no natural size, an SVG with neither a width nor a height, has none to
+take one from; size containment's size is the element's size whatever its
+view box says, and the view box still decides what is drawn in it. It
+computes to the function as written, and runs between two of one kind.
+Not here: `image-rendering`, so an image scaled up is smoothed where
+`pixelated` asks for its pixels, and WPT's `object-view-box-zoom` sees the
+blend at the edge of a canvas's quadrant; and an image in a vertical
+writing mode, which is drawn in the frame's turned axes, with a view box or
+without one (WPT's `object-view-box-writing-mode-*`, whose references fail
+the same way).
 An `<object>` whose `data` is an image shows it, one whose `data` the host
 says is a document is a frame, and its fallback content shows until either
 is in, or where nothing is (HTML 4.8.7) — Acid3 nests an object of a page

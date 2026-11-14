@@ -11,6 +11,7 @@
 // box, and the computed ones where it has none; and a colour is `rgb()` or
 // `rgba()`, as a browser serializes every one.
 import type { BasicShape } from './css/basic-shape.js';
+import type { ObjectViewBox } from './css/object-view-box.js';
 import type { Coord, ShapeFunction } from './css/shape-function.js';
 import { positionAreaComputed } from './css/anchor.js';
 import {
@@ -767,6 +768,17 @@ function clipPathText(path: ClipPath | null, scale: number): string {
   return path.box === 'border-box' ? shape : `${shape} ${path.box}`;
 }
 
+/** `object-view-box`'s computed value: its function as written, a length
+ *  a length and a percentage a percentage, `inset()` as short as its
+ *  sides allow. */
+function objectViewBoxText(view: ObjectViewBox | null, scale: number): string {
+  if (!view) return 'none';
+  const sides = view.lengths.map((v) => len(v, scale));
+  return view.shape === 'inset'
+    ? `inset(${shortest(sides)})`
+    : `${view.shape}(${sides.join(' ')})`;
+}
+
 /** A basic shape's computed value: `shape()` command by command, the rest
  *  by their lengths and positions. */
 function basicShapeText(basic: BasicShape, scale: number): string | null {
@@ -1270,6 +1282,7 @@ function cssomAt(
   // `auto` for what is in the top layer, and `none` for all else: the user
   // agent's own, which no page sets (CSS Position 4, 3.2)
   out.overlay = style.overlay;
+  out['object-view-box'] = objectViewBoxText(style.objectViewBox, scale);
   const widths = [
     style.borderTopWidth,
     style.borderRightWidth,
