@@ -9289,18 +9289,23 @@ test('a dialog open by its attribute is one of the open dialogs, last where a sc
 test('a page keeps its own session history: pushState and replaceState, a fragment, and traversal with popstate and hashchange', async () => {
   const doc = await hosted(
     '<p id="out"></p><div id="x"></div><script>' +
-      'var r = [];' +
+      // each step goes after the `hashchange` the step before it made,
+      // which is the last thing a step tells: on a timer of its own, a
+      // slow runner wrote the result before the last one came
+      'var r = [], steps = [' +
+      '  function () { history.back(); },' +
+      '  function () { history.go(-1); },' +
+      "  function () { document.getElementById('out').textContent = r.join('|'); }" +
+      '];' +
       'window.addEventListener("popstate", function (e) { r.push("pop " + JSON.stringify(e.state) + " " + location.hash); });' +
-      'window.addEventListener("hashchange", function (e) { r.push("hash " + e.newURL.split("#")[1]); });' +
+      'window.addEventListener("hashchange", function (e) { r.push("hash " + e.newURL.split("#")[1]); setTimeout(steps.shift(), 0); });' +
       'window.onload = function () {' +
       '  history.pushState({ a: 1 }, "", "#one"); r.push(history.length, JSON.stringify(history.state), location.hash);' +
       '  history.replaceState({ a: 2 }, "", "#two"); r.push(history.length, JSON.stringify(history.state));' +
       '  try { history.pushState(null, "", "https://other.example/"); } catch (e) { r.push(e.name); }' +
       // once the document is completely loaded, where a Location
       // navigation is no longer a replacement (HTML 7.2.4)
-      '  setTimeout(function () { location.hash = "x"; r.push(history.length);' +
-      '  setTimeout(function () { history.back(); setTimeout(function () { history.go(-1);' +
-      "    setTimeout(function () { document.getElementById('out').textContent = r.join('|'); }, 30); }, 30); }, 30); }, 0);" +
+      '  setTimeout(function () { location.hash = "x"; r.push(history.length); }, 0);' +
       '};' +
       '</script>',
   );
@@ -17086,7 +17091,11 @@ test('getAnimations() lists a CSS transition under way as a CSSTransition, befor
 
 test('a CSS transition tells the page as it runs, starts, ends and is cut short, and a seek moves what is drawn', async () => {
   const doc = await hosted(
-    '<style>.t { opacity: 1; transition: opacity 1s linear }</style>' +
+    // b's runs for longer than any test does, and is cut short at the
+    // frame after it is heard to start: at a second, a slow runner had it
+    // end first, and a paint later than two frames would cut it short
+    // before it started
+    '<style>.t { opacity: 1; transition: opacity 1s linear } #b { transition-duration: 100s }</style>' +
       '<p id="a" class="t">a</p><p id="b" class="t">b</p><p id="out"></p><script>' +
       'var log = [], a = document.getElementById("a"), b = document.getElementById("b");' +
       // on the elements: one taken out of the document is heard there alone
@@ -17094,21 +17103,26 @@ test('a CSS transition tells the page as it runs, starts, ends and is cut short,
       '  [a, b].forEach(function (el) { el.addEventListener(type, function (e) {' +
       '    log.push(e.target.id + ":" + e.type + ":" + e.propertyName + ":" +' +
       '      (e.type === "transitioncancel" ? e.elapsedTime > 0 : e.elapsedTime) + ":" + (e instanceof TransitionEvent)); }); }); });' +
-      'var half;' +
+      'var half, t;' +
+      // the first frame of the page's at which `log` holds what `heard`
+      // matches, where a timer of the page's could come before the frame
+      // that told it
+      'function once(heard, then) { requestAnimationFrame(function wait() {' +
+      '  if (heard.test(log.join())) then(); else requestAnimationFrame(wait); }); }' +
       'requestAnimationFrame(function () {' +
       '  getComputedStyle(a).opacity; getComputedStyle(b).opacity;' +
       '  a.style.opacity = "0"; b.style.opacity = "0";' +
       // a seek is what is drawn and read back, in the same task
-      '  var t = a.getAnimations()[0]; t.currentTime = 500;' +
+      '  t = a.getAnimations()[0]; t.currentTime = 500;' +
       '  half = getComputedStyle(a).opacity;' +
-      'requestAnimationFrame(function () { requestAnimationFrame(function () {' +
-      '  b.remove(); t.currentTime = 1000;' +
-      '  setTimeout(function () { requestAnimationFrame(function () { setTimeout(function () {' +
-      '    document.getElementById("out").textContent = JSON.stringify([half, log.sort()]);' +
-      '  }, 50); }); }, 50); }); }); });' +
+      '  once(/b:transitionstart/, function () { requestAnimationFrame(function () {' +
+      '    b.remove(); t.currentTime = 1000;' +
+      '    once(/a:transitionend.*b:transition(end|cancel)|b:transition(end|cancel).*a:transitionend/, function () {' +
+      '      document.getElementById("out").textContent = JSON.stringify([half, log.sort()]);' +
+      '    }); }); }); });' +
       '</script>',
   );
-  for (let i = 0; i < 40 && !doc.text('out'); i += 1) await settle(20);
+  await settled(doc, 'out', (text) => text !== '');
   assert.deepEqual(
     JSON.parse(doc.text('out') || 'null'),
     [
