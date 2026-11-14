@@ -1310,3 +1310,44 @@ test('targetLatency is held, fixed for the connection’s life, and an encoding�
   );
   assert.ok(logs.includes('ptime|true|false|false'), logs.join('\n'));
 });
+
+test('an operation’s length, an event handler’s brand check and a required argument are Web IDL’s', async () => {
+  const logs = await run(`
+    var P = RTCPeerConnection.prototype;
+    log('lengths', ['createOffer', 'createAnswer', 'setLocalDescription', 'setRemoteDescription', 'addIceCandidate', 'setConfiguration', 'addTransceiver', 'getStats']
+      .map(function (k) { return P[k].length; }).join(','),
+      RTCRtpSender.prototype.setParameters.length, RTCStatsReport.prototype.forEach.length,
+      RTCStatsReport.prototype[Symbol.iterator] === RTCStatsReport.prototype.entries);
+    function threw(f) { try { f(); return 'none'; } catch (e) { return e.name; } }
+    var setter = function (proto, name) { return Object.getOwnPropertyDescriptor(proto, name).set; };
+    var getter = function (proto, name) { return Object.getOwnPropertyDescriptor(proto, name).get; };
+    log('handlers',
+      threw(function () { setter(P, 'onnegotiationneeded').call({}, null); }),
+      threw(function () { getter(P, 'onicecandidate').call({}); }),
+      threw(function () { setter(RTCDataChannel.prototype, 'onopen').call({}, null); }),
+      threw(function () { setter(RTCIceTransport.prototype, 'onstatechange').call({}, null); }),
+      threw(function () { setter(RTCDataChannel.prototype, 'binaryType').call({}, 'nonsense'); }),
+      threw(function () { setter(P, 'ontrack').call(new RTCPeerConnection(), null); }));
+    var pc = new RTCPeerConnection();
+    var channel = pc.createDataChannel('');
+    log('arguments',
+      threw(function () { RTCRtpSender.getCapabilities(); }),
+      threw(function () { RTCRtpReceiver.getCapabilities(); }),
+      threw(function () { channel.send(); }),
+      threw(function () { channel.send('x'); }));
+    pc.close();
+  `);
+  assert.ok(logs.includes('lengths|0,0,0,1,0,0,1,0|1|1|true'), logs.join('\n'));
+  assert.ok(
+    logs.includes(
+      'handlers|TypeError|TypeError|TypeError|TypeError|TypeError|none',
+    ),
+    logs.join('\n'),
+  );
+  // a channel not open refuses what it is handed to send, but not before
+  // it has the argument
+  assert.ok(
+    logs.includes('arguments|TypeError|TypeError|TypeError|InvalidStateError'),
+    logs.join('\n'),
+  );
+});

@@ -664,14 +664,19 @@ export function installRtcTransports(
     entries(): Any {
       return slotOf(this, 'report').map.entries();
     }
-    forEach(fn: Any, thisArg?: Any): void {
+    // its `length` is 1, as a maplike's is: the second is optional
+    forEach(fn: Any, ...rest: Any[]): void {
+      const thisArg = rest[0];
       for (const [k, v] of slotOf(this, 'report').map)
         fn.call(thisArg, v, k, this);
     }
-    [Symbol.iterator](): Any {
-      return slotOf(this, 'report').map.entries();
-    }
   }
+  // a maplike's @@iterator is its entries (Web IDL, 3.7.11)
+  Object.defineProperty(RTCStatsReport.prototype, Symbol.iterator, {
+    value: RTCStatsReport.prototype.entries,
+    writable: true,
+    configurable: true,
+  });
   const reportOf = (list: Any[]): Any => {
     const report = new RTCStatsReport(TOKEN);
     const map = new Map();

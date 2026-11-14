@@ -132,10 +132,22 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
   /** An event handler IDL attribute, its accessors named as Web IDL
    *  names them. */
   const handler = (proto: Any, name: string): void => {
+    // an object of another interface is refused either way (Web IDL, 3.7.6)
+    const own = (self: Any): void => {
+      if (
+        self === null ||
+        (typeof self !== 'object' && typeof self !== 'function') ||
+        !Object.prototype.isPrototypeOf.call(proto, self)
+      ) {
+        throw illegal();
+      }
+    };
     const get = function (this: Any) {
+      own(this);
       return this._handlers[name] ?? null;
     };
     const set = function (this: Any, fn: Any) {
+      own(this);
       setHandler(
         this,
         name,
@@ -150,6 +162,16 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       enumerable: true,
       configurable: true,
     });
+  };
+  /** An operation's `length` as Web IDL has it: its required arguments,
+   *  where its optional ones, and its legacy callbacks, would count. */
+  const lengths = (on: Any, of: Record<string, number>): void => {
+    for (const key of Object.keys(of)) {
+      Object.defineProperty(on[key], 'length', {
+        value: of[key],
+        configurable: true,
+      });
+    }
   };
   /** Classes made Web IDL interfaces: their members enumerable, as IDL's
    *  are, and their objects' class strings their names. */
@@ -777,6 +799,11 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       setTransform(this, slotOf(this, 'sender'), 'sender', value);
     }
     static getCapabilities(kind: Any): Any {
+      if (arguments.length < 1) {
+        throw typeError(
+          "Failed to execute 'getCapabilities': 1 argument required, but only 0 present.",
+        );
+      }
       return capabilitiesOf(String(kind), 'sender');
     }
     getParameters(): Any {
@@ -1208,6 +1235,11 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       call('rtcJitter', s.tx.id, s.jitterBufferTarget);
     }
     static getCapabilities(kind: Any): Any {
+      if (arguments.length < 1) {
+        throw typeError(
+          "Failed to execute 'getCapabilities': 1 argument required, but only 0 present.",
+        );
+      }
       return capabilitiesOf(String(kind), 'receiver');
     }
     getParameters(): Any {
@@ -3464,6 +3496,17 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     RTCDTMFSender,
     RTCDTMFToneChangeEvent,
   };
+  lengths(RTCPeerConnection.prototype, {
+    createOffer: 0,
+    createAnswer: 0,
+    setLocalDescription: 0,
+    setRemoteDescription: 1,
+    addIceCandidate: 0,
+    setConfiguration: 0,
+    addTransceiver: 1,
+    getStats: 0,
+  });
+  lengths(RTCRtpSender.prototype, { setParameters: 1 });
   idl(classes);
   return { ...classes, ...channels.interfaces };
 }
