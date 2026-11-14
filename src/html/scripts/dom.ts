@@ -1878,7 +1878,118 @@ export function installDom(
         : v < 0
           ? 'calc(-infinity)'
           : 'calc(NaN)';
-  /** A number, or a numeric value, as the arithmetic takes it. */
+  /** What makes an object of an interface that has no constructor of its
+   *  own a page can call: the facade's code passes it, a page cannot. */
+  const MADE = Symbol('made');
+  /** The base types a numeric type has exponents for (CSS Typed OM 1,
+   *  4.3.3), in the order `type()` lists them. */
+  const BASE_TYPES = [
+    'length',
+    'angle',
+    'time',
+    'frequency',
+    'resolution',
+    'flex',
+    'percent',
+  ];
+  /** A numeric type: an exponent a base type, and a percent hint. */
+  type NumericType = { e: Record<string, number>; hint: string | null };
+  /** The canonical unit of each kind of quantity, which a sum value
+   *  converts to (CSS Values 4, 4.3). */
+  const CANONICAL: Record<string, string> = {
+    length: 'px',
+    angle: 'deg',
+    time: 's',
+    frequency: 'hz',
+    resolution: 'dppx',
+    flex: 'fr',
+  };
+  /** A unit as a page names it, or null for none Typed OM has. */
+  const unitNamed = (unit: Any): string | null => {
+    const u = String(unit).toLowerCase();
+    const name = u === '%' ? 'percent' : u;
+    return UNITS[name] ? name : null;
+  };
+  const typeOfUnit = (unit: string): NumericType => {
+    const kind = UNITS[unit][0];
+    return { e: kind === 'number' ? {} : { [kind]: 1 }, hint: null };
+  };
+  /** A type with a percent hint applied (4.3.3): its percent exponent
+   *  moved onto the hinted base type. */
+  const hinted = (t: NumericType, hint: string): NumericType => {
+    const e = { ...t.e };
+    if (!(hint in e)) e[hint] = 0;
+    if (e.percent) {
+      e[hint] += e.percent;
+      e.percent = 0;
+    }
+    return { e, hint };
+  };
+  const nonZero = (t: NumericType): [string, number][] =>
+    Object.entries(t.e).filter(([, v]) => v !== 0);
+  const sameExponents = (a: NumericType, b: NumericType): boolean => {
+    const x = nonZero(a);
+    return x.length === nonZero(b).length && x.every(([k, v]) => b.e[k] === v);
+  };
+  /** Two types added (4.3.3, "add two types"), or null where they are
+   *  not addable. */
+  const addTypes = (t1: NumericType, t2: NumericType): NumericType | null => {
+    let a = t1;
+    let b = t2;
+    if (a.hint !== null && b.hint !== null && a.hint !== b.hint) return null;
+    if (a.hint !== null) b = hinted(b, a.hint);
+    else if (b.hint !== null) a = hinted(a, b.hint);
+    if (sameExponents(a, b)) return { e: { ...a.e }, hint: a.hint };
+    const percent = (t: NumericType) => !!t.e.percent;
+    const other = (t: NumericType) => nonZero(t).some(([k]) => k !== 'percent');
+    if ((percent(a) || percent(b)) && (other(a) || other(b))) {
+      for (const hint of BASE_TYPES) {
+        if (hint === 'percent') continue;
+        const x = hinted(a, hint);
+        if (sameExponents(x, hinted(b, hint))) return { e: { ...x.e }, hint };
+      }
+    }
+    return null;
+  };
+  /** Two types multiplied (4.3.3, "multiply two types"), or null. */
+  const multiplyTypes = (
+    t1: NumericType,
+    t2: NumericType,
+  ): NumericType | null => {
+    let a = t1;
+    let b = t2;
+    if (a.hint !== null && b.hint !== null && a.hint !== b.hint) return null;
+    if (a.hint !== null) b = hinted(b, a.hint);
+    else if (b.hint !== null) a = hinted(a, b.hint);
+    const e = { ...a.e };
+    for (const [k, v] of Object.entries(b.e)) e[k] = (e[k] ?? 0) + v;
+    return { e, hint: a.hint };
+  };
+  /** A numeric value's type: a unit value's from its unit, a math value's
+   *  as it was made. */
+  const typeOfValue = (v: Any): NumericType =>
+    v instanceof CSSUnitValue ? typeOfUnit(v._unitName) : v._type;
+  /** Whether a value's type matches a production (4.3.3): `<number>`, a
+   *  dimension, or that dimension or a percentage where `percent`. */
+  const typeMatches = (v: Any, kind: string, percent = false): boolean => {
+    if (!(v instanceof CSSNumericValue)) return false;
+    const t = typeOfValue(v);
+    const e = nonZero(t);
+    if (kind === 'number') return e.length === 0 && t.hint === null;
+    if (
+      percent &&
+      t.hint === null &&
+      e.length === 1 &&
+      e[0][0] === 'percent' &&
+      e[0][1] === 1
+    ) {
+      return true;
+    }
+    if (e.length !== 1 || e[0][0] !== kind || e[0][1] !== 1) return false;
+    return t.hint === null || (percent && t.hint === kind);
+  };
+  /** A number, or a numeric value, as the arithmetic takes it (4.3.1,
+   *  "rectify a numberish value"). */
   const numeric = (v: Any): Any => {
     if (v instanceof CSSNumericValue) return v;
     if (typeof v === 'number') return new CSSUnitValue(v, 'number');
@@ -1886,153 +1997,305 @@ export function installDom(
       "Failed to execute on 'CSSNumericValue': Argument is not a CSSNumericValue or number.",
     );
   };
-  /** The kind of quantity a value is, where it is one. */
-  const quantityOf = (v: Any): string | null => {
-    if (v instanceof CSSUnitValue) return UNITS[v.unit][0];
-    if (v instanceof CSSMathSum) {
-      const kinds = new Set<string | null>(
-        v.values._items.map(quantityOf).filter((k: Any) => k !== 'percent'),
-      );
-      return kinds.size === 1 ? [...kinds][0] : kinds.size ? null : 'percent';
+  /** One term of a sum value (4.3.1): a number and its units' exponents. */
+  type SumItem = { value: number; units: Record<string, number> };
+  const sameUnits = (
+    a: Record<string, number>,
+    b: Record<string, number>,
+  ): boolean => {
+    const x = Object.keys(a);
+    return x.length === Object.keys(b).length && x.every((k) => a[k] === b[k]);
+  };
+  /** Terms added into a list, those of the same units as one. */
+  const addInto = (items: SumItem[], add: SumItem[]): void => {
+    for (const it of add) {
+      const same = items.find((i) => sameUnits(i.units, it.units));
+      if (same) same.value += it.value;
+      else items.push({ value: it.value, units: { ...it.units } });
     }
-    if (v instanceof CSSMathNegate) return quantityOf(v.value);
-    return null;
+  };
+  /** A value's sum value (4.3.1, "create a sum value"), its units the
+   *  canonical ones where they convert; null where it has none. */
+  const sumValueOf = (v: Any): SumItem[] | null => {
+    if (v instanceof CSSUnitValue) {
+      let value = v._value;
+      let unit = v._unitName;
+      const [kind, factor] = UNITS[unit];
+      const to = CANONICAL[kind];
+      if (factor !== null && to && to !== unit) {
+        value = (value * factor) / (UNITS[to][1] as number);
+        unit = to;
+      }
+      return [{ value, units: unit === 'number' ? {} : { [unit]: 1 } }];
+    }
+    if (v instanceof CSSMathSum) {
+      const items: SumItem[] = [];
+      for (const x of v._items) {
+        const s = sumValueOf(x);
+        if (!s) return null;
+        addInto(items, s);
+      }
+      return items;
+    }
+    if (v instanceof CSSMathNegate) {
+      const s = sumValueOf(v._of);
+      return s && s.map((i) => ({ value: -i.value, units: i.units }));
+    }
+    if (v instanceof CSSMathProduct) {
+      let items: SumItem[] = [{ value: 1, units: {} }];
+      for (const x of v._items) {
+        const s = sumValueOf(x);
+        if (!s) return null;
+        const next: SumItem[] = [];
+        for (const a of items) {
+          for (const b of s) {
+            const units = { ...a.units };
+            for (const [k, e] of Object.entries(b.units)) {
+              units[k] = (units[k] ?? 0) + e;
+              if (!units[k]) delete units[k];
+            }
+            addInto(next, [{ value: a.value * b.value, units }]);
+          }
+        }
+        items = next;
+      }
+      return items;
+    }
+    if (v instanceof CSSMathInvert) {
+      const s = sumValueOf(v._of);
+      if (!s || s.length !== 1) return null;
+      const units: Record<string, number> = {};
+      for (const [k, e] of Object.entries(s[0].units)) units[k] = -e;
+      return [{ value: 1 / s[0].value, units }];
+    }
+    const args =
+      v instanceof CSSMathClamp
+        ? [v._lower, v._of, v._upper]
+        : v instanceof CSSMathMin || v instanceof CSSMathMax
+          ? v._items
+          : null;
+    if (!args) return null;
+    const sums = args.map(sumValueOf);
+    if (sums.some((s: Any) => !s || s.length !== 1)) return null;
+    const units = sums[0][0].units;
+    if (!sums.every((s: Any) => sameUnits(s[0].units, units))) return null;
+    const values = sums.map((s: Any) => s[0].value);
+    const value =
+      v instanceof CSSMathMin
+        ? Math.min(...values)
+        : v instanceof CSSMathMax
+          ? Math.max(...values)
+          : Math.max(values[0], Math.min(values[1], values[2]));
+    return [{ value, units }];
+  };
+  /** A sum value's term as a unit value, or null where its units are more
+   *  than one unit to the first power (4.3.1). */
+  const unitValueOfItem = (item: SumItem): Any => {
+    const units = Object.entries(item.units);
+    if (!units.length) return new CSSUnitValue(item.value, 'number');
+    if (units.length > 1 || units[0][1] !== 1) return null;
+    return new CSSUnitValue(item.value, units[0][0]);
+  };
+  /** A unit value in another unit, or null where the two do not convert. */
+  const convertUnit = (v: Any, to: string): Any => {
+    if (v._unitName === to) return new CSSUnitValue(v._value, to);
+    const [kind, factor] = UNITS[v._unitName];
+    const [toKind, toFactor] = UNITS[to];
+    if (
+      kind !== toKind ||
+      factor === null ||
+      toFactor === null ||
+      kind === 'number' ||
+      kind === 'percent'
+    ) {
+      return null;
+    }
+    return new CSSUnitValue((v._value * factor) / toFactor, to);
+  };
+  /** Whether two numeric values are equal (4.3.1, "equal numeric
+   *  values"): the same class, and the same numbers and units or the same
+   *  arguments in order. */
+  const equalNumeric = (a: Any, b: Any): boolean => {
+    if (a.constructor !== b.constructor) return false;
+    if (a instanceof CSSUnitValue) {
+      return a._value === b._value && a._unitName === b._unitName;
+    }
+    if (a instanceof CSSMathNegate || a instanceof CSSMathInvert) {
+      return equalNumeric(a._of, b._of);
+    }
+    if (a instanceof CSSMathClamp) {
+      return (
+        equalNumeric(a._lower, b._lower) &&
+        equalNumeric(a._of, b._of) &&
+        equalNumeric(a._upper, b._upper)
+      );
+    }
+    return (
+      a._items.length === b._items.length &&
+      a._items.every((x: Any, i: number) => equalNumeric(x, b._items[i]))
+    );
+  };
+  const typeError = (op: string, why: string): never => {
+    throw new TypeError(
+      `Failed to execute '${op}' on 'CSSNumericValue': ${why}`,
+    );
   };
 
   class CSSStyleValue {
+    _text: string | undefined;
+    constructor(...args: Any[]) {
+      if (args[0] !== MADE) {
+        if (new.target === CSSStyleValue) {
+          throw new TypeError('Illegal constructor');
+        }
+        return;
+      }
+      this._text = args[1];
+    }
     toString(): string {
-      return '';
+      return this._text ?? '';
+    }
+    static parse(property: Any, cssText: Any): Any {
+      return parseStyle('parse', property, cssText, false)[0];
+    }
+    static parseAll(property: Any, cssText: Any): Any[] {
+      return parseStyle('parseAll', property, cssText, true);
     }
   }
+  /** A value Typed OM has no class of its own for, read as written. */
+  const styleValueOf = (text: string): Any =>
+    new (CSSStyleValue as Any)(MADE, text);
   class CSSNumericValue extends CSSStyleValue {
+    constructor(...args: Any[]) {
+      if (new.target === CSSNumericValue) {
+        throw new TypeError('Illegal constructor');
+      }
+      super(...args);
+    }
     add(...values: Any[]): Any {
-      const all = [this, ...values.map(numeric)];
-      const units = new Set(all.map((v) => v.unit));
-      if (all.every((v) => v instanceof CSSUnitValue) && units.size === 1) {
+      const all = [
+        ...(this instanceof CSSMathSum ? (this as Any)._items : [this]),
+        ...values.map(numeric),
+      ];
+      if (
+        all.every(
+          (v) => v instanceof CSSUnitValue && v._unitName === all[0]._unitName,
+        )
+      ) {
         return new CSSUnitValue(
-          all.reduce((sum, v) => sum + v.value, 0),
-          all[0].unit,
+          all.reduce((sum, v) => sum + v._value, 0),
+          all[0]._unitName,
         );
       }
-      const kinds = new Set(
-        all.map(quantityOf).filter((k) => k !== 'percent' && k !== null),
-      );
-      if (kinds.size > 1) {
-        throw new TypeError(
-          "Failed to execute 'add' on 'CSSNumericValue': Incompatible types",
-        );
-      }
-      return new CSSMathSum(
-        ...all.flatMap((v) => (v instanceof CSSMathSum ? v.values._items : v)),
-      );
+      return new CSSMathSum(...all);
     }
     sub(...values: Any[]): Any {
       return this.add(...values.map((v) => numeric(v).negate()));
     }
     mul(...values: Any[]): Any {
-      const all = [this, ...values.map(numeric)];
+      const all = [
+        ...(this instanceof CSSMathProduct ? (this as Any)._items : [this]),
+        ...values.map(numeric),
+      ];
       if (all.every((v) => v instanceof CSSUnitValue)) {
-        const units = all.filter((v) => v.unit !== 'number');
+        const units = all.filter((v) => v._unitName !== 'number');
         if (units.length <= 1) {
           return new CSSUnitValue(
-            all.reduce((p, v) => p * v.value, 1),
-            units[0]?.unit ?? 'number',
+            all.reduce((p, v) => p * v._value, 1),
+            units[0]?._unitName ?? 'number',
           );
         }
       }
-      return new CSSMathProduct(
-        ...all.flatMap((v) =>
-          v instanceof CSSMathProduct ? v.values._items : v,
-        ),
-      );
+      return new CSSMathProduct(...all);
     }
     div(...values: Any[]): Any {
       return this.mul(...values.map((v) => numeric(v).invert()));
     }
     min(...values: Any[]): Any {
-      const all = [this, ...values.map(numeric)];
-      if (
-        all.every((v) => v instanceof CSSUnitValue && v.unit === this._unit())
-      ) {
-        return new CSSUnitValue(
-          Math.min(...all.map((v) => v.value)),
-          all[0].unit,
-        );
-      }
-      return new CSSMathMin(...all);
+      return this._extremum(CSSMathMin, Math.min, values);
     }
     max(...values: Any[]): Any {
-      const all = [this, ...values.map(numeric)];
+      return this._extremum(CSSMathMax, Math.max, values);
+    }
+    _extremum(Math_: Any, pick: (...n: number[]) => number, values: Any[]) {
+      const all = [
+        ...(this instanceof Math_ ? (this as Any)._items : [this]),
+        ...values.map(numeric),
+      ];
       if (
-        all.every((v) => v instanceof CSSUnitValue && v.unit === this._unit())
+        all.every(
+          (v) => v instanceof CSSUnitValue && v._unitName === all[0]._unitName,
+        )
       ) {
         return new CSSUnitValue(
-          Math.max(...all.map((v) => v.value)),
-          all[0].unit,
+          pick(...all.map((v) => v._value)),
+          all[0]._unitName,
         );
       }
-      return new CSSMathMax(...all);
+      return new Math_(...all);
     }
     equals(...values: Any[]): boolean {
-      return values.map(numeric).every((v) => v._same(this));
+      return values.map(numeric).every((v) => equalNumeric(this, v));
     }
-    /** This value in another unit of its kind (CSS Typed OM 1, 4.3.1). */
+    /** This value in another unit (CSS Typed OM 1, 4.3.1). */
     to(unit: Any): Any {
-      const given = String(unit).toLowerCase();
-      const to = given === '%' ? 'percent' : given;
-      if (!UNITS[to]) {
+      const to = unitNamed(unit);
+      if (!to) {
         throw new DOMException(
           "Failed to execute 'to' on 'CSSNumericValue': Invalid unit for conversion",
           'SyntaxError',
         );
       }
-      if (this instanceof CSSMathSum) {
-        return (this as Any).values._items
-          .map((v: Any) => v.to(to))
-          .reduce((sum: Any, v: Any) => sum.add(v));
+      const sum = sumValueOf(this);
+      if (!sum || sum.length !== 1) {
+        return typeError('to', 'Cannot convert to the given unit');
       }
-      if (this instanceof CSSUnitValue) {
-        if (this.unit === to) return new CSSUnitValue(this.value, to);
-        const [kind, factor] = UNITS[this.unit];
-        const [toKind, toFactor] = UNITS[to];
-        if (
-          kind === toKind &&
-          factor !== null &&
-          toFactor !== null &&
-          kind !== 'number' &&
-          kind !== 'percent'
-        ) {
-          return new CSSUnitValue((this.value * factor) / toFactor, to);
-        }
-      }
-      throw new TypeError(
-        "Failed to execute 'to' on 'CSSNumericValue': Cannot convert to the given unit",
-      );
+      const value = unitValueOfItem(sum[0]);
+      const out = value && convertUnit(value, to);
+      return out ?? typeError('to', 'Cannot convert to the given unit');
     }
     toSum(...units: Any[]): Any {
-      const parts =
-        this instanceof CSSMathSum ? (this as Any).values._items : [this];
-      if (!parts.every((v: Any) => v instanceof CSSUnitValue)) {
-        throw new TypeError(
-          "Failed to execute 'toSum' on 'CSSNumericValue': Not a sum of values",
+      const names = units.map((u) => {
+        const n = unitNamed(u);
+        if (!n) {
+          throw new DOMException(
+            "Failed to execute 'toSum' on 'CSSNumericValue': Invalid unit for conversion",
+            'SyntaxError',
+          );
+        }
+        return n;
+      });
+      const sum = sumValueOf(this);
+      if (!sum) return typeError('toSum', 'Not a sum of values');
+      let left = sum.map(unitValueOfItem);
+      if (left.some((v) => !v)) {
+        return typeError('toSum', 'Not a sum of unit values');
+      }
+      if (!names.length) {
+        left.sort((a, b) =>
+          a._unitName < b._unitName ? -1 : a._unitName > b._unitName ? 1 : 0,
         );
+        return new CSSMathSum(...left);
       }
-      if (!units.length) {
-        return new CSSMathSum(...parts);
+      const out = names.map((n) => {
+        let total = 0;
+        left = left.filter((v) => {
+          const c = convertUnit(v, n);
+          if (c) total += c._value;
+          return !c;
+        });
+        return new CSSUnitValue(total, n);
+      });
+      if (left.length) {
+        return typeError('toSum', 'Leftover units that cannot be converted');
       }
-      return new CSSMathSum(...units.map((u) => this.to(u)));
+      return new CSSMathSum(...out);
     }
     type(): Any {
-      const kind = quantityOf(this);
+      const t = typeOfValue(this);
       const out: Any = {};
-      if (kind && kind !== 'number') out[kind] = 1;
-      if (this instanceof CSSMathSum && quantityOf(this) !== 'percent') {
-        if (
-          (this as Any).values._items.some((v: Any) => v.unit === 'percent')
-        ) {
-          out.percentHint = kind;
-        }
-      }
+      for (const base of BASE_TYPES) if (t.e[base]) out[base] = t.e[base];
+      if (t.hint !== null) out.percentHint = t.hint;
       return out;
     }
     negate(): Any {
@@ -2045,20 +2308,20 @@ export function installDom(
       return null;
     }
     _same(other: Any): boolean {
-      return (
-        this.constructor === other.constructor && String(this) === String(other)
-      );
+      return equalNumeric(this, other);
     }
     /**
-     * A `<number>`, `<percentage>` or `<dimension>`, or a `calc()` of
-     * them added, taken away, multiplied and divided, simplified as CSS
-     * Values simplifies one (CSS Typed OM 1, 4.3.1, `parse`).
+     * A `<number>`, `<percentage>` or `<dimension>`, or a math function of
+     * them, reified as Typed OM has one (CSS Typed OM 1, 4.3.1, `parse`,
+     * and 5.5.1): a `calc()` whose value comes to one unit is a sum of it,
+     * terms of the same kind of quantity in a sum are added together, and
+     * a type that does not add or multiply is a SyntaxError.
      */
-    static parse(text: Any): Any {
+    static override parse(text: Any): Any {
       const source = String(text).trim();
       const tokens =
         source.match(
-          /[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:%|[a-z]+)?|calc\(|min\(|max\(|[()+\-*/,]|\s+|./gi,
+          /[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:%|[a-z]+)?|[a-z-]+\(|[()+\-*/,]|\s+|./gi,
         ) ?? [];
       let at = 0;
       const peek = () => {
@@ -2076,33 +2339,48 @@ export function installDom(
           t,
         );
         if (!m) return fail();
-        const unit =
-          m[2] === '%' ? 'percent' : (m[2] ?? 'number').toLowerCase();
-        if (!UNITS[unit]) return fail();
+        const unit = unitNamed(m[2] === undefined ? 'number' : m[2]);
+        if (!unit) return fail();
         return new CSSUnitValue(Number(m[1]), unit);
       };
-      const sum = (): Any => {
-        let left = product();
+      /** A tree node: a value, or an operation over nodes. */
+      type Node =
+        | { k: 'v'; v: Any }
+        | { k: 'sum' | 'product' | 'min' | 'max' | 'clamp'; of: Node[] }
+        | { k: 'neg' | 'inv'; of: Node };
+      const sum = (): Node => {
+        const terms = [product()];
         for (;;) {
           const t = peek();
-          if (t !== '+' && t !== '-') return left;
-          // `+` and `-` need white space either side inside a calc()
+          if (t !== '+' && t !== '-') break;
           at += 1;
           const right = product();
-          left = t === '+' ? left.add(right) : left.sub(right);
+          terms.push(t === '+' ? right : { k: 'neg', of: right });
         }
+        return terms.length === 1 ? terms[0] : { k: 'sum', of: terms };
       };
-      const product = (): Any => {
-        let left = term();
+      const product = (): Node => {
+        const terms = [term()];
         for (;;) {
           const t = peek();
-          if (t !== '*' && t !== '/') return left;
+          if (t !== '*' && t !== '/') break;
           at += 1;
           const right = term();
-          left = t === '*' ? left.mul(right) : left.div(right);
+          terms.push(t === '*' ? right : { k: 'inv', of: right });
         }
+        return terms.length === 1 ? terms[0] : { k: 'product', of: terms };
       };
-      const term = (): Any => {
+      const args = (): Node[] => {
+        const out = [sum()];
+        while (peek() === ',') {
+          at += 1;
+          out.push(sum());
+        }
+        if (peek() !== ')') fail();
+        at += 1;
+        return out;
+      };
+      const term = (): Node => {
         const t = peek();
         if (t === undefined) return fail();
         at += 1;
@@ -2112,31 +2390,125 @@ export function installDom(
           at += 1;
           return inner;
         }
-        if (/^(min|max)\($/i.test(t)) {
-          const args = [sum()];
-          while (peek() === ',') {
-            at += 1;
-            args.push(sum());
-          }
-          if (peek() !== ')') return fail();
-          at += 1;
-          return /^min/i.test(t)
-            ? args[0].min(...args.slice(1))
-            : args[0].max(...args.slice(1));
+        const fn = /^(min|max|clamp)\($/i.exec(t);
+        if (fn) {
+          const kind = fn[1].toLowerCase() as 'min' | 'max' | 'clamp';
+          const of = args();
+          if (kind === 'clamp' && of.length !== 3) fail();
+          return { k: kind, of };
         }
-        return unitValue(t);
+        return { k: 'v', v: unitValue(t) };
+      };
+      /** A sum's or a product's terms flattened, and the plain unit values
+       *  among them that can be put together, put together. */
+      const flat = (k: 'sum' | 'product', of: Node[]): Node[] => {
+        const terms = of
+          .flatMap((n) => (n.k === k ? n.of : [n]))
+          .map((n) => {
+            // a product that comes to one value is that value in a sum
+            if (k !== 'sum' || n.k !== 'product') return n;
+            const folded = flat('product', n.of);
+            return folded.length === 1 ? folded[0] : n;
+          });
+        if (k === 'sum') {
+          const out: Node[] = [];
+          for (const n of terms) {
+            if (n.k !== 'v') {
+              out.push(n);
+              continue;
+            }
+            const kind = UNITS[n.v._unitName];
+            const same = out.find(
+              (m) =>
+                m.k === 'v' &&
+                (m.v._unitName === n.v._unitName ||
+                  (UNITS[m.v._unitName][0] === kind[0] &&
+                    kind[1] !== null &&
+                    UNITS[m.v._unitName][1] !== null &&
+                    kind[0] !== 'percent' &&
+                    kind[0] !== 'number')),
+            ) as Any;
+            if (!same) {
+              out.push(n);
+            } else if (same.v._unitName === n.v._unitName) {
+              same.v = new CSSUnitValue(
+                same.v._value + n.v._value,
+                same.v._unitName,
+              );
+            } else {
+              const to = CANONICAL[kind[0]];
+              same.v = new CSSUnitValue(
+                convertUnit(same.v, to)._value + convertUnit(n.v, to)._value,
+                to,
+              );
+            }
+          }
+          return out;
+        }
+        const values = terms.filter((n) => n.k === 'v') as Any[];
+        if (
+          values.length === terms.length &&
+          values.filter((n) => n.v._unitName !== 'number').length <= 1
+        ) {
+          const unit =
+            values.find((n) => n.v._unitName !== 'number')?.v._unitName ??
+            'number';
+          return [
+            {
+              k: 'v',
+              v: new CSSUnitValue(
+                values.reduce((p: number, n: Any) => p * n.v._value, 1),
+                unit,
+              ),
+            },
+          ];
+        }
+        return terms;
+      };
+      const reify = (n: Node): Any => {
+        switch (n.k) {
+          case 'v':
+            return n.v;
+          case 'neg':
+            return new CSSMathNegate(reify(n.of));
+          case 'inv':
+            return new CSSMathInvert(reify(n.of));
+          case 'sum':
+          case 'product': {
+            const terms = flat(n.k, n.of);
+            if (terms.length === 1) return reify(terms[0]);
+            const values = terms.map(reify);
+            return n.k === 'sum'
+              ? new CSSMathSum(...values)
+              : new CSSMathProduct(...values);
+          }
+          case 'min':
+            return new CSSMathMin(...n.of.map(reify));
+          case 'max':
+            return new CSSMathMax(...n.of.map(reify));
+          default:
+            return new CSSMathClamp(...(n.of.map(reify) as [Any, Any, Any]));
+        }
       };
       const first = peek();
       if (first === undefined) return fail();
-      if (!/^(calc|min|max)\($/i.test(first)) {
+      if (!/\($/.test(first)) {
         at += 1;
         const value = unitValue(first);
         if (peek() !== undefined) return fail();
         return value;
       }
-      const value = term();
+      if (!/^(calc|min|max|clamp)\($/i.test(first)) return fail();
+      const tree = term();
       if (peek() !== undefined) return fail();
-      return value;
+      try {
+        const value = reify(tree);
+        // a calc() is a math value, a sum where it comes to one term
+        return value instanceof CSSUnitValue ? new CSSMathSum(value) : value;
+      } catch (e) {
+        if (e instanceof TypeError) return fail();
+        throw e;
+      }
     }
   }
   class CSSUnitValue extends CSSNumericValue {
@@ -2152,9 +2524,8 @@ export function installDom(
           );
         }
       }
-      const u = String(unit).toLowerCase();
-      const name = u === '%' ? 'percent' : u;
-      if (!UNITS[name]) {
+      const name = unitNamed(unit);
+      if (!name) {
         throw new TypeError(
           `Failed to construct 'CSSUnitValue': Invalid unit: ${String(unit)}`,
         );
@@ -2188,13 +2559,6 @@ export function installDom(
       }
       return new CSSMathInvert(this);
     }
-    override _same(other: Any): boolean {
-      return (
-        other instanceof CSSUnitValue &&
-        other.unit === this.unit &&
-        other.value === this.value
-      );
-    }
     override toString(): string {
       return `${numberText(this._value)}${unitText(this._unitName)}`;
     }
@@ -2202,84 +2566,139 @@ export function installDom(
   /** A list of numeric values, as a math value holds them. */
   class CSSNumericArray {
     _items: Any[];
-    constructor(items: Any[]) {
+    constructor(...args: Any[]) {
+      if (args[0] !== MADE) throw new TypeError('Illegal constructor');
+      const items: Any[] = args[1];
       this._items = items;
       items.forEach((v, i) => {
-        (this as Any)[i] = v;
+        Object.defineProperty(this, i, {
+          value: v,
+          enumerable: true,
+          configurable: true,
+        });
       });
     }
     get length(): number {
       return this._items.length;
     }
-    [Symbol.iterator](): Any {
-      return this._items[Symbol.iterator]();
-    }
-    forEach(fn: Any, self?: Any): void {
-      this._items.forEach((v, i) => fn.call(self, v, i, this));
-    }
   }
+  /**
+   * A numeric value as CSS Typed OM 1, 6.7.2 serializes one: `nested`
+   * where it is a term of a math value, which parenthesizes one, and
+   * `bare` where it is an argument of a function, which wants none. `css`
+   * is the order CSS Values serializes a math function in, a value in a
+   * transform's: a sum's terms by unit, a product's numbers first, each
+   * unit that converts in its canonical one.
+   */
+  const mathText = (
+    v: Any,
+    nested = false,
+    bare = false,
+    css = false,
+  ): string => {
+    if (v instanceof CSSUnitValue) {
+      if (!css || !nested) return v.toString();
+      const [kind, factor] = UNITS[v._unitName];
+      const to = CANONICAL[kind];
+      return factor !== null && to ? convertUnit(v, to).toString() : String(v);
+    }
+    const term = (x: Any) => mathText(x, true, false, css);
+    const arg = (x: Any) => mathText(x, false, true, css);
+    if (v instanceof CSSMathMin || v instanceof CSSMathMax) {
+      return `${v.operator}(${v._items.map(arg).join(', ')})`;
+    }
+    if (v instanceof CSSMathClamp) {
+      return `clamp(${[v._lower, v._of, v._upper].map(arg).join(', ')})`;
+    }
+    const open = bare ? '' : nested ? '(' : 'calc(';
+    const close = bare ? '' : ')';
+    if (v instanceof CSSMathNegate) return `${open}-${term(v._of)}${close}`;
+    if (v instanceof CSSMathInvert) return `${open}1 / ${term(v._of)}${close}`;
+    const isSum = v instanceof CSSMathSum;
+    const Other = isSum ? CSSMathNegate : CSSMathInvert;
+    let items: Any[] = v._items;
+    if (css) {
+      const key = (x: Any): string => {
+        const y = x instanceof Other ? x._of : x;
+        if (!(y instanceof CSSUnitValue)) return isSum ? '￿' : '\u0001';
+        const [kind, factor] = UNITS[y._unitName];
+        const unit =
+          factor !== null && CANONICAL[kind] ? CANONICAL[kind] : y._unitName;
+        return isSum ? unit : unit === 'number' ? '\u0000' : '\u0001';
+      };
+      items = items
+        .map((x, i) => [key(x), i, x] as const)
+        .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1]))
+        .map((e) => e[2]);
+    }
+    const text = items
+      .map((x: Any, i: number) =>
+        i === 0
+          ? term(x)
+          : x instanceof Other
+            ? ` ${isSum ? '-' : '/'} ${term(x._of)}`
+            : ` ${isSum ? '+' : '*'} ${term(x)}`,
+      )
+      .join('');
+    return `${open}${text}${close}`;
+  };
   class CSSMathValue extends CSSNumericValue {
+    _type!: NumericType;
+    constructor(...args: Any[]) {
+      if (new.target === CSSMathValue) {
+        throw new TypeError('Illegal constructor');
+      }
+      super(...args);
+    }
     get operator(): string {
       return '';
     }
+    override toString(): string {
+      return mathText(this);
+    }
   }
-  /** A math value of a list, the operator between its members. */
-  const mathOf = (name: string, join: string, minimum: number): Any =>
+  /** A math value over a list (4.3.2): its arguments rectified, at least
+   *  one, and their types added or multiplied, a TypeError where they do
+   *  not go together. */
+  const mathOf = (name: string, op: string, product: boolean): Any =>
     class extends CSSMathValue {
-      values: Any;
+      _values: Any;
       constructor(...args: Any[]) {
         super();
-        if (args.length < minimum) {
+        if (!args.length) {
           throw new DOMException(
             `Failed to construct '${name}': Must specify at least one argument.`,
             'SyntaxError',
           );
         }
-        this.values = new CSSNumericArray(args.map(numeric));
+        const items = args.map(numeric);
+        let type: NumericType | null = typeOfValue(items[0]);
+        for (const x of items.slice(1)) {
+          type =
+            type && (product ? multiplyTypes : addTypes)(type, typeOfValue(x));
+        }
+        if (!type) {
+          throw new TypeError(
+            `Failed to construct '${name}': Incompatible types`,
+          );
+        }
+        this._type = type;
+        this._values = new (CSSNumericArray as Any)(MADE, items);
+      }
+      get _items(): Any[] {
+        return this._values._items;
+      }
+      get values(): Any {
+        return this._values;
       }
       override get operator(): string {
-        return name.slice(7).toLowerCase();
-      }
-      override toString(): string {
-        const items = (this as Any).values._items;
-        if (join === 'calc+') {
-          const text = items
-            .map((v: Any, i: number) =>
-              i === 0
-                ? inner(v)
-                : v instanceof CSSMathNegate
-                  ? ` - ${inner(v.value)}`
-                  : ` + ${inner(v)}`,
-            )
-            .join('');
-          return `calc(${text})`;
-        }
-        if (join === 'calc*') {
-          const text = items
-            .map((v: Any, i: number) =>
-              i === 0
-                ? inner(v)
-                : v instanceof CSSMathInvert
-                  ? ` / ${inner(v.value)}`
-                  : ` * ${inner(v)}`,
-            )
-            .join('');
-          return `calc(${text})`;
-        }
-        return `${join}(${items.map((v: Any) => String(v)).join(', ')})`;
+        return op;
       }
     };
-  /** A member of a calc() as it is written inside one. */
-  const inner = (v: Any): string => {
-    const text = String(v);
-    return v instanceof CSSMathSum || v instanceof CSSMathProduct
-      ? `(${text.slice(5, -1)})`
-      : text;
-  };
-  const CSSMathSum = mathOf('CSSMathSum', 'calc+', 1);
-  const CSSMathProduct = mathOf('CSSMathProduct', 'calc*', 1);
-  const CSSMathMin = mathOf('CSSMathMin', 'min', 1);
-  const CSSMathMax = mathOf('CSSMathMax', 'max', 1);
+  const CSSMathSum = mathOf('CSSMathSum', 'sum', false);
+  const CSSMathProduct = mathOf('CSSMathProduct', 'product', true);
+  const CSSMathMin = mathOf('CSSMathMin', 'min', false);
+  const CSSMathMax = mathOf('CSSMathMax', 'max', false);
   for (const [cls, name] of [
     [CSSMathSum, 'CSSMathSum'],
     [CSSMathProduct, 'CSSMathProduct'],
@@ -2289,29 +2708,77 @@ export function installDom(
     Object.defineProperty(cls, 'name', { value: name });
   }
   class CSSMathNegate extends CSSMathValue {
-    value: Any;
+    _of: Any;
     constructor(value: Any) {
       super();
-      this.value = numeric(value);
+      this._of = numeric(value);
+      const t = typeOfValue(this._of);
+      this._type = { e: { ...t.e }, hint: t.hint };
+    }
+    get value(): Any {
+      return this._of;
     }
     override get operator(): string {
       return 'negate';
     }
-    override toString(): string {
-      return `calc(-1 * ${inner(this.value)})`;
+    override negate(): Any {
+      return this._of;
     }
   }
   class CSSMathInvert extends CSSMathValue {
-    value: Any;
+    _of: Any;
     constructor(value: Any) {
       super();
-      this.value = numeric(value);
+      this._of = numeric(value);
+      const t = typeOfValue(this._of);
+      const e: Record<string, number> = {};
+      for (const [k, v] of Object.entries(t.e)) e[k] = v ? -v : 0;
+      this._type = { e, hint: t.hint };
+    }
+    get value(): Any {
+      return this._of;
     }
     override get operator(): string {
       return 'invert';
     }
-    override toString(): string {
-      return `calc(1 / ${inner(this.value)})`;
+    override invert(): Any {
+      return this._of;
+    }
+  }
+  class CSSMathClamp extends CSSMathValue {
+    _lower: Any;
+    _of: Any;
+    _upper: Any;
+    constructor(lower: Any, value: Any, upper: Any) {
+      super();
+      if (arguments.length < 3) {
+        throw new TypeError(
+          `Failed to construct 'CSSMathClamp': 3 arguments required, but only ${arguments.length} present.`,
+        );
+      }
+      this._lower = numeric(lower);
+      this._of = numeric(value);
+      this._upper = numeric(upper);
+      const a = addTypes(typeOfValue(this._lower), typeOfValue(this._of));
+      const type = a && addTypes(a, typeOfValue(this._upper));
+      if (!type) {
+        throw new TypeError(
+          "Failed to construct 'CSSMathClamp': Incompatible types",
+        );
+      }
+      this._type = type;
+    }
+    get lower(): Any {
+      return this._lower;
+    }
+    get value(): Any {
+      return this._of;
+    }
+    get upper(): Any {
+      return this._upper;
+    }
+    override get operator(): string {
+      return 'clamp';
     }
   }
   class CSSKeywordValue extends CSSStyleValue {
@@ -2330,12 +2797,780 @@ export function installDom(
       return this._value;
     }
     set value(v: Any) {
-      this._value = String(v);
+      const s = String(v);
+      if (!s) {
+        throw new TypeError(
+          "Failed to set the 'value' property on 'CSSKeywordValue': CSSKeywordValue does not support empty strings",
+        );
+      }
+      this._value = s;
     }
     override toString(): string {
       return this._value;
     }
   }
+
+  // --- CSS Typed OM: transforms (CSS Typed OM 1, 4.5) ---------------------------
+  //
+  // A transform list as objects: each function a component whose
+  // arguments are numeric values of the type its production has, checked
+  // as it is made and as an argument is set, and which can be turned into
+  // the matrix it stands for where every length is absolute.
+
+  /** A numeric value that has to match a production, or a TypeError. */
+  const matching = (
+    v: Any,
+    kind: string,
+    percent: boolean,
+    what: string,
+  ): Any => {
+    if (!typeMatches(v, kind, percent)) {
+      throw new TypeError(
+        `${what}: Must pass ${kind === 'number' ? 'a number' : kind === 'length' && percent ? 'a length or percent' : `an ${kind}`}`,
+      );
+    }
+    return v;
+  };
+  /** A numberish argument rectified and matching `<number>`. */
+  const numberArg = (v: Any, what: string): Any => {
+    let value: Any;
+    try {
+      value = numeric(v);
+    } catch {
+      throw new TypeError(`${what}: Must pass a number`);
+    }
+    return matching(value, 'number', false, what);
+  };
+  /** A value in an absolute unit, as the matrix wants it. */
+  const absolute = (v: Any, unit: string, what: string): number => {
+    try {
+      return v.to(unit)._value;
+    } catch {
+      throw new TypeError(
+        `Failed to execute 'toMatrix' on '${what}': Cannot create matrix if units cannot be converted.`,
+      );
+    }
+  };
+  /** The geometry interfaces, which are made after these. */
+  const geom = (): Any => GEOMETRY.classes;
+  const newMatrix = (init?: Any): Any =>
+    init === undefined
+      ? new (geom().DOMMatrix)()
+      : new (geom().DOMMatrix)(init);
+  /** A transform argument as a transform function writes it. */
+  const transformArg = (v: Any): string =>
+    v instanceof CSSUnitValue ? String(v) : mathText(v, false, false, true);
+
+  class CSSTransformComponent {
+    _is2D: boolean;
+    constructor(...args: Any[]) {
+      if (new.target === CSSTransformComponent && args[0] !== MADE) {
+        throw new TypeError('Illegal constructor');
+      }
+      this._is2D = true;
+    }
+    get is2D(): boolean {
+      return this._is2D;
+    }
+    set is2D(v: Any) {
+      this._is2D = !!v;
+    }
+    toMatrix(): Any {
+      return newMatrix();
+    }
+    toString(): string {
+      return '';
+    }
+  }
+  class CSSTranslate extends CSSTransformComponent {
+    _x: Any;
+    _y: Any;
+    _z: Any;
+    constructor(x: Any, y: Any, z?: Any) {
+      super();
+      const what = "Failed to construct 'CSSTranslate'";
+      this._x = matching(x, 'length', true, what);
+      this._y = matching(y, 'length', true, what);
+      this._z =
+        z === undefined
+          ? new CSSUnitValue(0, 'px')
+          : matching(z, 'length', false, what);
+      this._is2D = z === undefined;
+    }
+    get x(): Any {
+      return this._x;
+    }
+    set x(v: Any) {
+      this._x = matching(v, 'length', true, "Failed to set 'x'");
+    }
+    get y(): Any {
+      return this._y;
+    }
+    set y(v: Any) {
+      this._y = matching(v, 'length', true, "Failed to set 'y'");
+    }
+    get z(): Any {
+      return this._z;
+    }
+    set z(v: Any) {
+      this._z = matching(v, 'length', false, "Failed to set 'z'");
+    }
+    override toMatrix(): Any {
+      const x = absolute(this._x, 'px', 'CSSTranslate');
+      const y = absolute(this._y, 'px', 'CSSTranslate');
+      if (this._is2D) return newMatrix().translateSelf(x, y);
+      return newMatrix().translateSelf(
+        x,
+        y,
+        absolute(this._z, 'px', 'CSSTranslate'),
+      );
+    }
+    override toString(): string {
+      const args = [this._x, this._y, ...(this._is2D ? [] : [this._z])];
+      return `translate${this._is2D ? '' : '3d'}(${args.map(transformArg).join(', ')})`;
+    }
+  }
+  class CSSRotate extends CSSTransformComponent {
+    _x: Any;
+    _y: Any;
+    _z: Any;
+    _angle: Any;
+    constructor(...args: Any[]) {
+      super();
+      const what = "Failed to construct 'CSSRotate'";
+      if (args.length !== 1 && args.length !== 4) {
+        throw new TypeError(`${what}: Invalid number of arguments`);
+      }
+      if (args.length === 1) {
+        this._x = new CSSUnitValue(0, 'number');
+        this._y = new CSSUnitValue(0, 'number');
+        this._z = new CSSUnitValue(1, 'number');
+      } else {
+        this._x = numberArg(args[0], what);
+        this._y = numberArg(args[1], what);
+        this._z = numberArg(args[2], what);
+        this._is2D = false;
+      }
+      this._angle = matching(args.at(-1), 'angle', false, what);
+    }
+    get x(): Any {
+      return this._x;
+    }
+    set x(v: Any) {
+      this._x = numberArg(v, "Failed to set 'x'");
+    }
+    get y(): Any {
+      return this._y;
+    }
+    set y(v: Any) {
+      this._y = numberArg(v, "Failed to set 'y'");
+    }
+    get z(): Any {
+      return this._z;
+    }
+    set z(v: Any) {
+      this._z = numberArg(v, "Failed to set 'z'");
+    }
+    get angle(): Any {
+      return this._angle;
+    }
+    set angle(v: Any) {
+      this._angle = matching(v, 'angle', false, "Failed to set 'angle'");
+    }
+    override toMatrix(): Any {
+      const angle = absolute(this._angle, 'deg', 'CSSRotate');
+      if (this._is2D) return newMatrix().rotateSelf(angle);
+      return newMatrix().rotateAxisAngleSelf(
+        absolute(this._x, 'number', 'CSSRotate'),
+        absolute(this._y, 'number', 'CSSRotate'),
+        absolute(this._z, 'number', 'CSSRotate'),
+        angle,
+      );
+    }
+    override toString(): string {
+      if (this._is2D) return `rotate(${transformArg(this._angle)})`;
+      return `rotate3d(${[this._x, this._y, this._z, this._angle].map(transformArg).join(', ')})`;
+    }
+  }
+  class CSSScale extends CSSTransformComponent {
+    _x: Any;
+    _y: Any;
+    _z: Any;
+    constructor(x: Any, y: Any, z?: Any) {
+      super();
+      const what = "Failed to construct 'CSSScale'";
+      this._x = numberArg(x, what);
+      this._y = numberArg(y, what);
+      this._z =
+        z === undefined ? new CSSUnitValue(1, 'number') : numberArg(z, what);
+      this._is2D = z === undefined;
+    }
+    get x(): Any {
+      return this._x;
+    }
+    set x(v: Any) {
+      this._x = numberArg(v, "Failed to set 'x'");
+    }
+    get y(): Any {
+      return this._y;
+    }
+    set y(v: Any) {
+      this._y = numberArg(v, "Failed to set 'y'");
+    }
+    get z(): Any {
+      return this._z;
+    }
+    set z(v: Any) {
+      this._z = numberArg(v, "Failed to set 'z'");
+    }
+    override toMatrix(): Any {
+      const x = absolute(this._x, 'number', 'CSSScale');
+      const y = absolute(this._y, 'number', 'CSSScale');
+      if (this._is2D) return newMatrix().scaleSelf(x, y);
+      return newMatrix().scaleSelf(
+        x,
+        y,
+        absolute(this._z, 'number', 'CSSScale'),
+      );
+    }
+    override toString(): string {
+      const args = [this._x, this._y, ...(this._is2D ? [] : [this._z])];
+      return `scale${this._is2D ? '' : '3d'}(${args.map(transformArg).join(', ')})`;
+    }
+  }
+  /** A skew's is2D, which is always true and set to nothing. */
+  const always2D = {
+    get(): boolean {
+      return true;
+    },
+    set(_v: Any): void {},
+  };
+  const tanOf = (v: Any, what: string): number =>
+    Math.tan((absolute(v, 'deg', what) * Math.PI) / 180);
+  class CSSSkew extends CSSTransformComponent {
+    _ax: Any;
+    _ay: Any;
+    constructor(ax: Any, ay: Any) {
+      super();
+      const what = "Failed to construct 'CSSSkew'";
+      this._ax = matching(ax, 'angle', false, what);
+      this._ay = matching(ay, 'angle', false, what);
+    }
+    get ax(): Any {
+      return this._ax;
+    }
+    set ax(v: Any) {
+      this._ax = matching(v, 'angle', false, "Failed to set 'ax'");
+    }
+    get ay(): Any {
+      return this._ay;
+    }
+    set ay(v: Any) {
+      this._ay = matching(v, 'angle', false, "Failed to set 'ay'");
+    }
+    override get is2D(): boolean {
+      return always2D.get();
+    }
+    override set is2D(v: Any) {
+      always2D.set(v);
+    }
+    override toMatrix(): Any {
+      return newMatrix([
+        1,
+        tanOf(this._ay, 'CSSSkew'),
+        tanOf(this._ax, 'CSSSkew'),
+        1,
+        0,
+        0,
+      ]);
+    }
+    override toString(): string {
+      const ay = this._ay;
+      return ay instanceof CSSUnitValue && ay._value === 0
+        ? `skew(${transformArg(this._ax)})`
+        : `skew(${transformArg(this._ax)}, ${transformArg(ay)})`;
+    }
+  }
+  class CSSSkewX extends CSSTransformComponent {
+    _ax: Any;
+    constructor(ax: Any) {
+      super();
+      this._ax = matching(ax, 'angle', false, "Failed to construct 'CSSSkewX'");
+    }
+    get ax(): Any {
+      return this._ax;
+    }
+    set ax(v: Any) {
+      this._ax = matching(v, 'angle', false, "Failed to set 'ax'");
+    }
+    override get is2D(): boolean {
+      return always2D.get();
+    }
+    override set is2D(v: Any) {
+      always2D.set(v);
+    }
+    override toMatrix(): Any {
+      return newMatrix([1, 0, tanOf(this._ax, 'CSSSkewX'), 1, 0, 0]);
+    }
+    override toString(): string {
+      return `skewX(${transformArg(this._ax)})`;
+    }
+  }
+  class CSSSkewY extends CSSTransformComponent {
+    _ay: Any;
+    constructor(ay: Any) {
+      super();
+      this._ay = matching(ay, 'angle', false, "Failed to construct 'CSSSkewY'");
+    }
+    get ay(): Any {
+      return this._ay;
+    }
+    set ay(v: Any) {
+      this._ay = matching(v, 'angle', false, "Failed to set 'ay'");
+    }
+    override get is2D(): boolean {
+      return always2D.get();
+    }
+    override set is2D(v: Any) {
+      always2D.set(v);
+    }
+    override toMatrix(): Any {
+      return newMatrix([1, tanOf(this._ay, 'CSSSkewY'), 0, 1, 0, 0]);
+    }
+    override toString(): string {
+      return `skewY(${transformArg(this._ay)})`;
+    }
+  }
+  /** A perspective's length: a length, or `none` as a keyword or a
+   *  string. */
+  const perspectiveLength = (v: Any, what: string): Any => {
+    if (v instanceof CSSNumericValue) return matching(v, 'length', false, what);
+    const keyword =
+      v instanceof CSSKeywordValue
+        ? v
+        : typeof v === 'string' || v instanceof String
+          ? new CSSKeywordValue(String(v) || ' ')
+          : null;
+    if (keyword && keyword._value.toLowerCase() === 'none') return keyword;
+    throw new TypeError(`${what}: Must pass length or none`);
+  };
+  class CSSPerspective extends CSSTransformComponent {
+    _length: Any;
+    constructor(length: Any) {
+      super();
+      this._length = perspectiveLength(
+        length,
+        "Failed to construct 'CSSPerspective'",
+      );
+    }
+    get length(): Any {
+      return this._length;
+    }
+    set length(v: Any) {
+      this._length = perspectiveLength(v, "Failed to set 'length'");
+    }
+    override get is2D(): boolean {
+      return false;
+    }
+    override set is2D(_v: Any) {}
+    override toMatrix(): Any {
+      const m = newMatrix();
+      if (this._length instanceof CSSKeywordValue) return m;
+      const d = absolute(this._length, 'px', 'CSSPerspective');
+      m.m34 = -1 / Math.max(1, d);
+      return m;
+    }
+    override toString(): string {
+      const v = this._length;
+      if (v instanceof CSSKeywordValue) return `perspective(${v._value})`;
+      // a negative length is no perspective's, so it is kept in a calc()
+      if (v instanceof CSSUnitValue && v._value < 0) {
+        return `perspective(calc(${v}))`;
+      }
+      return `perspective(${transformArg(v)})`;
+    }
+  }
+  class CSSMatrixComponent extends CSSTransformComponent {
+    _matrix: Any;
+    constructor(matrix: Any, options?: Any) {
+      super();
+      if (!(matrix instanceof geom().DOMMatrixReadOnly)) {
+        throw new TypeError(
+          "Failed to construct 'CSSMatrixComponent': parameter 1 is not of type 'DOMMatrixReadOnly'.",
+        );
+      }
+      this._matrix = geom().DOMMatrix.fromMatrix(matrix);
+      const given = options?.is2D;
+      this._is2D = given === undefined ? matrix.is2D : !!given;
+    }
+    get matrix(): Any {
+      return this._matrix;
+    }
+    set matrix(v: Any) {
+      if (!(v instanceof geom().DOMMatrixReadOnly)) {
+        throw new TypeError(
+          "Failed to set the 'matrix' property on 'CSSMatrixComponent': The provided value is not of type 'DOMMatrix'.",
+        );
+      }
+      this._matrix = v;
+    }
+    override toMatrix(): Any {
+      const m = this._matrix;
+      return this._is2D
+        ? newMatrix([m.a, m.b, m.c, m.d, m.e, m.f])
+        : geom().DOMMatrix.fromMatrix(m);
+    }
+    override toString(): string {
+      const m = this._matrix;
+      const n = (x: number) => numberText(x);
+      return this._is2D
+        ? `matrix(${[m.a, m.b, m.c, m.d, m.e, m.f].map(n).join(', ')})`
+        : `matrix3d(${[
+            m.m11,
+            m.m12,
+            m.m13,
+            m.m14,
+            m.m21,
+            m.m22,
+            m.m23,
+            m.m24,
+            m.m31,
+            m.m32,
+            m.m33,
+            m.m34,
+            m.m41,
+            m.m42,
+            m.m43,
+            m.m44,
+          ]
+            .map(n)
+            .join(', ')})`;
+    }
+  }
+  /** A transform list (4.5): its components by index, which a page can
+   *  set or add one past the end of, and the product of their matrices. */
+  class CSSTransformValue extends CSSStyleValue {
+    _list: Any[];
+    constructor(transforms: Any) {
+      super();
+      const what = "Failed to construct 'CSSTransformValue'";
+      if (
+        transforms === undefined ||
+        transforms === null ||
+        typeof transforms[Symbol.iterator] !== 'function' ||
+        typeof transforms === 'string'
+      ) {
+        throw new TypeError(
+          `${what}: The provided value cannot be converted to a sequence.`,
+        );
+      }
+      const list = [...transforms];
+      if (!list.length) {
+        throw new TypeError(
+          `${what}: CSSTransformValue must have at least one component`,
+        );
+      }
+      for (const c of list) {
+        if (!(c instanceof CSSTransformComponent)) {
+          throw new TypeError(
+            `${what}: Failed to convert value to 'CSSTransformComponent'.`,
+          );
+        }
+      }
+      this._list = list;
+      return new Proxy(this, TRANSFORM_LIST);
+    }
+    get length(): number {
+      return this._list.length;
+    }
+    get is2D(): boolean {
+      return this._list.every((c) => c.is2D);
+    }
+    toMatrix(): Any {
+      const m = newMatrix();
+      for (const c of this._list) m.multiplySelf(c.toMatrix());
+      return m;
+    }
+    override toString(): string {
+      return this._list.map(String).join(' ');
+    }
+  }
+  /** What an index of a transform list is: its component, and set, a
+   *  component in its place or one past the end (Web IDL's indexed
+   *  properties, which only a proxy has). */
+  const indexOf = (key: Any): number | null =>
+    typeof key === 'string' && /^(?:0|[1-9]\d*)$/.test(key)
+      ? Number(key)
+      : null;
+  const TRANSFORM_LIST: ProxyHandler<Any> = {
+    get(target, key, receiver) {
+      const i = indexOf(key);
+      if (i !== null) return target._list[i];
+      return Reflect.get(target, key, receiver === undefined ? target : target);
+    },
+    set(target, key, value) {
+      const i = indexOf(key);
+      if (i === null) return Reflect.set(target, key, value, target);
+      if (!(value instanceof CSSTransformComponent)) {
+        throw new TypeError(
+          "Failed to set an indexed property on 'CSSTransformValue': Failed to convert value to 'CSSTransformComponent'.",
+        );
+      }
+      if (i > target._list.length) return false;
+      target._list[i] = value;
+      return true;
+    },
+    has(target, key) {
+      const i = indexOf(key);
+      return i !== null ? i < target._list.length : Reflect.has(target, key);
+    },
+    getOwnPropertyDescriptor(target, key) {
+      const i = indexOf(key);
+      if (i !== null) {
+        return i < target._list.length
+          ? {
+              value: target._list[i],
+              writable: true,
+              enumerable: true,
+              configurable: true,
+            }
+          : undefined;
+      }
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+    ownKeys(target) {
+      return [
+        ...target._list.map((_: Any, i: number) => String(i)),
+        ...Reflect.ownKeys(target),
+      ];
+    },
+    defineProperty(target, key, d) {
+      if (indexOf(key) !== null) return false;
+      return Reflect.defineProperty(target, key, d);
+    },
+    deleteProperty(target, key) {
+      if (indexOf(key) !== null) return false;
+      return Reflect.deleteProperty(target, key);
+    },
+  };
+
+  /** A transform list's functions, each its name and its arguments as
+   *  written, or null where the text is no list of functions. */
+  const transformFunctions = (text: string): [string, string[]][] | null => {
+    const s = text.trim();
+    const out: [string, string[]][] = [];
+    let i = 0;
+    while (i < s.length) {
+      while (/\s/.test(s[i] ?? '')) i += 1;
+      if (i >= s.length) break;
+      const m = /^([a-z][a-z0-9]*)\(/i.exec(s.slice(i));
+      if (!m) return null;
+      i += m[0].length;
+      let depth = 1;
+      let start = i;
+      const args: string[] = [];
+      for (; i < s.length && depth; i += 1) {
+        const c = s[i];
+        if (c === '(') depth += 1;
+        else if (c === ')') {
+          depth -= 1;
+          if (!depth) args.push(s.slice(start, i));
+        } else if (c === ',' && depth === 1) {
+          args.push(s.slice(start, i));
+          start = i + 1;
+        }
+      }
+      if (depth) return null;
+      out.push([m[1].toLowerCase(), args.map((a) => a.trim())]);
+    }
+    return out.length ? out : null;
+  };
+  /** A transform function as its component (CSS Typed OM 1, 5.5.3), its
+   *  unitless zeros the lengths or angles its grammar takes them for. */
+  const componentOf = (name: string, args: string[]): Any => {
+    const px0 = () => new CSSUnitValue(0, 'px');
+    const n = (a: string) => CSSNumericValue.parse(a);
+    const len = (a: string) => (a === '0' ? px0() : n(a));
+    const ang = (a: string) => (a === '0' ? new CSSUnitValue(0, 'deg') : n(a));
+    const one = () => new CSSUnitValue(1, 'number');
+    const zero = () => new CSSUnitValue(0, 'number');
+    const count = (...ok: number[]) => {
+      if (!ok.includes(args.length)) throw new TypeError('arguments');
+    };
+    switch (name) {
+      case 'translate':
+        count(1, 2);
+        return new CSSTranslate(len(args[0]), args[1] ? len(args[1]) : px0());
+      case 'translatex':
+        count(1);
+        return new CSSTranslate(len(args[0]), px0());
+      case 'translatey':
+        count(1);
+        return new CSSTranslate(px0(), len(args[0]));
+      case 'translatez':
+        count(1);
+        return new CSSTranslate(px0(), px0(), len(args[0]));
+      case 'translate3d':
+        count(3);
+        return new CSSTranslate(len(args[0]), len(args[1]), len(args[2]));
+      case 'scale':
+        count(1, 2);
+        return new CSSScale(n(args[0]), n(args[1] ?? args[0]));
+      case 'scalex':
+        count(1);
+        return new CSSScale(n(args[0]), one());
+      case 'scaley':
+        count(1);
+        return new CSSScale(one(), n(args[0]));
+      case 'scalez':
+        count(1);
+        return new CSSScale(one(), one(), n(args[0]));
+      case 'scale3d':
+        count(3);
+        return new CSSScale(n(args[0]), n(args[1]), n(args[2]));
+      case 'rotate':
+        count(1);
+        return new CSSRotate(ang(args[0]));
+      case 'rotatex':
+        count(1);
+        return new CSSRotate(one(), zero(), zero(), ang(args[0]));
+      case 'rotatey':
+        count(1);
+        return new CSSRotate(zero(), one(), zero(), ang(args[0]));
+      case 'rotatez':
+        count(1);
+        return new CSSRotate(zero(), zero(), one(), ang(args[0]));
+      case 'rotate3d':
+        count(4);
+        return new CSSRotate(n(args[0]), n(args[1]), n(args[2]), ang(args[3]));
+      case 'skew':
+        count(1, 2);
+        return new CSSSkew(
+          ang(args[0]),
+          args[1] ? ang(args[1]) : new CSSUnitValue(0, 'deg'),
+        );
+      case 'skewx':
+        count(1);
+        return new CSSSkewX(ang(args[0]));
+      case 'skewy':
+        count(1);
+        return new CSSSkewY(ang(args[0]));
+      case 'perspective':
+        count(1);
+        return new CSSPerspective(
+          /^none$/i.test(args[0]) ? new CSSKeywordValue('none') : len(args[0]),
+        );
+      case 'matrix':
+      case 'matrix3d': {
+        count(name === 'matrix' ? 6 : 16);
+        const values = args.map((a) => n(a).to('number')._value);
+        return new CSSMatrixComponent(new (geom().DOMMatrixReadOnly)(values));
+      }
+      default:
+        throw new TypeError(name);
+    }
+  };
+  /** A transform list reified, or null where it is not one Typed OM has
+   *  components for. */
+  const reifyTransform = (text: string): Any => {
+    if (/^\s*none\s*$/i.test(text)) return new CSSKeywordValue('none');
+    const fns = transformFunctions(text);
+    if (!fns) return null;
+    try {
+      return new CSSTransformValue(
+        fns.map(([name, args]) => componentOf(name, args)),
+      );
+    } catch {
+      return null;
+    }
+  };
+  /** The properties a bare `0` is a length of. */
+  const ZERO_IS_LENGTH =
+    /^(?:(?:min-|max-)?(?:width|height|inline-size|block-size)|margin(?:-.+)?|padding(?:-.+)?|top|right|bottom|left|inset(?:-.+)?|border(?:-.+)?-width|(?:row-|column-)?gap|font-size|letter-spacing|word-spacing|outline-(?:width|offset)|text-indent|flex-basis|perspective|border(?:-.+)?-radius)$/;
+  /** A dimension of another kind of quantity than a length. */
+  const OTHER_DIMENSION =
+    /(?:^|[\s(,])[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:deg|grad|rad|turn|s|ms|hz|khz|dpi|dpcm|dppx|x|fr)(?![\w-])/i;
+  /** One value of a property reified (CSS Typed OM 1, 5.5): a number, a
+   *  dimension or a math function a numeric value, a name a keyword, a
+   *  transform list its components, and anything else a value as
+   *  written. */
+  const reifyValue = (name: string, text: string): Any => {
+    const v = text.trim();
+    if (/var\(/i.test(v)) return styleValueOf(v);
+    if (name === 'transform') {
+      const transform = reifyTransform(v);
+      if (transform) return transform;
+    }
+    if (v === '0' && ZERO_IS_LENGTH.test(name))
+      return new CSSUnitValue(0, 'px');
+    if (
+      /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:%|[a-z]+)?$/i.test(v) ||
+      /^(?:calc|min|max|clamp)\(/i.test(v)
+    ) {
+      try {
+        return CSSNumericValue.parse(v);
+      } catch {
+        // a unit, or a function, Typed OM has no numeric value for
+      }
+    }
+    if (/^-?[a-z_][\w-]*$/i.test(v)) return new CSSKeywordValue(v);
+    return styleValueOf(v);
+  };
+  /** A value's top-level comma-separated parts. */
+  const commaParts = (text: string): string[] => {
+    const out: string[] = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      const c = text[i];
+      if (c === '(') depth += 1;
+      else if (c === ')') depth -= 1;
+      else if (c === ',' && depth === 0) {
+        out.push(text.slice(start, i));
+        start = i + 1;
+      }
+    }
+    out.push(text.slice(start));
+    return out;
+  };
+  /** The properties whose value is a list of values (CSS Typed OM 1,
+   *  5.1, "list-valued property"). */
+  const LIST_VALUED =
+    /^(?:transition|animation)-(?!composition$)[a-z-]+$|^(?:background|mask)-(?:image|position(?:-[xy])?|size|repeat|origin|clip|attachment|blend-mode)$|^(?:box|text)-shadow$|^will-change$|^font-feature-settings$|^font-variation-settings$|^scroll-timeline-(?:name|axis)$|^view-timeline-(?:name|axis|inset)$/;
+  /** What `CSSStyleValue.parse()` and `parseAll()` answer (5.2). */
+  const parseStyle = (
+    op: string,
+    property: Any,
+    cssText: Any,
+    all: boolean,
+  ): Any[] => {
+    const raw = String(property);
+    const text = String(cssText);
+    const name = raw.startsWith('--') ? raw : raw.toLowerCase();
+    const fail = (why: string): never => {
+      throw new TypeError(
+        `Failed to execute '${op}' on 'CSSStyleValue': ${why}`,
+      );
+    };
+    if (name.startsWith('--')) {
+      if (!text.trim())
+        fail('The value provided is not a valid custom property value.');
+      return [styleValueOf(text.trim())];
+    }
+    if (!isStyleProperty(name)) fail(`Invalid property name: ${raw}`);
+    if (
+      call('blockSet', '', name, text, '') === null ||
+      !text.trim() ||
+      // a length's property takes no other dimension
+      (ZERO_IS_LENGTH.test(name) && OTHER_DIMENSION.test(text))
+    ) {
+      fail('The value provided does not parse for the given property.');
+    }
+    if (all && LIST_VALUED.test(name)) {
+      return commaParts(text).map((part) => reifyValue(name, part));
+    }
+    return [reifyValue(name, text)];
+  };
   /** `CSS.px(10)` and its kin, a factory a unit (CSS Typed OM 1, 5.3). */
   const unitFactories: Record<string, (v: Any) => Any> = {};
   for (const unit of Object.keys(UNITS)) {
@@ -2345,17 +3580,6 @@ export function installDom(
     unitFactories[name] = (v: Any) => new CSSUnitValue(Number(v), unit);
   }
   const percentOf = (v: number): Any => new CSSUnitValue(v, 'percent');
-  /** A value Typed OM has no class of its own for, read as written. */
-  class CSSReifiedValue extends CSSStyleValue {
-    _text: string;
-    constructor(text: string) {
-      super();
-      this._text = text;
-    }
-    override toString(): string {
-      return this._text;
-    }
-  }
   /** A computed value as Typed OM reifies it (CSS Typed OM 1, 5): one
    *  number, dimension or percentage a `CSSUnitValue`, one name a
    *  `CSSKeywordValue`, and anything else a value read as written. */
@@ -2369,7 +3593,7 @@ export function installDom(
       }
     }
     if (/^-?[a-z_][\w-]*$/i.test(v)) return new CSSKeywordValue(v);
-    return new CSSReifiedValue(v);
+    return styleValueOf(v);
   };
   /** An element's computed values from the host, by kebab-case name, or
    *  null where it answers none — an element in no document. */
@@ -20071,6 +21295,7 @@ export function installDom(
     deleteMedium: 1,
     appendRule: 1,
     findRule: 1,
+    to: 1,
   };
   for (const key of [
     'type',
@@ -20144,6 +21369,82 @@ export function installDom(
     CSSNamespaceRule,
   ]) {
     cssomInterface(Interface);
+  }
+  // Typed OM's interfaces in the same shape: an operation's required
+  // arguments, and a static one enumerable on the interface object
+  const TYPED_OM_REQUIRED: Record<string, number> = {
+    to: 1,
+    parse: 1,
+  };
+  for (const Interface of [
+    CSSStyleValue,
+    CSSNumericValue,
+    CSSUnitValue,
+    CSSKeywordValue,
+    CSSMathValue,
+    CSSMathSum,
+    CSSMathProduct,
+    CSSMathNegate,
+    CSSMathInvert,
+    CSSMathMin,
+    CSSMathMax,
+    CSSMathClamp,
+    CSSNumericArray,
+    CSSTransformValue,
+    CSSTransformComponent,
+    CSSTranslate,
+    CSSRotate,
+    CSSScale,
+    CSSSkew,
+    CSSSkewX,
+    CSSSkewY,
+    CSSPerspective,
+    CSSMatrixComponent,
+  ]) {
+    cssomInterface(Interface);
+    for (const key of Object.getOwnPropertyNames(Interface)) {
+      const d = Object.getOwnPropertyDescriptor(Interface, key);
+      if (!d || typeof d.value !== 'function' || key === 'prototype') continue;
+      const fn = d.value;
+      const required =
+        key === 'parse' && Interface === CSSStyleValue
+          ? 2
+          : key === 'parseAll'
+            ? 2
+            : (TYPED_OM_REQUIRED[key] ?? 0);
+      const op = function (this: Any, ...args: Any[]): Any {
+        if (args.length < required) {
+          throw new TypeError(
+            `Failed to execute '${key}': ${required} argument${required === 1 ? '' : 's'} required, but only ${args.length} present.`,
+          );
+        }
+        return fn.apply(this, args);
+      };
+      Object.defineProperty(op, 'name', { value: key });
+      Object.defineProperty(op, 'length', { value: required });
+      Object.defineProperty(Interface, key, {
+        ...d,
+        value: op,
+        enumerable: true,
+      });
+    }
+  }
+  // a list of values is iterable as an array is (Web IDL 3.7.9, an
+  // indexed getter's value iterator)
+  for (const List of [CSSNumericArray, CSSTransformValue]) {
+    for (const key of ['entries', 'keys', 'values', 'forEach']) {
+      Object.defineProperty(List.prototype, key, {
+        value: (Array.prototype as Any)[key],
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    Object.defineProperty(List.prototype, Symbol.iterator, {
+      value: Array.prototype.values,
+      writable: true,
+      configurable: true,
+    });
   }
 
   /** The sheet of a `<style>` or a `<link>`: one object for as long as the
@@ -41668,7 +42969,18 @@ export function installDom(
     CSSMathInvert,
     CSSMathMin,
     CSSMathMax,
+    CSSMathClamp,
     CSSNumericArray,
+    CSSTransformValue,
+    CSSTransformComponent,
+    CSSTranslate,
+    CSSRotate,
+    CSSScale,
+    CSSSkew,
+    CSSSkewX,
+    CSSSkewY,
+    CSSPerspective,
+    CSSMatrixComponent,
     EventTarget,
     Node,
     CharacterData,
