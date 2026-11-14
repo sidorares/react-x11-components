@@ -140,6 +140,7 @@ import {
   settleButton,
   settleContainer,
   settleContentVisibility,
+  settleDecorationInset,
   settleOverflow,
   settleOutline,
   settleClamp,
@@ -9608,6 +9609,7 @@ export class Cascade {
     settleOutline(style, this.look, this.scale * zoom);
     settleContainer(style);
     settleContentVisibility(style);
+    settleDecorationInset(style, this.scale * zoom);
     // after the containment, which keeps a body's `overflow` its own
     if (own && (el.name.length === 4 || isXmlDocument(el.parent))) {
       propagateOverflow(el, style, parentStyle);

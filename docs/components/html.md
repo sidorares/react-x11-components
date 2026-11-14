@@ -7511,7 +7511,22 @@ overlines). A dotted rule over three pixels thick is round dots spread from
 one end of it to the other, and squares under that; a dashed one's dashes
 are three times its thickness long and two apart, twice and one from three
 pixels thick, the first at its start and the last at its end; and the two
-lines of a double one are a pixel apart. `unicode-bidi` is carried out as
+lines of a double one are a pixel apart. `text-decoration-inset` (CSS Text
+Decoration 4, 2.6) moves an underline's and a line through's ends in from
+the start and the end of the element that set them, or out where it is
+negative: at the line holding its first character and the line holding
+its last, or at both ends of every line under `box-decoration-break:
+clone`. A block inside the element, or around a paragraph its rule reaches,
+ends one paragraph and starts the next, and each part is inset at both of
+its ends, as Chrome draws them. A percentage is of the element's inline
+size in its paragraph — its text, and an inline element's own padding and
+borders — and `auto` is half the rule's thickness, between one pixel and
+two, which is what Chrome draws, and what it computes to where it runs to
+or from a length in an animation or a transition, so `auto` and `10px`
+meet half-way. Two elements side by side whose rules are
+alike are two rules, each in from its own ends. Not here: an element inside
+one that sets the same line, whose line replaces the outer one's over its
+text where browsers draw both. `unicode-bidi` is carried out as
 the bidi controls it stands for, laid out around the element's text and no
 part of the document's: a copy, a caret and a selection skip them. HTML's
 `dir` isolates its element, `dir="auto"` and `<bdi>` take their first

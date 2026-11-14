@@ -13,6 +13,7 @@
 import type { BasicShape } from './css/basic-shape.js';
 import type { ObjectViewBox } from './css/object-view-box.js';
 import { pathSegments, pathText } from './css/shape-outside.js';
+import { isAutoInset } from './css/decoration-inset.js';
 import type { Coord, ShapeFunction } from './css/shape-function.js';
 import { positionAreaComputed } from './css/anchor.js';
 import {
@@ -132,6 +133,18 @@ function len(value: Len | 'none', scale: number): string {
   if (!value.px) return pct;
   const sign = value.px < 0 ? '-' : '+';
   return `calc(${pct} ${sign} ${px(Math.abs(value.px), scale)})`;
+}
+
+/** `text-decoration-inset` as it computes: `auto`, or its start and its
+ *  end, one where they are the same. */
+function decorationInsetText(
+  inset: ComputedStyle['textDecorationInset'],
+  scale: number,
+): string {
+  if (isAutoInset(inset)) return 'auto';
+  const start = len(inset[0], scale);
+  const end = len(inset[1], scale);
+  return start === end ? start : `${start} ${end}`;
 }
 
 /** `translate` as it computes: across, then down where it is not 0px,
@@ -1391,6 +1404,10 @@ function cssomAt(
   // `auto` for what is in the top layer, and `none` for all else: the user
   // agent's own, which no page sets (CSS Position 4, 3.2)
   out.overlay = style.overlay;
+  out['text-decoration-inset'] = decorationInsetText(
+    style.textDecorationInset,
+    scale,
+  );
   // each shadow as Chrome writes it, its colour first and `inset` last
   out['box-shadow'] = style.boxShadow
     ? style.boxShadow

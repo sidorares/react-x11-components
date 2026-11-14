@@ -243,33 +243,56 @@ export function paintRunRules(
   dy: number,
   scale = 1,
   rules: 'under' | 'over' | 'all' = 'all',
+  /** Who draws each run's rule and how far in a stretch of it is drawn,
+   *  where an element says (`text-decoration-inset`); none for all of it. */
+  insets?: RuleInsets,
 ): void {
   const t = ruleThickness(scale);
   if (rules !== 'over') {
-    // the stretch being gathered: the span whose rule it is, and its ends
+    // the stretch being gathered: the span whose rule it is, and its ends;
+    // and, where insets are asked, whose rule it is and its logical ends
     let ruled: TextRun | null = null;
     let from = 0;
     let to = 0;
+    let owner: unknown = null;
+    let first: LaidRun | null = null;
+    let last: LaidRun | null = null;
+    const flush = (): void => {
+      if (!ruled) return;
+      let [a, b] = [from, to];
+      if (insets && first && last) {
+        const thick = ruled.underlineThickness ?? t;
+        [a, b] = insetStretch(insets, first, last, a, b, 'under', thick);
+      }
+      if (b > a) stretchRule(ctx, ruled, line, dx + a, dx + b, dy, t);
+    };
     for (const r of line.runs) {
       const span = r.span;
       if (!span?.underline) continue;
       const end = r.x + r.width;
+      const who = insets ? insets.owner(r, 'under') : null;
       if (
         ruled &&
         // on either side: a right-to-left stretch's runs come last first
         (Math.abs(r.x - to) <= 0.5 || Math.abs(end - from) <= 0.5) &&
-        sameRule(ruled, span)
+        sameRule(ruled, span) &&
+        who === owner
       ) {
         from = Math.min(from, r.x);
         to = Math.max(to, end);
+        if (first && r.start < first.start) first = r;
+        if (last && r.end > last.end) last = r;
         continue;
       }
-      if (ruled) stretchRule(ctx, ruled, line, dx + from, dx + to, dy, t);
+      flush();
       ruled = span;
       from = r.x;
       to = end;
+      owner = who;
+      first = r;
+      last = r;
     }
-    if (ruled) stretchRule(ctx, ruled, line, dx + from, dx + to, dy, t);
+    flush();
   }
   if (rules === 'under') return;
   // A line through, gathered the same way, and ended as well where the
@@ -288,28 +311,42 @@ export function paintRunRules(
   let summed = 0;
   let widths = 0;
   let mixed = false;
+  let owner: unknown = null;
+  let first: LaidRun | null = null;
+  let last: LaidRun | null = null;
+  const flush = (): void => {
+    if (!struck) return;
+    const mean = mixed && widths > 0 ? summed / widths : ascent;
+    let [a, b] = [from, to];
+    if (insets && first && last) {
+      const thick = strikeThickness(struck, t);
+      [a, b] = insetStretch(insets, first, last, a, b, 'strike', thick);
+    }
+    if (b > a) strikeRule(ctx, struck, line, dx + a, dx + b, dy, mean, t);
+  };
   for (const r of line.runs) {
     const span = r.span;
     if (!span?.strike) continue;
     const own = inkExtent(r, line).ascent;
     const end = r.x + r.width;
+    const who = insets ? insets.owner(r, 'strike') : null;
     if (
       struck &&
       r.run?.size === size &&
       (Math.abs(r.x - to) <= 0.5 || Math.abs(end - from) <= 0.5) &&
-      sameStrike(struck, span)
+      sameStrike(struck, span) &&
+      who === owner
     ) {
       from = Math.min(from, r.x);
       to = Math.max(to, end);
       summed += own * r.width;
       widths += r.width;
       if (own !== ascent) mixed = true;
+      if (first && r.start < first.start) first = r;
+      if (last && r.end > last.end) last = r;
       continue;
     }
-    if (struck) {
-      const mean = mixed && widths > 0 ? summed / widths : ascent;
-      strikeRule(ctx, struck, line, dx + from, dx + to, dy, mean, t);
-    }
+    flush();
     struck = span;
     size = r.run?.size;
     from = r.x;
@@ -318,11 +355,52 @@ export function paintRunRules(
     summed = own * r.width;
     widths = r.width;
     mixed = false;
+    owner = who;
+    first = r;
+    last = r;
   }
-  if (struck) {
-    const mean = mixed && widths > 0 ? summed / widths : ascent;
-    strikeRule(ctx, struck, line, dx + from, dx + to, dy, mean, t);
-  }
+  flush();
+}
+
+/**
+ * Who draws a run's rule, and how far in a stretch of it is drawn, as a
+ * document says (`text-decoration-inset`, CSS Text Decoration 4, 2.6):
+ * what `<Html>` hands `paintRunRules`, which ends a stretch where the
+ * element whose rule it is changes, so two elements side by side are two
+ * rules each inset at its own ends.
+ */
+export interface RuleInsets {
+  /** The element whose underline or line through a run's is. */
+  owner(r: LaidRun, rule: 'under' | 'strike'): unknown;
+  /** How far in from its logical start and end a stretch's rule is drawn,
+   *  its first and last runs by their place in the text, `width` across
+   *  and its rule `thickness` thick; null for all of it. */
+  inset(
+    first: LaidRun,
+    last: LaidRun,
+    width: number,
+    rule: 'under' | 'strike',
+    thickness: number,
+  ): readonly [number, number] | null;
+}
+
+/** A stretch's ends, `from` and `to`, each moved in by its inset: its
+ *  logical start on the right where it reads right to left. */
+function insetStretch(
+  insets: RuleInsets,
+  first: LaidRun,
+  last: LaidRun,
+  from: number,
+  to: number,
+  rule: 'under' | 'strike',
+  thickness: number,
+): [number, number] {
+  const got = insets.inset(first, last, to - from, rule, thickness);
+  if (!got) return [from, to];
+  const [start, end] = got;
+  const rtl =
+    first === last ? first.run?.direction === 'rtl' : first.x > last.x;
+  return rtl ? [from + end, to - start] : [from + start, to - end];
 }
 
 /** The underline of a stretch of a line, from `from` to `to` of it, as
