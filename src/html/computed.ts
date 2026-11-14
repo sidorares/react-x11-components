@@ -12,6 +12,7 @@
 // `rgba()`, as a browser serializes every one.
 import type { BasicShape } from './css/basic-shape.js';
 import type { ObjectViewBox } from './css/object-view-box.js';
+import { pathSegments, pathText } from './css/shape-outside.js';
 import type { Coord, ShapeFunction } from './css/shape-function.js';
 import { positionAreaComputed } from './css/anchor.js';
 import {
@@ -774,6 +775,88 @@ function clipPathText(path: ClipPath | null, scale: number): string {
   return path.box === 'border-box' ? shape : `${shape} ${path.box}`;
 }
 
+/**
+ * A computed `shape-outside` (CSS Shapes 1, 6.1): `none`, an image as
+ * written, a box, or a shape and its box where that is not the margin box.
+ * Radii left at `closest-side` are left out, a circle's centre is said only
+ * where the value said it, and `rect()` and `xywh()` are the `inset()` they
+ * come to, as Chromium writes them.
+ */
+function shapeOutsideText(
+  shape: ClipPath | string | null,
+  scale: number,
+): string {
+  if (shape === null) return 'none';
+  if (typeof shape === 'string') return shape;
+  const L = (v: Len) => len(v, scale);
+  const far = (v: Len): Len =>
+    typeof v === 'number'
+      ? v === 0
+        ? { pct: 100 }
+        : { pct: 100, px: -v }
+      : v === 'auto'
+        ? { pct: 0 }
+        : { pct: 100 - v.pct, ...(v.px ? { px: -v.px } : {}) };
+  const corners = (): string => {
+    if (!shape.radii) return '';
+    const a = shortest(shape.radii.map(L));
+    const d = shape.radiiY ? shortest(shape.radiiY.map(L)) : a;
+    return ` round ${a === d ? a : `${a} / ${d}`}`;
+  };
+  let text: string | null = null;
+  const [l0, l1, l2, l3] = shape.lengths;
+  if (shape.shape === 'inset')
+    text = `inset(${shortest(shape.lengths.map(L))}${corners()})`;
+  else if (shape.shape === 'rect') {
+    const near = (v: Len): Len => (v === 'auto' ? { pct: 0 } : v);
+    const sides = [near(l0), far(l1), far(l2), near(l3)].map(L);
+    text = `inset(${shortest(sides)}${corners()})`;
+  } else if (shape.shape === 'xywh') {
+    const sum = (a: Len, b: Len): Len => {
+      const pct = (v: Len) => (typeof v === 'object' ? v.pct : 0);
+      const px = (v: Len) =>
+        typeof v === 'number' ? v : typeof v === 'object' ? (v.px ?? 0) : 0;
+      const p = px(a) + px(b);
+      return { pct: 100 - pct(a) - pct(b), ...(p ? { px: -p } : {}) };
+    };
+    const sides = [l1, sum(l0, l2), sum(l1, l3), l0].map(L);
+    text = `inset(${shortest(sides)}${corners()})`;
+  } else if (shape.shape === 'polygon' && shape.points) {
+    const points: string[] = [];
+    for (let i = 0; i + 1 < shape.points.length; i += 2) {
+      points.push(`${L(shape.points[i])} ${L(shape.points[i + 1])}`);
+    }
+    const rule = shape.fillRule === 'evenodd' ? 'evenodd, ' : '';
+    text = `polygon(${rule}${points.join(', ')})`;
+  } else if (shape.shape === 'basic' && shape.basic) {
+    const basic = shape.basic;
+    const at = (c: readonly [Len, Len]): string[] =>
+      shape.atGiven ? ['at', `${L(c[0])} ${L(c[1])}`] : [];
+    const radius = (r: Len | 'closest-side' | 'farthest-side'): string =>
+      r === 'closest-side' || r === 'farthest-side'
+        ? r
+        : L(typeof r === 'number' ? Math.max(0, r) : r);
+    if (basic.kind === 'circle') {
+      const r = basic.r === 'closest-side' ? [] : [radius(basic.r)];
+      text = `circle(${[...r, ...at(basic.at)].join(' ')})`;
+    } else if (basic.kind === 'ellipse') {
+      const r =
+        basic.rx === 'closest-side' && basic.ry === 'closest-side'
+          ? []
+          : [radius(basic.rx), radius(basic.ry)];
+      text = `ellipse(${[...r, ...at(basic.at)].join(' ')})`;
+    } else if (basic.kind === 'path') {
+      const segs = pathSegments(basic.d);
+      const rule = basic.rule === 'evenodd' ? 'evenodd, ' : '';
+      text = segs ? `path(${rule}"${pathText(segs, true)}")` : null;
+    } else if (basic.kind === 'shape') {
+      text = shapeText(basic.shape, scale);
+    }
+  }
+  if (!text) return shape.box;
+  return shape.box === 'margin-box' ? text : `${text} ${shape.box}`;
+}
+
 /** `object-view-box`'s computed value: its function as written, a length
  *  a length and a percentage a percentage, `inset()` as short as its
  *  sides allow. */
@@ -1326,6 +1409,16 @@ function cssomAt(
     style.fitTolerance === 'normal' || style.fitTolerance === 'infinite'
       ? style.fitTolerance
       : len(style.fitTolerance, scale);
+  // CSS Shapes 1, 6 (`shape-outside.ts`): a shape written out from what the
+  // cascade read, a margin at nought or more
+  out['shape-outside'] = shapeOutsideText(style.shapeOutside, scale);
+  out['shape-margin'] = len(
+    typeof style.shapeMargin === 'number'
+      ? Math.max(0, style.shapeMargin)
+      : style.shapeMargin,
+    scale,
+  );
+  out['shape-image-threshold'] = num(style.shapeImageThreshold);
   const widths = [
     style.borderTopWidth,
     style.borderRightWidth,

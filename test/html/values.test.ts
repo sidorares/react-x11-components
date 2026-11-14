@@ -5032,7 +5032,12 @@ test('a value el.style keeps is checked where its grammar is read, and kept as w
     specifiedValue('clip-path', 'shape(from var(--x) 0, close)'),
     undefined,
   );
-  assert.strictEqual(specifiedValue('clip-path', 'circle(10px)'), undefined);
+  // the other basic shapes have theirs (`shape-outside.ts`)
+  assert.strictEqual(
+    specifiedValue('clip-path', 'circle(10px at left)'),
+    'circle(10px at left center)',
+  );
+  assert.strictEqual(specifiedValue('clip-path', 'circle(10px 20px)'), null);
   assert.strictEqual(specifiedValue('mix-blend-mode', 'multiply'), undefined);
   // SVG's properties have theirs (`svg-properties.ts`)
   assert.strictEqual(specifiedValue('mask-type', 'Alpha'), 'alpha');
