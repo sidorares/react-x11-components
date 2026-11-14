@@ -94,6 +94,10 @@ export interface TransportSeams {
   /** The document's Content Security Policies, which a session is held
    *  to (`connect-src`). Absent, none. */
   policies?(): CspPolicy[];
+  /** Whether the document's policies let a session connect to a URL,
+   *  telling a violation where not (`connect-src`), as a fetch's is.
+   *  Absent, `policies` is asked, and nothing is told. */
+  connects?(url: string): boolean;
   /** The page's console, which a refused session is told on. */
   log?(level: string, text: string): void;
   /** An entry of the page's, with its input. */
@@ -269,7 +273,13 @@ export class PageTransports {
     // anything is sent (WebTransport, "initialize WebTransport over HTTP",
     // and CSP's `connect-src`)
     if (
-      !connectAllowed(this._seams.policies?.() ?? [], url, this._seams.origin())
+      !(this._seams.connects
+        ? this._seams.connects(url)
+        : connectAllowed(
+            this._seams.policies?.() ?? [],
+            url,
+            this._seams.origin(),
+          ))
     ) {
       const message = `Refused to connect to '${url}' because it violates the document's Content Security Policy directive "connect-src".`;
       this._seams.log?.('error', message);

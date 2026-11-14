@@ -132,6 +132,10 @@ export interface SocketSeams {
    *  `ws:` one as `wss:` under `upgrade-insecure-requests`. Absent, as it
    *  is. */
   upgrade?(url: string): string;
+  /** Whether the document's policies let a socket connect to a URL,
+   *  telling a violation where not (`connect-src`), as a fetch's is.
+   *  Absent, `policies` is asked, and nothing is told. */
+  connects?(url: string): boolean;
   /** The page's console, which a failed socket is told on. */
   log?(level: string, text: string): void;
   /** An entry of the page's, with its input. */
@@ -333,7 +337,11 @@ export class PageSockets {
       this._fail(s, 'it is mixed content.');
       return;
     }
-    if (!connectAllowed(this._seams.policies?.() ?? [], url, origin)) {
+    if (
+      !(this._seams.connects
+        ? this._seams.connects(url)
+        : connectAllowed(this._seams.policies?.() ?? [], url, origin))
+    ) {
       this._seams.log?.(
         'error',
         `Refused to connect to '${url}' because it violates the document's Content Security Policy directive "connect-src".`,

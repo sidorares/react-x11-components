@@ -10905,6 +10905,11 @@ export class DomHost {
         connector: () => this._seams.webTransport,
         origin: () => this._origin(),
         policies: () => this._cspPolicies(),
+        // a violation of `connect-src` is told, as a fetch's is
+        connects: (url) => {
+          this.cspScan();
+          return this.csp.request({ url, destination: '' });
+        },
         log: (level, text) => this._seams.log(level, text),
         tell: (name, input) => {
           if (!this._disposed) this.entries?.call(name, input);
@@ -10928,6 +10933,11 @@ export class DomHost {
         upgrade: (url) => {
           this.cspScan();
           return this.csp.upgrade(url);
+        },
+        // a violation of `connect-src` is told, as a fetch's is
+        connects: (url) => {
+          this.cspScan();
+          return this.csp.request({ url, destination: '' });
         },
         log: (level, text) => this._seams.log(level, text),
         tell: (name, input) => {
