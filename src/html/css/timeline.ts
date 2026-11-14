@@ -80,6 +80,13 @@ export interface Sample {
   rule: KeyframesRule;
   progress: number;
   easing: Easing;
+  /** How its frames composite onto what is under them, where a frame says
+   *  nothing of its own (Web Animations 1, 5.4.4); `replace` where absent. */
+  composite?: 'replace' | 'add' | 'accumulate';
+  /** Which iteration it is in, where its iterations accumulate
+   *  (`iterationComposite: 'accumulate'`, 4.4.9): each adds the last
+   *  frame's value again. */
+  accumulateIterations?: number;
   /** Milliseconds an iteration takes, whether the progress grows as time
    *  passes, and how long the animation goes on from now, 0 for one that
    *  holds where it is: what says how soon a frame of it changes anything

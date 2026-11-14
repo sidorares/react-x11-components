@@ -110,6 +110,7 @@ import type { Animations } from './animation.js';
 import type { Keyframe } from './parse.js';
 import {
   discrete,
+  addField,
   interpolateField,
   keywordSizes,
   visibleSpan,
@@ -9161,9 +9162,19 @@ export class Cascade {
       return style;
     };
     const out: Declaration[][] = [];
+    // what each field is under the sample being worked out: the element's
+    // own, and then each sample's on top of it in their composite order,
+    // which a frame that adds or accumulates is composited onto and an end
+    // a track leaves out is (Web Animations 1, 5.4.4)
+    const under = new Map<string, unknown>();
+    const underOf = (key: string): unknown =>
+      under.has(key)
+        ? under.get(key)
+        : (base as unknown as Record<string, unknown>)[key];
     for (const sample of samples) {
       const { rule, progress, easing } = sample;
       const declarations: Declaration[] = [];
+      const lastFrame = rule.frames[rule.frames.length - 1] ?? null;
       for (const [prop, frames] of tracksOf(rule)) {
         const span = spanAt(frames, progress, easing);
         const { from, to, q } = span;
@@ -9212,15 +9223,63 @@ export class Cascade {
           q,
           this._anchorUnits(base),
         );
+        // a frame that adds or accumulates, and an end left out, where a
+        // sample has anything under it to composite onto
+        const compositeOf = (frame: Keyframe | null | undefined) =>
+          frame?.composite ?? sample.composite ?? 'replace';
+        const fromMode = from?.frame ? compositeOf(from.frame) : 'replace';
+        const toMode = to?.frame ? compositeOf(to.frame) : 'replace';
+        const layered =
+          under.size > 0 ||
+          fromMode !== 'replace' ||
+          toMode !== 'replace' ||
+          !!sample.accumulateIterations;
+        if (layered) {
+          const ends = (
+            record: Record<string, unknown>,
+            frame: Keyframe | null | undefined,
+            mode: string,
+          ): Record<string, unknown> => {
+            const outRecord: Record<string, unknown> = { ...record };
+            for (const key of fields) {
+              if (!frame) outRecord[key] = underOf(key);
+              else if (mode !== 'replace') {
+                const added = addField(
+                  key,
+                  underOf(key),
+                  record[key],
+                  mode === 'accumulate',
+                );
+                if (added !== undefined) outRecord[key] = added;
+              }
+            }
+            return outRecord;
+          };
+          a = ends(a, from?.frame, fromMode);
+          b = ends(b, to?.frame, toMode);
+        }
         for (const key of fields) {
           if (anchored?.mixed.has(key)) {
             computed[key] = q < 0.5 ? a[key] : b[key];
             continue;
           }
-          const value = interpolateField(key, a[key], b[key], q);
+          let value = interpolateField(key, a[key], b[key], q);
           if (value === undefined) {
             flips = true;
             break;
+          }
+          // each iteration past the first adds the last frame's value again
+          // (4.4.9, `iterationComposite: 'accumulate'`)
+          const times = Math.min(sample.accumulateIterations ?? 0, 1000);
+          if (times > 0 && lastFrame) {
+            const last = (
+              styleAt(lastFrame) as unknown as Record<string, unknown>
+            )[key];
+            for (let i = 0; i < times; i += 1) {
+              const added = addField(key, value, last, true);
+              if (added === undefined) break;
+              value = added;
+            }
           }
           computed[key] = value;
         }
@@ -9242,6 +9301,7 @@ export class Cascade {
           unchanged = Math.min(unchanged, unchangedFor(sample, span, most));
         }
         declarations.push({ prop, value: '', important: false, computed });
+        for (const key of fields) under.set(key, computed[key]);
       }
       if (declarations.length) out.push(declarations);
     }

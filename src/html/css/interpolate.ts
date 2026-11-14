@@ -928,3 +928,147 @@ function turnsApart(a: Turn, b: Turn): number {
   if (u[3] !== 0 && v[3] !== 0 && !sameAxis(u, v)) return Infinity;
   return (Math.abs(v[3] - u[3]) * Math.PI) / 180;
 }
+
+/**
+ * A computed style field's value composited onto the value under it (Web
+ * Animations 1, 5.4.4): `add` puts it on top — a transform list after the
+ * one under it, a list of shadows or filters after those — and `accumulate`
+ * sums each part where the two are alike, a scale by what it scales past
+ * one. Numbers, lengths and colours add part by part, a colour's channels
+ * clamped. Undefined where the two cannot be composited, and the value
+ * replaces the one under it.
+ */
+export function addField(
+  key: string,
+  under: unknown,
+  value: unknown,
+  accumulate: boolean,
+): unknown {
+  if (under === undefined) return value;
+  switch (key) {
+    case 'visibility':
+    case 'widthSize':
+    case 'heightSize':
+    case 'minWidthSize':
+    case 'maxWidthSize':
+    case 'minHeightSize':
+    case 'maxHeightSize':
+    case 'flexBasisSize':
+    case 'fontSizeBasis':
+    case 'cornerShape':
+    case 'clipPath':
+      return undefined;
+    case 'opacity':
+      return typeof under === 'number' && typeof value === 'number'
+        ? clamp(under + value, 0, 1)
+        : undefined;
+    case 'transform': {
+      const u = (under as TransformFunction[] | null) ?? [];
+      const v = (value as TransformFunction[] | null) ?? [];
+      if (accumulate && u.length === v.length) {
+        const out: TransformFunction[] = [];
+        for (let i = 0; i < u.length; i += 1) {
+          const x = u[i] as { by?: [unknown, unknown]; z?: number };
+          const y = v[i] as { by?: [unknown, unknown]; z?: number };
+          if (!x.by || !y.by) {
+            out.length = 0;
+            break;
+          }
+          const by0 = sum(x.by[0], y.by[0]);
+          const by1 = sum(x.by[1], y.by[1]);
+          if (by0 === undefined || by1 === undefined) {
+            out.length = 0;
+            break;
+          }
+          const z = (x.z ?? 0) + (y.z ?? 0);
+          out.push(
+            (z
+              ? { by: [by0, by1], z }
+              : { by: [by0, by1] }) as TransformFunction,
+          );
+        }
+        if (out.length === u.length && out.length) return out;
+      }
+      const list = [...u, ...v];
+      return list.length ? list : null;
+    }
+    case 'translate':
+      return sum(under ?? NO_MOVE, value ?? NO_MOVE);
+    case 'scale': {
+      const u = (under ?? NO_SCALE) as number[];
+      const v = (value ?? NO_SCALE) as number[];
+      if (!Array.isArray(u) || !Array.isArray(v) || u.length !== v.length) {
+        return undefined;
+      }
+      return u.map((n, i) => (accumulate ? n + v[i] - 1 : n * v[i]));
+    }
+    case 'boxShadow':
+    case 'filter': {
+      const u = (under as unknown[] | null) ?? [];
+      const v = (value as unknown[] | null) ?? [];
+      if (accumulate && u.length === v.length && u.length) {
+        const out = sum(u, v);
+        if (out !== undefined) return out;
+      }
+      const list = [...u, ...v];
+      return list.length ? list : null;
+    }
+  }
+  const out = sum(under, value);
+  if (typeof out !== 'number') return out;
+  if (INTEGERS.has(key)) return Math.round(out);
+  return NOT_NEGATIVE.has(key) ? Math.max(0, out) : out;
+}
+
+/** Two values added part by part, as `mix` interpolates them: numbers,
+ *  lengths, colours and the arrays and records of them a field holds. */
+function sum(a: unknown, b: unknown): unknown {
+  if (typeof a === 'number' && typeof b === 'number') return a + b;
+  const x = linear(a);
+  const y = linear(b);
+  if (x && y) {
+    const out: Pct = { pct: x.pct + y.pct };
+    const px = x.px + y.px;
+    if (px !== 0) out.px = px;
+    return x.pct || y.pct ? out : px;
+  }
+  if (typeof a === 'string' && typeof b === 'string') {
+    if (a === b && !rgbaOf(a)) return a;
+    const p = rgbaOf(a);
+    const q = rgbaOf(b);
+    if (!p || !q) return undefined;
+    const c = (n: number): number => Math.round(Math.min(1, n) * 255);
+    const alpha = Math.min(1, p[3] + q[3]);
+    return `rgba(${c(p[0] + q[0])}, ${c(p[1] + q[1])}, ${c(p[2] + q[2])}, ${alpha})`;
+  }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return undefined;
+    const out: unknown[] = [];
+    for (let i = 0; i < a.length; i += 1) {
+      const v = sum(a[i], b[i]);
+      if (v === undefined) return undefined;
+      out.push(v);
+    }
+    return out;
+  }
+  if (isRecord(a) && isRecord(b)) {
+    const keys = Object.keys(a);
+    if (keys.length !== Object.keys(b).length) return undefined;
+    const out: Record<string, unknown> = {};
+    for (const k of keys) {
+      if (!(k in b)) return undefined;
+      // what is not a quantity — an `inset` flag, a function's name —
+      // is the one on top where the two differ
+      const v =
+        typeof a[k] === 'boolean' ||
+        (typeof a[k] === 'string' && !rgbaOf(a[k] as string))
+          ? b[k]
+          : sum(a[k], b[k]);
+      if (v === undefined) return undefined;
+      out[k] = v;
+    }
+    return out;
+  }
+  if (a === b) return a;
+  return undefined;
+}
