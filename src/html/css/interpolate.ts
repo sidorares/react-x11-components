@@ -18,7 +18,7 @@
 // of that reads goes over at the half-way point, as CSS has a discrete
 // value go.
 
-import { blend, rgbaOf } from './color.js';
+import { blend, rgbaOf, rgbaUnclipped } from './color.js';
 import { interpolateFilters } from './filter.js';
 import type { FilterFunction } from './filter.js';
 import type {
@@ -70,6 +70,7 @@ export function interpolateField(
 ): unknown {
   if (q === 0 || same(a, b)) return a;
   if (q === 1) return b;
+  if (DISCRETE_RECORDS.has(key)) return undefined;
   switch (key) {
     case 'visibility':
       // visible all the way between, where either end is, and the nearer
@@ -337,6 +338,21 @@ export function discreteField(
  *  interpolation of them, across, down and in depth. */
 const NO_MOVE = Object.freeze([0, 0, 0]);
 const NO_SCALE = Object.freeze([1, 1, 1]);
+
+/** The fields that hold numbers and still do not interpolate: a grid line,
+ *  a counter's change and the template's areas go over at the half-way
+ *  point (CSS Grid 1, 8.3 and 7.3; CSS Lists 3, 4), where the numbers in
+ *  them would mix, and replace what is under them where they would add. */
+const DISCRETE_RECORDS = new Set([
+  'gridRowStart',
+  'gridRowEnd',
+  'gridColumnStart',
+  'gridColumnEnd',
+  'gridAreas',
+  'counterReset',
+  'counterIncrement',
+  'counterSet',
+]);
 
 /** The fields whose values are whole numbers, rounded between. */
 const INTEGERS = new Set([
@@ -945,6 +961,7 @@ export function addField(
   accumulate: boolean,
 ): unknown {
   if (under === undefined) return value;
+  if (DISCRETE_RECORDS.has(key)) return undefined;
   switch (key) {
     case 'visibility':
     case 'widthSize':
@@ -965,30 +982,7 @@ export function addField(
     case 'transform': {
       const u = (under as TransformFunction[] | null) ?? [];
       const v = (value as TransformFunction[] | null) ?? [];
-      if (accumulate && u.length === v.length) {
-        const out: TransformFunction[] = [];
-        for (let i = 0; i < u.length; i += 1) {
-          const x = u[i] as { by?: [unknown, unknown]; z?: number };
-          const y = v[i] as { by?: [unknown, unknown]; z?: number };
-          if (!x.by || !y.by) {
-            out.length = 0;
-            break;
-          }
-          const by0 = sum(x.by[0], y.by[0]);
-          const by1 = sum(x.by[1], y.by[1]);
-          if (by0 === undefined || by1 === undefined) {
-            out.length = 0;
-            break;
-          }
-          const z = (x.z ?? 0) + (y.z ?? 0);
-          out.push(
-            (z
-              ? { by: [by0, by1], z }
-              : { by: [by0, by1] }) as TransformFunction,
-          );
-        }
-        if (out.length === u.length && out.length) return out;
-      }
+      if (accumulate) return accumulateTransforms(u, v);
       const list = [...u, ...v];
       return list.length ? list : null;
     }
@@ -1014,10 +1008,152 @@ export function addField(
       return list.length ? list : null;
     }
   }
+  // what does not interpolate does not add either: a property that goes
+  // over at the half-way point replaces what is under it (5.4.4), a grid
+  // line or a counter as much as a keyword, numbers in it or not
+  if (
+    !same(under, value) &&
+    interpolateField(key, under, value, 0.5) === undefined
+  ) {
+    return undefined;
+  }
   const out = sum(under, value);
   if (typeof out !== 'number') return out;
   if (INTEGERS.has(key)) return Math.round(out);
   return NOT_NEGATIVE.has(key) ? Math.max(0, out) : out;
+}
+
+/**
+ * A composited value as a style field holds it: a colour `sum` left past
+ * the gamut clipped back into it as legacy sRGB, wherever it is in the
+ * value. Nothing a cascade makes is a `color(srgb …)` but such a sum, since
+ * a colour field keeps legacy sRGB and its text apart.
+ */
+export function settleSums(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return value.startsWith('color(srgb ')
+      ? (blend(value, value, 0) ?? value)
+      : value;
+  }
+  if (Array.isArray(value)) return value.map(settleSums);
+  if (isRecord(value)) {
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(value)) out[k] = settleSums(value[k]);
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Two transform lists accumulated (CSS Transforms 2, 16): the shorter
+ * padded with functions at nothing, as an interpolation pads it, each pair
+ * of a kind summed — a move and a turn by their lengths and angles, a scale
+ * by what it scales past one — and from the first pair that is not alike,
+ * what is left of each as one matrix, its parts accumulated
+ * (`accumulateMatrix`). Undefined where neither can be, and the value
+ * replaces the one under it.
+ */
+function accumulateTransforms(
+  u: readonly TransformFunction[],
+  v: readonly TransformFunction[],
+): TransformFunction[] | null | undefined {
+  const n = Math.max(u.length, v.length);
+  if (!n) return null;
+  const out: TransformFunction[] = [];
+  let i = 0;
+  for (; i < n; i += 1) {
+    const f = u[i] ?? identityOf(v[i]);
+    const g = v[i] ?? identityOf(u[i]);
+    const one = accumulateFunction(f, g);
+    if (!one) break;
+    out.push(one);
+  }
+  if (i < n) {
+    const pad = (
+      list: readonly TransformFunction[],
+      other: readonly TransformFunction[],
+    ) =>
+      Array.from(
+        { length: n - i },
+        (_, k) => list[i + k] ?? identityOf(other[i + k]),
+      );
+    const m = flatten(pad(u, v));
+    const n2 = flatten(pad(v, u));
+    if (!m || !n2) return undefined;
+    out.push({ matrix: accumulateMatrix(m, n2) });
+  }
+  return out;
+}
+
+/** Two functions of a kind accumulated, or null where they are not. */
+function accumulateFunction(
+  f: TransformFunction,
+  g: TransformFunction,
+): TransformFunction | null {
+  if ('by' in f || 'by' in g) {
+    if (!('by' in f) || !('by' in g)) return null;
+    const x = sum(f.by[0], g.by[0]);
+    const y = sum(f.by[1], g.by[1]);
+    if (x === undefined || y === undefined) return null;
+    const z = (f.z ?? 0) + (g.z ?? 0);
+    const by = [x, y] as [Len, Len];
+    return z ? { by, z } : { by };
+  }
+  if (!f.fn || !g.fn) {
+    if (f.fn || g.fn) return null;
+    if ('matrix' in f && 'matrix' in g) {
+      return { matrix: accumulateMatrix(f.matrix, g.matrix) };
+    }
+    return null;
+  }
+  const s = f.fn;
+  const t = g.fn;
+  let fn: Primitive;
+  if (s.kind === 'rotate' && t.kind === 'rotate') {
+    fn = { kind: 'rotate', angle: s.angle + t.angle };
+  } else if (
+    s.kind === 'rotate3d' &&
+    t.kind === 'rotate3d' &&
+    s.x === t.x &&
+    s.y === t.y &&
+    s.z === t.z
+  ) {
+    fn = { ...s, angle: s.angle + t.angle };
+  } else if (s.kind === 'scale' && t.kind === 'scale') {
+    fn =
+      s.z === undefined && t.z === undefined
+        ? { kind: 'scale', x: s.x + t.x - 1, y: s.y + t.y - 1 }
+        : {
+            kind: 'scale',
+            x: s.x + t.x - 1,
+            y: s.y + t.y - 1,
+            z: (s.z ?? 1) + (t.z ?? 1) - 1,
+          };
+  } else if (s.kind === 'skew' && t.kind === 'skew') {
+    fn = { kind: 'skew', x: s.x + t.x, y: s.y + t.y };
+  } else {
+    return null;
+  }
+  return primitive(fn);
+}
+
+/** Two matrices accumulated through their parts (CSS Transforms 2, 16,
+ *  "Accumulating decomposed 2D matrix values"): the moves and the turns
+ *  added, and a scale, and the skew's diagonal, by what each is past one. */
+export function accumulateMatrix(a: Matrix, b: Matrix): Matrix {
+  const x = decompose(a);
+  const y = decompose(b);
+  return recompose({
+    tx: x.tx + y.tx,
+    ty: x.ty + y.ty,
+    sx: x.sx + y.sx - 1,
+    sy: x.sy + y.sy - 1,
+    angle: x.angle + y.angle,
+    m11: x.m11 + y.m11 - 1,
+    m12: x.m12 + y.m12,
+    m21: x.m21 + y.m21,
+    m22: x.m22 + y.m22 - 1,
+  });
 }
 
 /** Two values added part by part, as `mix` interpolates them: numbers,
@@ -1034,12 +1170,18 @@ function sum(a: unknown, b: unknown): unknown {
   }
   if (typeof a === 'string' && typeof b === 'string') {
     if (a === b && !rgbaOf(a)) return a;
-    const p = rgbaOf(a);
-    const q = rgbaOf(b);
+    const p = rgbaUnclipped(a);
+    const q = rgbaUnclipped(b);
     if (!p || !q) return undefined;
-    const c = (n: number): number => Math.round(Math.min(1, n) * 255);
+    // premultiplied, and left past the gamut: a sum is clipped only once
+    // it has been interpolated (`settleSums`), so red added onto grey and
+    // blue onto grey come half way to a pink no clipped end has
     const alpha = Math.min(1, p[3] + q[3]);
-    return `rgba(${c(p[0] + q[0])}, ${c(p[1] + q[1])}, ${c(p[2] + q[2])}, ${alpha})`;
+    if (!(alpha > 0)) return 'transparent';
+    const c = (i: number): number =>
+      Number(((p[i] * p[3] + q[i] * q[3]) / alpha).toFixed(6));
+    const tail = alpha === 1 ? '' : ` / ${alpha}`;
+    return `color(srgb ${c(0)} ${c(1)} ${c(2)}${tail})`;
   }
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return undefined;
