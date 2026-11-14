@@ -2990,6 +2990,12 @@ export class DomHost {
     }
   }
 
+  /** The address a frame's document came from, `about:srcdoc` for a
+   *  `srcdoc` one, where `frames` hands its base; null for none. */
+  frameAddressOf(frame: Element): string | null {
+    return this._frameAt.get(frame) ?? null;
+  }
+
   frames(): FrameShown[] {
     const out: FrameShown[] = [];
     for (const frame of this._s.frameList) {
