@@ -58,6 +58,9 @@ import {
   autoMargins,
   extent,
   indexOfKept,
+  laneSubgrid,
+  laneSubgridItems,
+  laneSubgridPlaced,
   layoutAcross,
   layoutItem,
   leastHeight,
@@ -109,12 +112,12 @@ export function layoutGridLanes(
 ): number {
   const style = box.style;
   const boxes: Box[] = [];
-  const outOfFlow: Box[] = [];
   for (const child of wholeAgain(box, ctx)) {
     if (child.kind === 'text' && isBlank(child.text)) continue;
     if (child.outOfFlow) {
+      // where it is as the container's one item, turned round with the
+      // lanes (`staticAlignment`)
       positionOutOfFlow(child, box, ctx, false);
-      outOfFlow.push(child);
       continue;
     }
     boxes.push(child);
@@ -129,15 +132,6 @@ export function layoutGridLanes(
   const direction = style.gridLanesDirection;
   const fillReverse = direction.includes('fill-reverse');
   const trackReverse = direction.includes('track-reverse');
-  // An absolutely positioned child's static position is turned round with
-  // the lanes: at the far edge of the stacking axis where they fill from
-  // there, and of the grid axis where the tracks are filled from the last.
-  for (const child of outOfFlow) {
-    const inside = child.staticPosition?.inside;
-    if (!inside) continue;
-    if (rows ? fillReverse : trackReverse) inside.across = 1 - inside.across;
-    if (rows ? trackReverse : fillReverse) inside.down = 1 - inside.down;
-  }
   const definite = percentBaseInside(box);
   const own = Number.isFinite(definite);
   const least = own ? 0 : Math.max(leastHeight(box), USED_HEIGHT.get(box) ?? 0);
@@ -160,18 +154,21 @@ export function layoutGridLanes(
       pair = trackContributions(item.box, ctx);
       widths.set(item.box, pair);
     }
-    item.min = pair[0];
-    item.max = pair[1];
+    // and the margin, border and padding of a subgrid it is in at its edges
+    item.min = pair[0] + item.before + item.after;
+    item.max = pair[1] + item.before + item.after;
   };
-  if (rows) {
+  const layOutAcross = (only?: (child: Box) => boolean) => {
+    if (!rows) return;
     for (const child of boxes) {
+      if (only && !only(child)) continue;
       child.percentHeightBase = NaN;
       const area = Number.isFinite(contentWidth)
         ? contentWidth
         : trackContributions(child, ctx)[1];
       layoutItem(itemOf(child, 0, 1, true), area, ctx, NaN, true);
     }
-  }
+  };
   const single = (
     item: Item,
     start: number,
@@ -198,15 +195,29 @@ export function layoutGridLanes(
     const n = tracks.length;
     const out: TrackItem[] = [];
     const groups = new Map<number, Item[]>();
+    const auto = (item: Item, span: number) => {
+      const group = groups.get(span);
+      if (group) group.push(item);
+      else groups.set(span, [item]);
+    };
     items.forEach((item, i) => {
       const span = Math.min(spanOf(item), n);
       const start = starts[i];
-      if (start !== null) out.push(single(item, start, span, tracks));
-      else {
-        const group = groups.get(span);
-        if (group) group.push(item);
-        else groups.set(span, [item]);
+      if (subgridded[i]) {
+        // A subgrid sizes them by its items, and not as itself (CSS Grid 2,
+        // 9): where it has a line, in the lanes it spans; where it has
+        // none, each where it could be in any of them (3.4.1)
+        const inner = laneSubgridItems(item.box, start ?? 0, span, axis);
+        for (const one of inner) {
+          const at = rows ? one.row : one.col;
+          const across = Math.min(rows ? one.rows : one.cols, n);
+          if (start === null) auto(one, across);
+          else if (at < n) out.push(single(one, at, across, tracks));
+        }
+        return;
       }
+      if (start !== null) out.push(single(item, start, span, tracks));
+      else auto(item, span);
     });
     for (const [span, group] of groups) {
       for (let p = 0; p + span <= n; p += 1) {
@@ -261,6 +272,38 @@ export function layoutGridLanes(
     return { template, explicit, lines };
   };
   let { template, explicit, lines } = lay();
+  // The items that subgrid the lanes, given them where they were placed —
+  // an item placed by the lanes takes no names from them (3.2) — with
+  // their tracks' sizing functions; their items are planned in them.
+  const axis = rows ? 'rows' : 'cols';
+  const subgridded: boolean[] = [];
+  const setUpSubgrids = (explicitNow: number, tracksNow: GridTrack[]) => {
+    const autoTrack = rows ? style.gridAutoRows : style.gridAutoColumns;
+    items.forEach((item, i) => {
+      const start = given[i];
+      const span = spanOf(item);
+      const total = Math.max(explicitNow, (start ?? 0) + span, 1);
+      const defsNow = tracksNow.slice(0, total);
+      while (defsNow.length < total) defsNow.push(autoTrack);
+      const bare = gridLines(
+        total,
+        Array.from({ length: total + 1 }, () => []),
+        null,
+        rows ? 'rows' : 'columns',
+      );
+      subgridded[i] = laneSubgrid(
+        item.box,
+        start === null ? bare : lines,
+        defsNow,
+        start ?? 0,
+        span,
+        gridGap,
+        axis,
+      );
+    });
+  };
+  setUpSubgrids(explicit, template.tracks);
+  layOutAcross();
   // A repetition whose tracks its content sizes repeats as many times as
   // tracks as large as its hypothetical ones fit (3.1.1): the template with
   // the repetition as many times as the widest span needs, every item at
@@ -303,6 +346,8 @@ export function layoutGridLanes(
     const count =
       each > 0 ? Math.max(1, Math.floor((room + gridGap) / each)) : 1;
     ({ template, explicit, lines } = lay(count));
+    setUpSubgrids(explicit, template.tracks);
+    layOutAcross((child) => subgridded[boxes.indexOf(child)]);
   }
   let count = Math.max(1, explicit);
   items.forEach((item, i) => {
@@ -481,6 +526,19 @@ export function layoutGridLanes(
       item.col = from;
       item.cols = span;
       child.percentHeightBase = definite;
+      // a subgrid is laid out in the lanes it spans, sized
+      if (subgridded[i]) {
+        laneSubgridPlaced(
+          child,
+          'cols',
+          sizes,
+          lefts,
+          kept,
+          from,
+          span,
+          gridGap,
+        );
+      }
       layoutItem(item, area, ctx, NaN);
     }
     // Its margin box's length down the lanes, which a negative margin can
@@ -552,7 +610,14 @@ export function layoutGridLanes(
   // Each item where it goes: in its area across, aligned in it, and down
   // its lanes at its place, aligned in the hole after it where there is one
   // (6.4).
-  const holesAfter = gapsAfter(placed, n, range, stackGap);
+  // The last item in a lane has the hole after it out to the container's
+  // far edge, from the fill start, and not only to the stacking range's, as
+  // the engines have it: a `stretch` fills the container's height
+  const lastEnd = Math.max(
+    range,
+    fillReverse ? shift + range : stackRoom - shift,
+  );
+  const holesAfter = gapsAfter(placed, n, lastEnd, stackGap);
   placed.forEach((p, k) => {
     const { item, pos } = p;
     const child = item.box;
@@ -581,7 +646,38 @@ export function layoutGridLanes(
         : child.style.justifySelfText;
     // a row lane's item takes the percentages of its height of its row,
     // which is known now (4.4.1)
-    if (rows && percentOwn(child) && child.kind !== 'replaced') {
+    const index = items.indexOf(item);
+    if (rows && subgridded[index]) {
+      // A subgrid of row lanes is as tall as the rows it spans, whatever its
+      // own height says, and laid out again in them, its rows theirs (CSS
+      // Grid 2, 9)
+      laneSubgridPlaced(
+        child,
+        'rows',
+        sizes,
+        lefts,
+        kept,
+        from,
+        p.span,
+        gridGap,
+      );
+      const height = Math.max(
+        child.verticalExtra,
+        area - child.marginTop - child.marginBottom,
+      );
+      FLEXED_HEIGHT.set(child, height - child.verticalExtra);
+      try {
+        layoutAcross(
+          item,
+          child.width,
+          Number.isFinite(contentWidth) ? contentWidth : child.width,
+          ctx,
+        );
+      } finally {
+        FLEXED_HEIGHT.delete(child);
+      }
+      child.height = height;
+    } else if (rows && percentOwn(child) && child.kind !== 'replaced') {
       child.percentHeightBase = area;
       layoutAcross(
         item,
@@ -602,6 +698,7 @@ export function layoutGridLanes(
       else if (kind === 'flex-end') across = area - crossOuter;
       else if (
         rows &&
+        !subgridded[index] &&
         flow === null &&
         (kind === 'stretch' || kind === 'normal') &&
         child.style.height === AUTO &&
@@ -929,12 +1026,12 @@ function flowContent(
 /**
  * The hole after each item down its lanes (6.4): to the next item in any of
  * its tracks, less the gap before that one, or for the last in a track to
- * the far end of the stacking range.
+ * `end`, the far edge of the container or of the stacking range.
  */
 function gapsAfter(
   placed: Placed[],
   n: number,
-  range: number,
+  end: number,
   gap: number,
 ): number[] {
   /** The items each track holds, by where they start, in order. */
@@ -947,14 +1044,17 @@ function gapsAfter(
     list.sort((a, b) => placed[a].pos - placed[b].pos);
   const out: number[] = [];
   placed.forEach((p, k) => {
-    let end = Infinity;
+    let until = Infinity;
     for (let t = p.start; t < p.start + p.span; t += 1) {
       const list = byTrack[t];
       const i = list.indexOf(k);
       const next = list[i + 1];
-      end = Math.min(end, next === undefined ? range : placed[next].pos - gap);
+      until = Math.min(
+        until,
+        next === undefined ? end : placed[next].pos - gap,
+      );
     }
-    out.push(Math.max(0, end - (p.pos + p.outer)));
+    out.push(Math.max(0, until - (p.pos + p.outer)));
   });
   return out;
 }

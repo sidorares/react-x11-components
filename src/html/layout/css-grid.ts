@@ -869,6 +869,106 @@ function planGrid(
   };
 }
 
+/**
+ * Make an item of a grid lanes container a subgrid of its lanes (CSS Grid
+ * 3, 3.2), on the axis the lanes are: its lines the lanes' from `from`
+ * across `span`, with the names of theirs where it was placed by them, and
+ * its tracks' sizing functions theirs. Its columns' items are planned in
+ * them, which size the lanes (`laneSubgridItems`). The other axis, which
+ * stacks, it takes from no one. Whether it is a subgrid of them: a box
+ * that is not is cleared of what an earlier layout handed it.
+ */
+export function laneSubgrid(
+  child: Box,
+  lines: GridLines,
+  defs: GridTrack[],
+  from: number,
+  span: number,
+  gap: number,
+  axis: 'cols' | 'rows',
+): boolean {
+  const style = child.style;
+  const names =
+    axis === 'cols' ? style.gridColumns?.subgrid : style.gridRows?.subgrid;
+  if (
+    !style.grid ||
+    style.gridLanes ||
+    !names ||
+    contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
+  ) {
+    SUBGRIDS.delete(child);
+    return false;
+  }
+  const which = axis === 'cols' ? 'columns' : 'rows';
+  const sub: SubgridAxis = {
+    lines: subgridLines(lines, from, span, names, style.gridAreas, which),
+    defs: defs.slice(from, from + span),
+    gap,
+    placed: null,
+    items: null,
+  };
+  const subgrid: Subgrid =
+    axis === 'cols' ? { cols: sub, rows: null } : { cols: null, rows: sub };
+  SUBGRIDS.set(child, subgrid);
+  if (axis === 'cols') {
+    sub.items = planGrid(
+      child,
+      inFlow(child),
+      NaN,
+      percentBaseInside(child),
+      subgrid,
+    ).items;
+  }
+  return true;
+}
+
+/** A lanes subgrid's items as items of the lanes, in their tracks from
+ *  `from`, with its margin, border and padding at its edges (CSS Grid 2,
+ *  9): its columns' as planned, its rows' as its last layout made them. */
+export function laneSubgridItems(
+  child: Box,
+  from: number,
+  span: number,
+  axis: 'cols' | 'rows',
+): Item[] {
+  const across = axis === 'cols';
+  return throughSubgrid(
+    {
+      box: child,
+      col: across ? from : 0,
+      cols: across ? span : 1,
+      row: across ? 0 : from,
+      rows: across ? 1 : span,
+      min: -1,
+      max: -1,
+      across: false,
+      before: 0,
+      after: 0,
+      height: NaN,
+    },
+    axis,
+  );
+}
+
+/** Hand a lanes subgrid the lanes it was placed in, sized, before it is
+ *  laid out in them: what they are, where each starts, and their gap. */
+export function laneSubgridPlaced(
+  child: Box,
+  axis: 'cols' | 'rows',
+  sizes: number[],
+  at: number[],
+  defs: GridTrack[],
+  from: number,
+  span: number,
+  gap: number,
+): void {
+  const sub = SUBGRIDS.get(child)?.[axis];
+  if (!sub) return;
+  sub.defs = defs.slice(from, from + span);
+  sub.placed = spanOf(sizes, at, from, span);
+  sub.gap = gap;
+}
+
 /** A grid's children that are its items: what is in its flow. */
 function inFlow(box: Box): Box[] {
   return box.children.filter(

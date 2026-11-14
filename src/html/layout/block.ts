@@ -11067,7 +11067,24 @@ function staticAlignment(
       : own.justifySelf === 'auto'
         ? style.justifyItems
         : own.justifySelf;
-    return { across: factor(justify), down: cross };
+    let across = factor(justify);
+    let down = cross;
+    // and grid lanes turn it round with themselves (CSS Grid 3, 8): to the
+    // far edge of the stacking axis where they fill from there, and of the
+    // grid axis where the lanes are filled from the last
+    if (style.gridLanes) {
+      const direction = style.gridLanesDirection;
+      const rows =
+        direction.startsWith('row') ||
+        (direction === 'normal' &&
+          style.gridColumns === null &&
+          style.gridRows !== null);
+      const fill = direction.includes('fill-reverse');
+      const track = direction.includes('track-reverse');
+      if (rows ? fill : track) across = 1 - across;
+      if (rows ? track : fill) down = 1 - down;
+    }
+    return { across, down };
   }
   const justify = style.justifyContent;
   let main =
