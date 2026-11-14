@@ -211,7 +211,8 @@ test('an element’s attributeStyleMap reads and writes its style, held to what 
     'new StylePropertyMap()',
   );
   assert.deepEqual(out, [
-    '10px|2|CSSUnparsedValue|CSSStyleValue|width,transition-duration,--foo,margin',
+    // a shorthand's longhands, which the style lists as CSSOM does
+    '10px|2|CSSUnparsedValue|CSSStyleValue|width,transition-duration,--foo,margin-top,margin-right,margin-bottom,margin-left',
     '5px',
     '!TypeError',
     '!TypeError',

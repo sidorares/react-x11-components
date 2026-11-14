@@ -11,11 +11,11 @@ import { splitValue } from './values.js';
 type Specify = (prop: string, value: string) => string | null | undefined;
 
 /** A grid gap's old names, each the property it stands for. */
-const GAP_ALIASES: Record<string, string> = {
+const GAP_ALIASES: Record<string, string> = Object.assign(Object.create(null), {
   'grid-gap': 'gap',
   'grid-row-gap': 'row-gap',
   'grid-column-gap': 'column-gap',
-};
+});
 
 /** The properties this answers for. */
 export const ALIGN_SPECIFIED = new Set([
@@ -47,14 +47,17 @@ export const ALIGN_SHORTHANDS: Record<string, string[]> = {} as Record<
   string,
   string[]
 >;
-const LONGHANDS_OF: Record<string, string[]> = {
-  'place-content': ['align-content', 'justify-content'],
-  'place-items': ['align-items', 'justify-items'],
-  'place-self': ['align-self', 'justify-self'],
-  gap: ['row-gap', 'column-gap'],
-  'flex-flow': ['flex-direction', 'flex-wrap'],
-  flex: ['flex-grow', 'flex-shrink', 'flex-basis'],
-};
+const LONGHANDS_OF: Record<string, string[]> = Object.assign(
+  Object.create(null),
+  {
+    'place-content': ['align-content', 'justify-content'],
+    'place-items': ['align-items', 'justify-items'],
+    'place-self': ['align-self', 'justify-self'],
+    gap: ['row-gap', 'column-gap'],
+    'flex-flow': ['flex-direction', 'flex-wrap'],
+    flex: ['flex-grow', 'flex-shrink', 'flex-basis'],
+  },
+);
 Object.assign(ALIGN_SHORTHANDS, LONGHANDS_OF);
 
 const CSS_WIDE = /^(inherit|initial|unset|revert|revert-layer)$/i;
@@ -370,6 +373,8 @@ const parseShorthand = (
 
 /** A shorthand said from its longhands, as short as it can be. */
 const composedOf = (name: string, values: string[]): string => {
+  // a reference to a custom property is said only by what it is in
+  if (values.some((x) => /var\(/i.test(x))) return '';
   const wide = values.filter((x) => CSS_WIDE.test(x));
   if (wide.length) {
     return wide.length === values.length &&

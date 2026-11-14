@@ -5121,7 +5121,8 @@ test('a page edits a <style>’s rules as CSS-in-JS does, and what it inserts is
       'true',
       '2',
       'p',
-      '0',
+      // a unitless zero margin as CSSOM says it
+      '0px',
       '4',
       '(min-width: 1px)',
       '.m',
@@ -12282,7 +12283,8 @@ test("an element's style is a CSSStyleDeclaration whose members are its prototyp
     'TypeError',
     'color',
     'color: red; margin-top: 2px; padding: 1px;',
-    3,
+    // the padding's four sides, as CSSOM counts a shorthand's longhands
+    6,
     'margin-top',
     'red',
     'margin-top: 2px; padding: 1px;',
@@ -12297,8 +12299,8 @@ test("an element's style is a CSSStyleDeclaration whose members are its prototyp
 });
 
 test("a computed style and a rule's style are CSSStyleDeclarations, the one read only and the other written back to its sheet", async () => {
-  // what Chrome answers of each, but that it sets a shorthand's longhand
-  // by recomposing the shorthand where this declares the longhand after it
+  // what Chrome answers of each: a shorthand's longhand set after it is
+  // set in it, and the shorthand written back from its longhands
   const doc = await hosted(
     '<style>.r { color: red; margin: 1px 2px }</style><div id="e" style="color: red; margin-top: 1px"></div>' +
       '<p id="out"></p><script>' +
@@ -12341,7 +12343,7 @@ test("a computed style and a rule's style are CSSStyleDeclarations, the one read
     'color: red; margin: 1px 2px;',
     'color',
     '1px 2px',
-    '.r { color: green !important; margin: 1px 2px; margin-top: 5px; }',
+    '.r { color: green !important; margin: 5px 2px 1px; }',
     true,
     'important',
     'rgb(0, 128, 0)',

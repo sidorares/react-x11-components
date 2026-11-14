@@ -56,6 +56,12 @@ import {
   alignShorthand,
   alignSpecified,
 } from './align-specified.js';
+import {
+  BOX_SPECIFIED,
+  boxLonghands,
+  boxShorthand,
+  boxSpecified,
+} from './box-specified.js';
 import { closingParen } from './vars.js';
 import { MARKER_LONGHANDS, SVG_PROPERTIES } from './svg-properties.js';
 import type { UnitContext } from './values.js';
@@ -176,6 +182,8 @@ export function specifiedValue(
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
     return snap(word);
   }
+  // a box's margins, paddings and insets (`box-specified.ts`)
+  if (BOX_SPECIFIED.has(name)) return boxSpecified(name, value, specifiedValue);
   // what scroll-driven animations name and take (Scroll Animations 1)
   const timeline = TIMELINE_GRAMMARS[name];
   if (timeline) {
@@ -952,6 +960,8 @@ export function expandShorthand(
   if (grid) return grid;
   const align = alignLonghands(name, value, specifiedValue);
   if (align) return align;
+  const box = boxLonghands(name, value, specifiedValue);
+  if (box) return box;
   const border = borderLonghands(name, value);
   if (border) return border;
   if (name === 'animation') return animationLonghandsOf(value);
@@ -1016,6 +1026,8 @@ export function composeShorthand(
   if (grid !== null) return grid;
   const align = alignShorthand(name, longhand);
   if (align !== null) return align;
+  const box = boxShorthand(name, longhand);
+  if (box !== null) return box;
   const border = borderComposed(name, longhand);
   if (border !== null) return border;
   if (name === 'marker') {
