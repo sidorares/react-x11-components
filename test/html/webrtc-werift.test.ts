@@ -520,7 +520,7 @@ test('data channels: a close delivers what was queued, a negotiated channel open
   }
 });
 
-test('a close waits for what SCTP has to send again, which its reset would overtake', async () => {
+test('a close loses nothing SCTP has to send again: the far side holds the reset for it', async () => {
   const logs = await run(
     `
     function wait(ms) { return new Promise(function (r) { setTimeout(r, ms || 0); }); }
@@ -566,9 +566,9 @@ nodeTest(
   () => {
     const silent = { subscribe() {} };
     const flushes: (() => void)[] = [];
-    const sentQueue = [{ streamId: 3 }, { streamId: 1 }];
     let closed = 0;
-    // its open message unacknowledged, and a neighbour's chunk in flight
+    // its open message not yet handed to SCTP, and a neighbour's message
+    // queued behind it
     const channel = {
       id: 1,
       readyState: 'connecting',
@@ -579,6 +579,11 @@ nodeTest(
       error: silent,
       close: () => void closed++,
     };
+    const neighbour = { id: 3 };
+    const dataChannelQueue: [unknown, number, Uint8Array][] = [
+      [channel, 50, new Uint8Array([3])],
+      [neighbour, 51, new Uint8Array([1])],
+    ];
     const transports = new WeriftTransports(
       {
         onIceCandidate: silent,
@@ -587,11 +592,8 @@ nodeTest(
         iceConnectionStateChange: silent,
         connectionStateChange: silent,
         sctpTransport: {
-          sctp: {
-            flush: { subscribe: (f: () => void) => flushes.push(f) },
-            outboundQueue: [],
-            sentQueue,
-          },
+          dataChannelQueue,
+          sctp: { flush: { subscribe: (f: () => void) => flushes.push(f) } },
         },
         createDataChannel: () => channel,
       } as unknown as WTransportsPeer,
@@ -604,8 +606,8 @@ nodeTest(
       maxRetransmits: null,
     } as RTCDataChannelInitLike);
     made.close();
-    assert.equal(closed, 0, 'closed with its own chunk unacknowledged');
-    sentQueue.pop();
+    assert.equal(closed, 0, 'closed with its own message unsent');
+    dataChannelQueue.shift();
     for (const flush of flushes) flush();
     assert.equal(closed, 1, 'held up by a neighbour, or by connecting');
   },

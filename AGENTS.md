@@ -1065,21 +1065,21 @@ on Node 22 and later and on Bun, so `webrtc-werift.test.ts` skips on Node
 `src/html/rtc-codecs.ts`, which `getCapabilities` answers from before
 werift is loaded. Where werift differs from a browser the adapter
 corrects what it can, and docs/prd-webrtc.md lists the rest as issues to
-file upstream. **The adapter reaches into werift four times**, each for what
+file upstream. **The adapter reaches into werift twice**, each for what
 werift has no public way to do, and a werift without the field goes on as
 before. An empty message, which werift sends as nothing, is put on its
 `RTCSctpTransport`'s own send queue as RFC 8831's one byte under payload
-protocol 56 or 57 (`WeriftChannel._sendEmpty`). A close waits for what it sent
-to be acknowledged (`WeriftChannel.close`, reading `sentQueue`): a reset
-overtakes a retransmission, and werift's far side drops what arrives after
-one. And a connection whose page names no STUN server asks none
-(`_gatherFromNamed`, clearing each transport's `stunServer`): werift falls back
-to Google's whatever `iceServers` says, which is a request nobody asked for and
-five seconds of `setLocalDescription` on a network that does not answer. A
+protocol 56 or 57 (`WeriftChannel._sendEmpty`). And a
 packet of an SSRC no description named, with no rid, is routed by its MID
 (`routeByMid`, wrapping its router's `routeRtp`): werift drops it, and WPT's
 simulcast harness receives every layer so. Ask werift for each of these
-before reaching in anywhere else. Simulcast itself uses only what werift
+before reaching in anywhere else. Two more went with 0.27.0, which is why the
+peer range starts there: a page that names no STUN server asks none
+(`iceUseDefaultStunServer: false`, where werift asked Google's and held
+`setLocalDescription` for five seconds on a network that did not answer),
+and a close waits only for what werift has not handed to SCTP
+(`WeriftChannel.close`), since werift's far side now holds a reset until the
+retransmissions it overtook arrive (RFC 6525, 5.2.2), where it dropped them. Simulcast itself uses only what werift
 has in the open: werift's sender sends one stream, so a sender's other
 layers go onto its DTLS transport through `sendRtp` with SSRCs of their own
 (`MediaSender._sendVideo`), and the rids an offer writes are its
