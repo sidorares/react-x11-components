@@ -41454,15 +41454,16 @@ export function installDom(
     );
   });
   // a string handed to one is compiled as script, which a policy without
-  // `'unsafe-eval'` refuses: the timer is then never set (HTML 8.6, the
-  // timer initialization steps)
+  // `'unsafe-eval'` refuses: the timer is then never set, and its handle is
+  // 0, with nothing reported but the violation (HTML 8.6, the timer
+  // initialization steps; WPT's `eval-scripts-setTimeout-setInterval-*`)
   const stringRefused = (fn: Any): boolean =>
     typeof fn !== 'function' && !!cspOf && !cspOf.compiles(str(fn));
   define('setTimeout', (fn: Any, ms?: Any, ...args: Any[]) =>
-    stringRefused(fn) ? ++timerSeq : setTimer(fn, ms, args, false),
+    stringRefused(fn) ? 0 : setTimer(fn, ms, args, false),
   );
   define('setInterval', (fn: Any, ms?: Any, ...args: Any[]) =>
-    stringRefused(fn) ? ++timerSeq : setTimer(fn, ms, args, true),
+    stringRefused(fn) ? 0 : setTimer(fn, ms, args, true),
   );
   define('clearTimeout', clearTimer);
   define('clearInterval', clearTimer);
