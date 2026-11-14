@@ -3221,7 +3221,12 @@ with it; a letter typed at the start or the end of a link goes before or after
 it, where a deletion, a key or a script left the caret there, and into it where
 it takes the place of what the link held or follows a letter typed there,
 while `execCommand('insertText')` there stays in the link as the specification
-has it; and a delete never removes the `<body>`. `document.designMode` makes
+has it; a delete that joins two blocks whose white space a style makes other
+moves the second block's first line alone, up to its `<br>` or a line feed it
+keeps, in a `<span>` with that white space, where an element of its own does
+not already keep it, and leaves the rest where it was, while a `<pre>`'s
+white space, its element's, joins as the specification has it; and a delete
+never removes the `<body>`. `document.designMode` makes
 the document's root element the editing host. In a focused
 text field the commands are the field's own edits. `undo` and `redo` put back
 and make again the edits the commands and the keys made, a step each (typing

@@ -6612,6 +6612,25 @@ export class DomHost {
           textAlign: style['text-align'],
           textDecoration: style['text-decoration-line'],
           verticalAlign: style['vertical-align'],
+          // whether a page's own rule or `style` sets a preformatted
+          // element's white space, where the user agent's rule is no style
+          // a join keeps (`joinedWhiteSpace` in `editing.ts`)
+          ownWhiteSpace:
+            (el.name === 'pre' || el.name === 'listing' || el.name === 'xmp') &&
+            this._inDocument(el) &&
+            handle
+              .matchedRules(el)
+              .some(
+                (rule) =>
+                  rule.origin !== 'user-agent' &&
+                  rule.declarations.some((d) =>
+                    /^(white-space|white-space-collapse|text-wrap-mode|text-wrap)$/.test(
+                      d.property,
+                    ),
+                  ),
+              )
+              ? '1'
+              : '',
         });
       }
       // one custom property's, by its name: a theme's hundreds are no part

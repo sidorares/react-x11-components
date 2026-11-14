@@ -42374,8 +42374,12 @@ export function installDom(
         'InvalidNodeTypeError',
       );
     }
+    // a processing instruction's is its data's, as a text's is (DOM 4.2)
     const length =
-      node.nodeType === 3 || node.nodeType === 4 || node.nodeType === 8
+      node.nodeType === 3 ||
+      node.nodeType === 4 ||
+      node.nodeType === 7 ||
+      node.nodeType === 8
         ? node.data.length
         : node.childNodes.length;
     if (offset > length) {
@@ -42594,8 +42598,11 @@ export function installDom(
         );
       }
       if (node.getRootNode() !== document) return;
+      // from its start to its child count, which a text's is 0 (Selection
+      // API 3, `selectAllChildren`)
       const range = document.createRange();
-      range.selectNodeContents(node);
+      range.setStart(node, 0);
+      range.setEnd(node, node.childNodes.length);
       this._set(range, false);
     }
     deleteFromDocument(): void {

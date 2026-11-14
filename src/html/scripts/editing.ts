@@ -5444,6 +5444,153 @@ export function installEditing(deps: EditingDeps): EditingInternals {
 
   // The flags argument is a dictionary that can have blockMerging,
   // stripWrappers, and/or direction as keys.
+  /**
+   * The white space what moves out of `from` has, where it differs from
+   * what it moves into: Chromium and Gecko join two blocks of other white
+   * space by moving the first line of the second alone, in a `<span>` that
+   * keeps its white space (WPT's join-different-white-space-style tests),
+   * where the reference moved all of it, and the line in the white space of
+   * where it went. Null where the two agree, which keeps the reference's
+   * join, as `editing/run` holds it to.
+   */
+  function joinedWhiteSpace(into: Any, from: Any): string | null {
+    var there = computedStyle(into, 'whiteSpace');
+    var here = computedStyle(from, 'whiteSpace');
+    if (!here || !there || here == there) return null;
+    // a `<pre>`'s white space is its element's, which a join leaves where it
+    // was, as `editing/run` and join-pre-and-other-block have it: only what a
+    // style says goes with the line
+    if (inPreformatted(into) || inPreformatted(from)) return null;
+    return here;
+  }
+
+  /** Whether a node is in a `<pre>`, a `<listing>` or an `<xmp>`, or is
+   *  one, inside its editing host, whose white space only the user agent's
+   *  rule sets: one a page's own rule sets keeps it, as WPT's
+   *  join-pre-and-other-block has `pre { white-space: pre }` do. */
+  function inPreformatted(node: Any): boolean {
+    for (var at = node; at; at = at.parentNode) {
+      if (isHtmlElement(at, ['pre', 'listing', 'xmp'])) {
+        return computedStyle(at, 'ownWhiteSpace') != '1';
+      }
+      if (isEditingHost(at)) return false;
+    }
+    return false;
+  }
+
+  /** Whether a white space keeps a line feed as a line break. */
+  function keepsFeeds(whiteSpace: string): boolean {
+    return /^(pre|pre-wrap|pre-line|break-spaces)$/.test(whiteSpace);
+  }
+
+  /**
+   * The first line of what `container` holds from its child `first` on,
+   * taken out of it: up to a block, a `<br>`, or a line feed where `feeds`
+   * says the white space keeps them, the break itself removed, and the
+   * inline elements it was in split around it. What is left of `container`
+   * is taken out with it where nothing is.
+   */
+  function takeFirstLine(container: Any, first: Any, feeds: boolean): Any {
+    var range = document.createRange();
+    range.setStartBefore(first);
+    var br: Any = null;
+    var feed: Any = null;
+    var endNode: Any = container;
+    var endOffset = container.childNodes.length;
+    var at: Any = first;
+    while (at) {
+      if (isBlockNode(at)) {
+        endNode = at.parentNode;
+        endOffset = getNodeIndex(at);
+        break;
+      }
+      if (isHtmlElement(at, 'br')) {
+        br = at;
+        endNode = at.parentNode;
+        endOffset = getNodeIndex(at);
+        break;
+      }
+      if (feeds && at.nodeType == 3 && at.data.indexOf('\n') >= 0) {
+        feed = at;
+        endNode = at;
+        endOffset = at.data.indexOf('\n');
+        break;
+      }
+      if (at.firstChild) {
+        at = at.firstChild;
+        continue;
+      }
+      while (at != container && !at.nextSibling) at = at.parentNode;
+      at = at == container ? null : at.nextSibling;
+    }
+    range.setEnd(endNode, endOffset);
+    // whether each node the line is of, at the container's level, sets a
+    // white space of its own, which it keeps wherever it goes
+    var own = true;
+    var any = false;
+    var context = computedStyle(container, 'whiteSpace');
+    for (var top: Any = container.firstChild; top; top = top.nextSibling) {
+      if (!range.intersectsNode(top)) continue;
+      if (top == endNode && endOffset == 0) continue;
+      any = true;
+      if (top.nodeType != 1 || computedStyle(top, 'whiteSpace') == context) {
+        own = false;
+        break;
+      }
+    }
+    var line = range.extractContents();
+    lineSetsOwn = own && any;
+    // what the break was in, which may hold nothing now
+    var left: Any = null;
+    if (br) {
+      left = br.parentNode;
+      left.removeChild(br);
+    }
+    if (feed && feed.data.charAt(0) == '\n') feed.deleteData(0, 1);
+    if (feed && !feed.data) left = feed;
+    while (
+      left &&
+      left != container &&
+      !left.hasChildNodes?.() &&
+      isInlineNode(left)
+    ) {
+      var up = left.parentNode;
+      up.removeChild(left);
+      left = up;
+    }
+    return line;
+  }
+
+  /** Whether the last line `takeFirstLine` took was of elements each with a
+   *  white space of its own, which need no `<span>` to keep it. */
+  var lineSetsOwn = false;
+
+  /** A line of `whiteSpace`, in a `<span>` that keeps it, where its nodes
+   *  do not each keep their own. */
+  function lineKeeping(line: Any, whiteSpace: string): Any {
+    if (lineSetsOwn) return line;
+    var span = document.createElement('span');
+    span.setAttribute('style', 'white-space:' + whiteSpace);
+    span.appendChild(line);
+    return span;
+  }
+
+  /** `container` taken out where it holds nothing now, and each container
+   *  above it that then holds nothing, up to `stop`. */
+  function removeIfEmpty(container: Any, stop: Any): void {
+    while (
+      container &&
+      container != stop &&
+      !container.hasChildNodes() &&
+      isEditable(container) &&
+      !isEditingHost(container)
+    ) {
+      var up = container.parentNode;
+      up.removeChild(container);
+      container = up;
+    }
+  }
+
   function deleteSelection(flags?: Any): Any {
     if (flags === undefined) {
       flags = {};
@@ -5830,6 +5977,23 @@ export function installEditing(deps: EditingDeps): EditingInternals {
         return;
       }
 
+      // a line of other white space moves alone, keeping it
+      var kept = joinedWhiteSpace(startBlock, endBlock);
+      if (kept) {
+        var where = endBlock;
+        while (where.parentNode != startBlock) where = where.parentNode;
+        var line = takeFirstLine(
+          endBlock,
+          endBlock.firstChild,
+          keepsFeeds(kept),
+        );
+        startBlock.insertBefore(lineKeeping(line, kept), where);
+        removeIfEmpty(endBlock, startBlock);
+        removeExtraneousLineBreaksAtTheEndOf(startBlock);
+        restoreStatesAndValues(overrides);
+        return;
+      }
+
       // "Let children be a list of nodes, initially empty."
       var children: Any[] = [];
 
@@ -5890,6 +6054,20 @@ export function installEditing(deps: EditingDeps): EditingInternals {
         startBlock.removeChild(startBlock.lastChild);
       }
 
+      // a line of other white space moves alone, keeping it
+      var after = referenceNode.nextSibling;
+      var kept =
+        after && !isBlockNode(after)
+          ? joinedWhiteSpace(startBlock, endBlock)
+          : null;
+      if (kept) {
+        var line = takeFirstLine(endBlock, after, keepsFeeds(kept));
+        startBlock.appendChild(lineKeeping(line, kept));
+        removeExtraneousLineBreaksAtTheEndOf(startBlock);
+        restoreStatesAndValues(overrides);
+        return;
+      }
+
       // "Let nodes to move be a list of nodes, initially empty."
       var nodesToMove: Any[] = [];
 
@@ -5938,6 +6116,26 @@ export function installEditing(deps: EditingDeps): EditingInternals {
         isHtmlElement(startBlock.lastChild, 'br')
       ) {
         startBlock.removeChild(startBlock.lastChild);
+      }
+
+      // a line of other white space moves alone, keeping it
+      var kept = endBlock.firstChild
+        ? joinedWhiteSpace(startBlock, endBlock)
+        : null;
+      if (kept && isInlineNode(endBlock.firstChild)) {
+        if (isHtmlElement(startBlock.lastChild, 'br')) {
+          startBlock.removeChild(startBlock.lastChild);
+        }
+        var line = takeFirstLine(
+          endBlock,
+          endBlock.firstChild,
+          keepsFeeds(kept),
+        );
+        startBlock.appendChild(lineKeeping(line, kept));
+        removeIfEmpty(endBlock, null);
+        removeExtraneousLineBreaksAtTheEndOf(startBlock);
+        restoreStatesAndValues(overrides);
+        return;
       }
 
       // "Record the values of end block's children, and let values be the
