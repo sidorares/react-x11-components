@@ -43,6 +43,7 @@ import type { installRtcTransports } from './rtc-transports.js';
 import type { installWebGL } from './webgl.js';
 import type { installGeometry } from './geometry.js';
 import type { installSmil } from './smil.js';
+import type { installPathData } from './path-data.js';
 import type { installSvgDom } from './svg-dom.js';
 import type { installWebCrypto } from './webcrypto.js';
 import type { installDataTransfer } from './datatransfer.js';
@@ -107,6 +108,7 @@ export function installDom(
   textTracksApi: typeof installTextTracks,
   cspApi: typeof installCsp,
   smilApi: typeof installSmil,
+  pathDataApi: typeof installPathData,
   namedAccess: boolean,
   inWorker: boolean,
 ): void {
@@ -40800,6 +40802,23 @@ export function installDom(
     );
   }
   define('TimeEvent', SMIL.interfaces.TimeEvent);
+  // a path's segments (`path-data.ts`), read from and written to its `d`
+  {
+    const removeAttrOwn = Element.prototype.removeAttribute;
+    const made = pathDataApi({
+      getD: (el: Any) => {
+        const v = call('attr', el._id, 'd');
+        return typeof v === 'string' ? v : null;
+      },
+      setD: (el: Any, value: string | null) => {
+        if (value === null) reflectApply(removeAttrOwn, el, ['d']);
+        else reflectApply(setAttrOwn, el, ['d', value]);
+      },
+    });
+    for (const [key, d] of Object.entries(made.members)) {
+      Object.defineProperty(SVGPathElement.prototype, key, d);
+    }
+  }
   // an SVG link's `HyperlinkElementUtils` (SVG 2, 16.3.1): the parts of the
   // address its `href` resolves to, each but the origin settable, where its
   // `href` is the animated string an `href` is in a drawing
