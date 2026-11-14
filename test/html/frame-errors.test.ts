@@ -35,7 +35,8 @@ test('a frame whose response is a network error loads an error page the page can
       partial: false,
       baseUrl: 'https://example.test/page.html',
       scripts: {
-        log: (level: string, text: string) => void logs.push(text),
+        log: (level: string, text: string) =>
+          void (level === 'log' && logs.push(text)),
         fetch: async (request: FetchRequest): Promise<FetchResponse> => {
           // what the runtime throws for a response no parser reads
           if (request.url.endsWith('broken.html')) {
