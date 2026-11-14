@@ -4208,7 +4208,9 @@ test("a page's stacks hold its own frames, and none of the facade's or the host'
       "try { Error.prepareStackTrace = function () { return 'mine' } } catch (e) {}" +
       "try { window.Error = { prepareStackTrace: function () { return 'mine' } } } catch (e) {}" +
       "note('replaced', new TypeError().stack);" +
-      "setTimeout(function () { document.getElementById('out').textContent = JSON.stringify(stacks) }, 20);" +
+      // once the external script has run, which `load` waits for and a
+      // timer of the page's did not: the host answers for it
+      "addEventListener('load', function () { setTimeout(function () { document.getElementById('out').textContent = JSON.stringify(stacks) }, 0) });" +
       '</script>' +
       '<script src="ext.js"></script>',
     {
@@ -15995,12 +15997,11 @@ metric(
       'held 0 0 html',
       doc.logs.join('\n'),
     );
-    await settle(100);
-    assert.equal(
-      await colourAt(doc, abs.x + 10, abs.y + 10),
-      '#0000ff',
-      'and the document as it is, once the transition is over',
-    );
+    // its 50ms animation run out, at the frames that run it: read after a
+    // tenth of a second, a slow runner drew it half way
+    await waitForPixel(doc.result.ctx, abs.x + 10, abs.y + 10, '#0000ff', {
+      message: 'and the document as it is, once the transition is over',
+    });
   },
 );
 
@@ -17150,21 +17151,33 @@ test('a CSS animation tells the page as it starts, goes round, ends and is cance
       '    log.push(e.target.id + ":" + e.type + ":" + e.animationName + ":" +' +
       '      (e.type === "animationcancel" ? e.elapsedTime >= 0 : e.elapsedTime) + ":" +' +
       '      (e instanceof AnimationEvent) + ":" + (e.animation instanceof CSSAnimation)); }); }); });' +
-      'function frame(fn) { requestAnimationFrame(function () { setTimeout(fn, 20); }); }' +
-      'frame(function () {' +
-      '  a.style.animation = "k 1s linear 2"; b.style.animation = "k 1s linear infinite";' +
+      // each step goes at the first frame that has told all it waits for:
+      // an animation's events are made at the host's frames, which a step
+      // a frame and 20ms on could come before, so that a seek and a finish
+      // in one host frame told no iteration
+      'function once(words, then) { requestAnimationFrame(function wait() { var l = log.join();' +
+      '  if (words.every(function (w) { return l.indexOf(w) >= 0; })) then(); else requestAnimationFrame(wait); }); }' +
+      'requestAnimationFrame(function () {' +
+      // b's goes round once in a hundred seconds, so it is cancelled before
+      // it goes round however slow the runner
+      '  a.style.animation = "k 1s linear 2"; b.style.animation = "k 100s linear infinite";' +
       '  t = a.getAnimations()[0]; t.currentTime = 500;' +
-      '  frame(function () {' +
+      '  once(["a:animationstart", "b:animationstart"], function () {' +
       // a seek into its second iteration, and its end
       '    t.currentTime = 1500;' +
-      '    frame(function () {' +
+      '    once(["a:animationiteration"], function () {' +
       '      t.finish(); b.style.animation = "none";' +
-      '      frame(function () { frame(function () {' +
+      '      once(["a:animationend", "b:animationcancel"], function () {' +
       '        document.getElementById("out").textContent = JSON.stringify(log.sort());' +
-      '      }); }); }); }); });' +
+      '      }); }); }); });' +
       '</script>',
   );
-  for (let i = 0; i < 60 && !doc.text('out'); i += 1) await settle(20);
+  if (!(await settled(doc, 'out', (t) => t !== ''))) {
+    // what it heard, where the events a step waits for never came
+    doc.run(
+      'document.getElementById("out").textContent = JSON.stringify(log.sort())',
+    );
+  }
   assert.deepEqual(
     JSON.parse(doc.text('out') || 'null'),
     [
@@ -18134,22 +18147,33 @@ test("a CSS animation on a scroll timeline ends past its range, starts again scr
       '["animationstart", "animationend", "animationcancel"].forEach(function (type) {' +
       '  s.addEventListener(type, function (e) {' +
       '    log.push(e.target.id + ":" + e.type + ":" + e.elapsedTime + ":" + e.animationName); }); });' +
-      'function frame(fn) { requestAnimationFrame(function () { setTimeout(fn, 30); }); }' +
-      'frame(function () {' +
+      // each step goes at the first frame that has told `n` events: a
+      // scroll's are made at the host's next frame and told at the page's
+      // after it, where a step a frame and 30ms on came before them on a
+      // slow runner
+      'function heard(n, fn) { requestAnimationFrame(function wait() {' +
+      '  if (log.filter(function (l) { return l.indexOf(":") >= 0; }).length >= n) fn();' +
+      '  else requestAnimationFrame(wait); }); }' +
+      'heard(1, function () {' +
       '  log.push("past");' +
       '  s.scrollTop = 320;' +
-      '  frame(function () {' +
+      '  heard(3, function () {' +
       '    log.push("back");' +
       '    s.scrollTop = 160;' +
-      '    frame(function () {' +
+      '    heard(4, function () {' +
       '      log.push("end");' +
       '      s.scrollTop = 400;' +
-      '      frame(function () {' +
+      '      heard(5, function () {' +
       '        document.getElementById("out").textContent = JSON.stringify(log);' +
       '      }); }); }); });' +
       '</script>',
   );
-  const text = await settled(doc, 'out', (t) => t !== '', 6000);
+  let text = await settled(doc, 'out', (t) => t !== '', 6000);
+  if (!text) {
+    // what it heard, where the events a step waits for never came
+    doc.run('document.getElementById("out").textContent = JSON.stringify(log)');
+    text = doc.text('out');
+  }
   assert.deepEqual(
     JSON.parse(text || 'null'),
     [
