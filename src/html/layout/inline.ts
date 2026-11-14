@@ -1298,10 +1298,13 @@ function linesOf(
       // not wrap, whose `white-space` decides the break between two
       // things in it (CSS Text 3, 5.1): a `nowrap` row of inline-blocks
       // overflows, as a carousel's does, and does not wrap
+      // and none after a character that keeps it beside what follows
+      // (`ATOMIC_GLUE`)
       if (
         open.x !== open.indent &&
         open.x + pendingWidth + outer > roomWidth &&
-        wraps((box.parent ?? block).style)
+        wraps((box.parent ?? block).style) &&
+        !open.glued
       ) {
         close();
         continue;
@@ -1344,6 +1347,7 @@ function linesOf(
       });
       open.x += outer;
       open.hang = 0;
+      open.glued = false;
       open.left = room.left;
       index += 1;
       continue;
@@ -1628,9 +1632,13 @@ function linesOf(
     // this one, rather than being broken inside itself to fit it: the text
     // after an inline-block, or after a float it was cut at, was its first
     // letter at the line's end and the rest on the next.
+    // An atomic's break after it is none before a character that keeps the
+    // two together (`ATOMIC_GLUE`)
     const startsLine =
       wraps(style) &&
-      (open.hang > 0 || open.order[open.order.length - 1]?.kind === 'atomic');
+      (open.hang > 0 ||
+        (open.order[open.order.length - 1]?.kind === 'atomic' &&
+          !ATOMIC_GLUE.test(charAt(segment.runs, first.start))));
     if (
       !isEmpty(open) &&
       (pendingWidth > 0
@@ -1686,6 +1694,9 @@ function linesOf(
     open.x += first.width;
     open.left = band.left;
     open.hang = 0;
+    open.glued =
+      first.end > first.start &&
+      ATOMIC_GLUE.test(charAt(segment.runs, first.end - 1));
     // the spaces `pre-wrap` keeps that it ends on, which the engine hung
     const hung = keepsSpaces
       ? hangPreserved(placed, segment.runs, runStarts(segment.runs), fonts, rtl)
@@ -2557,7 +2568,23 @@ interface OpenLine {
   hang: number;
   /** The first line's `text-indent`, which `x` starts at. */
   indent: number;
+  /** Whether the line's last text ends in a character no line breaks
+   *  after where an atomic inline follows it (`ATOMIC_GLUE`). */
+  glued: boolean;
 }
+
+/**
+ * What no line breaks beside an atomic inline at (CSS Text 3, 5.1): for
+ * the Web's sake there is a soft wrap opportunity before and after every
+ * atomic inline, even beside a character that would suppress one, but for
+ * those of UAX #14's GL, WJ and ZWJ classes, other than U+00A0 NO-BREAK
+ * SPACE — a narrow no-break space, a figure space, a non-breaking hyphen,
+ * the Tibetan GL marks, a word joiner, a zero-width no-break space, a zero
+ * width joiner, a combining grapheme joiner and the Mongolian vowel
+ * separator.
+ */
+const ATOMIC_GLUE =
+  /[\u034F\u035C-\u0362\u0F08\u0F0C\u0F12\u0FD9\u0FDA\u180E\u2007\u2011\u202F\u2060\uFEFF\u200D]/;
 
 type Placed =
   | {
@@ -2596,6 +2623,7 @@ function openLine(indent: number): OpenLine {
     order: [],
     hang: 0,
     indent,
+    glued: false,
   };
 }
 

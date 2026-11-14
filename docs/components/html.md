@@ -5958,7 +5958,14 @@ the lines above it keep the paragraph's width. Where the line cannot break
 at the float, as in `nowrap` text, what follows it up to where the line can
 has to fit beside it too. A word with too little room
 left on a line after an inline-block or a float goes to the next line
-whole. A line's inline-blocks and images are painted in their turn among
+whole. A line may break before and after every inline-block and image,
+beside characters that keep letters together as well, but for those of
+UAX #14's GL, WJ and ZWJ classes other than U+00A0 NO-BREAK SPACE — a
+narrow no-break space, a figure space, a non-breaking hyphen, a word
+joiner, a zero-width no-break space, a zero width joiner — which keep it
+beside the text they end or start (CSS Text 3, 5.1): the two then run past
+the line's end together where they do not fit, rather than the line
+breaking earlier. A line's inline-blocks and images are painted in their turn among
 its text, and one line before the next (CSS 2.1 Appendix E, 7.2.1), as
 browsers paint them: an inline-block a negative margin draws the text
 after it over is under that text, with its decorations and its shadow,
