@@ -895,7 +895,7 @@ test('a frame sent to a blob: URL shows what the blob holds, whatever it is moun
       '.then(function () {' +
       '  var f = document.createElement("iframe"); document.body.appendChild(f);' +
       '  return new Promise(function (go) {' +
-      '    f.onload = function () { r.push(f.contentDocument.body.childNodes.length); go(); };' +
+      '    f.onload = function () { r.push(f.contentDocument === null); go(); };' +
       '    f.src = gone;' +
       '  });' +
       '})' +
@@ -912,8 +912,9 @@ test('a frame sent to a blob: URL shows what the blob holds, whatever it is moun
     'true',
     '#text',
     'ran',
-    // a blob nobody holds is a load that failed, heard as any failed load
-    '0',
+    // a blob nobody holds is a load that failed, heard as any failed load,
+    // and an error page of no origin, which the page cannot reach
+    'true',
   ]);
   assert.deepEqual(
     doc.fetched.filter((request) => request.url.startsWith('blob:')),

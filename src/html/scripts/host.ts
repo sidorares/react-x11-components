@@ -10116,6 +10116,18 @@ export class DomHost {
           'error',
           `The frame's ${src} could not be loaded: ${why}`,
         );
+        // an address that is no URL is `about:blank`, which the frame has
+        // already (HTML 4.8.5, "process the iframe attributes")
+        let parses = true;
+        try {
+          new URL(src);
+        } catch {
+          parses = false;
+        }
+        if (!parses) {
+          loaded();
+          return;
+        }
         this._frameErrorPage(frame, 'could not be reached.', src, loaded);
       });
   }
