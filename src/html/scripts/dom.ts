@@ -33117,8 +33117,14 @@ export function installDom(
     _result: Any = undefined;
     _error: Any = null;
     _done = false;
-    source: Any = null;
-    transaction: Any = null;
+    _source: Any = null;
+    _transaction: Any = null;
+    get source(): Any {
+      return this._source;
+    }
+    get transaction(): Any {
+      return this._transaction;
+    }
     get readyState(): string {
       return this._done ? 'done' : 'pending';
     }
@@ -33645,8 +33651,8 @@ export function installDom(
         );
       }
       const request = into ?? new IDBRequest();
-      request.source = source;
-      request.transaction = this;
+      request._source = source;
+      request._transaction = this;
       request._done = false;
       this._queue.push({ request, op });
       this._settling = false;
@@ -34428,12 +34434,12 @@ export function installDom(
           const tx = new IDBTransaction(db, [], 'versionchange');
           data.version = target;
           db._upgrade = tx;
-          request.transaction = tx;
+          request._transaction = tx;
           request._done = true;
           request._result = db;
           tx._onDone = (ok: boolean) => {
             db._upgrade = null;
-            request.transaction = null;
+            request._transaction = null;
             if (ok) {
               fireAt([request], new Event('success'));
               return;
@@ -43852,6 +43858,184 @@ export function installDom(
     CSSNamespaceRule,
     CSSStyleProperties,
   };
+  // IndexedDB's interfaces in Web IDL's shape (IndexedDB 3, 4): each one's
+  // members enumerable, an attribute read off its prototype or any other
+  // object a TypeError, an operation called with fewer arguments than it
+  // requires a TypeError and its `length` that count, and an interface with
+  // no constructor one a page cannot call or construct. The classes stay as
+  // they are for this realm's own `new`, and the page is handed interface
+  // objects over the same prototypes, so `instanceof` holds.
+  {
+    const IDB_OPERATIONS: Record<string, [string, number][]> = {
+      IDBFactory: [
+        ['open', 1],
+        ['deleteDatabase', 1],
+        ['databases', 0],
+        ['cmp', 2],
+      ],
+      IDBDatabase: [
+        ['transaction', 1],
+        ['close', 0],
+        ['createObjectStore', 1],
+        ['deleteObjectStore', 1],
+      ],
+      IDBTransaction: [
+        ['objectStore', 1],
+        ['commit', 0],
+        ['abort', 0],
+      ],
+      IDBObjectStore: [
+        ['put', 1],
+        ['add', 1],
+        ['delete', 1],
+        ['clear', 0],
+        ['get', 1],
+        ['getKey', 1],
+        ['getAll', 0],
+        ['getAllKeys', 0],
+        ['getAllRecords', 0],
+        ['count', 0],
+        ['openCursor', 0],
+        ['openKeyCursor', 0],
+        ['index', 1],
+        ['createIndex', 2],
+        ['deleteIndex', 1],
+      ],
+      IDBIndex: [
+        ['get', 1],
+        ['getKey', 1],
+        ['getAll', 0],
+        ['getAllKeys', 0],
+        ['getAllRecords', 0],
+        ['count', 0],
+        ['openCursor', 0],
+        ['openKeyCursor', 0],
+      ],
+      IDBCursor: [
+        ['advance', 1],
+        ['continue', 0],
+        ['continuePrimaryKey', 2],
+        ['update', 1],
+        ['delete', 0],
+      ],
+      IDBKeyRange: [['includes', 1]],
+      IDBRequest: [],
+      IDBOpenDBRequest: [],
+      IDBCursorWithValue: [],
+      IDBRecord: [],
+    };
+    const IDB_STATICS: Record<string, [string, number][]> = {
+      IDBKeyRange: [
+        ['only', 1],
+        ['lowerBound', 1],
+        ['upperBound', 1],
+        ['bound', 2],
+      ],
+    };
+    const isPrototypeOf = Object.prototype.isPrototypeOf;
+    const illegal = (): never => {
+      throw new TypeError('Illegal invocation');
+    };
+    const exposed = new Map<Any, Any>();
+    const parentOf = (Kind: Any): Any => {
+      const up = Object.getPrototypeOf(Kind);
+      return exposed.get(up) ?? up;
+    };
+    for (const [name, ops] of Object.entries(IDB_OPERATIONS)) {
+      const Kind = classes[name as keyof typeof classes] as Any;
+      const proto = Kind.prototype;
+      const required = new Map(ops);
+      for (const key of Object.getOwnPropertyNames(proto)) {
+        if (key === 'constructor' || key.startsWith('_')) continue;
+        const d = Object.getOwnPropertyDescriptor(proto, key)!;
+        if (d.get || d.set) {
+          const { get, set } = d;
+          Object.defineProperty(proto, key, {
+            get: get
+              ? {
+                  [key](this: Any) {
+                    if (!reflectApply(isPrototypeOf, proto, [this])) illegal();
+                    return reflectApply(get, this, []);
+                  },
+                }[key]
+              : undefined,
+            set: set
+              ? {
+                  [key](this: Any, v: Any) {
+                    if (!reflectApply(isPrototypeOf, proto, [this])) illegal();
+                    reflectApply(set, this, [v]);
+                  },
+                }[key]
+              : undefined,
+            enumerable: true,
+            configurable: true,
+          });
+        } else if (typeof d.value === 'function' && required.has(key)) {
+          const fn = d.value;
+          const n = required.get(key)!;
+          const op = {
+            [key](this: Any, ...args: Any[]) {
+              if (!reflectApply(isPrototypeOf, proto, [this])) illegal();
+              if (args.length < n) {
+                throw new TypeError(
+                  `Failed to execute '${key}' on '${name}': ${n} argument${n === 1 ? '' : 's'} required, but only ${args.length} present.`,
+                );
+              }
+              return reflectApply(fn, this, args);
+            },
+          }[key];
+          Object.defineProperty(op, 'length', { value: n });
+          Object.defineProperty(proto, key, {
+            ...d,
+            value: op,
+            enumerable: true,
+          });
+        } else {
+          Object.defineProperty(proto, key, { ...d, enumerable: true });
+        }
+      }
+      // the interface object a page has: no constructor, so neither called
+      // nor constructed (Web IDL 3.7.1), its statics its own
+      const Interface = {
+        [name]: function () {
+          throw new TypeError('Illegal constructor');
+        },
+      }[name] as Any;
+      Object.defineProperty(Interface, 'prototype', {
+        value: proto,
+        writable: false,
+      });
+      Object.defineProperty(proto, 'constructor', {
+        value: Interface,
+        writable: true,
+        configurable: true,
+        enumerable: false,
+      });
+      Object.setPrototypeOf(Interface, parentOf(Kind));
+      for (const [key, n] of IDB_STATICS[name] ?? []) {
+        const fn = Kind[key];
+        const op = {
+          [key](...args: Any[]) {
+            if (args.length < n) {
+              throw new TypeError(
+                `Failed to execute '${key}' on '${name}': ${n} argument${n === 1 ? '' : 's'} required, but only ${args.length} present.`,
+              );
+            }
+            return reflectApply(fn, Kind, args);
+          },
+        }[key];
+        Object.defineProperty(op, 'length', { value: n });
+        Object.defineProperty(Interface, key, {
+          value: op,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+      exposed.set(Kind, Interface);
+      (classes as Any)[name] = Interface;
+    }
+  }
   // and their interfaces with it, which a page tells a service worker by
   if (serviceWorkersOn) Object.assign(classes, SW.interfaces);
   for (const [name, value] of Object.entries(classes)) {
