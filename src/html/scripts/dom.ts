@@ -293,6 +293,7 @@ export function installDom(
    *  sets one on each element, and no list reads that attribute. */
   const KEEPS_LISTS = new Set([
     'info',
+    'longhands',
     'opaqueSrcdoc',
     'editingStyle',
     'colorText',
@@ -3497,6 +3498,7 @@ export function installDom(
       this._frames = keyframesOf(keyframes);
       this._framesJson = null;
       this._animation?._changed();
+      removeReplacedSoon();
     }
     /** The CSS properties its frames set, by their CSS names. */
     _properties(): string[] {
@@ -3506,6 +3508,20 @@ export function installDom(
           const prop = keyframeProperty(name);
           if (prop) out.add(prop);
         }
+      }
+      return [...out];
+    }
+    /** What its frames set as the style's fields, a shorthand's its
+     *  longhands', which is what replacing it is about (5.5); a custom
+     *  property is its name. */
+    _fields(): string[] {
+      const out = new Set<string>();
+      for (const prop of this._properties()) {
+        const fields = prop.startsWith('--')
+          ? ''
+          : str(call('longhands', prop));
+        if (fields) for (const f of fields.split(',')) out.add(f);
+        else out.add(prop);
       }
       return [...out];
     }
@@ -4407,6 +4423,7 @@ export function installDom(
     // — asked at every frame, since a document says it owes them from
     // inside the pass that made them, and the frame that comes first takes
     // them (`__cssOwed` only brings a frame where none is coming)
+    removeReplaced();
     cssOwed = false;
     try {
       dispatchCssEvents(call('cssEvents'));
@@ -4495,6 +4512,52 @@ export function installDom(
    *  `getAnimations` lists, those that are relevant (Web Animations 1,
    *  5.4.4). */
   const liveAnimations = new Set<Any>();
+  /**
+   * Web Animations 1, 5.5, "remove replaced animations": each finished,
+   * filling animation of an element whose every property a later one of
+   * the element's in composite order sets as well is removed, and told so.
+   * Run where the procedure would be, in a microtask after what made one
+   * replaceable (`removeReplacedSoon`) and at each frame.
+   */
+  const removeReplaced = (): void => {
+    const groups = new Map<Any, Map<string | null, Any[]>>();
+    for (const a of liveAnimations) {
+      if (!a._replaceable?.()) continue;
+      const target = a._effect.target;
+      let byPseudo = groups.get(target);
+      if (!byPseudo) groups.set(target, (byPseudo = new Map()));
+      const pseudo = a._effect.pseudoElement ?? null;
+      let list = byPseudo.get(pseudo);
+      if (!list) byPseudo.set(pseudo, (list = []));
+      list.push(a);
+    }
+    for (const byPseudo of groups.values()) {
+      for (const list of byPseudo.values()) {
+        if (list.length < 2) continue;
+        list.sort((x, y) => y._hostId - x._hostId);
+        const covered = new Set<string>();
+        list.forEach((a, i) => {
+          const props: string[] = a._effect._fields();
+          if (i > 0 && props.every((p) => covered.has(p))) {
+            a.replaceState = 'removed';
+            liveAnimations.delete(a);
+            a._report();
+            a._tell('remove', a._out(a._cur()));
+          }
+          for (const p of props) covered.add(p);
+        });
+      }
+    }
+  };
+  let replacedOwed = false;
+  const removeReplacedSoon = (): void => {
+    if (replacedOwed) return;
+    replacedOwed = true;
+    queueMicrotask(() => {
+      replacedOwed = false;
+      removeReplaced();
+    });
+  };
 
   /** A promise with its settling kept beside it. */
   const settleable = (): Any => {
@@ -4694,6 +4757,7 @@ export function installDom(
       if (effect) effect._animation = this;
       this._updateFinished(false, false);
       this._changed();
+      removeReplacedSoon();
     }
     get timeline(): Any {
       return this._timeline;
@@ -5269,10 +5333,12 @@ export function installDom(
     _notifyFinished(): void {
       if (this.playState !== 'finished' || this._finishedDone) return;
       this._finishedDone = true;
+      // what it replaces goes before a page that awaits it hears it has
+      // finished, and not while the call that finished it runs
+      removeReplacedSoon();
       const settle = this._finishedSettle;
       settle?.resolve(this);
       this._tell('finish', this._out(this._cur()));
-      this._replaceOlder();
     }
 
     // -- what it tells the host, and when it looks again
@@ -5397,43 +5463,6 @@ export function installDom(
       this._toldTo = target;
       this._told = told;
       call('animation', target._id, this._hostId, described, play);
-    }
-    /**
-     * The finished animations of its target that fill and that this one
-     * and the others finished after them cover every property of, removed
-     * (Web Animations 1, 5.5, "removing replaced animations"): a page that
-     * fades a panel in and out with `fill: forwards`, a new animation each
-     * time, would otherwise keep every one of them on the element, each
-     * sampled at every restyle.
-     */
-    _replaceOlder(): void {
-      const target = this._effect?.target;
-      if (!target || !this._replaceable()) return;
-      const pseudo = this._effect.pseudoElement;
-      const later: Any[] = [];
-      const mine = [...liveAnimations]
-        .filter(
-          (a) =>
-            a._effect?.target === target &&
-            a._effect.pseudoElement === pseudo &&
-            a._replaceable(),
-        )
-        .sort((a, b) => b._hostId - a._hostId);
-      for (const a of mine) {
-        const covered = new Set<string>();
-        for (const b of later) {
-          for (const p of b._effect._properties()) covered.add(p);
-        }
-        const props = a._effect._properties();
-        later.push(a);
-        if (a === mine[0] || !props.every((p: string) => covered.has(p))) {
-          continue;
-        }
-        a.replaceState = 'removed';
-        liveAnimations.delete(a);
-        a._report();
-        a._tell('remove', a._out(a._cur()));
-      }
     }
     /** Whether it may be replaced by later ones: finished, filling, not
      *  persisted, and of an element (Web Animations 1, 5.5). */

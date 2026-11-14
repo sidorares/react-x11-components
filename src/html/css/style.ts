@@ -10285,6 +10285,13 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'table-layout': ['tableLayout'],
 };
 
+/** The fields of a computed style a property sets, by its name: a
+ *  shorthand's are its longhands', which is how two properties are told to
+ *  overlap (Web Animations 1, 5.5). Empty for a name with none. */
+export function fieldsOfProperty(name: string): readonly string[] {
+  return INHERIT_TARGETS[name.toLowerCase()] ?? [];
+}
+
 /**
  * A decoration's thickness or an underline's offset: a length, a
  * percentage of the font size, or null for `auto` (and `alsoAuto`, which is

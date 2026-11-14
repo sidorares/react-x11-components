@@ -152,3 +152,36 @@ test('an element an effect no longer targets reads its own style at once', async
   );
   assert.deepEqual(out, ['50px', ['10px', '50px'], '20px']);
 });
+
+test('a filling animation another replaces is removed after the call that finished it, a shorthand counted as its longhands', async () => {
+  const page = await scriptedPage(
+    `<div id="e"></div><script>(async function () {
+      var e = document.getElementById('e');
+      var frame = function () { return new Promise(function (go) { requestAnimationFrame(go); }); };
+      var a = e.animate({ opacity: 1 }, { duration: 1, fill: 'forwards' });
+      var b = e.animate({ opacity: 1 }, { duration: 100000, fill: 'forwards' });
+      await a.finished;
+      var states = [a.replaceState];
+      b.finish();
+      states.push(a.replaceState);
+      await frame();
+      states.push(a.replaceState, b.replaceState);
+      var c = e.animate({ marginLeft: '10px' }, { duration: 1, fill: 'forwards' });
+      var d = e.animate({ margin: '20px' }, { duration: 30, fill: 'forwards' });
+      await d.finished;
+      await frame();
+      states.push(c.replaceState, d.replaceState);
+      console.log('out ' + JSON.stringify(states));
+    })();</script>`,
+  );
+  const out = JSON.parse(await page.until('out'));
+  page.result.unmount();
+  assert.deepEqual(out, [
+    'active',
+    'active',
+    'removed',
+    'active',
+    'removed',
+    'active',
+  ]);
+});
