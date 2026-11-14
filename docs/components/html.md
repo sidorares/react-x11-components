@@ -141,9 +141,11 @@ onResource={async (request) => {
 }}
 ```
 
-Image bytes may be PNG, JPEG, WebP, GIF or SVG, and under Bun whatever
+Image bytes may be PNG, JPEG, WebP, GIF, BMP or SVG, and under Bun whatever
 else `Bun.Image` reads; nothing names the type, so each is told apart by
-its bytes. Everything but GIF and SVG is decoded by the
+its bytes. A BMP is read here, 1 to 32 bits a pixel with a palette or bit
+fields and its rows either way up, and RLE is none (`src/html/bmp.ts`).
+Everything but GIF, BMP and SVG is decoded by the
 decoder core's `<image>` uses (react-x11's `decodeImageBytes`), so an
 image shows in a document exactly where it would show in an `<image>`: a
 WebP lands a moment after the first frame under Node, where its decoder is

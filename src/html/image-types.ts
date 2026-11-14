@@ -18,10 +18,11 @@ const DECODED = new Set([
   'image/jpg',
   'image/pjpeg',
   'image/webp',
+  // a BMP is read here (`bmp.ts`)
+  'image/bmp',
+  'image/x-bmp',
+  'image/x-ms-bmp',
 ]);
-
-/** What `Bun.Image` reads besides, on every platform. */
-const DECODED_BY_BUN = new Set(['image/bmp', 'image/x-bmp', 'image/x-ms-bmp']);
 
 /** What it reads through the system's codecs: on macOS, ImageIO, which
  *  has all three; on Windows, WIC, whose HEIF and AV1 decoders are Store
@@ -59,7 +60,6 @@ export function decodesImageType(type: string): boolean {
     process?: { platform?: string };
   };
   if (typeof g.Bun?.Image !== 'function') return false;
-  if (DECODED_BY_BUN.has(essence)) return true;
   const platform = g.process?.platform;
   if (platform === 'darwin') return DECODED_BY_IMAGEIO.has(essence);
   return platform === 'win32' && essence === 'image/tiff';
