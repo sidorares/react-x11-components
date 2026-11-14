@@ -229,6 +229,42 @@ test("an absolute box in a vertical writing mode is no taller than what its inse
   );
 });
 
+test('an absolute box that was inline-level is placed on its line in a vertical flow, where the pen stood, and a block-level one under it', async () => {
+  // CSS 2.1 10.3.7 and 10.6.4 in the frame's axes (CSS Writing Modes 4,
+  // 7.1; WPT css-writing-modes/abs-pos-non-replaced-vlr-003 and its kin):
+  // a box's static position is where the flow would have put it, and an
+  // inline one would have been after what the line held
+  for (const [mode, line] of [
+    ['vertical-lr', 80],
+    ['vertical-rl', 220],
+  ] as const) {
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        `<div style="position:relative;writing-mode:${mode};width:320px;` +
+        'height:320px;font:20px/20px sans-serif">' +
+        '<div style="width:80px;height:160px"></div>' +
+        '<span style="display:inline-block;width:10px;height:24px"></span>' +
+        '<span id="inline" style="position:absolute">X</span>' +
+        '<div id="block" style="position:absolute;width:10px;height:10px"></div>' +
+        '</div>',
+    );
+    const el = view(node);
+    const inline = rectOf(el, 'inline');
+    assert.deepStrictEqual(
+      [inline.x, inline.y],
+      [line, 24],
+      `${mode}, on the line`,
+    );
+    // a block would have broken the line: it goes under it, at its start
+    const block = rectOf(el, 'block');
+    assert.deepStrictEqual(
+      [block.x, block.y],
+      [mode === 'vertical-lr' ? line + 20 : line - 10, 0],
+      `${mode}, after the line`,
+    );
+  }
+});
+
 test('a horizontal block in a vertical flow is a frame of its own, which turns back what the flow turned', async () => {
   // CSS Writing Modes 4, 7.3: an orthogonal flow inside an orthogonal flow
   // (WPT css-anchor-position/anchor-center-vrl-htb). Its width is the room

@@ -27,7 +27,7 @@
 // each moved and none mirrored, so that its glyphs stay the right way up.
 import type { Box, LineBox, TextLayoutLike } from './boxes.js';
 import type { BoxShadow, ComputedStyle, WritingMode } from '../css/style.js';
-import { copyStyle } from '../css/style.js';
+import { copyStyle, INLINE_BEFORE_ABSOLUTE } from '../css/style.js';
 import type { TransformFunction } from '../css/transform.js';
 import { mapAnchorCalls } from '../css/anchor.js';
 import type {
@@ -270,6 +270,10 @@ export function framedStyle(
   mode: WritingMode,
 ): ComputedStyle {
   const out = copyStyle(style);
+  // what was inline-level before it was made absolute still is: its
+  // static position is on its line (`staticPositions`), which a mark kept
+  // by the style it was made with says
+  if (INLINE_BEFORE_ABSOLUTE.has(style)) INLINE_BEFORE_ABSOLUTE.add(out);
   const up = turnsUp(mode);
   const sides = up ? ANTICLOCKWISE_SIDES : CLOCKWISE_SIDES;
   const margins = reflects(mode) ? REFLECTED_MARGINS : sides;
