@@ -3411,6 +3411,17 @@ it, which is also where a view transition under way finds the window
 resized and is skipped; the host hears them through `HtmlPopup.onResize`. Not done:
 `moveTo` ([the design](../prd-popups.md#left-out)).
 
+### Mixed Content
+
+**A secure page's own requests to an insecure URL are refused** (Mixed
+Content): a page's `fetch`, `XMLHttpRequest`, `navigator.sendBeacon` and
+`EventSource`, at every hop, are a `TypeError` and never sent where the
+document, or one it is framed in, came over HTTPS and the URL is `http:` to
+another machine than this one. What `<Html>` asks `onResource` for is
+`HtmlNetwork`'s to hold to it (`mixedContent`): an image, a video and an
+audio upgraded to `https:`, and everything else refused. A WebSocket is the
+socket's (`sockets.ts`).
+
 ### Content Security Policy
 
 **A document's Content Security Policy is enforced and reported where its
