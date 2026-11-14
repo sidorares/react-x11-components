@@ -1882,6 +1882,10 @@ the codec its sender sends while the negotiated codecs have it, and
 microtasks or a `setParameters` between, it answers the same
 `transactionId`, and a `setParameters` after the task is refused.
 Nothing offers H.264, RED or ULPFEC, so the tests of them fail here.
+Two of WebRTC Extensions' members are held and change nothing: a
+connection's `targetLatency`, `lowest` unless the page made it `none` and
+fixed for the connection's life, and an encoding's `adaptivePtime`, false
+unless the page sets it, since Opus is sent at 20 ms whatever it says.
 
 A description is checked as a browser checks it before werift reads it. A
 remote one is refused where an ICE credential has a character ICE does not

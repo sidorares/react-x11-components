@@ -1282,3 +1282,31 @@ test('a sender sends what its track gives: black frames and silence while it is 
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
 });
+
+test('targetLatency is held, fixed for the connection’s life, and an encoding’s adaptivePtime is false until a page sets it', async () => {
+  const logs = await run(`
+    function threw(f) { try { f(); return 'none'; } catch (e) { return e.name; } }
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection({ targetLatency: 'none' });
+    log('latency', a.getConfiguration().targetLatency, b.getConfiguration().targetLatency,
+      threw(function () { new RTCPeerConnection({ targetLatency: 'whatever' }); }),
+      threw(function () { a.setConfiguration({}); }),
+      threw(function () { a.setConfiguration({ targetLatency: 'none' }); }),
+      threw(function () { b.setConfiguration({}); }),
+      threw(function () { b.setConfiguration({ targetLatency: 'none' }); }));
+    var s1 = a.addTransceiver('audio', { sendEncodings: [{ adaptivePtime: true }] }).sender;
+    var s2 = a.addTransceiver('video').sender;
+    var p = s1.getParameters();
+    var was = p.encodings[0].adaptivePtime;
+    p.encodings[0].adaptivePtime = false;
+    await s1.setParameters(p);
+    log('ptime', was, s1.getParameters().encodings[0].adaptivePtime, s2.getParameters().encodings[0].adaptivePtime);
+    a.close(); b.close();
+  `);
+  assert.ok(
+    logs.includes(
+      'latency|lowest|none|TypeError|none|TypeError|TypeError|none',
+    ),
+    logs.join('\n'),
+  );
+  assert.ok(logs.includes('ptime|true|false|false'), logs.join('\n'));
+});

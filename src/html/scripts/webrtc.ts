@@ -661,6 +661,9 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           'RTCPriorityType',
           'low',
         ),
+        // leave to change its packets' duration, which is held: Opus is
+        // sent at 20 ms whatever it says (WebRTC Extensions, 6)
+        adaptivePtime: !!e.adaptivePtime,
       };
       // a single encoding is no simulcast, and keeps no rid
       if (e.rid !== undefined && given.length > 1) enc.rid = String(e.rid);
@@ -704,9 +707,15 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
               active: true,
               priority: 'low',
               networkPriority: 'low',
+              adaptivePtime: false,
               scaleResolutionDownBy: 1,
             }
-          : { active: true, priority: 'low', networkPriority: 'low' },
+          : {
+              active: true,
+              priority: 'low',
+              networkPriority: 'low',
+              adaptivePtime: false,
+            },
       );
     }
     return out;
@@ -939,6 +948,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           networkPriority: PRIORITIES.includes(e.networkPriority)
             ? e.networkPriority
             : 'low',
+          adaptivePtime: !!e.adaptivePtime,
         };
         if (e.rid !== undefined) enc.rid = String(e.rid);
         if (e.maxBitrate !== undefined) enc.maxBitrate = Number(e.maxBitrate);
@@ -1744,6 +1754,14 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         c.iceCandidatePoolSize === undefined
           ? 0
           : enforce(c.iceCandidatePoolSize, 255, 'iceCandidatePoolSize'),
+      // what the connection is to trade for latency: held, as a hint the
+      // stack takes nothing from, and fixed for its life
+      targetLatency: enumOf(
+        c.targetLatency,
+        ['lowest', 'none'],
+        'RTCTargetLatency',
+        'lowest',
+      ),
       certificates,
     };
   };
@@ -3024,6 +3042,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         bundlePolicy: c.bundlePolicy,
         rtcpMuxPolicy: c.rtcpMuxPolicy,
         iceCandidatePoolSize: c.iceCandidatePoolSize,
+        targetLatency: c.targetLatency,
         certificates: c.certificates.slice(),
       };
     }
@@ -3055,6 +3074,11 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           'The RTCP mux policy cannot be changed.',
           'InvalidModificationError',
         );
+      }
+      // a configuration that leaves it out asks for the default, which is a
+      // change where the connection was made with the other
+      if (next.targetLatency !== before.targetLatency) {
+        throw typeError('The target latency cannot be changed.');
       }
       if (
         next.iceCandidatePoolSize !== before.iceCandidatePoolSize &&
