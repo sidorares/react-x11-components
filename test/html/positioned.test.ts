@@ -147,6 +147,36 @@ metric(
   },
 );
 
+test('an absolute box that was inline-level ends where its line left the pen in a right-to-left paragraph', async () => {
+  // CSS 2.1 10.3.7: with `direction: rtl` the static position sets
+  // `right`, where the box would have stood in the flow — a neutral of the
+  // bidi algorithm, which takes the paragraph's direction (UBA N1, N2): at
+  // the end of what its line holds, past the left end of that content,
+  // and before what follows it on the line. It ended at the line's right
+  // end, over the content before it.
+  const ib = (w: number) =>
+    `<span style="display:inline-block;width:${w}px;height:10px"></span>`;
+  const abs = (id: string) =>
+    `<span id="${id}" style="position:absolute;width:5px;height:5px"></span>`;
+  const { node } = await render(
+    '<style>body{margin:0} div{direction:rtl;width:100px;line-height:20px}</style>' +
+      `<div id="p">${ib(24)}${abs('end')}</div>` +
+      `<div id="q">${ib(24)}${abs('between')}${ib(10)}</div>`,
+  );
+  const el = view(node);
+  const at = (id: string, block: string) => {
+    const b = boxOf(el, id);
+    const p = boxOf(el, block);
+    return [b.x - p.x + b.width, b.y - p.y];
+  };
+  assert.deepStrictEqual(
+    at('end', 'p'),
+    [76, 0],
+    'left of what the line holds',
+  );
+  assert.deepStrictEqual(at('between', 'q'), [76, 0], 'before what follows it');
+});
+
 metric(
   'an absolute box that was inline-level is on a line of its own among blocks',
   async () => {

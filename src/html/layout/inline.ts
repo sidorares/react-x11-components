@@ -4201,6 +4201,14 @@ interface StaticMark {
  * top for every one of them, a box after a line of text was drawn over that
  * line, and a menu under its link came up on it. Not from a probe of
  * intrinsic width, whose room is no place for one.
+ *
+ * In a right-to-left paragraph an inline-level one is placed by its right
+ * edge, which is where the box would have stood in the flow: a neutral of
+ * the bidi algorithm, which takes the paragraph's direction at the end of
+ * what its line holds (UBA N1, N2), so its edge is the line's content's
+ * left end, past text of either direction; and where content follows it on
+ * the line, before that content. Placed by the line's right end, it covered
+ * the text before it.
  */
 function staticPositions(
   statics: StaticMark[],
@@ -4210,16 +4218,22 @@ function staticPositions(
   options: InlineOptions,
 ): void {
   if (!Number.isFinite(options.width)) return;
+  const rtl = block.style.direction === 'rtl';
   for (const { index, box } of statics) {
     const inline = INLINE_BEFORE_ABSOLUTE.has(box.style);
     let top = lines.length ? lines[0].y : 0;
     let x = 0;
+    let right = options.width;
     const after = lines.length ? penAfter(items, index, lines) : null;
     if (after) {
       const { line, pen, broken } = after;
       if (inline && !broken) {
         top = line.y;
         x = pen;
+        if (rtl) {
+          const next = penBefore(items, index, lines, true);
+          right = next && next.line === line ? next.pen : line.x;
+        }
       } else {
         top = line.y + line.height;
       }
@@ -4227,7 +4241,7 @@ function staticPositions(
     box.staticPosition = {
       from: block,
       x: options.originX + x - block.x,
-      right: options.originX + options.width - block.x,
+      right: options.originX + right - block.x,
       y: options.startY + top - block.y,
     };
   }

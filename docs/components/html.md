@@ -8047,7 +8047,11 @@ where a line in any other vertical mode would be. An absolute box at its static 
 `vertical-lr` starts at the left, where the flow it would have been in
 starts: laid out after the flow, which is laid out as `vertical-rl`'s and
 put back across, it is put back by its own size once it has one, and what
-it holds is put back across it then. An inline element in a writing mode its
+it holds is put back across it then. One that was inline-level is on its
+line, where the pen stood after what came before it, in any writing mode; in
+a right-to-left paragraph it ends there, which is past the left end of what
+its line holds, or before what follows it on the line, as the bidi
+algorithm places a neutral. An inline element in a writing mode its
 parent is not in is an inline-block (3.1). The root is laid out by its
 parent as any box is, in the page's axes. Its width is its block size,
 which is its content's where it has none of its own (7.3.2): a block, a
