@@ -2528,6 +2528,28 @@ test('navigator.platform is the one the user agent names, in a worker as on the 
   );
 });
 
+test('a worker’s global has its own interfaces: a WorkerLocation, a WorkerNavigator, and a self no script replaces', async () => {
+  const src =
+    'var r = [location instanceof WorkerLocation, String(location) === location.href,' +
+    ' Object.prototype.toString.call(location), String(WorkerLocation),' +
+    ' navigator instanceof WorkerNavigator, navigator.appCodeName, navigator.product,' +
+    " 'productSub' in navigator];" +
+    "self = 'replaced'; r.push(self instanceof WorkerGlobalScope);" +
+    'try { new WorkerLocation(); r.push("made") } catch (e) { r.push(e.name) }' +
+    "postMessage(r.join(' '));";
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      `var w = new Worker(URL.createObjectURL(new Blob([${JSON.stringify(src)}], { type: "application/javascript" })));` +
+      'w.onmessage = function (e) { document.getElementById("out").textContent = e.data; };' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    'true true [object WorkerLocation] function WorkerLocation() { [native code] } true Mozilla Gecko false true TypeError',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a data: worker runs on any page, at an origin of none, a secure context where its page is', async () => {
   // HTML 10.2.5.1: a dedicated worker's `data:` script is fetched whatever
   // its page's origin, and runs opaque; WebRTC's encoded-transform tests make

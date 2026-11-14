@@ -2020,6 +2020,15 @@ network off. A worker with nothing to do gives its thread up after `idleMs`, 30
 seconds by default, and starts again for the next thing it hears, so a site
 should keep nothing in its global, as the specification tells it not to.
 
+**A worker's global has a worker's interfaces.** `location` is a
+`WorkerLocation` and `navigator` a `WorkerNavigator`, each an interface of its
+own, and `self` is the global and stays so: an assignment to it changes
+nothing, where a window's `self` is `[Replaceable]`. A secure worker has
+`ServiceWorker`, `ServiceWorkerRegistration`, `ServiceWorkerContainer` and
+`NavigationPreloadManager` among its interfaces, as Web IDL's
+`[Exposed=(Window,Worker)]` has them; a dedicated or shared worker still has no
+`navigator.serviceWorker`.
+
 **A worker is a process's.** Each tab of the example browser is a process, so a
 site open in two tabs runs its worker twice, over the one store: what either
 keeps in `caches` and IndexedDB the other reads, a registration another tab

@@ -106,6 +106,16 @@ export function installServiceWorkers(
   const dispatch: Any = D.dispatch;
   const report: Any = D.report;
   const handlerProperty: Any = D.handlerProperty;
+  const operationsEnumerable = (Kind: Any): void => {
+    const proto = Kind.prototype;
+    for (const key of Object.getOwnPropertyNames(proto)) {
+      if (key === 'constructor' || key.startsWith('_')) continue;
+      const d = Object.getOwnPropertyDescriptor(proto, key);
+      if (d && typeof d.value === 'function' && !d.enumerable) {
+        Object.defineProperty(proto, key, { ...d, enumerable: true });
+      }
+    }
+  };
   const idlAttributes: Any = D.idlAttributes;
   const bytesOfBase64: Any = D.bytesOfBase64;
   const base64OfBytes: Any = D.base64OfBytes;
@@ -1112,6 +1122,23 @@ export function installServiceWorkers(
     return fn;
   };
 
+  // an interface's operations are enumerable, as Web IDL has them (3.7.7)
+  for (const Kind of [
+    ServiceWorker,
+    NavigationPreloadManager,
+    ServiceWorkerRegistration,
+    ServiceWorkerContainer,
+    ExtendableEvent,
+    ExtendableMessageEvent,
+    NotificationEvent,
+    FetchEvent,
+    Client,
+    WindowClient,
+    Clients,
+  ]) {
+    operationsEnumerable(Kind);
+  }
+
   return {
     interfaces: {
       ServiceWorker,
@@ -1162,6 +1189,7 @@ export function installServiceWorkers(
               typeof fn === 'function' ? fn : null,
             );
           },
+          enumerable: true,
           configurable: true,
         });
       }

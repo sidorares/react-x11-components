@@ -378,5 +378,16 @@ export function installCaches(deps: CachesDeps): CachesInternals {
   D.idlAttributes(Cache);
   D.idlAttributes(CacheStorage);
 
+  // an interface's operations are enumerable, as Web IDL has them (3.7.7)
+  for (const Kind of [Cache, CacheStorage] as any[]) {
+    const proto = Kind.prototype;
+    for (const key of Object.getOwnPropertyNames(proto)) {
+      if (key === 'constructor' || key.startsWith('_')) continue;
+      const d = Object.getOwnPropertyDescriptor(proto, key);
+      if (d && typeof d.value === 'function' && !d.enumerable) {
+        Object.defineProperty(proto, key, { ...d, enumerable: true });
+      }
+    }
+  }
   return { CacheStorage, Cache, caches: new CacheStorage(KEY) };
 }
