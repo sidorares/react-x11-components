@@ -3518,13 +3518,40 @@ export function installDom(
   /** A dimension of another kind of quantity than a length. */
   const OTHER_DIMENSION =
     /(?:^|[\s(,])[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:deg|grad|rad|turn|s|ms|hz|khz|dpi|dpcm|dppx|x|fr)(?![\w-])/i;
+  /** Whether a value is one function call, its first bracket closed at
+   *  its end. */
+  const oneCall = (v: string): boolean => {
+    let depth = 0;
+    for (let i = 0; i < v.length; i += 1) {
+      if (v[i] === '(') depth += 1;
+      else if (v[i] === ')') {
+        depth -= 1;
+        if (!depth) return i === v.length - 1;
+      }
+    }
+    return false;
+  };
   /** One value of a property reified (CSS Typed OM 1, 5.5): a number, a
    *  dimension or a math function a numeric value, a name a keyword, a
    *  transform list its components, and anything else a value as
    *  written. */
   const reifyValue = (name: string, text: string): Any => {
     const v = text.trim();
-    if (/var\(/i.test(v)) return styleValueOf(v);
+    if (/var\(/i.test(v)) {
+      try {
+        return unparsedOf(v);
+      } catch {
+        return styleValueOf(v);
+      }
+    }
+    if (
+      IMAGE_PROPERTY.test(name) &&
+      IMAGE_VALUE.test(v) &&
+      commaParts(v).length === 1 &&
+      oneCall(v)
+    ) {
+      return new (CSSImageValue as Any)(MADE, v);
+    }
     if (name === 'transform') {
       const transform = reifyTransform(v);
       if (transform) return transform;
@@ -3623,6 +3650,20 @@ export function installDom(
     if (/^-?[a-z_][\w-]*$/i.test(v)) return new CSSKeywordValue(v);
     return styleValueOf(v);
   };
+  /** A property's computed value reified: a shorthand's as written, a
+   *  list-valued property's each item, and one value as it is declared,
+   *  where that is a number or a name, or one Typed OM has a class for. */
+  const reifyComputedOf = (name: string, text: string): Any[] => {
+    if (
+      SHORTHAND.test(name) ||
+      LIST_VALUED.test(name) ||
+      name === 'transform' ||
+      IMAGE_PROPERTY.test(name)
+    ) {
+      return reifyDeclared(name, text);
+    }
+    return [reifyComputed(text)];
+  };
   /** An element's computed values from the host, by kebab-case name, or
    *  null where it answers none — an element in no document. */
   const computedValuesOf = (el: Any): Record<string, string> | null => {
@@ -3635,10 +3676,11 @@ export function installDom(
    *  value reified as it is asked for. */
   class StylePropertyMapReadOnly {
     _el: Any;
-    constructor(el: Any) {
-      this._el = el;
+    constructor(...args: Any[]) {
+      if (args[0] !== MADE) throw new TypeError('Illegal constructor');
+      this._el = args[1];
     }
-    _name(property: Any): string {
+    _name(property: Any, _op = 'get'): string {
       const raw = String(property);
       const name = raw.startsWith('--') ? raw : raw.toLowerCase();
       if (!name.startsWith('--') && !isStyleProperty(name)) {
@@ -3650,20 +3692,24 @@ export function installDom(
     }
     get(property: Any): Any {
       const name = this._name(property);
+      return this._values(name)?.[0];
+    }
+    /** A property's computed value reified, or undefined for a custom
+     *  property it has none of. */
+    _values(name: string): Any[] | undefined {
       if (name.startsWith('--')) {
         const text = getComputedStyle(this._el).getPropertyValue(name);
-        return text === '' ? undefined : reifyComputed(text);
+        return text === '' ? undefined : [unparsedOf(text.trim())];
       }
       // the computed value, where `getComputedStyle` has the resolved one:
       // an inset of `auto` on a positioned box is `auto` here
       const values = computedValuesOf(this._el);
       const text =
         values?.[name] ?? getComputedStyle(this._el).getPropertyValue(name);
-      return reifyComputed(text);
+      return reifyComputedOf(name, text);
     }
     getAll(property: Any): Any[] {
-      const one = this.get(property);
-      return one === undefined ? [] : [one];
+      return this._values(this._name(property, 'getAll')) ?? [];
     }
     has(property: Any): boolean {
       return this.get(property) !== undefined;
@@ -3675,7 +3721,7 @@ export function installDom(
       const style = getComputedStyle(this._el);
       for (let i = 0; i < style.length; i += 1) {
         const name = style[i];
-        yield [name, [reifyComputed(style.getPropertyValue(name))]];
+        yield [name, reifyComputedOf(name, style.getPropertyValue(name))];
       }
     }
     *keys(): IterableIterator<string> {
@@ -3693,6 +3739,372 @@ export function installDom(
       return this.entries();
     }
   }
+
+  // --- CSS Typed OM: unparsed values and the style maps (4.1, 4.2) -------------
+
+  /** A custom property's name, `--` and more. */
+  const isCustomName = (v: string): boolean => /^--./.test(v);
+  /** A value with a `var()` in it (CSS Typed OM 1, 4.2.2): strings, and the
+   *  references between them, indexed as a list a page can set one past
+   *  its end of. */
+  class CSSUnparsedValue extends CSSStyleValue {
+    _list: Any[];
+    constructor(members: Any) {
+      super();
+      const what = "Failed to construct 'CSSUnparsedValue'";
+      if (
+        members === undefined ||
+        members === null ||
+        typeof members === 'string' ||
+        typeof members[Symbol.iterator] !== 'function'
+      ) {
+        throw new TypeError(
+          `${what}: The provided value cannot be converted to a sequence.`,
+        );
+      }
+      this._list = [...members].map((m) =>
+        m instanceof CSSVariableReferenceValue ? m : String(m),
+      );
+      return new Proxy(this, UNPARSED_LIST);
+    }
+    get length(): number {
+      return this._list.length;
+    }
+    /** Its fragments as CSS writes them (CSS Typed OM 1, 6.1): two strings
+     *  that meet are kept apart by an empty comment, which tokenizes them
+     *  as they were. */
+    override toString(): string {
+      let out = '';
+      let last: Any = null;
+      for (const m of this._list) {
+        if (typeof m === 'string' && typeof last === 'string' && m && last) {
+          out += '/**/';
+        }
+        out += String(m);
+        last = m;
+      }
+      return out;
+    }
+  }
+  /** A `var()` (4.2.3): the custom property it names, and what stands for
+   *  it where that has no value. */
+  class CSSVariableReferenceValue {
+    _variable: string;
+    _fallback: Any;
+    constructor(variable: Any, fallback: Any = null) {
+      const name = String(variable);
+      if (!isCustomName(name)) {
+        throw new TypeError(
+          "Failed to construct 'CSSVariableReferenceValue': Invalid custom property name.",
+        );
+      }
+      if (fallback !== null && !(fallback instanceof CSSUnparsedValue)) {
+        throw new TypeError(
+          "Failed to construct 'CSSVariableReferenceValue': parameter 2 is not of type 'CSSUnparsedValue'.",
+        );
+      }
+      this._variable = name;
+      this._fallback = fallback;
+    }
+    get variable(): string {
+      return this._variable;
+    }
+    set variable(v: Any) {
+      const name = String(v);
+      if (!isCustomName(name)) {
+        throw new TypeError(
+          "Failed to set the 'variable' property on 'CSSVariableReferenceValue': Invalid custom property name.",
+        );
+      }
+      this._variable = name;
+    }
+    get fallback(): Any {
+      return this._fallback;
+    }
+    toString(): string {
+      return this._fallback === null
+        ? `var(${this._variable})`
+        : `var(${this._variable},${this._fallback})`;
+    }
+  }
+  const UNPARSED_LIST: ProxyHandler<Any> = {
+    ...TRANSFORM_LIST,
+    set(target, key, value) {
+      const i = indexOf(key);
+      if (i === null) return Reflect.set(target, key, value, target);
+      if (i > target._list.length) {
+        throw new RangeError(
+          "Failed to set an indexed property on 'CSSUnparsedValue': Index is out of range.",
+        );
+      }
+      target._list[i] =
+        value instanceof CSSVariableReferenceValue ? value : String(value);
+      return true;
+    },
+  };
+  /** A value with references in it as an unparsed value: the text between
+   *  them its strings, and each `var()` with its fallback the same. */
+  const unparsedOf = (text: string): Any => {
+    const items: Any[] = [];
+    let buf = '';
+    let i = 0;
+    while (i < text.length) {
+      if (
+        /^var\(/i.test(text.slice(i, i + 4)) &&
+        !/[\w-]/.test(text[i - 1] ?? '')
+      ) {
+        let depth = 1;
+        let j = i + 4;
+        for (; j < text.length && depth; j += 1) {
+          if (text[j] === '(') depth += 1;
+          else if (text[j] === ')') depth -= 1;
+        }
+        const inner = text.slice(i + 4, depth ? j : j - 1);
+        const parts = commaParts(inner);
+        const fallback =
+          parts.length > 1
+            ? unparsedOf(inner.slice(parts[0].length + 1))
+            : null;
+        if (buf) items.push(buf);
+        buf = '';
+        items.push(new CSSVariableReferenceValue(parts[0].trim(), fallback));
+        i = j;
+        continue;
+      }
+      buf += text[i];
+      i += 1;
+    }
+    if (buf) items.push(buf);
+    return new CSSUnparsedValue(items);
+  };
+  /** An image a property holds (4.6): opaque, read back as written. */
+  class CSSImageValue extends CSSStyleValue {
+    constructor(...args: Any[]) {
+      if (args[0] !== MADE) throw new TypeError('Illegal constructor');
+      super(MADE, args[1]);
+    }
+  }
+  /** The properties an image is a value of. */
+  const IMAGE_PROPERTY =
+    /^(?:background-image|mask-image|-webkit-mask-image|list-style-image|border-image-source|mask-border-source|shape-outside|content)$/;
+  const IMAGE_VALUE =
+    /^(?:url\(|(?:repeating-)?(?:linear|radial|conic)-gradient\(|image-set\(|cross-fade\()/i;
+  /** The shorthands, whose value Typed OM reifies as a value as written
+   *  (5.5). */
+  const SHORTHAND =
+    /^(?:margin|padding|inset|inset-(?:block|inline)|border(?:-(?:top|right|bottom|left|block|inline|block-start|block-end|inline-start|inline-end))?|border-(?:color|style|width|radius|image)|border-(?:block|inline)-(?:color|style|width)|background|background-position|font|font-variant|font-synthesis|flex|flex-flow|grid|grid-template|grid-area|grid-row|grid-column|gap|grid-gap|place-(?:content|items|self)|transition|animation|list-style|outline|overflow|text-decoration|text-emphasis|text-wrap|white-space|columns|column-rule|mask|mask-border|offset|marker|container|contain-intrinsic-size|overscroll-behavior|scroll-(?:margin|padding)(?:-(?:block|inline))?|scroll-timeline|view-timeline|position-try|text-box|anchor-scope)$/;
+  /** A declared or specified value of a property as Typed OM reifies it:
+   *  one value, or each of a list-valued property's. */
+  const reifyDeclared = (name: string, text: string): Any[] => {
+    const v = text.trim();
+    if (name.startsWith('--')) return [unparsedOf(v)];
+    if (SHORTHAND.test(name)) {
+      return [/var\(/i.test(v) ? unparsedOf(v) : styleValueOf(v)];
+    }
+    if (LIST_VALUED.test(name) && !/var\(/i.test(v)) {
+      return commaParts(v).map((part) => reifyValue(name, part));
+    }
+    return [reifyValue(name, v)];
+  };
+  /** A style map over a declaration block (4.1): an element's `style`,
+   *  which its `attributeStyleMap` is, or a rule's, its `styleMap`. Every
+   *  change goes through the block, so what a page reads of either is the
+   *  other. */
+  class StylePropertyMap extends StylePropertyMapReadOnly {
+    _decl: Any;
+    constructor(...args: Any[]) {
+      if (args[0] !== MADE) throw new TypeError('Illegal constructor');
+      super(MADE, null);
+      this._decl = args[1];
+    }
+    override _name(property: Any, op = 'get'): string {
+      const raw = String(property);
+      const name = raw.startsWith('--') ? raw : raw.toLowerCase();
+      if (!isCustomName(name) && !isStyleProperty(name)) {
+        throw new TypeError(
+          `Failed to execute '${op}' on 'StylePropertyMap': Invalid propertyName: ${raw}`,
+        );
+      }
+      return name;
+    }
+    override get(property: Any): Any {
+      const name = this._name(property);
+      const text = str(this._decl.getPropertyValue(name));
+      return text === '' ? undefined : reifyDeclared(name, text)[0];
+    }
+    override getAll(property: Any): Any[] {
+      const name = this._name(property, 'getAll');
+      const text = str(this._decl.getPropertyValue(name));
+      return text === '' ? [] : reifyDeclared(name, text);
+    }
+    override has(property: Any): boolean {
+      const name = this._name(property, 'has');
+      return str(this._decl.getPropertyValue(name)) !== '';
+    }
+    override get size(): number {
+      return this._decl.length;
+    }
+    override *entries(): IterableIterator<[string, Any[]]> {
+      const names: string[] = [];
+      for (let i = 0; i < this._decl.length; i += 1) {
+        names.push(this._decl.item(i));
+      }
+      for (const name of names) {
+        yield [
+          name,
+          reifyDeclared(name, str(this._decl.getPropertyValue(name))),
+        ];
+      }
+    }
+    override *keys(): IterableIterator<string> {
+      for (const [name] of this.entries()) yield name;
+    }
+    override *values(): IterableIterator<Any[]> {
+      for (const [, value] of this.entries()) yield value;
+    }
+    override forEach(callback: Any, thisArg?: Any): void {
+      for (const [name, value] of this.entries()) {
+        callback.call(thisArg, value, name, this);
+      }
+    }
+    override [Symbol.iterator](): IterableIterator<[string, Any[]]> {
+      return this.entries();
+    }
+    /** What each value is as the property's text, or a TypeError where
+     *  the property does not take it (4.1.2, "set"). */
+    _texts(op: string, name: string, values: Any[]): string[] {
+      const fail = (why: string): never => {
+        throw new TypeError(
+          `Failed to execute '${op}' on 'StylePropertyMap': ${why}`,
+        );
+      };
+      const list = LIST_VALUED.test(name);
+      if (values.length > 1 && !list) {
+        fail(`The property ${name} is not list-valued.`);
+      }
+      const referring = (v: Any) =>
+        v instanceof CSSUnparsedValue ||
+        (!(v instanceof CSSStyleValue) && /var\(/i.test(String(v)));
+      if (values.length > 1 && values.some(referring)) {
+        fail('A value with a var() cannot be one of a list.');
+      }
+      const takes = (text: string) => {
+        try {
+          parseStyle(op, name, text, list);
+        } catch {
+          fail(`The value ${text} is not one ${name} takes.`);
+        }
+      };
+      return values.map((v) => {
+        if (!(v instanceof CSSStyleValue)) {
+          const text = String(v);
+          if (!list && commaParts(text).length > 1) {
+            fail(`The property ${name} is not list-valued.`);
+          }
+          takes(text);
+          return text;
+        }
+        if (v instanceof CSSUnparsedValue) {
+          const text = String(v);
+          if (!text.trim()) fail('An empty value is no value.');
+          return text;
+        }
+        if (v instanceof CSSTransformValue && name !== 'transform') {
+          fail(`The property ${name} takes no transform.`);
+        }
+        if (v instanceof CSSNumericValue) {
+          // its type held to the property's, through a calc() of it, which
+          // a range does not refuse; and where the value is out of the
+          // property's range, a calc() is what holds it (5.4)
+          const text = String(v);
+          const calc = v instanceof CSSUnitValue ? `calc(${text})` : text;
+          if (
+            call('blockSet', '', name, calc, '') === null ||
+            // a length's property, a shorthand of lengths among them, takes
+            // a length or a percentage and nothing else
+            (ZERO_IS_LENGTH.test(name) && !typeMatches(v, 'length', true))
+          ) {
+            fail(`The value ${text} is not one ${name} takes.`);
+          }
+          try {
+            parseStyle(op, name, text, list);
+            return text;
+          } catch {
+            return calc;
+          }
+        }
+        const text = String(v);
+        takes(text);
+        return text;
+      });
+    }
+    set(property: Any, ...values: Any[]): void {
+      const name = this._name(property, 'set');
+      if (name.startsWith('--')) {
+        const v = values[0];
+        if (
+          values.length !== 1 ||
+          (v instanceof CSSStyleValue && !(v instanceof CSSUnparsedValue))
+        ) {
+          throw new TypeError(
+            "Failed to execute 'set' on 'StylePropertyMap': A custom property takes one unparsed value.",
+          );
+        }
+        this._decl.setProperty(name, String(v));
+        return;
+      }
+      const texts = this._texts('set', name, values);
+      this._decl.setProperty(name, texts.join(', '));
+    }
+    append(property: Any, ...values: Any[]): void {
+      const name = this._name(property, 'append');
+      const fail = (why: string): never => {
+        throw new TypeError(
+          `Failed to execute 'append' on 'StylePropertyMap': ${why}`,
+        );
+      };
+      if (name.startsWith('--') || !LIST_VALUED.test(name)) {
+        fail(`The property ${name} is not list-valued.`);
+      }
+      if (!values.length) return;
+      const wide = /^(?:inherit|initial|unset|revert|revert-layer)$/i;
+      for (const v of values) {
+        if (
+          v instanceof CSSUnparsedValue ||
+          (!(v instanceof CSSStyleValue) && /var\(/i.test(String(v))) ||
+          wide.test(String(v).trim())
+        ) {
+          fail('A var() or a CSS-wide keyword cannot be appended.');
+        }
+      }
+      const current = str(this._decl.getPropertyValue(name)).trim();
+      if (wide.test(current) || /var\(/i.test(current)) {
+        fail('There is no list to append to.');
+      }
+      const texts = this._texts('append', name, values);
+      this._decl.setProperty(
+        name,
+        current ? `${current}, ${texts.join(', ')}` : texts.join(', '),
+      );
+    }
+    delete(property: Any): void {
+      const name = this._name(property, 'delete');
+      this._decl.removeProperty(name);
+    }
+    clear(): void {
+      this._decl.cssText = '';
+    }
+  }
+  /** Each declaration block's style map, made once. */
+  const STYLE_MAPS = new WeakMap<object, Any>();
+  const styleMapOf = (decl: Any): Any => {
+    let map = STYLE_MAPS.get(decl);
+    if (!map) {
+      map = new (StylePropertyMap as Any)(MADE, decl);
+      STYLE_MAPS.set(decl, map);
+    }
+    return map;
+  };
 
   // --- easing functions (CSS Easing 2) ------------------------------------------
 
@@ -9887,7 +10299,7 @@ export function installDom(
     // the flat tree and is visible itself. HubSpot's forms hand their
     // `onFormReady` the form, and cultureamp.com's asks it this.
     computedStyleMap(): Any {
-      return new StylePropertyMapReadOnly(this);
+      return new (StylePropertyMapReadOnly as Any)(MADE, this);
     }
     checkVisibility(options?: Any): boolean {
       const o = options ?? {};
@@ -10646,6 +11058,9 @@ export function installDom(
     set style(v: Any) {
       this.setAttribute('style', v);
     }
+    get attributeStyleMap(): Any {
+      return styleMapOf(this.style);
+    }
     get dataset(): Any {
       return (this._dataset ??= datasetOf(this));
     }
@@ -10862,6 +11277,9 @@ export function installDom(
     // `[PutForwards=cssText]`, as an HTML element's is
     set style(v: Any) {
       this.style.cssText = v;
+    }
+    get attributeStyleMap(): Any {
+      return styleMapOf(this.style);
     }
     get dataset(): Any {
       return (this._dataset ??= datasetOf(this));
@@ -20335,6 +20753,9 @@ export function installDom(
     get style(): Any {
       return (this._style ??= ruleStyleOf(this));
     }
+    get styleMap(): Any {
+      return styleMapOf(this.style);
+    }
     set style(v: Any) {
       this.style.cssText = v;
     }
@@ -21620,6 +22041,12 @@ export function installDom(
     appendRule: 1,
     findRule: 1,
     to: 1,
+    get: 1,
+    getAll: 1,
+    has: 1,
+    set: 1,
+    append: 1,
+    delete: 1,
   };
   for (const key of [
     'type',
@@ -21724,6 +22151,11 @@ export function installDom(
     CSSSkewY,
     CSSPerspective,
     CSSMatrixComponent,
+    CSSUnparsedValue,
+    CSSVariableReferenceValue,
+    CSSImageValue,
+    StylePropertyMapReadOnly,
+    StylePropertyMap,
   ]) {
     cssomInterface(Interface);
     for (const key of Object.getOwnPropertyNames(Interface)) {
@@ -21755,7 +22187,7 @@ export function installDom(
   }
   // a list of values is iterable as an array is (Web IDL 3.7.9, an
   // indexed getter's value iterator)
-  for (const List of [CSSNumericArray, CSSTransformValue]) {
+  for (const List of [CSSNumericArray, CSSTransformValue, CSSUnparsedValue]) {
     for (const key of ['entries', 'keys', 'values', 'forEach']) {
       Object.defineProperty(List.prototype, key, {
         value: (Array.prototype as Any)[key],
@@ -43557,6 +43989,10 @@ export function installDom(
     CSSUnitValue,
     CSSKeywordValue,
     StylePropertyMapReadOnly,
+    StylePropertyMap,
+    CSSUnparsedValue,
+    CSSVariableReferenceValue,
+    CSSImageValue,
     CSSMathValue,
     CSSMathSum,
     CSSMathProduct,
