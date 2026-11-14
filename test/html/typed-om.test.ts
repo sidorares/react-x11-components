@@ -226,3 +226,36 @@ test('an element’s attributeStyleMap reads and writes its style, held to what 
     '!TypeError',
   ]);
 });
+
+test('a colour holds each channel to the kind of value its function takes, and parses from its text', async () => {
+  const out = await inPage(
+    'new CSSRGB(0.5, CSS.number(73), CSS.percent(91))',
+    'new CSSRGB(undefined, 0, 0)',
+    'new CSSRGB(0, 0, 0, CSS.number(1))',
+    'new CSSHSL(180, 0.5, 0.5).h',
+    'new CSSHWB(180, 0, 0)',
+    'new CSSHWB(CSS.px(1), 0, 0)',
+    '(function () { var c = new CSSLCH(0, 0, 0); c.c = CSS.number(1); })()',
+    "CSSColorValue.parse('hsla(123, 100%, 20%, .5)')",
+    "CSSColorValue.parse('#00bfff')",
+    "CSSColorValue.parse('transparent')",
+    "CSSColorValue.parse('GrayText').constructor.name",
+    "CSSColorValue.parse('initial')",
+    'new CSSColorValue()',
+  );
+  assert.deepEqual(out, [
+    'rgb(50% 73 91%)',
+    '!SyntaxError',
+    '!SyntaxError',
+    '180deg',
+    '!TypeError',
+    '!SyntaxError',
+    '!SyntaxError',
+    'hsl(123deg 100% 20% / 50%)',
+    'rgb(0 191 255)',
+    'rgb(0 0 0 / 0%)',
+    'CSSKeywordValue',
+    '!SyntaxError',
+    '!TypeError',
+  ]);
+});

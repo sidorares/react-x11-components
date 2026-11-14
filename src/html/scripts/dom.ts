@@ -3384,6 +3384,329 @@ export function installDom(
     },
   };
 
+  // --- CSS Typed OM: colours (CSS Typed OM 1, 4.7) ------------------------------
+  //
+  // A colour as its channels: each held to the kind of value its function
+  // takes — a percentage, a number, an angle, or `none` — as a page sets
+  // it, a bare number read as the fraction a percentage is, or as the
+  // number or the degrees it is, by the channel.
+
+  /** What a channel takes: an `rgb()` channel a number or a percentage, a
+   *  percentage alone, a number alone, or an angle. */
+  type ColorChannel = 'rgb' | 'percent' | 'number' | 'angle';
+  const colorSyntaxError = (what: string): never => {
+    throw new DOMException(`${what}: Invalid color channel.`, 'SyntaxError');
+  };
+  /** A channel's value rectified (4.7, "rectify a CSSColorRGBComp" and
+   *  its kin), or a SyntaxError where the channel does not take it. */
+  const colorChannel = (kind: ColorChannel, v: Any, what: string): Any => {
+    if (typeof v === 'number') {
+      return kind === 'number'
+        ? new CSSUnitValue(v, 'number')
+        : kind === 'angle'
+          ? new CSSUnitValue(v, 'deg')
+          : new CSSUnitValue(v * 100, 'percent');
+    }
+    if (v instanceof CSSNumericValue) {
+      const ok =
+        kind === 'rgb'
+          ? typeMatches(v, 'number') || typeMatches(v, 'percent')
+          : typeMatches(v, kind);
+      return ok ? v : colorSyntaxError(what);
+    }
+    // a keyword, which a string is, and which `undefined` is as a string
+    const word = v instanceof CSSKeywordValue ? v._value : String(v);
+    if (/^none$/i.test(word)) {
+      return v instanceof CSSKeywordValue ? v : new CSSKeywordValue(word);
+    }
+    // a hue takes any name, as Chromium's does
+    if (kind === 'angle' && /^-?[a-z_][\w-]*$/i.test(word)) {
+      return v instanceof CSSKeywordValue ? v : new CSSKeywordValue(word);
+    }
+    return colorSyntaxError(what);
+  };
+  /** An `hwb()` channel, a number or a numeric value alone (4.7.4). */
+  const hwbChannel = (kind: 'percent' | 'angle', v: Any, what: string): Any => {
+    if (kind === 'angle' && !(v instanceof CSSNumericValue)) {
+      throw new TypeError(`${what}: The hue is not a CSSNumericValue.`);
+    }
+    if (typeof v !== 'number' && !(v instanceof CSSNumericValue)) {
+      throw new TypeError(`${what}: The value is not a number.`);
+    }
+    return colorChannel(kind, v, what);
+  };
+  class CSSColorValue extends CSSStyleValue {
+    constructor(...args: Any[]) {
+      if (new.target === CSSColorValue) {
+        throw new TypeError('Illegal constructor');
+      }
+      super(...args);
+    }
+    /** A colour as its channels (4.7.1): a function's as written, a
+     *  name's or a hex colour's as `rgb()` numbers, and a system colour a
+     *  keyword. */
+    static override parse(cssText: Any): Any {
+      return parseColorValue(String(cssText));
+    }
+  }
+  /** A colour class with channels of the kinds given, set through their
+   *  rectifiers. */
+  const colorClass = (
+    name: string,
+    fn: string,
+    channels: [string, ColorChannel][],
+    hwb = false,
+  ): Any => {
+    const Color = class extends CSSColorValue {
+      _channels: Record<string, Any>;
+      constructor(...args: Any[]) {
+        super();
+        const what = `Failed to construct '${name}'`;
+        if (args.length < channels.length) {
+          throw new TypeError(
+            `${what}: ${channels.length} arguments required, but only ${args.length} present.`,
+          );
+        }
+        this._channels = {};
+        const all: [string, ColorChannel][] = [
+          ...channels,
+          ['alpha', 'percent'],
+        ];
+        all.forEach(([key, kind], i) => {
+          const v =
+            i === channels.length && args[i] === undefined ? 1 : args[i];
+          this._channels[key] = hwb
+            ? hwbChannel(kind === 'angle' ? 'angle' : 'percent', v, what)
+            : colorChannel(kind, v, what);
+        });
+      }
+      override toString(): string {
+        const c = this._channels;
+        const text = channels.map(([key]) => String(c[key])).join(' ');
+        const alpha = c.alpha;
+        const opaque =
+          alpha instanceof CSSUnitValue &&
+          alpha._unitName === 'percent' &&
+          alpha._value === 100;
+        return `${fn}(${text}${opaque ? '' : ` / ${alpha}`})`;
+      }
+    };
+    for (const [key, kind] of [
+      ...channels,
+      ['alpha', 'percent'] as [string, ColorChannel],
+    ]) {
+      Object.defineProperty(Color.prototype, key, {
+        get(this: Any) {
+          return this._channels[key];
+        },
+        set(this: Any, v: Any) {
+          const what = `Failed to set the '${key}' property on '${name}'`;
+          this._channels[key] = hwb
+            ? hwbChannel(kind === 'angle' ? 'angle' : 'percent', v, what)
+            : colorChannel(kind, v, what);
+        },
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    Object.defineProperty(Color, 'name', { value: name });
+    return Color;
+  };
+  const CSSRGB = colorClass('CSSRGB', 'rgb', [
+    ['r', 'rgb'],
+    ['g', 'rgb'],
+    ['b', 'rgb'],
+  ]);
+  const CSSHSL = colorClass('CSSHSL', 'hsl', [
+    ['h', 'angle'],
+    ['s', 'percent'],
+    ['l', 'percent'],
+  ]);
+  const CSSHWB = colorClass(
+    'CSSHWB',
+    'hwb',
+    [
+      ['h', 'angle'],
+      ['w', 'percent'],
+      ['b', 'percent'],
+    ],
+    true,
+  );
+  const CSSLab = colorClass('CSSLab', 'lab', [
+    ['l', 'percent'],
+    ['a', 'number'],
+    ['b', 'number'],
+  ]);
+  const CSSLCH = colorClass('CSSLCH', 'lch', [
+    ['l', 'percent'],
+    ['c', 'percent'],
+    ['h', 'angle'],
+  ]);
+  const CSSOKLab = colorClass('CSSOKLab', 'oklab', [
+    ['l', 'percent'],
+    ['a', 'number'],
+    ['b', 'number'],
+  ]);
+  const CSSOKLCH = colorClass('CSSOKLCH', 'oklch', [
+    ['l', 'percent'],
+    ['c', 'percent'],
+    ['h', 'angle'],
+  ]);
+  /** A colour in a named space (4.7.9): its space a keyword, its channels
+   *  percentages or numbers, and its alpha. */
+  class CSSColor extends CSSColorValue {
+    _space: Any;
+    _list: Any[];
+    _alpha: Any;
+    constructor(colorSpace: Any, channels: Any, alpha: Any = 1) {
+      super();
+      const what = "Failed to construct 'CSSColor'";
+      this._space =
+        colorSpace instanceof CSSKeywordValue
+          ? colorSpace
+          : new CSSKeywordValue(String(colorSpace));
+      if (
+        channels === null ||
+        channels === undefined ||
+        typeof channels[Symbol.iterator] !== 'function'
+      ) {
+        throw new TypeError(`${what}: The channels are not a sequence.`);
+      }
+      this._list = [...channels].map((v) => colorChannel('rgb', v, what));
+      this._alpha = colorChannel('percent', alpha, what);
+    }
+    get colorSpace(): Any {
+      return this._space;
+    }
+    set colorSpace(v: Any) {
+      this._space =
+        v instanceof CSSKeywordValue ? v : new CSSKeywordValue(String(v));
+    }
+    get channels(): Any[] {
+      return this._list;
+    }
+    set channels(v: Any) {
+      this._list = [...v].map((x: Any) =>
+        colorChannel('rgb', x, "Failed to set 'channels'"),
+      );
+    }
+    get alpha(): Any {
+      return this._alpha;
+    }
+    set alpha(v: Any) {
+      this._alpha = colorChannel('percent', v, "Failed to set 'alpha'");
+    }
+    override toString(): string {
+      const opaque =
+        this._alpha instanceof CSSUnitValue &&
+        this._alpha._unitName === 'percent' &&
+        this._alpha._value === 100;
+      return `color(${this._space} ${this._list.map(String).join(' ')}${opaque ? '' : ` / ${this._alpha}`})`;
+    }
+  }
+  /** The system colours (CSS Color 4, 6.2), which reify as keywords. */
+  const SYSTEM_COLOR =
+    /^(?:accentcolor|accentcolortext|activetext|buttonborder|buttonface|buttontext|canvas|canvastext|field|fieldtext|graytext|highlight|highlighttext|linktext|mark|marktext|selecteditem|selecteditemtext|visitedtext|currentcolor)$/i;
+  /** What `CSSColorValue.parse()` makes of a colour's text. */
+  const parseColorValue = (text: string): Any => {
+    const v = text.trim();
+    const fail = (): never => {
+      throw new DOMException(
+        "Failed to execute 'parse' on 'CSSColorValue': Invalid color.",
+        'SyntaxError',
+      );
+    };
+    if (SYSTEM_COLOR.test(v)) return new CSSKeywordValue(v.toLowerCase());
+    if (
+      !v ||
+      v.startsWith('--') ||
+      /^(?:inherit|initial|unset|revert|revert-layer)$/i.test(v)
+    ) {
+      return fail();
+    }
+    const m = /^(rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(([^()]*)\)$/i.exec(v);
+    if (m) {
+      const fn = m[1].toLowerCase().replace(/a$/, '');
+      const [main, slash] = m[2].split('/');
+      const words = main.split(/[\s,]+/).filter(Boolean);
+      let alphaWord: string | undefined = slash?.trim();
+      if (alphaWord === undefined && words.length === 4)
+        alphaWord = words.pop();
+      if (words.length !== 3) return fail();
+      const read = (word: string): Any => {
+        if (/^none$/i.test(word)) return new CSSKeywordValue('none');
+        try {
+          return CSSNumericValue.parse(word);
+        } catch {
+          return fail();
+        }
+      };
+      /** A channel's value, a bare number turned into what the channel
+       *  holds: degrees for a hue, a percentage where the channel is one,
+       *  scaled as the function's range has it. */
+      const as = (word: string, kind: ColorChannel, scale = 1): Any => {
+        const x = read(word);
+        if (!(x instanceof CSSUnitValue) || x._unitName !== 'number') return x;
+        if (kind === 'angle') return new CSSUnitValue(x._value, 'deg');
+        if (kind === 'percent')
+          return new CSSUnitValue(x._value * scale, 'percent');
+        return x;
+      };
+      const alpha = alphaWord === undefined ? 1 : as(alphaWord, 'percent', 100);
+      const [a, b, c] = words;
+      try {
+        switch (fn) {
+          case 'rgb':
+            return new CSSRGB(read(a), read(b), read(c), alpha);
+          case 'hsl':
+            return new CSSHSL(
+              as(a, 'angle'),
+              as(b, 'percent'),
+              as(c, 'percent'),
+              alpha,
+            );
+          case 'hwb':
+            return new CSSHWB(
+              as(a, 'angle'),
+              as(b, 'percent'),
+              as(c, 'percent'),
+              alpha,
+            );
+          case 'lab':
+            return new CSSLab(as(a, 'percent'), read(b), read(c), alpha);
+          case 'lch':
+            return new CSSLCH(
+              as(a, 'percent'),
+              as(b, 'percent', 100 / 150),
+              as(c, 'angle'),
+              alpha,
+            );
+          case 'oklab':
+            return new CSSOKLab(as(a, 'percent', 100), read(b), read(c), alpha);
+          default:
+            return new CSSOKLCH(
+              as(a, 'percent', 100),
+              as(b, 'percent', 100 / 0.4),
+              as(c, 'angle'),
+              alpha,
+            );
+        }
+      } catch {
+        return fail();
+      }
+    }
+    // a name or a hex colour, as `rgb()` numbers
+    const rgba = str(call('color', v));
+    if (!rgba || /\(/.test(v)) return fail();
+    const [r, g, b, a] = rgba.split(',').map(Number);
+    return new CSSRGB(
+      new CSSUnitValue(r, 'number'),
+      new CSSUnitValue(g, 'number'),
+      new CSSUnitValue(b, 'number'),
+      new CSSUnitValue((a / 255) * 100, 'percent'),
+    );
+  };
+
   /** A transform list's functions, each its name and its arguments as
    *  written, or null where the text is no list of functions. */
   const transformFunctions = (text: string): [string, string[]][] | null => {
@@ -22158,6 +22481,15 @@ export function installDom(
     CSSImageValue,
     StylePropertyMapReadOnly,
     StylePropertyMap,
+    CSSColorValue,
+    CSSRGB,
+    CSSHSL,
+    CSSHWB,
+    CSSLab,
+    CSSLCH,
+    CSSOKLab,
+    CSSOKLCH,
+    CSSColor,
   ]) {
     cssomInterface(Interface);
     for (const key of Object.getOwnPropertyNames(Interface)) {
@@ -44036,6 +44368,15 @@ export function installDom(
     CSSUnparsedValue,
     CSSVariableReferenceValue,
     CSSImageValue,
+    CSSColorValue,
+    CSSRGB,
+    CSSHSL,
+    CSSHWB,
+    CSSLab,
+    CSSLCH,
+    CSSOKLab,
+    CSSOKLCH,
+    CSSColor,
     CSSMathValue,
     CSSMathSum,
     CSSMathProduct,
