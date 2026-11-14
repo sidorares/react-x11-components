@@ -70,6 +70,7 @@ export function interpolateField(
 ): unknown {
   if (q === 0 || same(a, b)) return a;
   if (q === 1) return b;
+  if (DISCRETE_RECORDS.has(key)) return undefined;
   switch (key) {
     case 'visibility':
       // visible all the way between, where either end is, and the nearer
@@ -337,6 +338,21 @@ export function discreteField(
  *  interpolation of them, across, down and in depth. */
 const NO_MOVE = Object.freeze([0, 0, 0]);
 const NO_SCALE = Object.freeze([1, 1, 1]);
+
+/** The fields that hold numbers and still do not interpolate: a grid line,
+ *  a counter's change and the template's areas go over at the half-way
+ *  point (CSS Grid 1, 8.3 and 7.3; CSS Lists 3, 4), where the numbers in
+ *  them would mix, and replace what is under them where they would add. */
+const DISCRETE_RECORDS = new Set([
+  'gridRowStart',
+  'gridRowEnd',
+  'gridColumnStart',
+  'gridColumnEnd',
+  'gridAreas',
+  'counterReset',
+  'counterIncrement',
+  'counterSet',
+]);
 
 /** The fields whose values are whole numbers, rounded between. */
 const INTEGERS = new Set([
@@ -945,6 +961,7 @@ export function addField(
   accumulate: boolean,
 ): unknown {
   if (under === undefined) return value;
+  if (DISCRETE_RECORDS.has(key)) return undefined;
   switch (key) {
     case 'visibility':
     case 'widthSize':
@@ -1013,6 +1030,15 @@ export function addField(
       const list = [...u, ...v];
       return list.length ? list : null;
     }
+  }
+  // what does not interpolate does not add either: a property that goes
+  // over at the half-way point replaces what is under it (5.4.4), a grid
+  // line or a counter as much as a keyword, numbers in it or not
+  if (
+    !same(under, value) &&
+    interpolateField(key, under, value, 0.5) === undefined
+  ) {
+    return undefined;
   }
   const out = sum(under, value);
   if (typeof out !== 'number') return out;
