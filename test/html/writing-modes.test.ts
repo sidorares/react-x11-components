@@ -16,10 +16,12 @@ import {
   linesOf,
   metric,
   pixelsIn,
+  pixelsPng,
   rebuilt,
   render,
   render2x,
   renderScrolled,
+  renderWithBytes,
   snapshot,
   bytesApart,
   treeOf,
@@ -264,6 +266,55 @@ test('an absolute box that was inline-level is placed on its line in a vertical 
     );
   }
 });
+
+metric(
+  'an image, a background image and a gradient in a vertical flow are upright, level with the page',
+  async () => {
+    // they are physical (CSS Writing Modes 4, 7.1): only the lines turn. A
+    // frame turns all it draws a quarter, and they were drawn turned with it
+    const half = pixelsPng(20, 10, (_x, y) =>
+      y < 5 ? [255, 0, 0] : [0, 255, 0],
+    );
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}div{width:20px;height:10px}</style>' +
+        '<div style="writing-mode:vertical-rl;width:100px;height:40px">' +
+        '<img src="half.png" width="20" height="10" style="display:block">' +
+        '<div style="background:url(half.png) no-repeat"></div>' +
+        '<div style="background:linear-gradient(to bottom,#f00 50%,#0f0 50%)"></div>' +
+        '</div>',
+      { 'half.png': half },
+      200,
+    );
+    // each is 20 wide and 10 tall on the page, from the right, the image's
+    // red half at its top and its green half at its bottom
+    for (const [what, x] of [
+      ['image', 80],
+      ['background', 60],
+      ['gradient', 40],
+    ] as const) {
+      const top = await pixelsIn(result.ctx, {
+        x: x + 10,
+        y: 2,
+        width: 1,
+        height: 1,
+      });
+      const bottom = await pixelsIn(result.ctx, {
+        x: x + 10,
+        y: 7,
+        width: 1,
+        height: 1,
+      });
+      assert.deepStrictEqual(
+        [[...top.slice(0, 3)], [...bottom.slice(0, 3)]],
+        [
+          [255, 0, 0],
+          [0, 255, 0],
+        ],
+        what,
+      );
+    }
+  },
+);
 
 test('a horizontal block in a vertical flow is a frame of its own, which turns back what the flow turned', async () => {
   // CSS Writing Modes 4, 7.3: an orthogonal flow inside an orthogonal flow

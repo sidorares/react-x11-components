@@ -8068,7 +8068,11 @@ it holds is put back across it then. One that was inline-level is on its
 line, where the pen stood after what came before it, in any writing mode; in
 a right-to-left paragraph it ends there, which is past the left end of what
 its line holds, or before what follows it on the line, as the bidi
-algorithm places a neutral. An inline element in a writing mode its
+algorithm places a neutral. An image, a background image and a gradient in
+a vertical flow are drawn upright, level with the page, as its lines are
+not: the frame turns all it draws a quarter, and they are turned back about
+its origin, an image scaled on a surface of its own first so that the turn
+copies it pixel for pixel. An inline element in a writing mode its
 parent is not in is an inline-block (3.1). The root is laid out by its
 parent as any box is, in the page's axes. Its width is its block size,
 which is its content's where it has none of its own (7.3.2): a block, a
