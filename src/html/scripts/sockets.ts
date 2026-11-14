@@ -128,6 +128,10 @@ export interface SocketSeams {
   /** The document's Content Security Policies, which a socket is held to
    *  (`connect-src`). Absent, none. */
   policies?(): CspPolicy[];
+  /** The URL a socket connects to as the document's policies send it: a
+   *  `ws:` one as `wss:` under `upgrade-insecure-requests`. Absent, as it
+   *  is. */
+  upgrade?(url: string): string;
   /** The page's console, which a failed socket is told on. */
   log?(level: string, text: string): void;
   /** An entry of the page's, with its input. */
@@ -290,10 +294,13 @@ export class PageSockets {
 
   private _open(
     id: number,
-    url: string,
+    asked: string,
     protocolsJson: string,
     space = '',
   ): void {
+    // sent securely where the document's policies upgrade its insecure
+    // requests (Upgrade Insecure Requests, 4.1), before any check of it
+    const url = this._seams.upgrade?.(asked) ?? asked;
     let protocols: string[] = [];
     try {
       const parsed = JSON.parse(protocolsJson) as unknown;

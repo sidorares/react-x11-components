@@ -348,6 +348,11 @@ export class ScriptRunner {
     else if (local && popup?.creatorCsp && slot?.auxiliary) {
       this.host.csp.inherit(popup.creatorCsp);
     } else this.host.csp.addHeaders(headers);
+    // and a frame's document upgrades insecure requests where the one it is
+    // in does (Upgrade Insecure Requests, 3.3)
+    if (_link?.frame && _link.parent.host.csp.upgrades) {
+      this.host.csp.upgradeInherited = true;
+    }
     this.host.reportEndpoints = reportEndpointsOf(headers);
     // a document laid out before its realm came has its sheets scanned
     // again, now that its policies say what of them may style it
@@ -693,6 +698,9 @@ export class ScriptRunner {
     const destination = request.destination ?? '';
     if (destination === 'worker' || destination === 'sharedworker') {
       this.host.cspScan();
+      // sent securely where the document's policies upgrade its insecure
+      // requests (Upgrade Insecure Requests, 4.1)
+      request = { ...request, url: this.host.csp.upgrade(request.url) };
       if (!this.host.csp.request({ url: request.url, destination })) {
         throw new TypeError('Failed to fetch');
       }
@@ -728,12 +736,16 @@ export class ScriptRunner {
         ? {
             ...request,
             // each request a redirect makes, before it is sent
-            nextHop: (url) =>
-              this.host.csp.request({ url: request.url, destination }, null, [
-                url,
-              ])
-                ? url
-                : null,
+            nextHop: (url) => {
+              const upgraded = this.host.csp.upgrade(url);
+              return this.host.csp.request(
+                { url: request.url, destination },
+                null,
+                [upgraded],
+              )
+                ? upgraded
+                : null;
+            },
           }
         : request,
       signal,
@@ -1654,11 +1666,15 @@ export class ScriptRunner {
         referrerPolicyOf(referring?.attribs.referrerpolicy) ||
         this.host.documentReferrerPolicy(),
     };
+    // sent securely where the document's policies upgrade its insecure
+    // requests (Upgrade Insecure Requests, 4.1)
+    this.host.cspScan(element);
+    const sent = this.host.csp.upgrade(url);
     // held to the document's policies before it is asked for, and where it
     // landed after (CSP 3, 4.1.2 and 4.1.3): a module's imports by the nonce
     // of the script they are imported from, and as no parser's
     const csp: CspRequest = {
-      url,
+      url: sent,
       destination:
         worklet?.destination ??
         (type === 'javascript' ? 'script' : type === 'css' ? 'style' : type),
@@ -1667,26 +1683,30 @@ export class ScriptRunner {
       integrity: element?.attribs.integrity ?? '',
       parserInserted: !!element && !!parserDocumentOf(element),
     };
-    this.host.cspScan(element);
     if (!this.host.csp.request(csp, element)) return null;
     // and at each hop a redirect makes, before it is asked for
     const nextHop = this.host.csp.policies.length
-      ? (to: string) => (this.host.csp.request(csp, element, [to]) ? to : null)
+      ? (to: string) => {
+          const upgraded = this.host.csp.upgrade(to);
+          return this.host.csp.request(csp, element, [upgraded])
+            ? upgraded
+            : null;
+        }
       : undefined;
     const loaded = await this._options
       .load(
-        url,
+        sent,
         element,
         cors,
         type === 'javascript' ? undefined : type,
         nextHop ? { ...asker, nextHop } : asker,
       )
       .catch(() => null);
-    const through = laterHops(url, loaded);
+    const through = laterHops(sent, loaded);
     if (through.length && !this.host.csp.request(csp, element, through)) {
       return null;
     }
-    return judgeScript(loaded, url, origin, mode, module, type);
+    return judgeScript(loaded, sent, origin, mode, module, type);
   }
 
   private _advance(state: 'interactive' | 'complete'): void {

@@ -23,6 +23,7 @@ import {
   policiesOfHeaders,
   reportedUrl,
   requestMatches,
+  upgradedUrl,
   wantsSample,
 } from '../csp.js';
 import type {
@@ -220,6 +221,7 @@ export class PageCsp<T = unknown> {
    *  one that made it (CSP 3, 4.2.1; HTML's policy container). */
   inherit(from: PageCsp<unknown>): void {
     this._add(from.policies.map((p) => ({ ...p })));
+    if (from.upgradeInherited) this.upgradeInherited = true;
   }
 
   /** A `<meta http-equiv="Content-Security-Policy">`'s, once (HTML 4.2.5.3,
@@ -250,6 +252,32 @@ export class PageCsp<T = unknown> {
   /** What string compilation is held to, as `changed` says it. */
   get said(): string {
     return this._said;
+  }
+
+  /** Whether an enforced policy says `upgrade-insecure-requests` (Upgrade
+   *  Insecure Requests, 3.1): a document's insecure requests are then sent
+   *  as secure ones. A report-only policy says nothing of it. */
+  get upgrades(): boolean {
+    return (
+      this.upgradeInherited ||
+      this.policies.some(
+        (p) =>
+          p.disposition === 'enforce' &&
+          p.directives.has('upgrade-insecure-requests'),
+      )
+    );
+  }
+
+  /** Whether the document that made this one upgrades its insecure
+   *  requests, whatever this one's policies say: a frame's document, and a
+   *  worker, keeps its creator's insecure requests policy (Upgrade Insecure
+   *  Requests, 3.3; HTML, a worker's environment settings). */
+  upgradeInherited = false;
+
+  /** A URL as the document's request for it is sent (`upgradedUrl`), where
+   *  its policies upgrade insecure requests, and as it is where not. */
+  upgrade(url: string): string {
+    return this.upgrades ? upgradedUrl(url) : url;
   }
 
   /** The enforced policies' directives, for what asks `connect-src` of
