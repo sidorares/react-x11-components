@@ -185,3 +185,45 @@ test('a filling animation another replaces is removed after the call that finish
     'active',
   ]);
 });
+
+test('a size an animation is sought to is laid out before a page reads it, and a keyword runs in a min-width', async () => {
+  const page = await scriptedPage(
+    `<div style="width: 600px; interpolate-size: allow-keywords"><div id="t"><div style="height: 100px; width: 23px"></div></div></div><script>
+      var t = document.getElementById('t'), r = [];
+      var a = t.animate({ height: ['calc-size(auto, size)', 'calc-size(auto, size * 2)'] }, 1000);
+      a.pause();
+      a.currentTime = 250;
+      r.push(getComputedStyle(t).height);
+      a.currentTime = 500;
+      r.push(getComputedStyle(t).height);
+      a.cancel();
+      var b = t.animate({ minWidth: ['initial', '20px'] }, 1000);
+      b.pause();
+      b.currentTime = 300;
+      r.push(getComputedStyle(t).minWidth);
+      console.log('out ' + JSON.stringify(r));
+    </script>`,
+  );
+  const out = JSON.parse(await page.until('out'));
+  page.result.unmount();
+  assert.deepEqual(out, [
+    '125px',
+    '150px',
+    'calc-size(auto, 6px + (0.7 * size))',
+  ]);
+});
+
+test("a CSS animation's keyframe composites as its animation-composition says", async () => {
+  const page = await scriptedPage(
+    `<style>@keyframes k { from { margin-left: 10px; animation-composition: add } to { margin-left: 30px; animation-composition: add } }
+      #t { margin-left: 100px; animation: k 1s linear paused }</style><div id="t"></div><script>
+      var t = document.getElementById('t');
+      var a = t.getAnimations()[0];
+      a.currentTime = 500;
+      console.log('out ' + JSON.stringify([getComputedStyle(t).marginLeft]));
+    </script>`,
+  );
+  const out = JSON.parse(await page.until('out'));
+  page.result.unmount();
+  assert.deepEqual(out, ['120px']);
+});

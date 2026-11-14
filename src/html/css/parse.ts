@@ -2946,6 +2946,9 @@ function parseKeyframes(
     if (!selectors) continue;
     const { offsets, ranges } = selectors;
     let easing: string | null = null;
+    // and how its values composite onto what is under them, which a frame
+    // says as an animation does (CSS Animations 2, 4.3)
+    let composite: Keyframe['composite'];
     const declarations: Declaration[] = [];
     for (const d of parseDeclarations(body.body)) {
       if (d.important) continue;
@@ -2954,15 +2957,18 @@ function parseKeyframes(
         d.prop === '-webkit-animation-timing-function'
       ) {
         easing = d.value;
+      } else if (d.prop === 'animation-composition') {
+        const v = d.value.trim().toLowerCase();
+        if (v === 'replace' || v === 'add' || v === 'accumulate') composite = v;
       } else if (!NOT_IN_KEYFRAMES.test(d.prop)) {
         declarations.push(d);
       }
     }
-    frames.push(
-      ranges.length
-        ? { offsets, ranges, declarations, easing }
-        : { offsets, declarations, easing },
-    );
+    const frame: Keyframe = ranges.length
+      ? { offsets, ranges, declarations, easing }
+      : { offsets, declarations, easing };
+    if (composite) frame.composite = composite;
+    frames.push(frame);
   }
   return { name, frames };
 }
