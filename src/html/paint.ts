@@ -106,6 +106,7 @@ import {
   containmentApplies,
   placedMatrix,
   holdsOutOfFlow,
+  viewBoxOf,
 } from './layout/block.js';
 import { containingParent } from './layout/multicol.js';
 import { isScroller, scrollBarsOf, thumbRect } from './layout/scroll.js';
@@ -13915,18 +13916,7 @@ const METER_VALUES = {
 function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
   if (TRANSITION_IMAGES.has(box)) {
     const draw = options.transitionImage?.(box);
-    if (draw) {
-      draw(
-        ctx,
-        box.contentX + options.originX,
-        box.contentY + options.originY,
-        box.contentWidth,
-        box.contentHeight,
-        options.damage,
-        box.style.mixBlendMode === 'plus-lighter' &&
-          typeof ctx.globalCompositeOperation === 'string',
-      );
-    }
+    if (draw) paintTransitionImage(ctx, box, options, draw);
     return;
   }
   const image = options.imageFor(box);
@@ -13995,6 +13985,78 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
   }
 }
 
+/** How far a view transition's image may be from its picture's size and
+ *  still be drawn at that size (`paintTransitionImage`). */
+const SNAP_SCALED = 0.01;
+
+/**
+ * A view transition's old or new image (`TRANSITION_IMAGES`), a replaced
+ * element whose content is its element's picture (CSS View Transitions 1,
+ * 3.2.4): fitted and placed in its content box by `object-fit`,
+ * `object-position` and `object-view-box` as an image is, the captured
+ * border box standing for the image's natural size and what its element
+ * drew past that going with it, and cut where the pseudo-element's own
+ * `overflow` cuts it, rounded as its corners are. Its overflow is
+ * `visible` by default, so `object-fit: none` on a box smaller than its
+ * element shows all of the element, as an `<img>`, which a browser cuts
+ * to its content box, does not.
+ */
+function paintTransitionImage(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  draw: TransitionDraw,
+): void {
+  const at = fitted(
+    box,
+    box.contentX + options.originX,
+    box.contentY + options.originY,
+    box.contentWidth,
+    box.contentHeight,
+  );
+  // scaled, it is drawn over whole pixels, its edges each rounded, as a
+  // browser snaps a replaced element's content rect: drawn where it fell,
+  // `object-view-box`'s 142.86 by 125 came out a row and a column short of
+  // a box of the same size laid out at the same place. Not scaled is
+  // within a hundredth of a pixel: the group is sized from its element in
+  // CSS pixels written to a ten-thousandth (`cssPx`), and a table 69.03125
+  // wide had an image 69.0313 wide, which snapping would have scaled
+  const own = box.intrinsic;
+  if (
+    own &&
+    (Math.abs(at.w - own.width) > SNAP_SCALED ||
+      Math.abs(at.h - own.height) > SNAP_SCALED)
+  ) {
+    const x = Math.round(at.x);
+    const y = Math.round(at.y);
+    at.w = Math.round(at.x + at.w) - x;
+    at.h = Math.round(at.y + at.h) - y;
+    at.x = x;
+    at.y = y;
+  }
+  const style = box.style;
+  const clips =
+    (style.overflowX !== 'visible' || style.overflowY !== 'visible') &&
+    !!ctx.save;
+  // the whole edge, its corners and all: what the picture draws past the
+  // box is in no bounds of the box's, which `squaredFor` reads
+  const pushed = clips && pushEdgeClip(ctx, clipEdge(box, options));
+  try {
+    draw(
+      ctx,
+      at.x,
+      at.y,
+      at.w,
+      at.h,
+      options.damage,
+      style.mixBlendMode === 'plus-lighter' &&
+        typeof ctx.globalCompositeOperation === 'string',
+    );
+  } finally {
+    if (pushed) ctx.restore!();
+  }
+}
+
 /**
  * Where an image is drawn in its content box (CSS Images 3, 5.5):
  * stretched to it, the `fill` everything is by default, or at its own
@@ -14002,6 +14064,11 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
  * Tailwind's `object-cover` avatars and card images are), at its own size
  * (`none`), or the smaller of those two (`scale-down`) — and placed by
  * `object-position`, the middle unless it says otherwise.
+ *
+ * Under an `object-view-box` (CSS Images 5, 6.6) it is the view box that
+ * is fitted and placed so, its size the natural size, and the answer is
+ * where the whole of the image lands around it: what is outside the view
+ * box is cut by the content box and by nothing else, as browsers draw it.
  */
 function fitted(
   box: Box,
@@ -14010,8 +14077,39 @@ function fitted(
   w: number,
   h: number,
 ): { x: number; y: number; w: number; h: number } {
+  const view = box.style.objectViewBox ? viewBoxOf(box) : null;
+  if (view) {
+    const natural = box.intrinsic!;
+    const at = fittedTo(
+      box,
+      { width: view.width, height: view.height, missing: 0, ratio: 0 },
+      x,
+      y,
+      w,
+      h,
+    );
+    const sx = at.w / view.width;
+    const sy = at.h / view.height;
+    return {
+      x: at.x - view.x * sx,
+      y: at.y - view.y * sy,
+      w: natural.width * sx,
+      h: natural.height * sy,
+    };
+  }
+  return fittedTo(box, box.intrinsic, x, y, w, h);
+}
+
+/** `fitted` for content of the natural size `own`. */
+function fittedTo(
+  box: Box,
+  own: Box['intrinsic'],
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): { x: number; y: number; w: number; h: number } {
   const fit = box.style.objectFit;
-  const own = box.intrinsic;
   if (!own) return { x, y, w, h };
   // what of its size it has of its own: an SVG may have a ratio from its
   // `viewBox` and neither side, or one side

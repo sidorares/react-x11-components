@@ -18,6 +18,7 @@ import {
 import { parseEdges } from './triggers.js';
 import { parseShapeFunction } from './shape-function.js';
 import { specifiedColorText } from './color.js';
+import { parseObjectViewBox } from './object-view-box.js';
 import { parseZoom, splitValue } from './values.js';
 import { closingParen } from './vars.js';
 import { MARKER_LONGHANDS, SVG_PROPERTIES } from './svg-properties.js';
@@ -175,6 +176,14 @@ export function specifiedValue(
     // simplified
     const canonical = contrastColorsText(value);
     if (canonical !== value) return canonical;
+  }
+  // `none` or a `<basic-shape-rect>` (CSS Images 5, 6.6), kept as written
+  if (name === 'object-view-box') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    const read = parseObjectViewBox(word, CHECK);
+    if (read === undefined) return null;
+    return read === null ? 'none' : word.replace(/\s+/g, ' ');
   }
   if (name === 'clip-path' || name === '-webkit-clip-path') {
     if (!/\bshape\(/i.test(value)) return undefined;

@@ -79,6 +79,8 @@ import {
 } from './color.js';
 import { svgPaint } from './shapes.js';
 import { parseBasicShape } from './basic-shape.js';
+import { parseObjectViewBox } from './object-view-box.js';
+import type { ObjectViewBox } from './object-view-box.js';
 import {
   anchorMathValue,
   nestedValue,
@@ -1086,6 +1088,11 @@ export interface ComputedStyle {
   aspectRatio: { ratio: number; auto: boolean } | null;
   /** How an image fills its content box, and where in it. */
   objectFit: 'fill' | 'contain' | 'cover' | 'none' | 'scale-down';
+  /** `object-view-box` (CSS Images 5, 6.6): the part of a replaced
+   *  element's content that stands for all of it, which `object-fit` and
+   *  `object-position` place, and whose size is its natural size; null for
+   *  `none`. Not inherited. */
+  objectViewBox: ObjectViewBox | null;
   /** A form control's own look (`auto`), or `none`: the page draws it,
    *  with its own background, borders and padding (`ControlFace`). */
   appearance: 'auto' | 'none';
@@ -1937,6 +1944,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     textOverflow: 'clip',
     aspectRatio: null,
     objectFit: 'fill',
+    objectViewBox: null,
     appearance: 'auto',
     styledControl: false,
     itemsThrough: false,
@@ -2958,6 +2966,11 @@ export function applyDeclaration(
     case 'object-fit': {
       const v = value.trim().toLowerCase();
       if (OBJECT_FITS.has(v)) style.objectFit = v as ComputedStyle['objectFit'];
+      return;
+    }
+    case 'object-view-box': {
+      const box = parseObjectViewBox(value, ctx);
+      if (box !== undefined) style.objectViewBox = box;
       return;
     }
     case 'appearance':
@@ -9953,6 +9966,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   ],
   'aspect-ratio': ['aspectRatio'],
   'object-fit': ['objectFit'],
+  'object-view-box': ['objectViewBox'],
   appearance: ['appearance'],
   '-webkit-appearance': ['appearance'],
   '-moz-appearance': ['appearance'],
