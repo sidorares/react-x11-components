@@ -232,6 +232,9 @@ function FrameDocument({
   const sandbox = host.shared.sandboxes.get(document) ?? 0;
   const seams: ScriptsOptions = {
     ...outer,
+    // what its own response said of it — its policies, its sandbox — and
+    // never the page's (`headers` is the response the page came in)
+    headers: host.responseHeadersOf(document),
     // the frame's own pane: its size and its scroll, in the page's zoom —
     // its offsets device pixels, `dpr` of them a CSS pixel, as the page's
     // are (`viewportOf`)

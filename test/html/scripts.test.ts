@@ -9530,6 +9530,24 @@ test('a frame’s initial about:blank has no entries and tells no navigation, an
   );
 });
 
+test('a frame’s document is held to the policies its own response says, and never to the page’s', async () => {
+  const frame = (id: string) =>
+    `<!doctype html><p id="${id}">no</p><script>document.getElementById("${id}").textContent = "ran";</script>`;
+  const { text } = await hostedFrames(
+    '<iframe id="a" src="strict.html"></iframe><iframe id="b" src="open.html"></iframe>',
+    { 'strict.html': frame('x'), 'open.html': frame('y') },
+    false,
+    {},
+    { 'strict.html': [['content-security-policy', "script-src 'none'"]] },
+  );
+  const end = Date.now() + 10000;
+  while (text('b', 'y') !== 'ran' && Date.now() < end) {
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+  }
+  assert.equal(text('b', 'y'), 'ran');
+  assert.equal(text('a', 'x'), 'no');
+});
+
 test('a frame taken out aborts its navigation as it goes, rejects the traversals on their way, and its destination says nothing after', async () => {
   // HTML, "inform the navigation API about child navigable destruction"
   const { text } = await hostedFrames(
