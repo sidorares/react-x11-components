@@ -20200,13 +20200,16 @@ test('a scriptless frame is scrolled to its fragment, its scroll-margin taken of
   // the page realm, which holds the document, tries to scroll it to its
   // fragment, as `scrollIntoView` lines an element up, in a task after the
   // frame's `load`, as Chromium does
-  const { text, logs } = await hostedFrames(
+  const { text, logs, runner } = await hostedFrames(
     '<iframe id="f" src="frame.html#t" style="width: 300px; height: 80px"></iframe>' +
       '<p id="out"></p><script>' +
       'var f = document.getElementById("f");' +
+      // read where the frame's window hears the scroll: the task is armed
+      // after the load is told, and a slow runner that took 50ms over the
+      // rest of it ran a timer the page set as it heard the load first
       'f.onload = function () { var w = f.contentWindow, at = w.scrollY;' +
-      '  setTimeout(function () { document.getElementById("out").textContent =' +
-      '    [at, w.scrollY, w.innerHeight].join("|"); }, 50); };' +
+      '  w.addEventListener("scroll", function () { document.getElementById("out").textContent =' +
+      '    [at, w.scrollY, w.innerHeight].join("|"); }, { once: true }); };' +
       '</script>',
     {
       'frame.html#t':
@@ -20217,10 +20220,19 @@ test('a scriptless frame is scrolled to its fragment, its scroll-margin taken of
     },
     true,
   );
-  const page = await until(
+  let page = await until(
     () => text('page', 'out'),
     (t) => t !== '',
   );
+  if (!page) {
+    // where the frame is, where no scroll came
+    runner().engine.exec(
+      'var w = f.contentWindow; document.getElementById("out").textContent = ["no scroll", w.scrollY, w.innerHeight].join("|")',
+      'test',
+      0,
+    );
+    page = text('page', 'out');
+  }
   assert.equal(page, '0|80|80', logs.join('\n'));
 });
 
