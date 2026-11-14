@@ -72,6 +72,7 @@ import { installPathData } from './path-data.js';
 import { installTextTracks } from './text-tracks.js';
 import { installStorageManager } from './storage-manager.js';
 import { installCsp } from './csp-page.js';
+import { installWorklets } from './worklets.js';
 import { installClipboard } from './clipboard.js';
 import { installNotifications } from './notifications.js';
 import { installWindows } from './windows.js';
@@ -371,13 +372,14 @@ const INSTALL = `(function () {
   const smil = (${installSmil.toString()});
   const storageManager = (${installStorageManager.toString()});
   const pathData = (${installPathData.toString()});
+  const worklets = (${installWorklets.toString()});
   const bridge = globalThis.__bridge;
   const named = globalThis.__named === true;
   const worker = globalThis.__worker === true;
   delete globalThis.__bridge;
   delete globalThis.__named;
   delete globalThis.__worker;
-  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, svgDom, webcrypto, transfers, clipboards, notifying, windowing, serviceWorkers, cacheStorage, uiEvents, pointers, editing, encoded, textTracks, csp, smil, storageManager, pathData, named, worker);
+  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, svgDom, webcrypto, transfers, clipboards, notifying, windowing, serviceWorkers, cacheStorage, uiEvents, pointers, editing, encoded, textTracks, csp, smil, storageManager, pathData, worklets, named, worker);
 })()`;
 
 /**

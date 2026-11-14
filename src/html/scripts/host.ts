@@ -290,7 +290,9 @@ import { PageTransports } from './transports.js';
 import { PageSockets } from './sockets.js';
 import { PageCsp, cspNonceOf, runningScriptAt } from './csp-host.js';
 import type { CspViolation, CspWhere } from './csp-host.js';
+import { directiveFor, evalMatches } from '../csp.js';
 import type { CspPolicy } from '../csp.js';
+import { PageWorklets } from './worklet-host.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
 import { publicSuffixList, publicSuffixNow } from '../cookies.js';
 import { defaultStorage } from '../storage.js';
@@ -2750,6 +2752,17 @@ export class DomHost {
   readonly top: string;
   /** A page's windows, where the host may open any (`./popups.ts`). */
   windows: ReturnType<typeof windowOps> | null = null;
+  /** A worklet's module's source, fetched as the document's for the
+   *  worklet's destination, which its runner answers (`worklet-host.ts`). */
+  workletFetch:
+    | ((
+        url: string,
+        destination: string,
+        credentials: string,
+      ) => Promise<string | null>)
+    | null = null;
+  /** The page's worklets, made as it first adds a module to one. */
+  private _workletsMade: PageWorklets | null = null;
   /** What made this document, where it is `about:blank`: its origin and its
    *  base are that document's (HTML 7.1.1). */
   creator: string | null = null;
@@ -5280,6 +5293,52 @@ export class DomHost {
       // `CSS.supports`: as `<Html>` answers an `@supports`, a condition as
       // it is written or, where it is no condition, in parentheses
       // a dedicated worker, started, posted to and ended: the page's side
+      // `addModule` (`worklets.ts`): the graph fetched and run on the host,
+      // and what came of it told a task after
+      case 'worklet': {
+        const ask = JSON.parse(text(a)) as {
+          ask: number;
+          scope: number;
+          kind: string;
+          url: string;
+          credentials: string;
+          sampleRate: number;
+        };
+        this._workletsMade ??= new PageWorklets({
+          fetch: (url, destination, credentials) =>
+            this.workletFetch?.(url, destination, credentials) ??
+            Promise.resolve(null),
+          // what the document's enforced policies let be compiled, which a
+          // worklet's global is held to natively (CSP 3, 4.4)
+          compiles: () => {
+            this.cspScan();
+            const enforced = this.csp.enforced();
+            const allows = (wasm: boolean): boolean =>
+              enforced.every((directives) => {
+                const list = directiveFor(directives, 'script-src');
+                return !list || evalMatches(list, wasm);
+              });
+            return { strings: allows(false), wasm: allows(true) };
+          },
+        });
+        void this._workletsMade
+          .add(
+            Number(ask.scope),
+            ask.kind === 'paint' ? 'paint' : 'audio',
+            String(ask.url),
+            String(ask.credentials),
+            Number(ask.sampleRate) || 0,
+          )
+          .then((added) => {
+            if (this._disposed) return;
+            this.entries?.call('__workletAdded', [
+              Number(ask.ask),
+              added.status,
+              JSON.stringify(added.names),
+            ]);
+          });
+        return null;
+      }
       case 'workerStart': {
         if (!this.workers) {
           throw new DomError(

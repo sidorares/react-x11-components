@@ -57,6 +57,13 @@ export interface WebAudioDeps {
   sourceOf?(track: unknown): number;
   /** Bytes from base64, as the host hands an analyser its samples. */
   bytesOfBase64?(text: string): Uint8Array;
+  /** A context's `audioWorklet`, made the first time it is asked for, at
+   *  its sample rate (`worklets.ts`); null where the realm has none. */
+  audioWorklet?(sampleRate: number): unknown;
+  /** Whether an audio worklet's scope has registered a processor's name. */
+  workletRegistered?(worklet: unknown, name: string): boolean;
+  /** The page's `MessageChannel`, whose port an `AudioWorkletNode` has. */
+  MessageChannel?: unknown;
 }
 
 export function installWebAudio(deps: WebAudioDeps): Record<string, unknown> {
@@ -2267,6 +2274,12 @@ export function installWebAudio(deps: WebAudioDeps): Record<string, unknown> {
       slotOf(this, 'context');
       return 128;
     }
+    /** Its worklet's (Web Audio 1, 1.1.2): one a context, made the first
+     *  time it is asked for, whose modules no render thread runs. */
+    get audioWorklet(): Any {
+      const c = slotOf(this, 'context');
+      return (c.worklet ??= D.audioWorklet?.(c.sampleRate) ?? null);
+    }
     createGain(): Any {
       return new GainNode(this);
     }
@@ -2407,6 +2420,92 @@ export function installWebAudio(deps: WebAudioDeps): Record<string, unknown> {
     }
   }
   handler(BaseAudioContext.prototype, 'statechange');
+
+  /** An `AudioWorkletNode`'s parameters (Web Audio 1, 1.31): a read-only
+   *  map, which a processor's descriptors fill, and no processor runs
+   *  here to say any. */
+  class AudioParamMap {
+    constructor(token: Any = undefined) {
+      if (token !== TOKEN) throw illegalConstructor();
+      apply(wmSet, slots, [this, { paramMap: true, entries: new Map() }]);
+    }
+    get size(): number {
+      return slotOf(this, 'paramMap').entries.size;
+    }
+    get(key: Any): Any {
+      return slotOf(this, 'paramMap').entries.get(String(key));
+    }
+    has(key: Any): boolean {
+      return slotOf(this, 'paramMap').entries.has(String(key));
+    }
+    keys(): Any {
+      return slotOf(this, 'paramMap').entries.keys();
+    }
+    values(): Any {
+      return slotOf(this, 'paramMap').entries.values();
+    }
+    entries(): Any {
+      return slotOf(this, 'paramMap').entries.entries();
+    }
+    forEach(callback: Any, thisArg: Any = undefined): void {
+      for (const [k, v] of slotOf(this, 'paramMap').entries) {
+        apply(callback, thisArg, [v, k, this]);
+      }
+    }
+    [Symbol.iterator](): Any {
+      return slotOf(this, 'paramMap').entries.entries();
+    }
+  }
+
+  /**
+   * A node over a processor an audio worklet's module registered (Web Audio
+   * 1, 1.32.3): its name has to be one its context's worklet knows, and
+   * what it would process is no sound here, so it is silent, as every node
+   * is. Its `port` is a channel's, whose other end no processor holds.
+   */
+  class AudioWorkletNode extends AudioNode {
+    constructor(context: Any, name: Any, options: Any = undefined) {
+      super(TOKEN);
+      if (arguments.length < 2) {
+        throw typeError(
+          `Failed to construct 'AudioWorkletNode': 2 arguments required, but only ${arguments.length} present.`,
+        );
+      }
+      const c = contextOf(context, 'AudioWorkletNode');
+      const processor = String(name);
+      if (!c.worklet || !D.workletRegistered?.(c.worklet, processor)) {
+        throw domError(
+          `Failed to construct 'AudioWorkletNode': AudioWorkletNode cannot be created: The node name '${processor}' is not defined in AudioWorkletGlobalScope.`,
+          'InvalidStateError',
+        );
+      }
+      const o = dict(options, 'AudioWorkletNodeOptions');
+      const inputs =
+        o.numberOfInputs === undefined ? 1 : +o.numberOfInputs >>> 0;
+      const outputs =
+        o.numberOfOutputs === undefined ? 1 : +o.numberOfOutputs >>> 0;
+      if (inputs === 0 && outputs === 0) {
+        throw domError(
+          'numberOfInputs and numberOfOutputs cannot both be 0.',
+          'NotSupportedError',
+        );
+      }
+      const n = makeNode(this, c, SHAPE(inputs, outputs), {
+        workletNode: true,
+      });
+      channelOptions(this, o);
+      const Channel = D.MessageChannel;
+      n.port = Channel ? new Channel().port1 : null;
+      n.parameters = new AudioParamMap(TOKEN);
+    }
+    get port(): Any {
+      return slotOf(this, 'workletNode').port;
+    }
+    get parameters(): Any {
+      return slotOf(this, 'workletNode').parameters;
+    }
+  }
+  handler(AudioWorkletNode.prototype, 'processorerror');
 
   /**
    * A WAV file as an `AudioBuffer` at a context's rate, by straight-line
@@ -2645,6 +2744,154 @@ export function installWebAudio(deps: WebAudioDeps): Record<string, unknown> {
     }
   }
 
+  /** What an offline rendering ends with (Web Audio 1, 1.4.2). */
+  class OfflineAudioCompletionEvent extends Event {
+    _renderedBuffer: Any;
+    constructor(type: Any, init: Any = undefined) {
+      if (arguments.length < 2) {
+        throw typeError(
+          `Failed to construct 'OfflineAudioCompletionEvent': 2 arguments required, but only ${arguments.length} present.`,
+        );
+      }
+      const d = dict(init, 'OfflineAudioCompletionEventInit');
+      if (!isA(d.renderedBuffer, 'audioBuffer')) {
+        throw typeError(
+          "Failed to construct 'OfflineAudioCompletionEvent': member renderedBuffer is not of type 'AudioBuffer'.",
+        );
+      }
+      super(type, init);
+      this._renderedBuffer = d.renderedBuffer;
+    }
+    get renderedBuffer(): Any {
+      return this._renderedBuffer;
+    }
+  }
+
+  /**
+   * A context that renders as fast as it can into a buffer (Web Audio 1,
+   * 1.3): what it renders is silence, as every node here is, `length`
+   * frames of it in as many channels as it was made with, handed over a
+   * task after `startRendering`, with `complete`.
+   */
+  class OfflineAudioContext extends BaseAudioContext {
+    constructor(
+      contextOptions: Any = undefined,
+      length: Any = undefined,
+      sampleRate: Any = undefined,
+    ) {
+      super(TOKEN);
+      let channels: Any;
+      let frames: Any;
+      let rate: Any;
+      if (
+        arguments.length === 1 &&
+        contextOptions !== null &&
+        typeof contextOptions === 'object'
+      ) {
+        const o = dict(contextOptions, 'OfflineAudioContextOptions');
+        if (o.length === undefined || o.sampleRate === undefined) {
+          throw typeError(
+            "Failed to construct 'OfflineAudioContext': required member length or sampleRate is undefined.",
+          );
+        }
+        channels = o.numberOfChannels === undefined ? 1 : o.numberOfChannels;
+        frames = o.length;
+        rate = o.sampleRate;
+      } else {
+        if (arguments.length < 3) {
+          throw typeError(
+            `Failed to construct 'OfflineAudioContext': 3 arguments required, but only ${arguments.length} present.`,
+          );
+        }
+        channels = contextOptions;
+        frames = length;
+        rate = sampleRate;
+      }
+      const count = +channels >>> 0;
+      const total = +frames >>> 0;
+      const hz = finite(rate, 'float value');
+      if (count < 1 || count > 32) {
+        throw domError(
+          'numberOfChannels must be from 1 to 32.',
+          'NotSupportedError',
+        );
+      }
+      if (total < 1) {
+        throw domError('length must be at least 1.', 'NotSupportedError');
+      }
+      if (hz < 3000 || hz > 768000) {
+        throw domError(
+          'sampleRate must be from 3000 to 768000.',
+          'NotSupportedError',
+        );
+      }
+      const c = makeContext(this, hz, false);
+      c.length = total;
+      c.channels = count;
+      c.rendering = null;
+    }
+    get length(): number {
+      return slotOf(this, 'context').length;
+    }
+    startRendering(): Promise<Any> {
+      let c: Any;
+      try {
+        c = slotOf(this, 'context');
+      } catch (error) {
+        return P.reject(error);
+      }
+      if (c.rendering) {
+        return P.reject(
+          domError('The context has rendered already.', 'InvalidStateError'),
+        );
+      }
+      c.rendering = new P((resolve: Any) => {
+        setState(c, 'running');
+        setTimer(() => {
+          const buffer = new AudioBuffer({
+            numberOfChannels: c.channels,
+            length: c.length,
+            sampleRate: c.sampleRate,
+          });
+          c.time = c.length / c.sampleRate;
+          setState(c, 'closed');
+          resolve(buffer);
+          fire(
+            c.self,
+            new OfflineAudioCompletionEvent('complete', {
+              renderedBuffer: buffer,
+            }),
+          );
+        }, 0);
+      });
+      return c.rendering;
+    }
+    resume(): Promise<void> {
+      try {
+        slotOf(this, 'context');
+      } catch (error) {
+        return P.reject(error);
+      }
+      return P.resolve(undefined);
+    }
+    suspend(suspendTime: Any = undefined): Promise<void> {
+      try {
+        slotOf(this, 'context');
+      } catch (error) {
+        return P.reject(error);
+      }
+      finite(suspendTime, 'double value');
+      return P.resolve(undefined);
+    }
+  }
+  handler(OfflineAudioContext.prototype, 'complete');
+
+  idl({
+    OfflineAudioContext,
+    OfflineAudioCompletionEvent,
+    AudioWorkletNode,
+    AudioParamMap,
+  });
   idl({
     BaseAudioContext,
     AudioContext,
@@ -2679,6 +2926,10 @@ export function installWebAudio(deps: WebAudioDeps): Record<string, unknown> {
   return {
     BaseAudioContext,
     AudioContext,
+    OfflineAudioContext,
+    OfflineAudioCompletionEvent,
+    AudioWorkletNode,
+    AudioParamMap,
     AudioNode,
     AudioParam,
     AudioScheduledSourceNode,

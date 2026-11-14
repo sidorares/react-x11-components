@@ -21002,3 +21002,92 @@ test('children replaced all at once leave the tree whole, told once, and a live 
     ].join('|'),
   );
 });
+
+test('a worklet adds a module graph its scope runs, an audio worklet’s processors make nodes, and an offline context renders', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [typeof Worklet, CSS.paintWorklet instanceof Worklet, CSS.paintWorklet === CSS.paintWorklet];' +
+      'var ctx = new OfflineAudioContext(1, 128, 44100);' +
+      'r.push(ctx.audioWorklet instanceof AudioWorklet, ctx.audioWorklet === ctx.audioWorklet, ctx.length);' +
+      'function made(name) { try { new AudioWorkletNode(ctx, name); return "made"; } catch (e) { return e.name; } }' +
+      'function out() { document.getElementById("out").textContent = r.join("|"); }' +
+      'r.push(made("p"));' +
+      'ctx.audioWorklet.addModule("proc.js").then(function () {' +
+      '  r.push(made("p"), made("undefined"), made("object"));' +
+      '  return CSS.paintWorklet.addModule("paint.js");' +
+      '}).then(function () {' +
+      '  return CSS.paintWorklet.addModule("gone.js").then(function () { r.push("loaded"); },' +
+      '    function (e) { r.push(e.name); });' +
+      '}).then(function () {' +
+      '  return CSS.paintWorklet.addModule("http://[").catch(function (e) { r.push(e.name); });' +
+      '}).then(function () {' +
+      '  ctx.oncomplete = function (e) { r.push("complete " + e.renderedBuffer.length); };' +
+      '  return ctx.startRendering();' +
+      '}).then(function (buffer) {' +
+      '  r.push(buffer.length, buffer.getChannelData(0)[0], ctx.state);' +
+      '  setTimeout(out, 0);' +
+      '});' +
+      '</script>',
+    {
+      scripts: {
+        // a static import, and code that reaches for the host's realm,
+        // which a worklet's global has none of
+        'https://example.test/dir/proc.js':
+          'import "./dep.js";' +
+          'registerProcessor("p", class extends AudioWorkletProcessor {});' +
+          'registerProcessor(String((function () {}).constructor("return typeof process")()),' +
+          '  class extends AudioWorkletProcessor {});',
+        'https://example.test/dir/dep.js': 'globalThis.dep = 1;',
+        'https://example.test/dir/paint.js':
+          'registerPaint("dots", class { paint() {} });',
+      },
+    },
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    [
+      'function|true|true|true|true|128',
+      'InvalidStateError',
+      // what the module registered, and that its code found no `process`
+      'made|made|InvalidStateError',
+      'AbortError',
+      'SyntaxError',
+      'complete 128',
+      '128|0|closed',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+test('a worklet’s module is the document’s to fetch, held to its policies, and its eval refused where theirs is', async () => {
+  const doc = await hosted(
+    '<meta http-equiv="Content-Security-Policy" content="script-src \'self\' \'unsafe-inline\'">' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      'document.addEventListener("securitypolicyviolation", function (e) {' +
+      '  r.push(e.effectiveDirective + " " + e.blockedURI); });' +
+      'var ctx = new OfflineAudioContext(1, 128, 44100);' +
+      'function made(name) { try { new AudioWorkletNode(ctx, name); return "made"; } catch (e) { return e.name; } }' +
+      'ctx.audioWorklet.addModule("https://other.test/x.js").catch(function (e) { r.push(e.name); })' +
+      '.then(function () { return ctx.audioWorklet.addModule("evals.js"); })' +
+      '.then(function () {' +
+      '  r.push(made("evaled"), made("refused"));' +
+      '  setTimeout(function () { document.getElementById("out").textContent = r.sort().join("|"); }, 50);' +
+      '});' +
+      '</script>',
+    {
+      scripts: {
+        'https://other.test/x.js': 'registerProcessor("x", class {});',
+        'https://example.test/dir/evals.js':
+          'try { eval("1"); registerProcessor("evaled", class {}); }' +
+          ' catch (e) { registerProcessor("refused", class {}); }',
+      },
+    },
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    // in no order, as a violation is told a task later
+    'AbortError|InvalidStateError|made|script-src-elem https://other.test/x.js',
+    doc.logs.join('\n'),
+  );
+});
