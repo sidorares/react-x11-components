@@ -940,7 +940,7 @@ const net = useHtmlNetwork(url);
 map, `on…` attributes, timers, `fetch` and `XMLHttpRequest`, WHATWG
 streams, WebSockets, WebTransport, the DOM, a canvas a script draws on — or
 an `OffscreenCanvas`, in a worker as well — frames running in realms of
-their own and dedicated workers on threads of their own. It is the engine the example
+their own and dedicated workers on threads of their own, 64 at once a page. It is the engine the example
 browser was built over — a `node:vm` context a document, a DOM inside it
 over the tree drawn here, and only primitives crossing between the two —
 and [the PRD](../prd-html-scripts.md) is its design. **Off unless it is
