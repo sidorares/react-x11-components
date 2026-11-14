@@ -3297,6 +3297,15 @@ the hash of a string compiled. Under `'strict-dynamic'` an inline script a
 script put in runs, as one with a `src` does, where the parser's needs its nonce
 or its hash.
 
+**A redirect a policy refuses is never followed.** What a document asks for
+under a policy — a script, a module a worker imports, a worker's script, an
+image, a sheet, a font — is held to the policy at each hop a redirect makes,
+before that hop's request is sent (Fetch 4.1, "main fetch", step 7), through
+`nextHop` on the request `onResource` and `scripts.fetch` are handed, which
+`HtmlNetwork` asks. A host that follows redirects without asking is held to
+where the resource landed, so the policy holds either way, but its server hears
+of a request the policy refused.
+
 **A nonce is hidden from its attribute where a response's header brought a
 policy** (HTML 2.6.3): as an element goes into the document its `nonce` content
 attribute is emptied, and its nonce kept where no selector reads it, which

@@ -181,7 +181,15 @@ export async function throughWorker(
       nonce: request.element ? doc.nonceOf(request.element) : '',
     };
     if (!doc.csp.request(csp, request.element)) return null;
-    const result = (await answer(scripts, request, host)) as {
+    // and at each hop a redirect makes, before it is asked for
+    const asked = doc.csp.policies.length
+      ? {
+          ...request,
+          nextHop: (to: string) =>
+            doc.csp.request(csp, request.element, [to]) ? to : null,
+        }
+      : request;
+    const result = (await answer(scripts, asked, host)) as {
       url?: string;
       redirects?: string[];
     } | null;

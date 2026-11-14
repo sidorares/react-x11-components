@@ -422,6 +422,15 @@ export interface FetchRequest {
    * `manual` alone: `error` is a page's, kept for a worker's `fetch` event.
    */
   redirect?: 'follow' | 'error' | 'manual';
+  /**
+   * Where a redirect is followed to, asked before that request is sent: the
+   * URL it leads to as it is to be asked for, or null where it may not be
+   * followed. A document's Content Security Policy is held to each request a
+   * redirect makes (Fetch 4.1, "main fetch", step 7), and a server should not
+   * hear of one the policy refuses. A network that cannot ask is answered
+   * after it landed, held to every URL on its way.
+   */
+  nextHop?: (url: string) => string | null;
   /** Whether its `Origin` is `null`, whatever its client's is: a sandboxed
    *  document's, whose address says nothing of who it is, or one a redirect
    *  through another origin tainted (`redirectTainted`). */

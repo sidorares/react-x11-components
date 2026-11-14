@@ -17,6 +17,7 @@ import {
   resourceResult,
   stallClock,
 } from '../../src/html/network.js';
+import { Element } from 'domhandler';
 import { CookieJar } from '../../src/html/cookies.js';
 import type { HtmlNetworkActivity } from '../../src/html/network.js';
 import { FRAME_MS, holdClock } from '../held-clock.js';
@@ -834,6 +835,65 @@ test('a redirect followed by the network: a loop ends, and a POST’s 302 is a G
   assert.equal(answer.status, 200);
   assert.equal(answer.redirected, true);
   assert.equal(answer.url, `${origin}/echo`);
+});
+
+test('a redirect the asker refuses is never followed: a page’s fetch fails and a resource is none, and the server hears nothing of where it led', async (t) => {
+  const heard: string[] = [];
+  const server = createServer((req, res) => {
+    heard.push(req.url ?? '');
+    if (req.url?.startsWith('/hop')) {
+      res.writeHead(302, { location: '/landed' + req.url.slice(4) });
+      res.end();
+    } else {
+      res.writeHead(200, { 'content-type': 'image/png' });
+      res.end('x');
+    }
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  t.after(() => server.close());
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const signal = new AbortController().signal;
+  const network = new HtmlNetwork({ connectTimeout: null });
+  const asked: string[] = [];
+  const refuse = (url: string): null => {
+    asked.push(url);
+    return null;
+  };
+  await assert.rejects(
+    network.fetcher(`${origin}/page`)(
+      {
+        url: `${origin}/hop1`,
+        method: 'GET',
+        headers: [],
+        body: null,
+        nextHop: refuse,
+      },
+      signal,
+    ),
+    /refuses/,
+  );
+  const element = new Element('img', {});
+  const image = await network.resources(`${origin}/page`)({
+    url: `${origin}/hop2`,
+    kind: 'image',
+    element,
+    nextHop: refuse,
+  });
+  assert.equal(image, null);
+  assert.deepEqual(asked, [`${origin}/landed1`, `${origin}/landed2`]);
+  assert.deepEqual(heard, ['/hop1', '/hop2']);
+  // and one it lets through is followed as ever
+  const allowed = await network.fetcher(`${origin}/page`)(
+    {
+      url: `${origin}/hop3`,
+      method: 'GET',
+      headers: [],
+      body: null,
+      nextHop: (url) => url,
+    },
+    signal,
+  );
+  assert.equal(allowed.url, `${origin}/landed3`);
 });
 
 test('a document says what redirected it, with a jar or without, and each hop what it said', async (t) => {

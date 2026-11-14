@@ -25,6 +25,7 @@ import { act, cleanup, renderX11 } from 'react-x11/test';
 import { Html, preloadHtmlScripts } from '../../src/html/index.js';
 import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
 import type { FetchRequest } from '../../src/html/scripts/host.js';
+import type { ResourceRequest } from '../../src/html/resources.js';
 
 const SELF = 'https://example.test:8443/page.html';
 
@@ -260,19 +261,22 @@ async function policed(
   logs: string[];
   sent: FetchRequest[];
   asked: string[];
+  requests: ResourceRequest[];
   until(prefix: string): Promise<string>;
   unmount(): void;
 }> {
   const logs: string[] = [];
   const sent: FetchRequest[] = [];
   const asked: string[] = [];
+  const requests: ResourceRequest[] = [];
   const result = await renderX11(
     React.createElement(Html, {
       source: `<!doctype html><html><head>${head}</head><body>${body}</body></html>`,
       partial: false,
       baseUrl: PAGE_URL,
-      onResource: ({ url }: { url: string }) => {
-        asked.push(url);
+      onResource: (request: ResourceRequest) => {
+        asked.push(request.url);
+        requests.push(request);
         return null;
       },
       scripts: {
@@ -298,6 +302,7 @@ async function policed(
     logs,
     sent,
     asked,
+    requests,
     async until(prefix) {
       const end = Date.now() + 5000;
       const found = () => logs.find((l) => l.startsWith(`log: ${prefix}`));
@@ -435,6 +440,40 @@ scripted(
     ]);
     await page.until('error');
     assert.ok(!page.asked.includes('https://example.test/a.png'));
+    page.unmount();
+  },
+);
+
+scripted(
+  'a redirect a policy refuses is refused before its request is sent, and told by the URL first asked for',
+  async () => {
+    const page = await policed(
+      `<meta http-equiv="Content-Security-Policy" content="img-src 'self'; script-src 'self' 'nonce-n'">${LISTEN}`,
+      `<img id="i" src="https://example.test/a.png">
+     <script src="https://example.test/s.js"></script>
+     <script nonce="n">setTimeout(function () {
+       console.log('seen ' + JSON.stringify(seen.map(function (s) { return [s[0], s[1]]; })));
+     }, 500)</script>`,
+    );
+    const end = Date.now() + 5000;
+    while (page.requests.length < 2 && Date.now() < end) {
+      await act(() => new Promise((r) => setTimeout(r, 10)));
+    }
+    const image = page.requests.find((r) => r.kind === 'image');
+    const script = page.requests.find((r) => r.kind === 'script');
+    assert.ok(image?.nextHop && script?.nextHop, 'asked with nextHop');
+    // a hop of its own origin goes on, and one of another is refused
+    assert.equal(
+      image.nextHop('https://example.test/b.png'),
+      'https://example.test/b.png',
+    );
+    assert.equal(image.nextHop('https://other.test/b.png'), null);
+    assert.equal(script.nextHop('https://other.test/s.js'), null);
+    // what is told is the URL first asked for, not where it was sent
+    assert.deepEqual(JSON.parse(await page.until('seen')), [
+      ['https://example.test/a.png', 'img-src'],
+      ['https://example.test/s.js', 'script-src-elem'],
+    ]);
     page.unmount();
   },
 );
