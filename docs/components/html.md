@@ -8019,8 +8019,10 @@ multicol container's columns has its insets read where the strip had it.
 A CSS-wide keyword in a `@position-try` rule takes an inset back whole,
 the `anchor()` in it with it, and `position-try-order` sorts the base style
 with the options, the last successful one alone kept ahead of them.
-`getComputedStyle` reads a `::backdrop`'s style, and the option's where a
-position option placed it; one of an element in no top layer, which has no
+`getComputedStyle` reads a `::backdrop`'s style, at that moment where a
+transition or an animation of its element's runs, as it reads a
+`::before`'s, and not at the last frame, and the option's where a position
+option placed it; one of an element in no top layer, which has no
 box, reads the style it would be made with, inheriting from its element, as
 Chrome answers for it, so an `attr()` the element sets reaches it. A box an
 option placed reads the option's insets where both sides of an axis are

@@ -88,6 +88,21 @@ declare const setTimeout: SetTimeout;
 declare const URL: UrlClass;
 declare const performance: { now(): number };
 
+/**
+ * The clock a page's tasks are timed on (`_bridge`, `_spent`): what the
+ * page's own code has spent, and how long the task has run. One object,
+ * exported for a test to hold, as `timerClock` is in `./host.ts`: on a busy
+ * runner a collection or a thread taken away lands in whatever the page was
+ * running, and is the page's time by this clock, so a test that gives its
+ * page a short time had a task of a millisecond's work stopped for it. The
+ * runtime's watchdog, the ceiling, is the wall clock's whatever this says.
+ */
+export const taskClock = {
+  now(): number {
+    return performance.now();
+  },
+};
+
 // The runtime's `vm` and `util`, loaded as this module is: it is reached
 // only once a document's scripts are turned on (`./load.ts`).
 const vm = await nodeModule<VmModule>('vm');
@@ -1585,12 +1600,12 @@ export class ScriptEngine {
    *  able to hear of it and go on. */
   get waitLeft(): number {
     const end = this._ceiling - this._options.timeout * 1.25;
-    return end - (performance.now() - this._taskFrom);
+    return end - (taskClock.now() - this._taskFrom);
   }
 
   /** Whose time it is from now, the page's or the host's; what it was. */
   private _stretch(page: boolean): boolean {
-    const now = performance.now();
+    const now = taskClock.now();
     if (this._inPage) this._pageUsed += now - this._since;
     this._since = now;
     const was = this._inPage;
@@ -1629,7 +1644,7 @@ export class ScriptEngine {
     const mark = { depth: this._depth, ops: this._ops, page: this._inPage };
     if (this._depth++ === 0) {
       this._options.entered?.();
-      this._taskFrom = this._since = performance.now();
+      this._taskFrom = this._since = taskClock.now();
       this._pageUsed = 0;
       this._inPage = true;
       this._stopped = false;
@@ -1648,7 +1663,7 @@ export class ScriptEngine {
     if (this._depth) this._stretch(mark.page);
     else {
       this._inPage = false;
-      this._busy += performance.now() - this._taskFrom;
+      this._busy += taskClock.now() - this._taskFrom;
       this._options.left?.();
       // any entry's, a script's as much as a task's: a popup's inline script
       // resolves its opener's promise as readily as a listener does
