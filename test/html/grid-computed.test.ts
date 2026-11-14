@@ -154,3 +154,66 @@ metric(
     );
   },
 );
+
+/** `#t`'s track list `at` of the way through an animation from `from` to
+ *  `to`, paused there, on an element whose own list is `own`, each
+ *  keyframe composited onto it by `composition`, as WPT's keyframes are. */
+async function animated(
+  from: string,
+  to: string,
+  at: number,
+  own = 'none',
+  composition = 'replace',
+): Promise<string> {
+  const frame = (list: string) =>
+    `{ grid-template-columns: ${list}; animation-composition: ${composition} }`;
+  const style = await computed(
+    `<style>@keyframes k { from ${frame(from)} to ${frame(to)} }</style>` +
+      `<div id="t" style="grid-template-columns: ${own};` +
+      `animation: k 100s linear ${-100 * at}s paused both"></div>`,
+  );
+  return style['grid-template-columns'];
+}
+
+metric(
+  'a track list runs between two of its kind track by track, the rest over at the middle',
+  async () => {
+    // CSS Grid 1, 7.2: lists of the same tracks interpolate each pair, a
+    // pair of other kinds going over on its own, and the names all at once
+    assert.strictEqual(
+      await animated('1fr [a b] 1fr [d] 1fr', '2fr [c] auto 2fr', 0.4),
+      '1.4fr [a b] 1fr [d] 1.4fr',
+    );
+    assert.strictEqual(
+      await animated('1fr [a b] 1fr [d] 1fr', '2fr [c] auto 2fr', 0.6),
+      '1.6fr [c] auto 1.6fr',
+    );
+    // `minmax()`'s sides each on their own, inside a `repeat()` too
+    assert.strictEqual(
+      await animated(
+        'repeat(2, minmax(10px, 1fr))',
+        'repeat(2, minmax(20px, auto))',
+        0.6,
+      ),
+      'repeat(2, minmax(16px, auto))',
+    );
+    // and lists of other shapes go over whole
+    assert.strictEqual(
+      await animated('repeat(2, 10px)', 'repeat(3, 20px)', 0.4),
+      'repeat(2, 10px)',
+    );
+  },
+);
+
+metric('a track list added onto another adds track by track', async () => {
+  // a length onto a length, an `fr` onto an `fr`, and the one on top where
+  // a pair does not add
+  assert.strictEqual(
+    await animated('1fr 1fr', '3fr auto', 0.5, '1fr 1fr', 'add'),
+    '3fr auto',
+  );
+  assert.strictEqual(
+    await animated('100px 100px', '200px 20%', 0, '50px 10%', 'add'),
+    '150px calc(10% + 100px)',
+  );
+});

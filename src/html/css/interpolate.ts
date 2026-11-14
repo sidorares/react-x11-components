@@ -28,7 +28,11 @@ import type {
   ClipPath,
   ComputedStyle,
   CornerShapes,
+  GridTemplate,
+  GridTrack,
   SizeOf,
+  WrittenPart,
+  WrittenTrack,
 } from './style.js';
 import type { ShapeFunction } from './shape-function.js';
 import { halfCorner, shapeAtHalfCorner } from './corner-shape.js';
@@ -148,6 +152,13 @@ export function interpolateField(
       return typeof a === 'number' && typeof b === 'number'
         ? clamp(a + (b - a) * q, 0, 1)
         : undefined;
+    case 'gridColumns':
+    case 'gridRows':
+      return interpolateTemplates(
+        a as GridTemplate | null,
+        b as GridTemplate | null,
+        q,
+      );
     case 'fontSizeBasis':
       // a size part of the way between two is the length it comes to,
       // which no family scales, as Blink has an animated size; and the
@@ -159,6 +170,220 @@ export function interpolateField(
   if (typeof value !== 'number') return value;
   if (INTEGERS.has(key)) return Math.round(value);
   return NOT_NEGATIVE.has(key) ? Math.max(0, value) : value;
+}
+
+// --- grid track lists ---------------------------------------------------------
+
+/**
+ * Two track lists `q` of the way between (CSS Grid 1, 7.2: "if the list
+ * lengths match, by computed value type on each item in the list; discrete
+ * otherwise"). They match where they have the same tracks in the same
+ * `repeat()`s, of the same counts. Each pair of tracks then runs between
+ * its ends where both are lengths, `fr`s or `fit-content()`s of lengths,
+ * two `minmax()`s side by side, and goes over at the half-way point where
+ * they are not — that track alone. The line names go over at the half-way
+ * point, all of them. Undefined for lists that do not match, which go over
+ * whole.
+ */
+function interpolateTemplates(
+  a: GridTemplate | null,
+  b: GridTemplate | null,
+  q: number,
+): GridTemplate | undefined {
+  if (!a?.written || !b?.written || a.subgrid || b.subgrid) return undefined;
+  if (!sameShape(a.written, b.written)) return undefined;
+  const ta = writtenTracks(a.written);
+  const tb = writtenTracks(b.written);
+  const mixed = ta.map((track, i) => mixTrack(track, tb[i], q));
+  return rebuilt(q < 0.5 ? a : b, mixed);
+}
+
+/** A track list with another added onto it (Web Animations 1, 5.4.4): a
+ *  track to each track, where the two lists match, as a length onto a
+ *  length and an `fr` onto an `fr`, and the one on top where a pair does
+ *  not add; the one on top, and its names, where the lists do not match. */
+function addTemplates(
+  under: GridTemplate | null,
+  value: GridTemplate | null,
+): GridTemplate | null {
+  if (
+    !under?.written ||
+    !value?.written ||
+    under.subgrid ||
+    value.subgrid ||
+    !sameShape(under.written, value.written)
+  ) {
+    return value;
+  }
+  const tu = writtenTracks(under.written);
+  const tv = writtenTracks(value.written);
+  return rebuilt(
+    value,
+    tv.map((track, i) => addTrack(tu[i], track)),
+  );
+}
+
+/** Whether two written track lists have the same tracks in the same
+ *  `repeat()`s, whatever names are between them. */
+function sameShape(
+  a: readonly WrittenPart[],
+  b: readonly WrittenPart[],
+): boolean {
+  const x = a.filter((part) => !('names' in part));
+  const y = b.filter((part) => !('names' in part));
+  if (x.length !== y.length) return false;
+  return x.every((part, i) => {
+    const other = y[i];
+    if ('repeat' in part) {
+      return (
+        'repeat' in other &&
+        part.repeat === other.repeat &&
+        sameShape(part.parts, other.parts)
+      );
+    }
+    return !('repeat' in other);
+  });
+}
+
+/** A written list's tracks in order, each `repeat()`'s once. */
+function writtenTracks(parts: readonly WrittenPart[]): WrittenTrack[] {
+  const out: WrittenTrack[] = [];
+  for (const part of parts) {
+    if ('names' in part) continue;
+    if ('repeat' in part) out.push(...writtenTracks(part.parts));
+    else out.push(part);
+  }
+  return out;
+}
+
+/** `side`'s list with its tracks, in order, replaced by `tracks`: its
+ *  names and its `repeat()`s, each counted out again into the tracks it
+ *  stands for and the auto repetition it is. */
+function rebuilt(
+  side: GridTemplate,
+  tracks: readonly WrittenTrack[],
+): GridTemplate {
+  let next = 0;
+  const swap = (parts: readonly WrittenPart[]): WrittenPart[] =>
+    parts.map((part) => {
+      if ('names' in part) return part;
+      if ('repeat' in part) return { ...part, parts: swap(part.parts) };
+      return tracks[next++];
+    });
+  const written = swap(side.written!);
+  const expanded: GridTrack[] = [];
+  let repeat = side.repeat;
+  for (const part of written) {
+    if ('names' in part) continue;
+    if (!('repeat' in part)) {
+      expanded.push(part.track);
+      continue;
+    }
+    const inner = writtenTracks(part.parts).map((one) => one.track);
+    if (typeof part.repeat === 'number') {
+      for (let i = 0; i < part.repeat; i += 1) expanded.push(...inner);
+    } else if (repeat) {
+      repeat = { ...repeat, tracks: inner };
+    }
+  }
+  return { ...side, tracks: expanded, repeat, written };
+}
+
+/** A track's size kinds that run between two of them: a length or a
+ *  percentage, and an `fr` or a `fit-content()` of one. */
+function mixSizing(
+  a: GridTrack['max'],
+  b: GridTrack['max'],
+  q: number,
+): GridTrack['max'] | undefined {
+  if (same(a, b)) return a;
+  const x = linear(a);
+  const y = linear(b);
+  if (x && y) {
+    const out = mix(a, b, q) as Len;
+    // a track is no less than nothing
+    return typeof out === 'number' ? Math.max(0, out) : out;
+  }
+  if (isRecord(a) && isRecord(b)) {
+    if ('fr' in a && 'fr' in b) {
+      return {
+        fr: Math.max(
+          0,
+          (a.fr as number) + ((b.fr as number) - (a.fr as number)) * q,
+        ),
+      };
+    }
+    if ('fit' in a && 'fit' in b) {
+      const fit = mixSizing(a.fit as Len, b.fit as Len, q);
+      return fit === undefined ? undefined : { fit: fit as Len };
+    }
+  }
+  return undefined;
+}
+
+/** One track `q` of the way between two written as the same form, or over
+ *  at the half-way point (`interpolateTemplates`). */
+function mixTrack(a: WrittenTrack, b: WrittenTrack, q: number): WrittenTrack {
+  const over = q < 0.5 ? a : b;
+  if (a.form !== b.form) return over;
+  if (a.form === 'minmax') {
+    // each side runs, or goes over, on its own
+    const min =
+      mixSizing(a.track.min, b.track.min, q) ??
+      discrete(a.track.min, b.track.min, q);
+    const max =
+      mixSizing(a.track.max, b.track.max, q) ??
+      discrete(a.track.max, b.track.max, q);
+    return { form: 'minmax', track: { min: min as GridTrack['min'], max } };
+  }
+  const max = mixSizing(a.track.max, b.track.max, q);
+  if (max === undefined) return over;
+  // a length is its own least size, and anything else's is `auto`
+  const min = linear(max) ? (max as GridTrack['min']) : a.track.min;
+  if (!same(a.track.min, b.track.min) && !linear(max)) return over;
+  return { form: a.form, track: { min, max } };
+}
+
+/** A track's sizes added, where they add, and the one on top's where they
+ *  do not (`addTemplates`). */
+function addSizing(
+  under: GridTrack['max'],
+  value: GridTrack['max'],
+): GridTrack['max'] {
+  if (linear(under) && linear(value)) return sum(under, value) as Len;
+  if (isRecord(under) && isRecord(value)) {
+    if ('fr' in under && 'fr' in value) {
+      return { fr: (under.fr as number) + (value.fr as number) };
+    }
+    if ('fit' in under && 'fit' in value) {
+      return { fit: addSizing(under.fit as Len, value.fit as Len) as Len };
+    }
+  }
+  return value;
+}
+
+function addTrack(under: WrittenTrack, value: WrittenTrack): WrittenTrack {
+  if (under.form !== value.form) return value;
+  if (value.form === 'minmax') {
+    return {
+      form: 'minmax',
+      track: {
+        min: addSizing(under.track.min, value.track.min) as GridTrack['min'],
+        max: addSizing(under.track.max, value.track.max),
+      },
+    };
+  }
+  const max = addSizing(under.track.max, value.track.max);
+  if (max === value.track.max && !same(under.track.max, value.track.max)) {
+    return value;
+  }
+  return {
+    form: value.form,
+    track: {
+      min: linear(max) ? (max as GridTrack['min']) : value.track.min,
+      max,
+    },
+  };
 }
 
 /**
@@ -1056,6 +1281,12 @@ export function addField(
         isAutoInset(w) ? [w.auto, w.auto] : w;
       return sum(lens(u), lens(v));
     }
+    case 'gridColumns':
+    case 'gridRows':
+      return addTemplates(
+        under as GridTemplate | null,
+        value as GridTemplate | null,
+      );
     case 'boxShadow':
     case 'filter': {
       const u = (under as unknown[] | null) ?? [];

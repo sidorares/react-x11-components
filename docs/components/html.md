@@ -5854,7 +5854,12 @@ repetitions said out. A grid with no template, no areas and nothing in it
 reads `none` for its track lists, where its layout made one track. `grid-template-areas` reads as a string a row,
 `grid-auto-rows` and `grid-auto-columns` as their whole lists (layout takes
 the first), and the placement longhands and `grid-lanes` as they compute.
-The track lists do not interpolate yet. A script's `el.style` takes each
+A track list runs between two others of the same tracks in the same
+`repeat()`s track by track (CSS Grid 1, 7.2): a pair of lengths, of `fr`s
+or of `fit-content()`s between their ends, two `minmax()`s side by side,
+and any other pair over at the half-way point on its own, the line names
+all at once; lists of other shapes go over whole. One added onto another
+adds the same way, and where a pair does not add, the one on top stands. A script's `el.style` takes each
 grid property only where its grammar does, and keeps it canonical (CSSOM
 6.7): a track list's keywords in lower case and its empty groups of names
 dropped, a grid line's number before its name and `span` first, `span 1`
