@@ -32,6 +32,7 @@
 
 import { codePointAtOffset, codeUnitOffsets } from '../../internal/text.js';
 import type { TextRun } from '../../richtext/index.js';
+import { autospaceFlags } from '../css/autospace.js';
 import { fadeColor } from '../css/color.js';
 import type { BoxShadow, ComputedStyle } from '../css/style.js';
 import {
@@ -593,17 +594,18 @@ export function overflowStyleOf(block: Box): ComputedStyle {
 }
 
 function layoutLines(block: Box, options: InlineOptions): InlineResult {
-  const items: Item[] = [];
+  const collected: Item[] = [];
   const statics: StaticMark[] = [];
   const floatCount = collect(
     block,
-    items,
+    collected,
     options.width,
     options.fonts,
     block.style,
     !!options.floatBoxes,
     statics,
   );
+  const items = autospaced(collected, statics);
   const result = linesOf(block, options, items, floatCount);
   // lines made a piece at a time that `text-wrap: pretty` would break
   // otherwise, made again with its breaks asked for — and kept where the
@@ -4358,11 +4360,11 @@ export function emptyBoxPoint(
 ): { x: number; y: number; height: number; onLine: boolean } | null {
   const lines = block.lines;
   if (!lines?.length) return null;
-  const items: Item[] = [];
+  const collected: Item[] = [];
   const seek: StaticMark = { index: -1, box };
   collect(
     block,
-    items,
+    collected,
     block.contentWidth,
     fonts,
     block.style,
@@ -4372,6 +4374,7 @@ export function emptyBoxPoint(
     1,
     seek,
   );
+  const items = autospaced(collected, [seek]);
   if (seek.index < 0) return null;
   const rtl = block.style.direction === 'rtl';
   const before = penAfter(items, seek.index, lines, rtl);
@@ -4756,6 +4759,146 @@ function wordSpaced(
     from = m.index + m[0].length;
   }
   push(from, text.length, 0);
+}
+
+/** A character an ideograph is (CSS Text 4, 6.4.1): a letter or a number of
+ *  the Han, Hiragana, Katakana or Bopomofo scripts. */
+const IDEOGRAPH = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Bopomofo}]/u;
+const LETTER_OR_NUMBER = /[\p{L}\p{N}]/u;
+const MARK = /\p{M}/u;
+const DIGIT = /\p{Nd}/u;
+/** What is wide in East Asian text, and so neither a letter nor a numeral
+ *  of another script beside an ideograph: the CJK blocks, Hangul and the
+ *  full-width forms. */
+const WIDE =
+  /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6\u{20000}-\u{3fffd}]/u;
+
+/** Whether text stands upright in a vertical line, where no room goes
+ *  beside it (CSS Text 4, 6.4): set upright, or combined. A sideways mode
+ *  sets nothing upright and combines nothing. */
+function standsUpright(style: ComputedStyle): boolean {
+  return (
+    (style.writingMode === 'vertical-rl' ||
+      style.writingMode === 'vertical-lr') &&
+    (style.textOrientation === 'upright' || style.textCombineUpright)
+  );
+}
+
+/** 1 an ideograph, 2 a letter, 3 a numeral of another script, 0 neither, and
+ *  -1 a mark, which is its base's. */
+function autospaceClass(ch: string): -1 | 0 | 1 | 2 | 3 {
+  if (MARK.test(ch)) return -1;
+  if (!LETTER_OR_NUMBER.test(ch)) return 0;
+  if (IDEOGRAPH.test(ch)) return 1;
+  if (WIDE.test(ch)) return 0;
+  return DIGIT.test(ch) ? 3 : 2;
+}
+
+/**
+ * `text-autospace` (CSS Text 4, 6.4): room between an ideograph and a letter
+ * or a numeral of another script beside it, `text-autospace-size` ems of
+ * the text before the boundary, which the style of that text has to ask
+ * for. It goes on as letter spacing on the character before the boundary,
+ * split from its run into one of its own, inside a text and across the
+ * edges of the inline boxes the two are in; an atomic between them parts
+ * them. `marks` are indexes into `items`, moved along with the items they
+ * point at. Nothing is split where no text holds an ideograph.
+ */
+function autospaced(items: Item[], marks: { index: number }[]): Item[] {
+  if (
+    !items.some((item) => item.kind === 'text' && IDEOGRAPH.test(item.run.text))
+  ) {
+    return items;
+  }
+  // where each text item gets room, after which of its code units
+  const spaced = new Map<number, number[]>();
+  let prev: { item: number; at: number; kind: 0 | 1 | 2 | 3 } | null = null;
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    if (item.kind === 'atomic') {
+      prev = null;
+      continue;
+    }
+    if (item.kind !== 'text' || item.control) continue;
+    const text = item.run.text;
+    for (let at = 0; at < text.length;) {
+      const ch = String.fromCodePoint(text.codePointAt(at)!);
+      const next = at + ch.length;
+      const kind = autospaceClass(ch);
+      if (kind === -1) {
+        // a mark goes with its base, and the room after both
+        if (prev) prev = { item: i, at: next - 1, kind: prev.kind };
+      } else {
+        if (prev && kind && prev.kind && (prev.kind === 1) !== (kind === 1)) {
+          const other = prev.kind === 1 ? kind : prev.kind;
+          const before = items[prev.item] as Extract<Item, { kind: 'text' }>;
+          const flags = autospaceFlags(before.box.style.textAutospace);
+          if (
+            (other === 2 ? flags.alpha : flags.numeric) &&
+            !standsUpright(before.box.style) &&
+            !standsUpright(item.box.style)
+          ) {
+            let list = spaced.get(prev.item);
+            if (!list) spaced.set(prev.item, (list = []));
+            list.push(prev.at);
+          }
+        }
+        prev = { item: i, at: next - 1, kind };
+      }
+      at = next;
+    }
+  }
+  if (!spaced.size) return items;
+  const out: Item[] = [];
+  const moved = new Array<number>(items.length + 1);
+  for (let i = 0; i < items.length; i += 1) {
+    moved[i] = out.length;
+    const item = items[i];
+    const list = spaced.get(i);
+    if (!list || item.kind !== 'text') {
+      out.push(item);
+      continue;
+    }
+    const { run } = item;
+    const style = item.box.style;
+    const room = (run.size ?? style.fontSize) * style.textAutospaceSize;
+    let from = 0;
+    const push = (to: number, extra: number): void => {
+      if (to <= from) return;
+      out.push({
+        ...item,
+        run: {
+          ...run,
+          text: run.text.slice(from, to),
+          ...(extra
+            ? {
+                letterSpacing: (run.letterSpacing ?? 0) + extra,
+                kernAcross: true,
+              }
+            : null),
+        },
+        length: to - from,
+        start: item.start + from,
+      });
+      from = to;
+    };
+    for (const last of list) {
+      // the character the room is after, alone in its run: its code point,
+      // whose low surrogate `last` may be
+      const end = last + 1;
+      const pair = end >= 2 && (run.text.codePointAt(end - 2) ?? 0) > 0xffff;
+      const width = pair ? 2 : 1;
+      push(end - width, 0);
+      // letter spacing comes after each code unit's glyph, and a pair is one
+      push(end, room);
+    }
+    push(run.text.length, 0);
+  }
+  moved[items.length] = out.length;
+  for (const mark of marks) {
+    if (mark.index >= 0) mark.index = moved[mark.index];
+  }
+  return out;
 }
 
 /**

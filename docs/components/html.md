@@ -7702,7 +7702,13 @@ Dutch is `IJsland` and Greek capitals lose their tonos),
 `word-space-transform` (a zero width space and a `<wbr>`, which is one, set
 as a space or an ideographic space after the white space collapses and
 before `text-transform`, but for one beside a line feed the text keeps;
-`auto-phrase` finds no phrases, and adds nothing), `letter-spacing`
+`auto-phrase` finds no phrases, and adds nothing),
+`text-autospace` and `text-autospace-size` (an eighth of an em, or what the
+size says, between an ideograph and a letter or a numeral of another script
+beside it, inside a text and across the inline boxes the two are in, put
+after the character before the boundary in its style; `normal` and `auto`
+space both, as Chrome does; an atomic between them parts them, and the
+`punctuation` class and `replace` are read and do nothing), `letter-spacing`
 and `word-spacing` (the first is the text engine's; the second is spacing added to each space and
 no-break space, so only text that asks for it is split into more runs),
 and a space that justification or `word-spacing` widens keeps the

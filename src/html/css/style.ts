@@ -84,6 +84,7 @@ import {
   parseTextTransform,
   parseWordSpaceTransform,
 } from './text-transform.js';
+import { parseTextAutospace } from './autospace.js';
 import {
   parseTextBox,
   parseTextBoxEdge,
@@ -860,6 +861,17 @@ export interface ComputedStyle {
    *  (`parseWordSpaceTransform`): what a zero width space and a `<wbr>`
    *  are set as. Inherited. */
   wordSpaceTransform: string;
+  /** `text-autospace` (CSS Text 4, 6.4) as it computes
+   *  (`parseTextAutospace`): where room goes between ideographs and the
+   *  letters and numerals beside them. Inherited. */
+  textAutospace: string;
+  /** `text-autospace-size`: that room, in ems of the text it follows.
+   *  Inherited. */
+  textAutospaceSize: number;
+  /** Whether `text-combine-upright` combines the text (CSS Writing Modes 4,
+   *  9.1): read for `text-autospace` alone, which puts no room beside it,
+   *  and not laid out. Not inherited. */
+  textCombineUpright: boolean;
   letterSpacing: number;
   wordSpacing: number;
   /** The shadows its text casts, front to back, as `boxShadow`'s are but
@@ -1779,6 +1791,8 @@ export const INHERITED = [
   'alignBlocks',
   'textIndent',
   'textTransform',
+  'textAutospace',
+  'textAutospaceSize',
   'textBoxEdge',
   'wordSpaceTransform',
   'textUnderlineOffset',
@@ -1954,6 +1968,9 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     textIndent: 0,
     textTransform: 'none',
     wordSpaceTransform: 'none',
+    textAutospace: 'normal',
+    textAutospaceSize: 0.125,
+    textCombineUpright: false,
     letterSpacing: 0,
     wordSpacing: 0,
     textShadow: null,
@@ -2375,6 +2392,8 @@ export function inherit(
   out.alignBlocks = parent.alignBlocks;
   out.textIndent = parent.textIndent;
   out.textTransform = parent.textTransform;
+  out.textAutospace = parent.textAutospace;
+  out.textAutospaceSize = parent.textAutospaceSize;
   out.textBoxEdge = parent.textBoxEdge;
   out.wordSpaceTransform = parent.wordSpaceTransform;
   out.letterSpacing = parent.letterSpacing;
@@ -4606,6 +4625,23 @@ export function applyDeclaration(
     case 'word-space-transform': {
       const v = parseWordSpaceTransform(value);
       if (v !== undefined) style.wordSpaceTransform = v;
+      return;
+    }
+    case 'text-autospace': {
+      const v = parseTextAutospace(value);
+      if (v !== undefined) style.textAutospace = v;
+      return;
+    }
+    case 'text-combine-upright': {
+      const v = value.trim().toLowerCase();
+      if (v === 'none' || v === 'all' || /^digits(?:\s+[234])?$/.test(v)) {
+        style.textCombineUpright = v !== 'none';
+      }
+      return;
+    }
+    case 'text-autospace-size': {
+      const n = parseNumber(value);
+      if (n !== null && Number.isFinite(n)) style.textAutospaceSize = n;
       return;
     }
     case 'text-transform': {
@@ -9599,6 +9635,8 @@ const INHERITED_NAMES = new Set<string>([
   'block-ellipsis',
   'text-indent',
   'text-transform',
+  'text-autospace',
+  'text-autospace-size',
   'text-box-edge',
   'word-space-transform',
   'letter-spacing',
@@ -10210,6 +10248,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'text-indent': ['textIndent'],
   'text-transform': ['textTransform'],
   'word-space-transform': ['wordSpaceTransform'],
+  'text-autospace': ['textAutospace'],
+  'text-autospace-size': ['textAutospaceSize'],
+  'text-combine-upright': ['textCombineUpright'],
   'letter-spacing': ['letterSpacing'],
   'word-spacing': ['wordSpacing'],
   'font-variant': [

@@ -37,6 +37,7 @@ import {
   parseTextTransform,
   parseWordSpaceTransform,
 } from './text-transform.js';
+import { parseTextAutospace } from './autospace.js';
 import {
   parseTextBox,
   parseTextBoxEdge,
@@ -263,6 +264,17 @@ export function specifiedValue(
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
     return parseWordSpaceTransform(word) ?? null;
+  }
+  // its classes in the order CSS Text 4, 6.4 lists them, and a number
+  if (name === 'text-autospace') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return parseTextAutospace(word) ?? null;
+  }
+  if (name === 'text-autospace-size') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(word) ? word : null;
   }
   // its keywords each at most once, in the order CSS Text 3, 2.1 gives them
   if (name === 'text-transform') {
