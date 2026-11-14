@@ -16,6 +16,8 @@ import {
   HtmlViewNode,
   preloadHtmlScripts,
 } from '../../src/html/index.js';
+import { snapClock } from '../../src/html/node.js';
+import { holdClock, type HeldClock } from '../held-clock.js';
 import { findById, FONTS } from './harness.js';
 
 afterEach(cleanup);
@@ -83,20 +85,26 @@ async function page(source: string, scripts = true) {
     step,
     el: (id: string) => findById(view.document, id)!,
     /** A finger down at a point, moved through the others a frame apart,
-     *  and lifted `rest` ms after its last move. */
-    swipe: async (points: [number, number][], rest = 16) => {
+     *  and lifted `rest` ms after its last move: a frame apart on `clock`
+     *  where the test holds the gesture's (`snapClock`), which a finger's
+     *  speed is read on. */
+    swipe: async (points: [number, number][], rest = 16, clock?: HeldClock) => {
+      const apart = async (ms: number) => {
+        clock?.pass(ms);
+        await step(ms);
+      };
       finger = true;
       server.injectPointerMove(points[0][0], points[0][1]);
-      await step(16);
+      await apart(16);
       server.injectButton(1, true);
-      await step(16);
+      await apart(16);
       for (const [x, y] of points.slice(1)) {
         server.injectPointerMove(x, y);
-        await step(16);
+        await apart(16);
       }
-      if (rest > 16) await step(rest - 16);
+      if (rest > 16) await apart(rest - 16);
       server.injectButton(1, false);
-      await step(16);
+      await apart(16);
       finger = false;
     },
     /** A mouse's drag from one point to another, a frame at each. */
@@ -195,23 +203,34 @@ test('a tap is the pointer’s down and up, then the mouse’s events a tap is c
   assert.equal(scrollTop(p, 's'), 0);
 });
 
-test('a finger let go as it moves flings on, comes to rest at the snap position ahead, and the list’s scrollend is told once it has', async () => {
+test('a finger let go as it moves flings on, comes to rest at the snap position ahead, and the list’s scrollend is told once it has', async (t) => {
+  // the gesture's clock held, the finger's speed read on it: on the wall
+  // clock a slow runner moved the finger more than the speed's window apart,
+  // which read as a finger that stopped, or ran the fling out before it was
+  // looked at
+  const clock = holdClock(t, snapClock);
   const p = await page(
     LIST +
       `<script>const s = document.getElementById('s'); s.addEventListener('scrollend', () => console.log('scrollend ' + s.scrollTop));</script>`,
   );
-  await p.swipe([
-    [50, 180],
-    [50, 160],
-    [50, 140],
-    [50, 120],
-    [50, 100],
-  ]);
-  // the finger took it 80px, and it has gone on since
+  await p.swipe(
+    [
+      [50, 180],
+      [50, 160],
+      [50, 140],
+      [50, 120],
+      [50, 100],
+    ],
+    16,
+    clock,
+  );
+  // the finger took it 80px, and it goes on from there
   const lifted = scrollTop(p, 's');
   assert.ok(lifted >= 80, `${lifted}`);
   assert.ok(p.view.scrollGestureOwed(p.el('s')), 'still on its way');
-  await p.step(1200);
+  await clock.finish();
+  // told at the page's next rendering update, which the wall clock brings
+  for (let i = 0; i < 100 && !p.log.length; i += 1) await p.step(20);
   const rest = scrollTop(p, 's');
   assert.ok(rest > lifted, `it went on, to ${rest}`);
   assert.equal(rest % 40, 0, 'at a snap position');
