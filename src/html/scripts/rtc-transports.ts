@@ -515,7 +515,7 @@ export function installRtcTransports(
     if (t) return t;
     const ice = new RTCIceTransport(TOKEN);
     const dtls = new RTCDtlsTransport(TOKEN);
-    t = { id, ice, dtls, state: { ...NEW_TRANSPORT } };
+    t = { id, ice, dtls, state: { ...NEW_TRANSPORT }, queued: null };
     apply(wmSet, slots, [
       ice,
       { iceTransport: true, state: t.state, local: [], remote: [], pc: s },
@@ -793,34 +793,58 @@ export function installRtcTransports(
     const s = connections.get(pcId);
     if (!s || s.closed) return null;
     const t = transportOf(s, id);
-    const before: TransportState = t.state;
-    if (
-      before.gatheringState !== 'complete' &&
-      state.gatheringState === 'complete'
-    ) {
-      // the end of a transport's candidates, then, in a task of its own,
-      // what its gathering coming to an end changes (webrtc-pc#2894)
-      const [mid, index] = sectionOfTransport(s, id);
-      fire(
-        s.self,
-        new RTCPeerConnectionIceEvent('icecandidate', {
-          candidate: new RTCIceCandidate({
-            candidate: '',
-            sdpMid: mid ?? '0',
-            sdpMLineIndex: index,
-            usernameFragment: state.localParameters?.usernameFragment ?? null,
-          }),
-        }),
-      );
-      setTimer(() => {
-        if (s.closed) return;
-        transportMoved(s, t, before, state);
-      }, 0);
-      return null;
-    }
-    transportMoved(s, t, before, state);
+    // what is told while the end of its gathering waits for its task waits
+    // behind it, or it is read against the state before that end and
+    // ends the gathering again: a stack that tells the transport three
+    // times in that task, its pair or its roles moving, had the page hear
+    // three ends of candidates and three gatheringstatechanges
+    if (t.queued) t.queued.push(state);
+    else transportArrived(s, t, id, state);
     return null;
   });
+
+  /** A transport's new state, read against the one it has: the end of its
+   *  candidates, then, in a task of its own, what its gathering coming to
+   *  an end changes (webrtc-pc#2894), and the states told meanwhile. */
+  const transportArrived = (
+    s: Any,
+    t: Any,
+    id: number,
+    state: TransportState,
+  ): void => {
+    const before: TransportState = t.state;
+    if (
+      before.gatheringState === 'complete' ||
+      state.gatheringState !== 'complete'
+    ) {
+      transportMoved(s, t, before, state);
+      return;
+    }
+    const [mid, index] = sectionOfTransport(s, id);
+    fire(
+      s.self,
+      new RTCPeerConnectionIceEvent('icecandidate', {
+        candidate: new RTCIceCandidate({
+          candidate: '',
+          sdpMid: mid ?? '0',
+          sdpMLineIndex: index,
+          usernameFragment: state.localParameters?.usernameFragment ?? null,
+        }),
+      }),
+    );
+    t.queued = [] as TransportState[];
+    setTimer(() => {
+      const waiting: TransportState[] = t.queued;
+      t.queued = null;
+      if (s.closed) return;
+      transportMoved(s, t, before, state);
+      for (const next of waiting) {
+        if (s.closed) return;
+        if (t.queued) t.queued.push(next);
+        else transportArrived(s, t, id, next);
+      }
+    }, 0);
+  };
 
   const transportMoved = (
     s: Any,
