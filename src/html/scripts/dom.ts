@@ -43206,11 +43206,14 @@ export function installDom(
       trustedComply: (value: Any, sink: string) =>
         ttOf.comply(value, 'TrustedScript', sink),
       trustedRequired: () => !!ttOf?.required,
+      later: (fn: () => void) => setTimer(fn, 0, [], false),
     });
     define(
       'SecurityPolicyViolationEvent',
       cspOf.interfaces.SecurityPolicyViolationEvent,
     );
+    define('Report', cspOf.interfaces.Report);
+    define('ReportingObserver', cspOf.interfaces.ReportingObserver);
     cspOf.policyChanged(str(call('csp', 'said') ?? ''));
   }
 
