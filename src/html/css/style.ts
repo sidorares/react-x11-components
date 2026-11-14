@@ -88,6 +88,13 @@ import {
   shapeOutsideSpecified,
   shapeThresholdComputed,
 } from './shape-outside.js';
+import {
+  autoInset,
+  isAutoInset,
+  NO_DECORATION_INSET,
+  parseDecorationInset,
+} from './decoration-inset.js';
+import type { AutoInset } from './decoration-inset.js';
 import type { ObjectViewBox } from './object-view-box.js';
 import {
   anchorMathValue,
@@ -1550,6 +1557,12 @@ export interface ComputedStyle {
   textDecorationStyle: 'solid' | 'double' | 'dotted' | 'dashed' | 'wavy';
   /** `text-decoration-thickness`, or null for `auto` and `from-font`. */
   textDecorationThickness: number | null;
+  /** `text-decoration-inset` (CSS Text Decoration 4, 2.6): how far in from
+   *  this box's start and end the decorations it sets begin and end, a
+   *  length or a percentage of the box's inline size each, or `auto`, a
+   *  little in, as the user agent chooses (`insetOf`, in `paint.ts`). Not
+   *  inherited: it is read off the decorating box itself. */
+  textDecorationInset: readonly [Len, Len] | AutoInset;
   /** `text-underline-offset`, from the alphabetic baseline down, or null
    *  for `auto`. Inherited. */
   textUnderlineOffset: number | null;
@@ -2194,6 +2207,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     textDecorationColor: null,
     textDecorationStyle: 'solid',
     textDecorationThickness: null,
+    textDecorationInset: NO_DECORATION_INSET,
     textUnderlineOffset: null,
     underline: null,
     underlineStyle: 'solid',
@@ -2464,6 +2478,11 @@ export function zoomedBy(style: ComputedStyle, r: number): ComputedStyle {
   out.underlineThickness = at(style.underlineThickness);
   out.underlineOffset = at(style.underlineOffset);
   out.lineThroughThickness = at(style.lineThroughThickness);
+  const inset = style.textDecorationInset;
+  if (isAutoInset(inset)) out.textDecorationInset = { auto: inset.auto * r };
+  else if (inset !== NO_DECORATION_INSET) {
+    out.textDecorationInset = [zoomLen(inset[0], r), zoomLen(inset[1], r)];
+  }
   const fields = out as unknown as Record<string, unknown>;
   for (const key of BOX_LENGTHS) fields[key] = zoomLen(style[key], r);
   for (const key of BOX_WIDTHS) fields[key] = style[key] * r;
@@ -4816,6 +4835,14 @@ export function applyDeclaration(
     case 'text-decoration-thickness': {
       const thickness = decorationLength(value, ctx, 'from-font');
       if (thickness !== undefined) style.textDecorationThickness = thickness;
+      return;
+    }
+    case 'text-decoration-inset': {
+      const inset = parseDecorationInset(value, ctx);
+      if (inset === 'auto') {
+        // with the length it runs from, of the thickness the element has
+        style.textDecorationInset = autoInset(usedThickness(style), ctx.scale);
+      } else if (inset !== undefined) style.textDecorationInset = inset;
       return;
     }
     case 'text-underline-offset': {
@@ -10536,6 +10563,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'text-decoration-line': ['textDecorationLine'],
   'text-decoration-style': ['textDecorationStyle'],
   'text-decoration-thickness': ['textDecorationThickness'],
+  'text-decoration-inset': ['textDecorationInset'],
   'text-underline-offset': ['textUnderlineOffset'],
   'table-layout': ['tableLayout'],
 };
@@ -10608,6 +10636,21 @@ export function decorate(style: ComputedStyle): void {
     );
     style.lineThroughStyle = style.textDecorationStyle;
     style.lineThroughThickness = usedThickness(style);
+  }
+}
+
+/**
+ * `text-decoration-inset: auto`'s length, once the style's font size and
+ * thickness are known (`autoInset`): read with the declaration, it was of
+ * whatever size the style had got to, which a frame of an animation is
+ * worked out from before its font.
+ */
+export function settleDecorationInset(
+  style: ComputedStyle,
+  scale: number,
+): void {
+  if (isAutoInset(style.textDecorationInset)) {
+    style.textDecorationInset = autoInset(usedThickness(style), scale);
   }
 }
 

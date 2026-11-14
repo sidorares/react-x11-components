@@ -26,7 +26,18 @@ import {
   paintRunBackgrounds,
   paintRunRules,
 } from '../richtext/runs.js';
-import type { FillContext, LaidLine, LaidRun } from '../richtext/runs.js';
+import type {
+  FillContext,
+  LaidLine,
+  LaidRun,
+  RuleInsets,
+} from '../richtext/runs.js';
+import {
+  autoInsetLength,
+  decorationInsetsSeen,
+  isAutoInset,
+  NO_DECORATION_INSET,
+} from './css/decoration-inset.js';
 import type { TextRun } from '../richtext/index.js';
 import { gaugeOf } from './controls.js';
 import { controlValue } from './form.js';
@@ -14858,7 +14869,7 @@ function paintLinePart(
 
   // an underline goes under the glyphs, a line through over them (CSS 2.1
   // Appendix E): a descender crosses its own underline
-  paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'under', skip);
+  paintRules(ctx, box, visible, dx, dy, options.scale ?? 1, 'under', skip);
   paintHighlightRules(ctx, visible, options, dx, dy, 'under', skip);
 
   if (CLIPPED_TEXT.has(box)) {
@@ -14912,7 +14923,7 @@ function paintLinePart(
     }
   }
 
-  paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'over', skip);
+  paintRules(ctx, box, visible, dx, dy, options.scale ?? 1, 'over', skip);
   paintHighlightRules(ctx, visible, options, dx, dy, 'over', skip);
   if (bleeds.length) paintBleeds(ctx, bleeds, options);
   // One painted with the positioned boxes is its stacking context's to
@@ -15656,6 +15667,9 @@ function castShadows(
 /** One pass of the lines' run rules, `under` or `over` their glyphs. */
 function paintRules(
   ctx: PaintContext,
+  /** The block whose lines these are: the paragraph a rule's element
+   *  starts and ends in, for its insets. */
+  paragraph: Box,
   lines: LineBox[],
   dx: number,
   dy: number,
@@ -15664,12 +15678,21 @@ function paintRules(
   /** What of the lines another part of them paints (`LinePart`). */
   skip?: ReadonlySet<unknown>,
 ): void {
+  // whose each rule is and how far in it is drawn, where any element has
+  // said (`text-decoration-inset`): nothing is asked of a page that has not
+  const seen = decorationInsetsSeen();
+  const whole = seen ? new Map<Box, number>() : null;
+  const ranges = seen ? new Map<Box, readonly [number, number]>() : null;
   for (const line of lines) {
     const shifted = SHIFTED_LINES.has(line);
     for (const text of line.texts) {
       if (skip?.has(text)) continue;
       const natural = text.layout.lines[text.layoutLine];
       if (!natural) continue;
+      const insets =
+        whole && ranges
+          ? ruleInsets(text, paragraph, lines, whole, ranges, scale)
+          : undefined;
       for (const laid of [natural, trailOf(text, natural)]) {
         if (!laid) continue;
         paintRunRules(
@@ -15679,10 +15702,155 @@ function paintRules(
           text.drawY + dy + (shifted ? ruleDrop(text) : 0),
           scale,
           rules,
+          insets,
         );
       }
     }
   }
+}
+
+/**
+ * The element whose underline or line through a box's text is drawn with:
+ * the nearest around it that sets that line (`decorate`), up to a box that
+ * takes none from above, through blocks, which do. A text box shares its
+ * element's style, so the walk starts above it, or each text of an element
+ * would be one of its own.
+ */
+function decoratingBox(box: Box | null, line: string): Box | null {
+  for (let at = box?.kind === 'text' ? box.parent : box; at; at = at.parent) {
+    const style = at.style;
+    if (style.textDecorationLine.split(' ').includes(line)) return at;
+    if (
+      style.float !== 'none' ||
+      style.position === 'absolute' ||
+      style.position === 'fixed' ||
+      style.display === 'inline-block' ||
+      style.display === 'inline-table' ||
+      style.display === 'inline-flex'
+    ) {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * How a text's rules are inset (CSS Text Decoration 4, 2.6): each stretch
+ * is its element's (`decoratingBox`), and is drawn in from that element's
+ * start where it holds the element's first character in the paragraph
+ * and from its end where it holds its last there — at every one of its
+ * lines' ends where the element's `box-decoration-break` is `clone`. A
+ * block in an element, or one around a paragraph that its rule reaches,
+ * ends a paragraph, as Chrome has it: each part of `<u>a<div>b</div>c</u>`
+ * is inset at both ends. A percentage is of the element's inline size in
+ * the paragraph: its text, all of its stretches the paragraph's lines hold
+ * where it is sliced over them (`whole`, worked out once), and an inline
+ * box's own padding and borders. `auto` is half the rule's thickness,
+ * between one pixel and two (`autoInsetLength`), which is what Chrome draws.
+ */
+function ruleInsets(
+  text: LineText,
+  paragraph: Box,
+  lines: readonly LineBox[],
+  whole: Map<Box, number>,
+  ranges: Map<Box, readonly [number, number]>,
+  scale: number,
+): RuleInsets {
+  const spans = text.spans;
+  const word = (rule: 'under' | 'strike') =>
+    rule === 'under' ? 'underline' : 'line-through';
+  const owner = (r: LaidRun, rule: 'under' | 'strike'): Box | null =>
+    decoratingBox(spans.boxAt?.(r.start) ?? null, word(rule));
+  return {
+    owner,
+    inset(first, last, width, rule, thickness) {
+      const box = owner(first, rule);
+      const value = box?.style.textDecorationInset;
+      if (!box || !value || value === NO_DECORATION_INSET) return null;
+      // its start and its end in this paragraph: a block in it, or a block
+      // around it the rule is drawn into, ends one paragraph and starts
+      // the next
+      const inline = box.kind === 'inline';
+      const clone = box.style.boxDecorationBreak === 'clone';
+      const own = textRangeOf(box, ranges);
+      const here = textRangeOf(paragraph, ranges);
+      const from = Math.max(own[0], here[0]);
+      const to = Math.min(own[1], here[1]);
+      const starts = clone || spans.documentAt(first.start) <= from;
+      const ends = clone || spans.documentAt(last.end) >= to;
+      if (!starts && !ends) return null;
+      if (isAutoInset(value)) {
+        const by = autoInsetLength(thickness, scale);
+        return [starts ? by : 0, ends ? by : 0];
+      }
+      // of the decorating box's inline size: its text in this paragraph —
+      // on each line where it is cloned there — and an inline box's own
+      // padding and borders
+      const edges = inline
+        ? box.padLeft + box.padRight + box.borderLeft + box.borderRight
+        : 0;
+      const base =
+        edges +
+        (clone || (starts && ends)
+          ? width
+          : wholeWidth(box, from, to, lines, whole));
+      return [
+        starts ? resolve(value[0], base) : 0,
+        ends ? resolve(value[1], base) : 0,
+      ];
+    },
+  };
+}
+
+/** Where an element's text is in the document's: from its first text
+ *  box's start to its last's end, since an inline box keeps no range of its
+ *  own; kept for the paint. */
+function textRangeOf(
+  box: Box,
+  ranges: Map<Box, readonly [number, number]>,
+): readonly [number, number] {
+  const kept = ranges.get(box);
+  if (kept) return kept;
+  let from = Infinity;
+  let to = -Infinity;
+  const walk = (at: Box): void => {
+    if (at.kind === 'text') {
+      from = Math.min(from, at.textStart);
+      to = Math.max(to, at.textEnd);
+      return;
+    }
+    for (const child of at.children) walk(child);
+  };
+  walk(box);
+  const range = from <= to ? ([from, to] as const) : ([0, 0] as const);
+  ranges.set(box, range);
+  return range;
+}
+
+/** How wide all of an element's text is on the lines a paint is handed,
+ *  kept for the paint: the inline size a sliced inset's percentage is of. */
+function wholeWidth(
+  box: Box,
+  from: number,
+  to: number,
+  lines: readonly LineBox[],
+  whole: Map<Box, number>,
+): number {
+  const kept = whole.get(box);
+  if (kept !== undefined) return kept;
+  let sum = 0;
+  for (const line of lines) {
+    for (const text of line.texts) {
+      const natural = text.layout.lines[text.layoutLine];
+      if (!natural) continue;
+      for (const r of natural.runs) {
+        const at = text.spans.documentAt(r.start);
+        if (at >= from && at < to) sum += r.width;
+      }
+    }
+  }
+  whole.set(box, sum);
+  return sum;
 }
 
 /**

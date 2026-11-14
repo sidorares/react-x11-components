@@ -25,6 +25,7 @@ import {
   shapeOutsideSpecified,
   shapeThresholdSpecified,
 } from './shape-outside.js';
+import { parseDecorationInset } from './decoration-inset.js';
 import { parseZoom, splitValue } from './values.js';
 import {
   GRID_SPECIFIED,
@@ -208,6 +209,18 @@ export function specifiedValue(
   if (name === 'shape-outside') return shapeOutsideSpecified(value);
   if (name === 'shape-margin') return shapeMarginSpecified(value);
   if (name === 'shape-image-threshold') return shapeThresholdSpecified(value);
+  // `auto`, or one or two lengths or percentages, one where both are the
+  // same (CSS Text Decoration 4, 2.6)
+  if (name === 'text-decoration-inset') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    if (parseDecorationInset(word, CHECK) === undefined) return null;
+    if (word.toLowerCase() === 'auto') return 'auto';
+    const parts = splitValue(word).map((part) => (part === '0' ? '0px' : part));
+    return parts.length === 2 && parts[0] === parts[1]
+      ? parts[0]
+      : parts.join(' ');
+  }
   if (name === 'clip-path' || name === '-webkit-clip-path') {
     // a basic shape other than `shape()`, its arguments in canonical form
     const basic = basicShapeSpecified(value);

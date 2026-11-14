@@ -20,6 +20,8 @@
 
 import { blend, rgbaOf, rgbaUnclipped } from './color.js';
 import { interpolateFilters } from './filter.js';
+import { isAutoInset } from './decoration-inset.js';
+import type { AutoInset } from './decoration-inset.js';
 import type { FilterFunction } from './filter.js';
 import type {
   BoxShadow,
@@ -68,6 +70,8 @@ export function interpolateField(
   b: unknown,
   q: number,
 ): unknown {
+  // `auto` runs as its length beside a length, at either end as well
+  if (key === 'textDecorationInset') return interpolateInsets(a, b, q);
   if (q === 0 || same(a, b)) return a;
   if (q === 1) return b;
   if (DISCRETE_RECORDS.has(key)) return undefined;
@@ -155,6 +159,23 @@ export function interpolateField(
   if (typeof value !== 'number') return value;
   if (INTEGERS.has(key)) return Math.round(value);
   return NOT_NEGATIVE.has(key) ? Math.max(0, value) : value;
+}
+
+/**
+ * Two `text-decoration-inset`s `q` of the way between: `auto` runs as the
+ * length it comes to (`autoInset`) where the other end is lengths, so it
+ * reads back as that length from the first frame on, and stays `auto` where
+ * both are, going over at the half-way point.
+ */
+function interpolateInsets(a: unknown, b: unknown, q: number): unknown {
+  const x = a as readonly [Len, Len] | AutoInset;
+  const y = b as readonly [Len, Len] | AutoInset;
+  if (isAutoInset(x) && isAutoInset(y)) return q < 0.5 ? x : y;
+  const lens = (v: readonly [Len, Len] | AutoInset): readonly [Len, Len] =>
+    isAutoInset(v) ? [v.auto, v.auto] : v;
+  // mixed at its ends too, where a percentage and a length come to a
+  // `calc()` of both, as Chrome reads `10%` run to `auto` back at its end
+  return mix(lens(x), lens(y), q);
 }
 
 /**
@@ -1025,6 +1046,15 @@ export function addField(
         return undefined;
       }
       return u.map((n, i) => (accumulate ? n + v[i] - 1 : n * v[i]));
+    }
+    case 'textDecorationInset': {
+      // `auto` adds as the length it comes to, as it runs as one
+      const u = under as readonly [Len, Len] | AutoInset;
+      const v = value as readonly [Len, Len] | AutoInset;
+      if (isAutoInset(u) && isAutoInset(v)) return undefined;
+      const lens = (w: readonly [Len, Len] | AutoInset) =>
+        isAutoInset(w) ? [w.auto, w.auto] : w;
+      return sum(lens(u), lens(v));
     }
     case 'boxShadow':
     case 'filter': {
