@@ -928,10 +928,6 @@ class WeriftTransceiver implements RTCTransceiverLike {
   }
 }
 
-/** Whether a page's `iceServers` name a STUN server. */
-const namesStun = (request: RTCConnectRequest): boolean =>
-  request.iceServers.some((s) => s.urls.some((u) => /^stuns?:/i.test(u)));
-
 /** The configuration werift is handed for a page's: its certificates
  *  those `generateCertificate` made, by their numbers. */
 function configOf(
@@ -950,6 +946,10 @@ function configOf(
       ...(s.credential !== undefined ? { credential: s.credential } : {}),
     })),
     iceTransportPolicy: request.iceTransportPolicy,
+    // werift asks stun.l.google.com where no STUN server is named, which is
+    // a request nobody asked for, and on a network that does not answer it
+    // held each setLocalDescription for five seconds
+    iceUseDefaultStunServer: false,
     bundlePolicy: request.bundlePolicy,
     // werift gathers no pool ahead of a description, and throws for one: a
     // pool is a hint (WebRTC 1.0, 4.2.5), so none is asked for
@@ -1205,8 +1205,6 @@ class WeriftConnection implements RTCConnectionLike {
   /** Whether a description was ever applied: before one there is no
    *  transport to have stats of, nor a certificate it uses. */
   private _described = false;
-  /** Whether the page's configuration names a STUN server. */
-  private _namesStun: boolean;
   /** The page's servers, which a gathering is checked against
    *  (`_checkServers`), and what was checked last. */
   private _servers: RTCConnectRequest['iceServers'];
@@ -1226,7 +1224,6 @@ class WeriftConnection implements RTCConnectionLike {
     const codecs = config.codecs as { audio: WCodec[]; video: WCodec[] };
     this._codecs = [...codecs.audio, ...codecs.video];
     this._net = new WeriftTransports(this._pc, _events, () => this._closed);
-    this._namesStun = namesStun(request);
     this._media = hasMedia(_w) ? _w : null;
     this._servers = request.iceServers;
   }
@@ -1260,22 +1257,6 @@ class WeriftConnection implements RTCConnectionLike {
         });
       }
     });
-  }
-
-  /**
-   * Keeps a gathering to the servers the page named. werift falls back to
-   * `stun.l.google.com` where a configuration names no STUN server, and has
-   * no option against it: a page that named nobody made a request nobody
-   * asked for, and on a network that does not answer, each
-   * `setLocalDescription` waited out five seconds for it. A transport reads
-   * its server as it gathers, which is in `setLocalDescription` alone.
-   */
-  private _gatherFromNamed(): void {
-    if (this._namesStun) return;
-    for (const dtls of this._pc.dtlsTransports) {
-      const ice = dtls.iceTransport.connection;
-      if (ice) ice.stunServer = undefined;
-    }
   }
 
   private _watchTransports(): void {
@@ -1495,7 +1476,6 @@ class WeriftConnection implements RTCConnectionLike {
       }
       const description = type === 'rollback' ? { type } : { type, sdp: text };
       if (side === 'local') {
-        this._gatherFromNamed();
         await this._pc.setLocalDescription(description);
       } else await this._pc.setRemoteDescription(description);
     } catch (error) {
@@ -1747,7 +1727,6 @@ class WeriftConnection implements RTCConnectionLike {
   }
 
   setConfiguration(request: RTCConnectRequest): void {
-    this._namesStun = namesStun(request);
     this._servers = request.iceServers;
     try {
       this._pc.setConfiguration({

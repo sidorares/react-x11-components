@@ -47,10 +47,10 @@ export interface WIce {
   getSelectedCandidatePair(): { local: WCandidate; remote: WCandidate } | null;
   getLocalParameters(): { usernameFragment: string; password: string };
   getRemoteParameters(): { usernameFragment: string; password: string } | null;
-  /** What gathers for it, the STUN server it asks, and the peer's
-   *  candidates it checks, a peer-reflexive one among them, which
-   *  `getRemoteCandidates()` leaves out. */
-  readonly connection?: { stunServer?: unknown; remoteCandidates?: unknown[] };
+  /** What gathers for it, and the peer's candidates it checks, a
+   *  peer-reflexive one among them, which `getRemoteCandidates()` leaves
+   *  out. */
+  readonly connection?: { remoteCandidates?: unknown[] };
   /** The peer's candidates it has, but those it found as peer-reflexive. */
   getRemoteCandidates?(): unknown[];
 }
@@ -85,10 +85,6 @@ export interface WAssociation {
   readonly maxChannels?: number;
   /** Told as each transmission ends, which a SACK starts. */
   readonly flush?: WEvent<[]>;
-  /** What is still to go, and what went and is not acknowledged yet, the
-   *  second a private of its own (see `close`). */
-  readonly outboundQueue?: WFifo<{ readonly streamId: number }>;
-  readonly sentQueue?: WFifo<{ readonly streamId: number }>;
 }
 
 /** One of werift's queues: an array to 0.25, and from 0.26 a `FifoQueue`
@@ -298,11 +294,11 @@ class WeriftChannel implements RTCDataChannelLike {
     void sctp.dataChannelFlush();
   }
 
-  /** Whether anything sent on this channel has yet to be acknowledged:
-   *  what werift has not handed to SCTP, and what SCTP has not been told
-   *  arrived. By the channel's stream, so a neighbour that goes on sending
-   *  holds no close up. */
-  private _unacknowledged(): boolean {
+  /** Whether anything sent on this channel has yet to be handed to SCTP,
+   *  which numbers a chunk as it is queued: its `bufferedAmount`, and the
+   *  channel's DCEP messages. By the channel, so a neighbour that goes on
+   *  sending holds no close up. */
+  private _unsent(): boolean {
     if (this._ch.bufferedAmount > 0) return true;
     // the DCEP ACK of a channel the far side opened waits there too, and a
     // close that reset the stream ahead of it left the opener an ACK for a
@@ -311,35 +307,28 @@ class WeriftChannel implements RTCDataChannelLike {
     for (const [channel] of this._sctp()?.dataChannelQueue ?? []) {
       if (channel === this._ch) return true;
     }
-    const sctp = this._sctp()?.sctp;
-    return (
-      holds(sctp?.outboundQueue, this._ch.id) ||
-      holds(sctp?.sentQueue, this._ch.id)
-    );
+    return false;
   }
 
   /**
-   * Closes it once what was sent has been acknowledged. werift resets the
-   * stream as it is closed, with what it has queued still unsent, and its
-   * far side drops whatever arrives after a reset — it does none of RFC
-   * 6525's deferred reset processing (5.2.2). So a channel closed at once
-   * lost every message it had not sent yet, and one closed as the last of
-   * them was sent lost a message with a chunk still to come again: a burst
-   * can overflow a receive buffer, and the reset overtakes the
-   * retransmission. Nothing public says what was acknowledged, so this
-   * reads `sentQueue`, a private: a werift without it closes as the last
-   * message is sent.
+   * Closes it once what was sent has been handed to SCTP. werift resets the
+   * stream as it is closed, with what it has not handed over still to go,
+   * and that goes out after the reset, on a stream the far side has reset:
+   * a channel closed at once lost every message it had not sent yet. What
+   * SCTP holds is numbered before the reset's last TSN, and the far side
+   * holds the reset until all of it has arrived (RFC 6525, 5.2.2), which
+   * werift does from 0.27.0, so a retransmission it overtakes is not lost.
    */
   close(): void {
     if (this._closing) return;
     this._closing = true;
-    if (!this._unacknowledged()) {
+    if (!this._unsent()) {
       this._ch.close();
       return;
     }
     let waiting = true;
     const settled = () => {
-      if (!waiting || this._unacknowledged()) return;
+      if (!waiting || this._unsent()) return;
       waiting = false;
       // whatever its state: one closed as it opened is still connecting
       this._ch.close();
@@ -348,17 +337,6 @@ class WeriftChannel implements RTCDataChannelLike {
     this._ch.bufferedAmountLow.subscribe(settled);
     this._sctp()?.sctp?.flush?.subscribe(settled);
   }
-}
-
-/** Whether one of werift's chunk queues holds a chunk of the stream. Walked
- *  rather than asked, since a `FifoQueue` has no `some`. */
-function holds(
-  queue: Iterable<{ readonly streamId: number }> | undefined,
-  stream: number | null | undefined,
-): boolean {
-  if (!queue) return false;
-  for (const chunk of queue) if (chunk.streamId === stream) return true;
-  return false;
 }
 
 /** What werift is asked for a data channel the page made. */
