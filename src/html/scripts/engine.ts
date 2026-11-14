@@ -71,6 +71,7 @@ import { installSmil } from './smil.js';
 import { installPathData } from './path-data.js';
 import { installTextTracks } from './text-tracks.js';
 import { installStorageManager } from './storage-manager.js';
+import { installResourceTiming } from './resource-timing.js';
 import { installCsp } from './csp-page.js';
 import { installWorklets } from './worklets.js';
 import { installTrustedTypes } from './trusted-types.js';
@@ -375,13 +376,14 @@ const INSTALL = `(function () {
   const pathData = (${installPathData.toString()});
   const worklets = (${installWorklets.toString()});
   const trustedTypes = (${installTrustedTypes.toString()});
+  const resourceTiming = (${installResourceTiming.toString()});
   const bridge = globalThis.__bridge;
   const named = globalThis.__named === true;
   const worker = globalThis.__worker === true;
   delete globalThis.__bridge;
   delete globalThis.__named;
   delete globalThis.__worker;
-  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, svgDom, webcrypto, transfers, clipboards, notifying, windowing, serviceWorkers, cacheStorage, uiEvents, pointers, editing, encoded, textTracks, csp, smil, storageManager, pathData, worklets, trustedTypes, named, worker);
+  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, svgDom, webcrypto, transfers, clipboards, notifying, windowing, serviceWorkers, cacheStorage, uiEvents, pointers, editing, encoded, textTracks, csp, smil, storageManager, pathData, worklets, trustedTypes, resourceTiming, named, worker);
 })()`;
 
 /**

@@ -44,7 +44,8 @@ import type { ResourceAsker, ResourceCors } from '../resources.js';
 import type { ValueModule } from './script-origin.js';
 import { decodeInEncoding, readyFor } from '../encoding.js';
 import { fireDomEvent } from '../dom-events.js';
-import { scriptTypeOf } from '../dom.js';
+import { scriptTypeOf, tagOf } from '../dom.js';
+import type { ResourceClock, ResourceContext } from '../resource-timing.js';
 import { HTML_USER_AGENT } from '../network.js';
 import type { HtmlServiceWorkers } from '../service-workers.js';
 import { NO_MEDIA_DEVICES } from '../media-devices.js';
@@ -81,6 +82,112 @@ import type { HtmlSessionHistory } from './session.js';
 import { linkOpener, linkTarget, navigableFor } from './target.js';
 
 declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
+declare const performance: { now(): number };
+
+/** What a resource the document asked for was asked for by, as its resource
+ *  timing entry says it (Resource Timing 2, `initiatorType`): the element
+ *  that names it, or `css` where a style does. */
+function initiatorOf(request: ResourceRequest): string {
+  const tag = request.element ? tagOf(request.element) : '';
+  if (tag === 'link') {
+    // a sheet's own `<link>`, and not an `@import` in what it holds
+    const href = (request.element.attribs.href ?? '').trim();
+    const own =
+      request.kind !== 'stylesheet' ||
+      (!!href &&
+        (request.url === href ||
+          request.url.split('#')[0].endsWith(href.replace(/^\.?\//, ''))));
+    return own ? 'link' : 'css';
+  }
+  switch (request.kind) {
+    case 'image':
+      return [
+        'img',
+        'input',
+        'image',
+        'video',
+        'object',
+        'embed',
+        'body',
+      ].includes(tag)
+        ? tag
+        : 'css';
+    case 'script':
+      return 'script';
+    default:
+      return 'css';
+  }
+}
+
+/**
+ * A resource the document asks its host for, timed for the resource timing
+ * entry its page reads: a clock on the request (`ResourceRequest.timing`),
+ * which the host stamps as it fetches, and the page told once it is in. A
+ * request the host declined without asking anything is no fetch, and makes
+ * none; a `<video>`'s and an `<audio>`'s are the player's.
+ */
+async function timedResource<T>(
+  /** Where the page is told, asked once the fetch is over: a document's
+   *  first resources may be asked for before its engine is up. */
+  reporter: () =>
+    | ((clock: ResourceClock, context: Omit<ResourceContext, 'origin'>) => void)
+    | null,
+  request: ResourceRequest,
+  ask: (request: ResourceRequest) => T | Promise<T>,
+  /** Whether the element's fetch blocks rendering, asked as it starts. */
+  blocking: (element: Element) => boolean = () => false,
+): Promise<T> {
+  const report = (
+    clock: ResourceClock,
+    context: Omit<ResourceContext, 'origin'>,
+  ): void => reporter()?.(clock, context);
+  if (
+    request.opaqueSheet ||
+    request.kind === 'video' ||
+    request.kind === 'audio' ||
+    !/^https?:/i.test(request.url)
+  ) {
+    return ask(request);
+  }
+  const clock: ResourceClock = { start: performance.now(), hops: [] };
+  const context: Omit<ResourceContext, 'origin'> = {
+    name: request.url,
+    initiatorType: initiatorOf(request),
+    mode: request.cors ? 'cors' : 'no-cors',
+    // a script's own fetch, or a sheet's, and what a sheet imports
+    renderBlocking:
+      !!request.element &&
+      (request.kind === 'stylesheet' ||
+        (request.kind === 'script' && tagOf(request.element) === 'script')) &&
+      blocking(request.element),
+  };
+  let result: T;
+  try {
+    result = await ask({ ...request, timing: clock });
+  } catch (error) {
+    clock.end ??= performance.now();
+    clock.failed = true;
+    report(clock, context);
+    throw error;
+  }
+  clock.end ??= performance.now();
+  if (result === null || result === undefined) {
+    // declined, or a host that says nothing of how it went
+    if (clock.hops.length || clock.cache) report(clock, context);
+    return result;
+  }
+  if (!clock.hops.length && !clock.cache) {
+    clock.hops.push({
+      url: request.url,
+      sent: clock.start,
+      answered: clock.end,
+      status: 200,
+      headers: [],
+    });
+  }
+  report(clock, context);
+  return result;
+}
 
 const h = React.createElement;
 
@@ -634,6 +741,17 @@ export function useScriptedHtml(
     (handle.ref as React.RefObject<PaneNode | null>).current;
 
   const frames = config.frames ?? true;
+  /** Where a resource the document fetched is told to its page, once the
+   *  engine is up (`DomHost.resourceTimed`). */
+  const timingReport = () => {
+    const host = scripts.runner?.()?.host;
+    return host
+      ? (clock: ResourceClock, context: Omit<ResourceContext, 'origin'>) =>
+          host.resourceTimed(clock, context)
+      : null;
+  };
+  const renderBlockingOf = (element: Element): boolean =>
+    scripts.runner?.()?.host.rendersBlockedBy(element) ?? false;
   const options: ScriptsOptions = {
     userAgent: config.userAgent ?? HTML_USER_AGENT,
     language: config.language ?? runtimeLanguage(),
@@ -683,14 +801,19 @@ export function useScriptedHtml(
         // (HTML's "fetch a single module script")
         const utf8 = !!type || !element || scriptTypeOf(element) === 'module';
         return loadedScript(
-          await ask({
-            url,
-            kind: 'script',
-            element: owner,
-            ...(cors ? { cors } : {}),
-            ...(type ? { type } : {}),
-            ...asker,
-          }),
+          await timedResource(
+            timingReport,
+            {
+              url,
+              kind: 'script',
+              element: owner,
+              ...(cors ? { cors } : {}),
+              ...(type ? { type } : {}),
+              ...asker,
+            },
+            ask,
+            renderBlockingOf,
+          ),
           charset,
           utf8,
         );
@@ -906,11 +1029,17 @@ export function useScriptedHtml(
   const onResource = useCallback(
     async (request: ResourceRequest) => {
       if (!request.url.startsWith('blob:')) {
-        return throughWorker(
-          scripts,
+        return timedResource(
+          timingReport,
           request,
-          latest.current.props.onResource,
-        ) as Promise<ResourceResult | null>;
+          (timed) =>
+            throughWorker(
+              scripts,
+              timed,
+              latest.current.props.onResource,
+            ) as Promise<ResourceResult | null>,
+          renderBlockingOf,
+        );
       }
       // a turn on, since this is asked from inside the page's own ops
       await Promise.resolve();

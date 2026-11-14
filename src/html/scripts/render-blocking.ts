@@ -105,6 +105,13 @@ export class RenderBlocking {
   private _over = false;
   /** A scan reached the body: nothing the parser makes is before it now. */
   private _scanned = false;
+  /** The stylesheets the parser put before the body: implicitly potentially
+   *  render-blocking (HTML 4.2.4.3, 4.2.6), which is what their fetches,
+   *  and their imports', say of themselves (`blocksFetch`). The set itself
+   *  holds only what `blocking` names. */
+  private readonly _implicit = new WeakSet<Element>();
+  /** What a script put in, which no scan may take for the parser's. */
+  private readonly _inserted = new WeakSet<Element>();
 
   constructor(private readonly _host: RenderBlockingHost) {}
 
@@ -237,11 +244,60 @@ export class RenderBlocking {
         if (tag === 'template') continue;
         if (tag === 'script' || tag === 'link' || tag === 'style') {
           this._decide(el, !xml);
+          if (!xml && !this._inserted.has(el) && this._sheetLike(el)) {
+            this._implicit.add(el);
+          }
         }
         walk(el.children);
       }
     };
     walk(this._host.document().children);
+  }
+
+  /** A `<link rel=stylesheet>` or a `<style>` that makes a sheet this
+   *  document's media applies. */
+  private _sheetLike(el: Element): boolean {
+    if (isForeign(el)) return false;
+    const tag = tagOf(el);
+    const { media } = el.attribs;
+    if (media && media.trim() && !this._host.mediaMatches(media)) return false;
+    if (tag === 'style') {
+      const type = (el.attribs.type ?? '').trim().toLowerCase();
+      return type === '' || type === 'text/css';
+    }
+    const { rel, href } = el.attribs;
+    return (
+      tag === 'link' &&
+      hasToken(rel, 'stylesheet') &&
+      !hasToken(rel, 'alternate') &&
+      el.attribs.disabled === undefined &&
+      !!href?.trim()
+    );
+  }
+
+  /** Whether a fetch an element makes now is render-blocking (Resource
+   *  Timing 2's `renderBlockingStatus`): it is in the head, and is
+   *  potentially render-blocking — what its `blocking` says, or a script or
+   *  a stylesheet the parser put there — whether or not the document still
+   *  allows adding to the set. */
+  blocksFetch(el: Element): boolean {
+    this._scanHead();
+    let head = false;
+    for (let at = el.parent; at; at = at.parent) {
+      if (isTag(at) && !isForeign(at) && tagOf(at) === 'head') {
+        head = isTag(at.parent!) && tagOf(at.parent) === 'html';
+        break;
+      }
+    }
+    // a `<style>` the parser made blocks wherever it is, as Chromium has
+    // it: the one exception to the head
+    if (tagOf(el) === 'style') {
+      return (
+        this._potentially(el) ||
+        (!this._inserted.has(el) && this._sheetLike(el))
+      );
+    }
+    return head && (this._implicit.has(el) || this._potentially(el));
   }
 
   /** Take out what is over: an expectation met, an element gone. */
@@ -261,6 +317,7 @@ export class RenderBlocking {
   /** A script put nodes into the document: each link, script and style
    *  among them blocks where adding is allowed now. */
   connected(elements: readonly Element[]): void {
+    for (const el of elements) this._inserted.add(el);
     this._scanHead();
     const allowed = this._allows();
     for (const el of elements) {

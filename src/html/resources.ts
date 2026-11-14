@@ -28,6 +28,7 @@ import { headerSize } from './image-header.js';
 import type { HeaderSize } from './image-header.js';
 import { CORS_MARK, corsOfKey } from './url.js';
 import type { UrlResolver } from './url.js';
+import type { ResourceClock } from './resource-timing.js';
 import type { Element } from 'domhandler';
 import { corsAllows, originOf } from './scripts/fetch-hops.js';
 
@@ -89,6 +90,19 @@ export interface ResourceRequest {
    *  `HtmlNetwork` asks it; a host that cannot is held to where the
    *  resource landed, by its `url` and `redirects`. */
   nextHop?: (url: string) => string | null;
+  /**
+   * Where a host that times its fetches says how this one went, on the
+   * clock a page reads (`performance.now()`): when each request on its
+   * way was sent and answered, with what, and when its body ended — what
+   * the document's resource timing entry for it is made of (Resource
+   * Timing 2). `HtmlNetwork` fills it in; a host that does not leaves it,
+   * and the entry says only when the fetch began and ended. Present only
+   * where the document's scripts run and a page can read it.
+   */
+  timing?: ResourceClock;
+  /** Named by a stylesheet of another origin than the document's, which a
+   *  page sees nothing of: no resource timing entry is made of it. */
+  opaqueSheet?: boolean;
 }
 
 /** Who asked for a resource, where that is not the document the host was
@@ -96,7 +110,7 @@ export interface ResourceRequest {
  *  (`referrerPolicy`), and where it may be redirected to (`nextHop`). */
 export type ResourceAsker = Pick<
   ResourceRequest,
-  'client' | 'opaqueOrigin' | 'referrerPolicy' | 'nextHop'
+  'client' | 'opaqueOrigin' | 'referrerPolicy' | 'nextHop' | 'timing'
 >;
 
 /** A CORS request for a resource (HTML 2.5.4, a CORS settings attribute):
