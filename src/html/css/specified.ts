@@ -5,6 +5,7 @@
 // kept as it was written, as it always was here, so a value a page sets and
 // reads back is never lost to a grammar this has not got.
 
+import { backgroundSpecified } from './backgrounds-specified.js';
 import {
   borderComposed,
   borderLonghands,
@@ -224,6 +225,9 @@ export function specifiedValue(
     const canonical = contrastColorsText(value);
     if (canonical !== value) return canonical;
   }
+  // the background layers' properties (`backgrounds-specified.ts`)
+  const layer = backgroundSpecified(name, value);
+  if (layer !== undefined) return layer;
   // the borders' properties, and `background-color` (`borders-specified.ts`)
   const border = borderSpecified(name, value);
   if (border !== undefined) return border;
