@@ -3158,6 +3158,17 @@ not count, since its matrices are read from the attribute.
 `isPointInFill` and `isPointInStroke` go by the same outlines, the fill rule,
 the stroke's width, caps and dashes, and take every join as round.
 
+**A path's `d` is segments to a script** (SVG Paths, `SVGPathData`,
+`src/html/scripts/path-data.ts`). `getPathData()` reads the attribute as
+`{ type, values }` segments, a repeated command spelled out as the one it
+stands for and up to the first error, and `{ normalize: true }` makes them
+absolute `M`, `L`, `C` and `Z`, a quadratic and an arc as cubics.
+`setPathData()` writes a list back as far as its segments are segments, an
+arc's flags made booleans, and takes `d` out for an empty one, and
+`getPathSegmentAtLength()` answers the segment, as written, a length along
+the path falls in. Each reads the attribute and not a CSS `d` or what an
+animation sets, and hands out objects made for the call.
+
 **An SVG element's attributes are SVG 2's objects.** `rect.x.baseVal`, a
 `transform.baseVal` list with `consolidate()`, `viewBox.baseVal`,
 `preserveAspectRatio`, the enumerations, a filter primitive's numbers and the
