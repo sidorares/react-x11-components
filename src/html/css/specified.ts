@@ -5,6 +5,11 @@
 // kept as it was written, as it always was here, so a value a page sets and
 // reads back is never lost to a grammar this has not got.
 
+import {
+  borderComposed,
+  borderLonghands,
+  borderSpecified,
+} from './borders-specified.js';
 import { positionAreaText } from './anchor.js';
 import { serializeMath } from './calc-tree.js';
 import { specifiedMath } from './math.js';
@@ -219,6 +224,9 @@ export function specifiedValue(
     const canonical = contrastColorsText(value);
     if (canonical !== value) return canonical;
   }
+  // the borders' properties, and `background-color` (`borders-specified.ts`)
+  const border = borderSpecified(name, value);
+  if (border !== undefined) return border;
   // `none` or a `<basic-shape-rect>` (CSS Images 5, 6.6), kept as written
   if (name === 'object-view-box') {
     const word = value.trim();
@@ -931,6 +939,8 @@ export function expandShorthand(
   if (grid) return grid;
   const align = alignLonghands(name, value, specifiedValue);
   if (align) return align;
+  const border = borderLonghands(name, value);
+  if (border) return border;
   if (name === 'animation') return animationLonghandsOf(value);
   if (name === 'marker') return MARKER_LONGHANDS.map((side) => [side, value]);
   if (name === 'position-try') {
@@ -993,6 +1003,8 @@ export function composeShorthand(
   if (grid !== null) return grid;
   const align = alignShorthand(name, longhand);
   if (align !== null) return align;
+  const border = borderComposed(name, longhand);
+  if (border !== null) return border;
   if (name === 'marker') {
     const sides = MARKER_LONGHANDS.map(longhand);
     if (sides.some((v) => v === null)) return '';

@@ -140,6 +140,7 @@ import {
   withoutPseudoElements,
 } from '../css/specified.js';
 import { ALIGN_SHORTHANDS, ALIGN_SPECIFIED } from '../css/align-specified.js';
+import { borderDeclared, collapseBorders } from '../css/borders-specified.js';
 import { eventPath, retarget, shadowIncludingHolds } from './event-path.js';
 import { NO_MODIFIERS } from '../dom-events.js';
 import {
@@ -1739,7 +1740,7 @@ const NODE_READS = new Set([
 function serializeDeclarations(
   declarations: readonly { prop: string; value: string; important: boolean }[],
 ): string {
-  return declarations
+  return collapseBorders(declarations)
     .map((d) => `${d.prop}: ${d.value}${d.important ? ' !important' : ''};`)
     .join(' ');
 }
@@ -1750,6 +1751,12 @@ function declarationsIn(block: string | null | undefined) {
   if (!block) return [];
   const out = parseDeclarations(block).flatMap((d) => {
     const value = tidyValue(d.value);
+    // a border shorthand is its longhands, as `cssText` and the attribute
+    // write them back (`collapseBorders`)
+    const border = borderDeclared(d.prop, value);
+    if (border) {
+      return border.map(([prop, v]) => ({ ...d, prop, value: v }));
+    }
     const decl = value === d.value ? d : { ...d, value };
     // what a block says of box alignment, the gaps and flex layout is
     // held to their grammars and its shorthands read as their longhands,
