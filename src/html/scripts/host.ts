@@ -10187,11 +10187,47 @@ export class DomHost {
   private _preloadLink(el: Element): void {
     const { rel, href } = el.attribs;
     if (!rel || !href || isForeign(el) || isStylePreload(el)) return;
-    if (!/(?:^|\s)(?:preload|modulepreload)(?:\s|$)/i.test(rel)) return;
+    const prefetch = /(?:^|\s)prefetch(?:\s|$)/i.test(rel);
+    if (!prefetch && !/(?:^|\s)(?:preload|modulepreload)(?:\s|$)/i.test(rel)) {
+      return;
+    }
     const id = this.idOf(el);
     const tell = (type: string) => {
       if (!this._disposed) this.entries?.call('__fire', [id, type]);
     };
+    if (prefetch) {
+      // a prefetch is the document's own request, held to its policies and
+      // to Mixed Content at each hop as a `fetch` is (HTML 4.6.7.15; Fetch's
+      // destination "", no-cors): it is heard of by its `load` or `error`
+      let url: string;
+      try {
+        url = this._resolve(href);
+      } catch {
+        return;
+      }
+      this._fetchFor(
+        {
+          url,
+          method: 'GET',
+          headers: [],
+          body: null,
+          mode: 'no-cors',
+          credentials: 'include',
+          destination: '',
+        },
+        new AbortController().signal,
+      ).then(
+        (response) => {
+          release(response);
+          const { status } = response;
+          tell(
+            status === 0 || (status >= 200 && status < 300) ? 'load' : 'error',
+          );
+        },
+        () => tell('error'),
+      );
+      return;
+    }
     this._seams
       .fetch(
         { url: this._resolve(href), method: 'GET', headers: [], body: null },

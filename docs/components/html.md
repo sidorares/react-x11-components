@@ -5052,6 +5052,12 @@ The order is HTML's and UI Events', and three places in it are worth knowing:
   joshwcomeau.com waited behind a preload that was never told, and every
   later update of the page with it. A preload of anything else is asked for
   nothing and told nothing, as nothing waits on one.
+- **A `<link rel=prefetch>` a script puts in is the document's own
+  request**, sent as a `fetch` is, no-cors, and held to its policies at
+  each hop, and told by its `load` or its `error`. WPT's security-features
+  tests ask for a resource that way and wait for one or the other, so each
+  waited out its time where it was told neither. One the parser met is not
+  asked for.
 
 A `mousemove` is told at every move the pointer makes over what the
 document draws, a hit test each, which is why a host decides what crossing
