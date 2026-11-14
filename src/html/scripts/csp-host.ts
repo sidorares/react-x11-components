@@ -173,6 +173,28 @@ export function runningScriptAt(): CspWhere | null {
   return null;
 }
 
+/**
+ * What a violation of `frame-src` says it was about where the frame was
+ * sent to another origin: that origin alone, as browsers cut a document's
+ * address another origin's frame was refused (WPT's
+ * `report-only-cross-origin-frame`), where an image's is its whole URL.
+ * Null for any other.
+ */
+function frameBlocked(
+  effective: string,
+  url: string,
+  self: string,
+): string | null {
+  if (effective !== 'frame-src') return null;
+  let origin: string;
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    return null;
+  }
+  return origin !== 'null' && origin !== self ? origin : null;
+}
+
 /** The first characters of what a violation is about, which a policy that
  *  asks for one (`'report-sample'`) is told (CSP 3, 5.3, step 2). */
 const SAMPLE_LENGTH = 40;
@@ -265,7 +287,7 @@ export class PageCsp<T = unknown> {
       this._violate(
         policy,
         effective,
-        reportedUrl(request.url),
+        frameBlocked(effective, request.url, self) ?? reportedUrl(request.url),
         '',
         target,
         where,
@@ -457,4 +479,7 @@ export class PageCsp<T = unknown> {
   }
 }
 
-declare const URL: new (url: string, base?: string) => { href: string };
+declare const URL: new (
+  url: string,
+  base?: string,
+) => { href: string; origin: string };

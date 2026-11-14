@@ -180,13 +180,16 @@ export async function throughWorker(
       destination,
       nonce: request.element ? doc.nonceOf(request.element) : '',
     };
-    if (!doc.csp.request(csp, request.element)) return null;
+    // what a request is refused is told at the document, which the
+    // violation is of, and not at the element that asked (CSP 3, 4.1.2,
+    // "create a violation object for request": it has no element)
+    if (!doc.csp.request(csp, null)) return null;
     // and at each hop a redirect makes, before it is asked for
     const asked = doc.csp.policies.length
       ? {
           ...request,
           nextHop: (to: string) =>
-            doc.csp.request(csp, request.element, [to]) ? to : null,
+            doc.csp.request(csp, null, [to]) ? to : null,
         }
       : request;
     const result = (await answer(scripts, asked, host)) as {
@@ -200,7 +203,7 @@ export async function throughWorker(
         : final === request.url
           ? []
           : [final];
-      if (through.length && !doc.csp.request(csp, request.element, through)) {
+      if (through.length && !doc.csp.request(csp, null, through)) {
         return null;
       }
     }
