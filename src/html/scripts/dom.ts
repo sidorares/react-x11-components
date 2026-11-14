@@ -33940,7 +33940,9 @@ export function installDom(
     event._threw = false;
     const go = fireAt(targets, event);
     if (!event._threw) return go;
-    if (tx && !tx._finished) {
+    // one that throws after an explicit commit() leaves it to commit
+    // (IndexedDB 3, 5.6: only an active transaction is aborted so)
+    if (tx && !tx._finished && !tx._committing) {
       tx._abort(new DOMException('An event listener threw.', 'AbortError'));
     }
     return false;
@@ -34275,6 +34277,15 @@ export function installDom(
     indexes: new Map([...store.indexes].map(([k, v]) => [k, { ...v }])),
   });
 
+  /** A database's transactions not yet finished, in the order they were
+   *  made, which is the order they start in where their scopes overlap. */
+  const IDB_LIVE = new WeakMap<object, Any[]>();
+  const idbLive = (data: object): Any[] => {
+    let live = IDB_LIVE.get(data);
+    if (!live) IDB_LIVE.set(data, (live = []));
+    return live;
+  };
+
   class IDBDatabase extends EventTarget {
     _data: IdbData;
     _closed = false;
@@ -34403,10 +34414,22 @@ export function installDom(
      *  to, and what its difference is taken against for the host. */
     _before: Map<string, IdbStore> | null = null;
     _counted = true;
+    /** Whether it is active (IndexedDB 3, 2.7): through the task that made
+     *  it and each that dispatched one of its requests' events, the
+     *  microtasks after them included, which is where a promise a page
+     *  awaits a request with goes on. */
+    _active = true;
+    /** A deactivation is queued: the timer every activation in the task
+     *  before it shares. */
+    _deactivating = false;
+    /** The transactions that wait for this one to finish to start
+     *  (`_blocker`). */
+    _waiters: Any[] = [];
     constructor(db: Any, names: string[], mode: string) {
       super();
       this._db = db;
       this._names = names;
+      idbLive(db._data).push(this);
       this.mode = mode;
       // what a write is undone to where the transaction aborts
       const data: IdbData = db._data;
@@ -34428,6 +34451,7 @@ export function installDom(
           for (const store of kept) data.stores.set(store.name, store);
         };
       } else this._undo = () => {};
+      this._activate();
       // one with nothing asked of it commits at its first round
       this._schedule();
     }
@@ -34468,7 +34492,7 @@ export function installDom(
       return store;
     }
     abort(): void {
-      if (this._finished) {
+      if (this._finished || this._committing) {
         throw new DOMException(
           'The transaction has finished.',
           'InvalidStateError',
@@ -34478,20 +34502,80 @@ export function installDom(
         new DOMException('The transaction was aborted.', 'AbortError'),
       );
     }
+    /** Committing, from `commit()` on: no longer active, and no
+     *  longer to be aborted (IndexedDB 3, 4.9). */
+    _committing = false;
     commit(): void {
-      if (this._finished) {
+      if (this._finished || !this._active) {
         throw new DOMException(
-          'The transaction has finished.',
+          'The transaction is not active.',
           'InvalidStateError',
         );
       }
+      this._committing = true;
+      this._active = false;
       this._settling = true;
       this._schedule();
+    }
+    /** Active until the end of this task: a timer queued now runs after
+     *  everything this task and its microtasks do, and before a task a page
+     *  queues after it. */
+    _activate(): void {
+      if (this._committing) return;
+      this._active = true;
+      if (this._deactivating) return;
+      this._deactivating = true;
+      setTimer(
+        () => {
+          this._deactivating = false;
+          this._active = false;
+        },
+        0,
+        [],
+        false,
+      );
+    }
+    /** An earlier transaction this one may not start before (IndexedDB 3,
+     *  2.7.2): one whose scope overlaps it, where either of them writes;
+     *  an upgrade overlaps every one. */
+    _blocker(): Any {
+      for (const other of idbLive(this._db._data)) {
+        if (other === this) return null;
+        if (other._finished) continue;
+        if (other.mode === 'readonly' && this.mode === 'readonly') continue;
+        if (
+          other.mode === 'versionchange' ||
+          this.mode === 'versionchange' ||
+          other._names.some((name: string) => this._names.includes(name))
+        ) {
+          return other;
+        }
+      }
+      return null;
+    }
+    /** What every request asks first, after its arguments (IndexedDB 3,
+     *  4.5 and 4.6): the store or the index is there, an
+     *  `InvalidStateError`; the transaction is active, a
+     *  `TransactionInactiveError`; and a write is in no read-only one. */
+    _check(source: Any, write = false): void {
+      void source._data;
+      if (this._finished || !this._active) {
+        throw new DOMException(
+          'The transaction is not active.',
+          'TransactionInactiveError',
+        );
+      }
+      if (write && this.mode === 'readonly') {
+        throw new DOMException(
+          'The transaction is read-only.',
+          'ReadOnlyError',
+        );
+      }
     }
     /** A request this transaction runs in its turn: `op` answers its
      *  result or throws its error. */
     _request(source: Any, op: () => Any, into?: Any): Any {
-      if (this._finished) {
+      if (this._finished || !this._active) {
         throw new DOMException(
           'The transaction has finished.',
           'TransactionInactiveError',
@@ -34514,6 +34598,7 @@ export function installDom(
         request._done = true;
         request._result = undefined;
         request._error = error;
+        this._activate();
         const go = fireAtRequest(
           this,
           [request, this, this._db],
@@ -34525,6 +34610,7 @@ export function installDom(
       request._done = true;
       request._result = result;
       request._error = null;
+      this._activate();
       fireAtRequest(this, [request], new Event('success'));
     }
     _schedule(): void {
@@ -34532,13 +34618,23 @@ export function installDom(
       this._scheduled = true;
       setTimer(() => this._run(), 0, [], false);
     }
-    /** A round: every request queued, in order, and those their callbacks
-     *  queue; then, where a round left none, one more after the
-     *  microtasks, and the commit. */
+    /** A round: every request queued before it, in order; then, where a
+     *  round left none, one more after the microtasks, and the commit. */
     _run(): void {
       this._scheduled = false;
       if (this._finished) return;
-      while (this._queue.length && !this._finished) {
+      const blocker = this._blocker();
+      if (blocker) {
+        if (!blocker._waiters.includes(this)) blocker._waiters.push(this);
+        return;
+      }
+      // what was asked before the round: what a listener asks as it hears
+      // one of them is the next round's, a task of its own, as a browser
+      // fires each request's event in a task of its own, or a page that
+      // asks again from each success would never leave this loop
+      let asked = this._queue.length;
+      while (asked > 0 && this._queue.length && !this._finished) {
+        asked -= 1;
         const { request, op } = this._queue.shift()!;
         this._answer(request, op);
       }
@@ -34565,6 +34661,9 @@ export function installDom(
       this._counted = false;
       const data: IdbData = this._db._data;
       data.active = Math.max(0, (data.active ?? 1) - 1);
+      const live = idbLive(data);
+      live.splice(live.indexOf(this), 1);
+      for (const waiter of this._waiters.splice(0)) waiter._schedule();
     }
     /** What it changed, written to the host where it keeps databases:
      *  each record written or gone, and the stores as they are now. */
@@ -34752,14 +34851,6 @@ export function installDom(
     get transaction(): Any {
       return this._tx;
     }
-    _writable(): void {
-      if (this._tx.mode === 'readonly') {
-        throw new DOMException(
-          'The transaction is read-only.',
-          'ReadOnlyError',
-        );
-      }
-    }
     put(value: Any, key?: Any): Any {
       return this._write(value, key, false);
     }
@@ -34767,7 +34858,7 @@ export function installDom(
       return this._write(value, key, true);
     }
     _write(value: Any, key: Any, add: boolean): Any {
-      this._writable();
+      this._tx._check(this, true);
       const data = this._data;
       const clone = structuredCopy(value, new Map());
       let theKey: Any = undefined;
@@ -34834,6 +34925,7 @@ export function installDom(
       });
     }
     get(query: Any): Any {
+      this._tx._check(this);
       const range = rangeOf(query, true);
       return this._tx._request(this, () => {
         const record = this._data.records.find((r) => inRange(range, r.key));
@@ -34841,6 +34933,7 @@ export function installDom(
       });
     }
     getKey(query: Any): Any {
+      this._tx._check(this);
       const range = rangeOf(query, true);
       return this._tx._request(this, () => {
         const record = this._data.records.find((r) => inRange(range, r.key));
@@ -34859,6 +34952,7 @@ export function installDom(
       return readAll(this, options ?? {}, undefined, recordOf, true);
     }
     count(query?: Any): Any {
+      this._tx._check(this);
       const range = rangeOf(query);
       return this._tx._request(
         this,
@@ -34866,7 +34960,7 @@ export function installDom(
       );
     }
     delete(query: Any): Any {
-      this._writable();
+      this._tx._check(this, true);
       const range = rangeOf(query, true);
       return this._tx._request(this, () => {
         const data = this._data;
@@ -34875,7 +34969,7 @@ export function installDom(
       });
     }
     clear(): Any {
-      this._writable();
+      this._tx._check(this, true);
       return this._tx._request(this, () => {
         this._data.records = [];
         return undefined;
@@ -35020,6 +35114,7 @@ export function installDom(
       return this._data.multiEntry;
     }
     get(query: Any): Any {
+      this._tx._check(this);
       const range = rangeOf(query, true);
       return this._tx._request(this, () => {
         const entry = sourceEntries(this).find((e) => inRange(range, e.key));
@@ -35027,6 +35122,7 @@ export function installDom(
       });
     }
     getKey(query: Any): Any {
+      this._tx._check(this);
       const range = rangeOf(query, true);
       return this._tx._request(this, () => {
         const entry = sourceEntries(this).find((e) => inRange(range, e.key));
@@ -35045,6 +35141,7 @@ export function installDom(
       return readAll(this, options ?? {}, undefined, recordOf, true);
     }
     count(query?: Any): Any {
+      this._tx._check(this);
       const range = rangeOf(query);
       return this._tx._request(
         this,
@@ -35132,7 +35229,6 @@ export function installDom(
       }
       query = options.query;
     }
-    const range = rangeOf(query);
     let most = Infinity;
     if (count !== undefined) {
       // [EnforceRange] unsigned long
@@ -35144,6 +35240,8 @@ export function installDom(
       }
       if (Math.trunc(n) > 0) most = Math.trunc(n);
     }
+    source._tx._check(source);
+    const range = rangeOf(query);
     return source._tx._request(source, () => {
       let entries = sourceEntries(source).filter((e) => inRange(range, e.key));
       if (direction.endsWith('unique')) {
@@ -35313,6 +35411,7 @@ export function installDom(
     if (!DIRECTIONS.includes(dir)) {
       throw new TypeError(`'${dir}' is not a valid cursor direction.`);
     }
+    source._tx._check(source);
     const range = rangeOf(query);
     const request = new IDBRequest();
     const Cursor = withValue ? IDBCursorWithValue : IDBCursor;
@@ -35406,6 +35505,7 @@ export function installDom(
               new Event('error', { bubbles: true, cancelable: true }),
             );
           };
+          tx._activate();
           fireAtRequest(
             tx,
             [request],
