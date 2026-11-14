@@ -2740,6 +2740,63 @@ export function installDom(
    * between the two around it that have one, the first at 0 and the last
    * at 1 (6.6.2, "compute missing keyframe offsets").
    */
+  /** What no keyframe animates: the animation and transition properties,
+   *  and those that set how others are read (Web Animations 1, 5.2.2). */
+  const NOT_ANIMATABLE =
+    /^(?:animation|transition)(?:-|$)|^(?:contain|direction|text-combine-upright|text-orientation|unicode-bidi|will-change|writing-mode)$/;
+  /** A keyframe's property name as the CSS property it animates, or null
+   *  for one no keyframe animates: a custom property's, or an animatable
+   *  property's attribute name, of a property a style has. */
+  const animatableProperty = (name: string): string | null => {
+    const css = keyframeProperty(name);
+    if (css === null || css.startsWith('--')) return css;
+    if (NOT_ANIMATABLE.test(css)) return null;
+    // where the style's properties cannot be asked, every name is taken
+    return isStyleProperty(name) || styleProperties === null ? css : null;
+  };
+  /**
+   * A keyframe-like object read as Web Animations has it (5.2.2, "process
+   * a keyframe-like object"): its `composite`, `easing` and `offset`, in
+   * their names' order, then each animatable property it has an own
+   * enumerable key for, in code-point order, and no other — a page's
+   * getter for a property no keyframe animates is never called. With
+   * `lists`, a value that is a sequence is read as one.
+   */
+  const readKeyframeLike = (
+    obj: Any,
+    lists: boolean,
+  ): { members: Any; values: Record<string, Any> } => {
+    const members: Any = {};
+    for (const key of ['composite', 'easing', 'offset']) {
+      const v = obj[key];
+      if (v !== undefined) {
+        members[key] =
+          lists &&
+          v !== null &&
+          typeof v === 'object' &&
+          typeof v[Symbol.iterator] === 'function'
+            ? Array.from(v as Iterable<Any>)
+            : v;
+      }
+    }
+    const names = Object.keys(obj)
+      .filter((name) => animatableProperty(name) !== null)
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const values: Record<string, Any> = {};
+    for (const name of names) {
+      const v = obj[name];
+      if (lists) {
+        values[name] =
+          v !== null &&
+          typeof v === 'object' &&
+          typeof v[Symbol.iterator] === 'function'
+            ? Array.from(v as Iterable<Any>, (x) => String(x))
+            : [String(v)];
+      } else values[name] = String(v);
+    }
+    return { members, values };
+  };
+
   const keyframesOf = (given: Any): Any[] => {
     if (given === null || given === undefined) return [];
     if (typeof given !== 'object') {
@@ -2749,17 +2806,28 @@ export function installDom(
     }
     let frames: Any[];
     if (typeof given[Symbol.iterator] === 'function') {
-      frames = Array.from(given as Iterable<Any>, (frame) => ({
-        ...(frame ?? {}),
-        offset: keyframeOffsetOf(frame?.offset),
-      }));
+      frames = Array.from(given as Iterable<Any>, (frame) => {
+        if (
+          frame !== null &&
+          frame !== undefined &&
+          typeof frame !== 'object'
+        ) {
+          throw new TypeError(
+            "Failed to execute 'animate' on 'Element': Keyframes must be objects.",
+          );
+        }
+        const read = readKeyframeLike(frame ?? {}, false);
+        return {
+          ...read.values,
+          ...read.members,
+          offset: keyframeOffsetOf(read.members.offset),
+        };
+      });
     } else {
       const byOffset = new Map<number, Any>();
-      for (const [name, values] of Object.entries(given)) {
-        if (name === 'offset' || name === 'easing' || name === 'composite') {
-          continue;
-        }
-        const list = Array.isArray(values) ? values : [values];
+      const read = readKeyframeLike(given, true);
+      for (const [name, values] of Object.entries(read.values)) {
+        const list = values as Any[];
         list.forEach((v, i) => {
           const at = list.length === 1 ? 1 : i / (list.length - 1);
           let frame = byOffset.get(at);
@@ -2772,6 +2840,7 @@ export function installDom(
         .map(([, frame]) => frame);
       const listOf = (v: Any): Any[] =>
         v === undefined ? [] : Array.isArray(v) ? v : [v];
+      given = read.members;
       listOf(given.offset)
         .map(keyframeOffsetOf)
         .forEach((o, i) => {
@@ -4914,12 +4983,21 @@ export function installDom(
           'NoModificationAllowedError',
         );
       }
-      const values = call(
-        'animationValues',
-        target._id,
-        this._hostId,
-        effect._properties().join('\u0000'),
-      );
+      // the host told where this animation is now, as a `finish()` or a
+      // seek in the same task leaves it, filling both ways, before it works
+      // its values out, and then told it as it is again
+      this._report(true);
+      let values: Any;
+      try {
+        values = call(
+          'animationValues',
+          target._id,
+          this._hostId,
+          effect._properties().join('\u0000'),
+        );
+      } finally {
+        this._report();
+      }
       if (typeof values !== 'string') {
         throw new DOMException(
           "Failed to execute 'commitStyles' on 'Animation': Target element is not rendered.",
@@ -5153,7 +5231,7 @@ export function installDom(
      * idle, cancelled, replaced, of no element — that the element it was
      * told of has it no longer.
      */
-    _report(): void {
+    _report(committing = false): void {
       const effect = this._effect;
       const target = effect?.target ?? null;
       const time = this._cur();
@@ -5161,10 +5239,12 @@ export function installDom(
       if (
         target instanceof Element &&
         time !== null &&
-        this.replaceState !== 'removed'
+        (committing || this.replaceState !== 'removed')
       ) {
         const n = effect._norm();
-        const fill = effect._state().boundary ? 'both' : n.fill;
+        // what `commitStyles` writes is the effect as though it filled
+        // both ways, a removed one's too (Web Animations 1, 4.4.13)
+        const fill = committing || effect._state().boundary ? 'both' : n.fill;
         described = effect._hostEffect(n, fill);
       }
       if (this._toldTo && (this._toldTo !== target || described === null)) {

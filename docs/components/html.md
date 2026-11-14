@@ -2442,8 +2442,15 @@ easing and each frame's are Web Animations' (4.8 to 4.11), and a property a
 frame leaves out at either end is the element's value under the CSS
 animations. `commitStyles()` writes what the effect comes to now, under the
 animations made after it, into the `style` attribute
-(`scriptAnimationValues`), and throws as a browser does for an element that
-is not rendered and for a pseudo-element. A finished animation that fills
+(`scriptAnimationValues`), of the document as the script left it and the
+animation where a `finish()` or a seek in the same task put it, and throws as
+a browser does for an element that is not rendered and for a pseudo-element.
+Keyframes are read as Web Animations has it (5.2.2): a keyframe-like
+object's `composite`, `easing` and `offset`, then its own animatable
+properties in code-point order, a page's getter for any other name never
+called — the animation and transition properties, `contain`, `direction`,
+`text-combine-upright`, `text-orientation`, `unicode-bidi`, `will-change`,
+`writing-mode`, a name the style has no property of and a dashed one. A finished animation that fills
 is removed once later ones on its element cover every property it sets
 (5.5), which tells `remove`, so a page that fades a panel in and out with a
 new animation each time does not keep them all; `persist()` keeps one.

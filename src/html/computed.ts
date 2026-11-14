@@ -1270,6 +1270,26 @@ function cssomAt(
   // `auto` for what is in the top layer, and `none` for all else: the user
   // agent's own, which no page sets (CSS Position 4, 3.2)
   out.overlay = style.overlay;
+  // each shadow as Chrome writes it, its colour first and `inset` last
+  out['box-shadow'] = style.boxShadow
+    ? style.boxShadow
+        .map(
+          (s) =>
+            `${cssomColor(s.color, null, color, style.colorSource)} ${px(s.x, scale)} ${px(s.y, scale)} ${px(s.blur, scale)} ${px(s.spread, scale)}${s.inset ? ' inset' : ''}`,
+        )
+        .join(', ')
+    : 'none';
+  // `rect()` with its sides as computed, `auto` for a side left so
+  out.clip = style.clip
+    ? `rect(${[
+        style.clip.top,
+        style.clip.right,
+        style.clip.bottom,
+        style.clip.left,
+      ]
+        .map((v) => (v === null ? 'auto' : px(v, scale)))
+        .join(', ')})`
+    : 'auto';
   const widths = [
     style.borderTopWidth,
     style.borderRightWidth,
