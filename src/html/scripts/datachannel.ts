@@ -115,10 +115,22 @@ export function installDataChannels(
   /** An event handler IDL attribute, its accessors named as Web IDL
    *  names them. */
   const handler = (proto: Any, name: string): void => {
+    // an object of another interface is refused either way (Web IDL, 3.7.6)
+    const own = (self: Any): void => {
+      if (
+        self === null ||
+        (typeof self !== 'object' && typeof self !== 'function') ||
+        !Object.prototype.isPrototypeOf.call(proto, self)
+      ) {
+        throw illegal();
+      }
+    };
     const get = function (this: Any) {
+      own(this);
       return this._handlers[name] ?? null;
     };
     const set = function (this: Any, fn: Any) {
+      own(this);
       setHandler(
         this,
         name,
@@ -268,13 +280,17 @@ export function installDataChannels(
       return slotOf(this, 'channel').binaryType;
     }
     set binaryType(value: Any) {
+      const s = slotOf(this, 'channel');
       const type = String(value);
-      if (type === 'blob' || type === 'arraybuffer') {
-        slotOf(this, 'channel').binaryType = type;
-      }
+      if (type === 'blob' || type === 'arraybuffer') s.binaryType = type;
     }
     send(data: Any): void {
       const s = slotOf(this, 'channel');
+      if (arguments.length < 1) {
+        throw typeError(
+          "Failed to execute 'send' on 'RTCDataChannel': 1 argument required, but only 0 present.",
+        );
+      }
       if (s.readyState !== 'open') {
         throw domError('The data channel is not open.', 'InvalidStateError');
       }
