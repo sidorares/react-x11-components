@@ -346,6 +346,52 @@ test('candidates are told after the description, then the end of a transport’s
   assert.ok(logs.includes('no mid|TypeError'), logs.join('\n'));
 });
 
+test('a transport told again while the end of its gathering waits for its task ends its gathering once', async () => {
+  // werift tells a transport again as its pair or its roles move, and on
+  // a machine with more interfaces it does so in that task: three ends of
+  // candidates and three gatheringstatechanges, where there is one
+  const fake = new FakeWebRTC();
+  const webRTC = Object.create(fake) as FakeWebRTC;
+  webRTC.connect = (request, events) =>
+    fake.connect(request, {
+      ...events,
+      transport(id, state) {
+        events.transport(id, state);
+        if (state.gatheringState !== 'complete') return;
+        events.transport(id, { ...state, role: 'controlled' });
+        events.transport(id, { ...state, role: 'controlling' });
+      },
+    });
+  const logs = await run(
+    `
+    var pc = new RTCPeerConnection();
+    pc.addTransceiver('audio');
+    var events = [];
+    var done = new Promise(function (r) {
+      pc.onicecandidate = function (e) {
+        events.push(e.candidate === null ? 'null' : e.candidate.candidate === '' ? 'end' : 'candidate');
+        if (e.candidate === null) r();
+      };
+    });
+    pc.onicegatheringstatechange = function () { events.push('pc:' + pc.iceGatheringState); };
+    await pc.setLocalDescription();
+    var ice = pc.getTransceivers()[0].sender.transport.iceTransport;
+    ice.ongatheringstatechange = function () { events.push('t:' + ice.gatheringState); };
+    await done;
+    await new Promise(function (r) { setTimeout(r, 50); });
+    log('events', events.join(','), ice.gatheringState);
+    pc.close();
+  `,
+    { webRTC },
+  );
+  assert.ok(
+    logs.includes(
+      'events|t:gathering,pc:gathering,candidate,end,t:complete,pc:complete,null|complete',
+    ),
+    logs.join('\n'),
+  );
+});
+
 test('two connections connect: the aggregate states follow their transports', async () => {
   const logs = await run(`
     ${NEGOTIATE}
