@@ -20240,7 +20240,14 @@ export function installDom(
 
   class HTMLStyleElement extends HTMLElement {
     get sheet(): Any {
-      return this.isConnected ? sheetOf(this) : null;
+      // one its document's policies refuse makes no sheet
+      if (
+        !this.isConnected ||
+        (cspOf?.policed && call('csp', 'style', this._id) !== true)
+      ) {
+        return null;
+      }
+      return sheetOf(this);
     }
   }
   Object.defineProperty(
