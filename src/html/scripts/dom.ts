@@ -34246,6 +34246,26 @@ export function installDom(
       if (this._finished) return;
       this._finished = true;
       this._undo();
+      // the handles an upgrade renamed have their names back (IndexedDB 3,
+      // 5.8, "abort an upgrade transaction"), but for those of what it
+      // created, which keep their last names and are deleted
+      const before = this.mode === 'versionchange' ? this._before : null;
+      for (const store of [...this._stores.values()]) {
+        const was = before?.get(store._original ?? store._name);
+        for (const index of [...store._indexHandles.values()]) {
+          if (index._original === undefined) continue;
+          if (!was?.indexes.has(index._original)) continue;
+          store._indexHandles.delete(index._name);
+          index._name = index._original;
+          index._original = undefined;
+          store._indexHandles.set(index._name, index);
+        }
+        if (store._original === undefined || !was) continue;
+        this._stores.delete(store._name);
+        store._name = store._original;
+        store._original = undefined;
+        this._stores.set(store._name, store);
+      }
       this._settle();
       this.error = error;
       const pending = this._queue;
@@ -34302,6 +34322,45 @@ export function installDom(
     get name(): string {
       return this._name;
     }
+    /** Renaming the store (IndexedDB 3, 4.5), in an upgrade alone; an
+     *  abort puts its name back (`_abort`). */
+    set name(value: Any) {
+      const name = str(value);
+      const data = this._data;
+      const tx = this._tx;
+      if (tx.mode !== 'versionchange') {
+        throw new DOMException(
+          'A store is renamed only while the database is upgraded.',
+          'InvalidStateError',
+        );
+      }
+      if (tx._finished) {
+        throw new DOMException(
+          'The transaction has finished.',
+          'TransactionInactiveError',
+        );
+      }
+      if (name === this._name) return;
+      const stores = tx._db._data.stores;
+      if (stores.has(name)) {
+        throw new DOMException(
+          `An object store named '${name}' already exists.`,
+          'ConstraintError',
+        );
+      }
+      stores.delete(this._name);
+      data.name = name;
+      stores.set(name, data);
+      tx._stores.delete(this._name);
+      tx._stores.set(name, this);
+      this._original ??= this._name;
+      this._name = name;
+    }
+    /** Its name before the transaction renamed it, which an abort puts
+     *  back. */
+    _original: string | undefined = undefined;
+    /** Its index handles, one a name (IndexedDB 3, 4.5, `index()`). */
+    _indexHandles = new Map<string, Any>();
     get keyPath(): Any {
       const path = this._data.keyPath;
       return Array.isArray(path) ? [...path] : path;
@@ -34309,8 +34368,11 @@ export function installDom(
     get autoIncrement(): boolean {
       return this._data.autoIncrement;
     }
+    /** Its indexes' names, and none once it is gone: a store an aborted
+     *  upgrade created has an empty index set (IndexedDB 3, 5.8). */
     get indexNames(): Any {
-      return stringList(this._data.indexes.keys());
+      const data = this._tx._db._data.stores.get(this._name);
+      return stringList(data ? data.indexes.keys() : []);
     }
     get transaction(): Any {
       return this._tx;
@@ -34505,7 +34567,12 @@ export function installDom(
           'NotFoundError',
         );
       }
-      return new IDBIndex(this, indexName);
+      let handle = this._indexHandles.get(indexName);
+      if (!handle) {
+        handle = new IDBIndex(this, indexName);
+        this._indexHandles.set(indexName, handle);
+      }
+      return handle;
     }
   }
 
@@ -34532,6 +34599,41 @@ export function installDom(
     get name(): string {
       return this._name;
     }
+    /** Renaming the index (IndexedDB 3, 4.6), as its store is renamed. */
+    set name(value: Any) {
+      const name = str(value);
+      const data = this._data;
+      const tx = this._store._tx;
+      if (tx.mode !== 'versionchange') {
+        throw new DOMException(
+          'An index is renamed only while the database is upgraded.',
+          'InvalidStateError',
+        );
+      }
+      if (tx._finished) {
+        throw new DOMException(
+          'The transaction has finished.',
+          'TransactionInactiveError',
+        );
+      }
+      if (name === this._name) return;
+      const indexes = this._store._data.indexes;
+      if (indexes.has(name)) {
+        throw new DOMException(
+          `An index named '${name}' already exists.`,
+          'ConstraintError',
+        );
+      }
+      indexes.delete(this._name);
+      data.name = name;
+      indexes.set(name, data);
+      const handles = this._store._indexHandles;
+      handles.delete(this._name);
+      handles.set(name, this);
+      this._original ??= this._name;
+      this._name = name;
+    }
+    _original: string | undefined = undefined;
     get keyPath(): Any {
       const path = this._data.keyPath;
       return Array.isArray(path) ? [...path] : path;
