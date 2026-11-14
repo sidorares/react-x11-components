@@ -5796,11 +5796,18 @@ lanes with `subgrid` on their axis takes the lanes it spans for its tracks
 (3.2), and its items size them in its place: where it has a line of its
 own, in the lanes it spans, with its margin, border and padding at its
 edges, and where the lanes place it, each wherever it could go in any of
-them (3.4.1), its lines then taking none of the lanes' names. Not read yet:
-a subgrid of the stacking axis, which the specification turns into lanes
-of its own, and so a grid lanes container that subgrids its parent; the
-items' own baseline alignment; fragmentation; and `direction: rtl`, which
-no grid here reads either.
+them (3.4.1), its lines then taking none of the lanes' names. The other
+way round, a grid lanes container that is an item of a grid, or of grid
+lanes, with `subgrid` on its lanes' axis subgrids its parent there: its
+lanes are the parent's tracks over its span, with their lines' names and
+the parent's gap where its own is `normal`, sized by the parent, and its
+items size them as a subgrid's do, one with no line of its own at every
+start it could have. It subgrids nothing on its stacking axis, and grid
+lanes of rows in lanes of columns subgrid nothing at all. Not read yet: a
+grid that subgrids the stacking axis of the lanes it is in, which the
+specification turns into lanes of its own; the items' own baseline
+alignment; fragmentation; and `direction: rtl`, which no grid here reads
+either.
 A table's borders collapse where it asks: one border along each edge of its
 grid, centred on it, chosen from the cells, rows, row groups, columns,
 column groups and the table that meet there as CSS 2.1 17.6.2.1 chooses —
