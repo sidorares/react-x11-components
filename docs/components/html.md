@@ -3123,14 +3123,42 @@ rest of SVG 2's and Filter Effects' `SVGAnimated…` attributes reflect their
 attribute: a write through one sets it, and an attribute set any other way
 shows in one a page holds. `SVGLength` converts between its units against the
 element's font and the nearest `<svg>`'s size; `SVGPoint`, `SVGRect` and
-`SVGMatrix` are interfaces of their own, as in every browser. Nothing animates
-an attribute (SMIL is not run), so an `animVal` reads its `baseVal` and is
-read only. Where the browsers differ this follows two of them, Chromium where
-all three do. `getComputedStyle` answers SVG's properties, `fill`, `stroke`,
-`stop-color`, the markers, `cx` to `ry` and the rest, for every element, and
-`el.style` keeps each in its canonical form. What an SVG property's value is
-while a CSS animation or transition runs on it is not worked out: it reads
-the value at rest.
+`SVGMatrix` are interfaces of their own, as in every browser. An `animVal`
+reads what SMIL animation sets, below, and is read only. Where the browsers
+differ this follows two of them, Chromium where all three do.
+`getComputedStyle` answers SVG's properties, `fill`, `stroke`, `stop-color`,
+the markers, `cx` to `ry`, a path's `d` as `path("…")`, and the rest, for every
+element, and `el.style` keeps each in its canonical form. The attributes of
+CSS's own properties that SVG has as presentation attributes, `color`,
+`opacity`, `display`, `visibility` and the font's among them, are
+declarations of them on any SVG element (`presentationHints`). What an SVG
+property's value is while a CSS animation or transition runs on it is not
+worked out: it reads the value at rest.
+
+**SMIL runs for a page's scripts, and is drawn at rest.** `<animate>`,
+`<set>`, `<animateTransform>` and `<animateMotion>` keep time on their
+outermost `<svg>`'s clock, which starts at the document's `load` and which
+`pauseAnimations()`, `unpauseAnimations()` and `setCurrentTime()` drive
+(`src/html/scripts/smil.ts`). Their begin and end lists take offsets,
+syncbases, events, `repeat(n)`, `accessKey()` and `indefinite`, with `dur`,
+`repeatCount`, `repeatDur`, `min`, `max`, `restart` and `fill`. Values go by
+`values`, `from`, `to` and `by`, every `calcMode` with `keyTimes` and
+`keySplines`, `additive` and `accumulate`, over numbers, lengths in any unit,
+colours, `currentColor` and `inherit`, lists, transforms, path data and a
+motion path, an `<mpath>` to any basic shape among them. What they set is
+what a page reads: an attribute's `animVal`, `getComputedStyle()`, inherited
+by what is under the target, and the geometry `getBBox()` and `getCTM()`
+answer, `<animateMotion>`'s matrix after the element's transform. The
+`beginEvent`, `repeatEvent` and `endEvent` events, and the `onbegin`, `onend`
+and `onrepeat` handlers, come at the update after what they tell of; a seek
+tells only what began or ended across it, and nothing it passed over. Nothing
+is kept but the instance times events and `beginElement()` add: each read
+works the intervals out again from the attributes, once for a time and a
+change to the tree, so an attribute a script changes is in the next read.
+Two things are not done: what animation sets is not drawn, so a drawing
+shows its attributes as written, and an animated `color` does not reach a
+`fill` of `currentColor` under it, nor an animated `class` the rules it
+selects.
 
 ### Windows
 
