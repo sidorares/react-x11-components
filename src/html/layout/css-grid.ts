@@ -476,14 +476,18 @@ export function layoutGrid(
     let heights = sizeRows(definite, own ? definite : Infinity, least);
     // with no height of its own, the grid is as tall as its rows come to
     // with their percentages `auto`, and the percentages are of that (7.2.1)
+    // — and it stays that tall, what the rows come to then running past it
+    // or leaving room in it
+    let tall = NaN;
     if (!own && [...plan.explicitRows, style.gridAutoRows].some(percentTrack)) {
-      let tall = rowGap * Math.max(0, heights.length - 1);
+      tall = rowGap * Math.max(0, heights.length - 1);
       for (const h of heights) tall += h;
       tall = Math.max(tall, least);
       heights = sizeRows(tall, tall, 0);
     }
     let height = rowGap * Math.max(0, heights.length - 1);
     for (const h of heights) height += h;
+    if (!Number.isNaN(tall)) height = tall;
     // with no height of its own, a percentage gap is of the height its rows
     // come to without it, and the rows are placed with it where the grid is
     // that tall
