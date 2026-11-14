@@ -3205,7 +3205,32 @@ the element's tree or one a shadow host of it is in, or else the elements
 the attribute's IDs name in the element's own tree; setting one writes the
 empty string to the attribute, and the attribute set any other way takes
 back what was set. A list is one frozen array while it holds the same
-elements. Nothing reads them for an accessibility tree yet.
+elements. Nothing reads them for an accessibility tree yet. A custom
+element's `ElementInternals` has the same `role`, `aria*` and element
+references, each null until a page sets one, with no attribute behind them.
+
+**Slots tell a page what they were assigned** (DOM 4.2.2): a slot whose
+assigned nodes changed hears `slotchange`, bubbling, in the mutation
+observer microtask after the observers, and so does one with nothing
+assigned whose fallback changed. The assignment is watched only once a page
+listens for `slotchange` anywhere. A root attached with `slotAssignment:
+'manual'` assigns each slot what its `assign()` named, in that order, and a
+copy of such a root is manual too.
+
+**What `dom/` asks of the core interfaces**: a `DOMTokenList` is the
+attribute's tokens as an ordered set, indexed and iterable, its arguments
+validated, and writes no attribute that was not there for an empty set.
+Every interface's constants are on its prototype as well, neither writable
+nor configurable, and two nodes in different trees are ordered the same way
+whichever is asked of the other. `replaceChild`, `replaceChildren` and a
+fragment's children moving each make the records a browser makes, one each.
+A range's offset in a processing instruction counts its data.
+`attachShadow` refuses an element in any namespace but HTML's. A document
+`createDocument`, `createHTMLDocument` or `new Document()` makes is at
+`about:blank`. A copy of a customized built-in is one, however the original
+was made, and a form-associated custom element submits what `setFormValue`
+set. A query whose selector ends in a pseudo-element matches nothing rather
+than throwing.
 
 **A drawing's geometry is worked out from its attributes.** No box stands for
 what an inline `<svg>` holds, so `getBBox`, `getCTM`, `getScreenCTM`,

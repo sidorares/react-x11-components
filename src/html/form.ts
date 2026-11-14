@@ -106,7 +106,9 @@ const SUBMITTABLE = new Set(['button', 'input', 'select', 'textarea']);
 /** Whether an element is one: an `<input>` a drawing or a `<math>` holds is
  *  only a name, which no form owns. */
 function isSubmittable(el: Element): boolean {
-  return SUBMITTABLE.has(tagOf(el)) && !isForeign(el);
+  return (
+    (SUBMITTABLE.has(tagOf(el)) && !isForeign(el)) || FORM_ASSOCIATED.has(el)
+  );
 }
 
 /** Every `<input type>` HTML knows. Any other type, or none, is a text
@@ -724,6 +726,18 @@ function entriesOf(
       const prefix = name ? `${name}.` : '';
       add(`${prefix}x`, String(Math.round(point?.x ?? 0)));
       add(`${prefix}y`, String(Math.round(point?.y ?? 0)));
+      continue;
+    }
+    // a form-associated custom element's, what `setFormValue` set (HTML
+    // 4.10.21.4, step 5.12): entries of its own, or one under its name
+    if (FORM_ASSOCIATED.has(el)) {
+      const value = CUSTOM_FORM_VALUES.get(el);
+      if (Array.isArray(value)) {
+        for (const [n, v] of value) add(n, v);
+      } else if (typeof value === 'string') {
+        const named = attr(el, 'name');
+        if (named) add(named, value);
+      }
       continue;
     }
     const name = attr(el, 'name');
@@ -1421,6 +1435,22 @@ export function setCustomError(el: Element, message: string): boolean {
 /** A custom element a definition says takes part in forms. */
 export function markFormAssociated(el: Element): void {
   FORM_ASSOCIATED.add(el);
+}
+
+/** What each form-associated custom element submits (HTML 4.13.7.3,
+ *  "submission value"): a string, or entries of its own. */
+const CUSTOM_FORM_VALUES = new WeakMap<
+  Element,
+  string | readonly (readonly [string, string])[]
+>();
+
+/** `internals.setFormValue(value)`: null for nothing to submit. */
+export function setCustomFormValue(
+  el: Element,
+  value: string | readonly (readonly [string, string])[] | null,
+): void {
+  if (value === null) CUSTOM_FORM_VALUES.delete(el);
+  else CUSTOM_FORM_VALUES.set(el, value);
 }
 
 /** A control's `indeterminate` IDL attribute: whether it changed. */
