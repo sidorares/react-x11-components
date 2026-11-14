@@ -1633,6 +1633,7 @@ function listOf(value: string | null, fold = true): Set<string> {
  *  draws its document answers (`DomHost._op`). */
 const NODE_READS = new Set([
   'active',
+  'animationValues',
   'blur',
   'viewScroll',
   'viewScrollTo',
@@ -6706,6 +6707,8 @@ export class DomHost {
       // with the animation at the top of the element's effect stack, or
       // null where the element is not rendered
       case 'animationValues': {
+        // of the document as the page's script left it
+        this.flush();
         const el = this._element(a);
         const handle = this._drawing(el);
         if (!handle) return null;
