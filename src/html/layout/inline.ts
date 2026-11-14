@@ -664,11 +664,16 @@ function linesOf(
   // and text that keeps its spaces where its lines wrap, whose spaces a
   // line may end on (`hangPreserved`)
   let keepsSpaces = false;
+  // and what keeps them as `break-spaces` does (`layoutBreakSpaces`)
+  let breakSpaced = false;
   for (const item of items) {
     if (item.kind !== 'text' || item.control) continue;
     const style = item.box.style;
     if (style.textShadow) (shadowed ??= new Set()).add(style.textShadow);
     if (style.whiteSpace === 'pre-wrap') keepsSpaces = true;
+    if (style.breakSpaces && style.whiteSpace === 'pre-wrap') {
+      breakSpaced = true;
+    }
     if (
       !tabbed &&
       (style.whiteSpace === 'pre' || style.whiteSpace === 'pre-wrap') &&
@@ -807,6 +812,41 @@ function linesOf(
     );
     if (laid && !shortOfStrut(laid.lines, strut, firstStrut)) return laid;
     if (laid) strutted = true;
+  }
+
+  // Spaces kept as `break-spaces` keeps them, which take room at a line's
+  // end and break after each, in text that is all the paragraph holds: a
+  // line at a time (`layoutBreakSpaces`). Anything else in it is laid out
+  // as `pre-wrap` is, its spaces hung.
+  if (
+    breakSpaced &&
+    wraps(style) &&
+    !hasAtomics &&
+    !hasEdges &&
+    !raised &&
+    !floated &&
+    !indent &&
+    !alignedApart &&
+    !restyled &&
+    !strutted &&
+    !apart &&
+    !options.clamp &&
+    style.textAlign !== 'justify' &&
+    lastAlign !== 'justify' &&
+    cutOf(style, options.clamp, options.width, over) === null &&
+    !hasControls(items)
+  ) {
+    const laid = layoutBreakSpaces(
+      items as Extract<Item, { kind: 'text' }>[],
+      base,
+      style,
+      options.width,
+      lineHeightMul,
+      align,
+      fonts,
+    );
+    if (!shortOfStrut(laid.lines, strut, firstStrut)) return laid;
+    strutted = true;
   }
 
   // The text-only, float-free, unindented case: one call, every line — or
@@ -2324,6 +2364,179 @@ function layoutChunked(
   }
   flush(true);
   return { lines, height: y, width: widest };
+}
+
+/** How much of what is left of a `break-spaces` paragraph is laid out to
+ *  find where its next line ends (`layoutBreakSpaces`), at first: twice
+ *  as much each time a line reaches that far. */
+const BREAK_SPACES_WINDOW = 2048;
+
+/**
+ * A paragraph whose text keeps its spaces as `break-spaces` does (CSS Text
+ * 3, 4.1.3, `ComputedStyle.breakSpaces`), laid out a line at a time. Its
+ * spaces take room at a line's end, where `pre-wrap`'s hang past it, so a
+ * line ends where its text and the spaces after it fit, and a line may
+ * break after any one of them — inside a run of spaces, and before a word
+ * whose space after it would not fit. No engine has that: each hangs the
+ * spaces it ends a line on. So the engine is asked for the next line of
+ * what is left (`breakSpacesEnd`), the line's end is put right, and the
+ * line is laid out alone, its spaces as no-break spaces, which an engine
+ * measures, aligns and never hangs: that is what makes a right-aligned
+ * line come in by its spaces, as a browser's does.
+ */
+function layoutBreakSpaces(
+  items: Extract<Item, { kind: 'text' }>[],
+  base: Record<string, unknown>,
+  style: ComputedStyle,
+  width: number,
+  lineHeightMul: number,
+  align: string,
+  fonts: FontsLike,
+): InlineResult {
+  const runs: TextRun[] = [];
+  let total = 0;
+  for (const item of items) {
+    runs.push(item.run);
+    total += item.run.text.length;
+  }
+  const starts = runStarts(runs);
+  const options = {
+    maxWidth: width,
+    lineHeight: lineHeightMul,
+    direction: style.direction,
+    overflowWrap: overflowWrapOf(style, items),
+    fit: PARAGRAPH_FIT,
+  };
+  const lines: LineBox[] = [];
+  let widest = 0;
+  let y = 0;
+  for (let from = 0; from < total;) {
+    const to = breakSpacesEnd(items, runs, starts, total, from, fonts, base, {
+      ...options,
+    });
+    // the line alone, its kept spaces as no-break spaces, and the spans
+    // its text has in the document
+    const own = sliceRuns(runs, from, to).slice();
+    const spans = new SpanMap();
+    let at = 0;
+    for (let k = 0; k < items.length; k += 1) {
+      const start = starts[k];
+      const end = start + runs[k].text.length;
+      if (end <= from || start >= to) continue;
+      const lo = Math.max(start, from);
+      const hi = Math.min(end, to);
+      const item = items[k];
+      spans.add(
+        item.start + (lo - start),
+        hi - lo,
+        item.control ? null : item.box,
+      );
+      if (keepsBreakSpaces(item)) {
+        const piece = own[at];
+        own[at] = { ...piece, text: piece.text.replace(/ /g, '\u00a0') };
+      }
+      at += 1;
+    }
+    // a layout of its own, which two lines of the same text would share
+    // from the cache, and the paint draws a layout once (`paintLinePart`):
+    // a millionth of a pixel apart, which aligns nothing elsewhere
+    const layout = fonts.layout(own, base, {
+      ...options,
+      maxWidth: width + lines.length * 1e-6,
+      align,
+      wrap: false,
+    });
+    LAYOUT_RUNS.set(layout, own);
+    widest = Math.max(widest, emitLayout(layout, spans, 0, y, lines));
+    y += layout.height;
+    from = to;
+  }
+  return { lines, height: y, width: widest };
+}
+
+/** Whether a text keeps its spaces as `break-spaces` does where its lines
+ *  wrap (`layoutBreakSpaces`). */
+function keepsBreakSpaces(item: Extract<Item, { kind: 'text' }>): boolean {
+  const style = item.box.style;
+  return !item.control && style.breakSpaces && style.whiteSpace === 'pre-wrap';
+}
+
+/**
+ * Where the line a `break-spaces` paragraph starts at `from` ends: where
+ * the engine ends it, or before the first of the spaces it hung there that
+ * does not fit (CSS Text 3, 4.1.3) — after the last that does, or, where
+ * none does, at the line's last break before its last word, which the
+ * engine finds when that word is glued to the space after it. Where there
+ * is no such break the space goes on the line past its end, which is the
+ * first place a line may break after the word.
+ */
+function breakSpacesEnd(
+  items: Extract<Item, { kind: 'text' }>[],
+  runs: TextRun[],
+  starts: number[],
+  total: number,
+  from: number,
+  fonts: FontsLike,
+  base: Record<string, unknown>,
+  options: Parameters<FontsLike['layout']>[2] & { maxWidth: number },
+): number {
+  const keeps = (at: number): boolean => {
+    const k = runIndexAt(starts, at);
+    return (
+      runs[k].text.charCodeAt(at - starts[k]) === 0x20 &&
+      keepsBreakSpaces(items[k])
+    );
+  };
+  const glued = new Set<number>();
+  let window = BREAK_SPACES_WINDOW;
+  let fallback = -1;
+  for (let tries = 0; tries < 16; tries += 1) {
+    const to = Math.min(total, from + window);
+    let probe = sliceRuns(runs, from, to);
+    if (glued.size) {
+      const at = runStarts(probe);
+      probe = replacedAt(
+        probe,
+        at,
+        [...glued].map((g) => g - from).sort((a, b) => a - b),
+        '\u00a0',
+      );
+    }
+    const line = fonts.layout(probe, base, options).lines[0];
+    if (!line) return total;
+    const end = from + line.end;
+    // a line that reaches as far as was laid out may reach further
+    if (end >= to && to < total && line.end > 0) {
+      window *= 2;
+      continue;
+    }
+    if (end <= from) return Math.max(from + 1, Math.min(total, end + 1));
+    // a glued line still holding the space: no break before the word
+    if (fallback >= 0 && end > fallback - 1) return fallback;
+    // the spaces it hung, logical order; a forced break after them
+    // is kept with them
+    let last = end;
+    const k = runIndexAt(starts, last - 1);
+    if (runs[k].text.charCodeAt(last - 1 - starts[k]) === 10) last -= 1;
+    const spaces: number[] = [];
+    for (let at = last - 1; at >= from && keeps(at); at -= 1) spaces.push(at);
+    if (!spaces.length) return end;
+    spaces.reverse();
+    let free = options.maxWidth - line.width;
+    let fit = 0;
+    for (const at of spaces) {
+      const advance = spaceAdvance(fonts, runs[runIndexAt(starts, at)]);
+      if (advance > free + FIT_SLACK) break;
+      free -= advance;
+      fit += 1;
+    }
+    if (fit === spaces.length) return end;
+    if (fit > 0) return spaces[fit - 1] + 1;
+    // none fits: glue the first to its word, and break before it
+    glued.add(spaces[0]);
+    fallback = spaces[0] + 1;
+  }
+  return fallback >= 0 ? fallback : total;
 }
 
 // --- the line under construction --------------------------------------------

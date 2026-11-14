@@ -844,10 +844,19 @@ export interface ComputedStyle {
   tabSize: number;
   tabSizeIsLength: boolean;
   whiteSpace: 'normal' | 'nowrap' | 'pre' | 'pre-wrap' | 'pre-line';
+  /** `white-space-collapse: break-spaces` (CSS Text 4, 3.1), which
+   *  `white-space: break-spaces` is with wrapping: the spaces it keeps take
+   *  room at a line's end, where `pre-wrap`'s hang, and a line may break
+   *  after each of them. `whiteSpace` says `pre-wrap` for it, or `pre`
+   *  where the lines do not wrap, so all that holds of kept spaces holds of
+   *  these (`layoutBreakSpaces`). Inherited. */
+  breakSpaces: boolean;
   /** Whether a word too long for its line may be cut inside itself
    *  (`overflow-wrap`, CSS Text 3, 5.5): `normal` lets it run past the
    *  line's end, as a browser does, and `anywhere` is `break-word`. */
-  overflowWrap: 'normal' | 'break-word';
+  /** `anywhere` breaks as `break-word` does here, and is kept for a page
+   *  to read. */
+  overflowWrap: 'normal' | 'break-word' | 'anywhere';
   /** `word-break` (CSS Text 3, 5.2): `break-all` and `break-word` cut a
    *  word too long for its line whatever `overflow-wrap` says, which is
    *  as near as the engines come to breaking between any two letters.
@@ -1114,6 +1123,9 @@ export interface ComputedStyle {
   /** A form control's own look (`auto`), or `none`: the page draws it,
    *  with its own background, borders and padding (`ControlFace`). */
   appearance: 'auto' | 'none';
+  /** The keyword `appearance` was given, for a page to read: every one but
+   *  `none` is `auto` to what draws it. */
+  appearanceText: string;
   /** Whether the page styled a form control's box: set a background or a
    *  border property on it, whatever to, or `appearance: none`. Its look
    *  is the page's then and not the palette's (`Cascade`'s
@@ -1141,6 +1153,9 @@ export interface ComputedStyle {
   /** `scrollbar-color`'s thumb colour, null for `auto` (CSS Scrollbars 1,
    *  2): the track is an overlay bar's, which draws none. Inherited. */
   scrollbarThumbColor: string | null;
+  /** `scrollbar-color`'s track, which an overlay bar draws none of and a
+   *  page reads. */
+  scrollbarTrackColor: string | null;
   /** `caret-color`, null for `auto`, the text's own colour (CSS UI 4,
    *  6.2.1): what an editing host's caret is drawn in. Inherited, and as a
    *  keyword where it is `currentColor`, worked out against each element's
@@ -1435,6 +1450,9 @@ export interface ComputedStyle {
    *  pan: `'xy'` for `auto`, `''` for `none`. Its zooms are nothing here,
    *  so `manipulation` is `'xy'` and `pinch-zoom` alone is `''`. */
   touchAction: '' | 'x' | 'y' | 'xy';
+  /** `touch-action` as a page reads it: which way is which is all
+   *  `touchAction` keeps. */
+  touchActionText: string;
   /** `scroll-initial-target` (CSS Scroll Snap 2, 3.1): whether the box is
    *  what its nearest scroll container is first scrolled to. */
   scrollInitialTarget: 'none' | 'nearest';
@@ -1679,6 +1697,7 @@ export const INHERITED = [
   'colorSource',
   'interpolateSize',
   'scrollbarThumbColor',
+  'scrollbarTrackColor',
   'caretColor',
   'colorScheme',
   'colorSchemeKeywords',
@@ -1717,6 +1736,7 @@ export const INHERITED = [
   'orphans',
   'widows',
   'whiteSpace',
+  'breakSpaces',
   'overflowWrap',
   'wordBreak',
   'lineBreakAnywhere',
@@ -1885,6 +1905,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     tabSize: 8,
     tabSizeIsLength: false,
     whiteSpace: 'normal',
+    breakSpaces: false,
     overflowWrap: 'normal',
     wordBreak: 'normal',
     lineBreakAnywhere: false,
@@ -1982,6 +2003,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     objectFit: 'fill',
     objectViewBox: null,
     appearance: 'auto',
+    appearanceText: 'auto',
     styledControl: false,
     itemsThrough: false,
     overlay: 'none',
@@ -1991,6 +2013,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     overflowY: 'visible',
     scrollbarWidth: 'auto',
     scrollbarThumbColor: null,
+    scrollbarTrackColor: null,
     caretColor: null,
     clip: null,
     clipPath: null,
@@ -2113,6 +2136,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     scrollSnapAlign: NO_SNAP_ALIGN,
     scrollSnapStop: 'normal',
     touchAction: 'xy',
+    touchActionText: 'auto',
     scrollInitialTarget: 'none',
     scrollPaddingTop: AUTO,
     scrollPaddingRight: AUTO,
@@ -2260,6 +2284,7 @@ export function inherit(
   out.colorSource = parent.colorSource;
   out.interpolateSize = parent.interpolateSize;
   out.scrollbarThumbColor = parent.scrollbarThumbColor;
+  out.scrollbarTrackColor = parent.scrollbarTrackColor;
   out.caretColor = parent.caretColor;
   out.colorScheme = parent.colorScheme;
   out.colorSchemeKeywords = parent.colorSchemeKeywords;
@@ -2297,6 +2322,7 @@ export function inherit(
   out.orphans = parent.orphans;
   out.widows = parent.widows;
   out.whiteSpace = parent.whiteSpace;
+  out.breakSpaces = parent.breakSpaces;
   out.overflowWrap = parent.overflowWrap;
   out.wordBreak = parent.wordBreak;
   out.lineBreakAnywhere = parent.lineBreakAnywhere;
@@ -3023,8 +3049,10 @@ export function applyDeclaration(
       // every keyword but `none` is some control's own look, which is the
       // only other thing this engine has
       const v = value.trim().toLowerCase();
-      if (/^[a-z-]+$/.test(v))
+      if (/^[a-z-]+$/.test(v)) {
         style.appearance = v === 'none' ? 'none' : 'auto';
+        style.appearanceText = v;
+      }
       return;
     }
     case 'contain': {
@@ -3225,14 +3253,17 @@ export function applyDeclaration(
     case 'scrollbar-color': {
       if (value.trim().toLowerCase() === 'auto') {
         style.scrollbarThumbColor = null;
+        style.scrollbarTrackColor = null;
         return;
       }
       // a thumb and a track: an overlay bar draws no track
       const parts = splitValue(value);
       if (parts.length !== 2) return;
       const thumb = parseColor(parts[0]);
-      if (thumb === null || parseColor(parts[1]) === null) return;
+      const track = parseColor(parts[1]);
+      if (thumb === null || track === null) return;
       style.scrollbarThumbColor = thumb;
+      style.scrollbarTrackColor = track;
       return;
     }
     case 'caret-color': {
@@ -3282,7 +3313,10 @@ export function applyDeclaration(
     }
     case 'touch-action': {
       const t = parseTouchAction(value);
-      if (t !== null) style.touchAction = t;
+      if (t !== null) {
+        style.touchAction = t;
+        style.touchActionText = touchActionText(value);
+      }
       return;
     }
     case 'scroll-initial-target': {
@@ -4560,10 +4594,12 @@ export function applyDeclaration(
         v === 'pre-line'
       ) {
         style.whiteSpace = v;
+        style.breakSpaces = false;
       } else if (v === 'break-spaces') {
         // `pre-wrap` whose spaces take room at a line's end rather than
-        // hanging past it, which is as near as the engines come
+        // hanging past it (`breakSpaces`)
         style.whiteSpace = 'pre-wrap';
+        style.breakSpaces = true;
       }
       return;
     }
@@ -4573,9 +4609,7 @@ export function applyDeclaration(
     case 'word-wrap': {
       const v = value.trim().toLowerCase();
       if (v === 'normal') style.overflowWrap = 'normal';
-      else if (v === 'break-word' || v === 'anywhere') {
-        style.overflowWrap = 'break-word';
-      }
+      else if (v === 'break-word' || v === 'anywhere') style.overflowWrap = v;
       return;
     }
     case 'line-break': {
@@ -4618,6 +4652,7 @@ export function applyDeclaration(
               : null;
       if (collapse) {
         style.whiteSpace = whiteSpaceOf(collapse, wrapsIn(style.whiteSpace));
+        style.breakSpaces = v === 'break-spaces';
       }
       return;
     }
@@ -7563,6 +7598,28 @@ const NO_LIGATURES = 'liga=0,clig=0,dlig=0,hlig=0,calt=0';
  * ligatures`' alone, so beside anything else the shorthand cannot say it, and
  * reads ''.
  */
+/** One `font-variant` longhand's value, its keywords in the shorthand's
+ *  order. */
+export function fontVariantPartText(
+  style: ComputedStyle,
+  kind: 'ligatures' | 'caps' | 'numeric' | 'position',
+): string {
+  const held = style[VARIANT_FIELDS[kind]];
+  if (!held) return 'normal';
+  if (kind === 'ligatures' && held === NO_LIGATURES) return 'none';
+  const words: string[] = [];
+  for (const word of Object.keys(VARIANTS)) {
+    const [of, features] = VARIANTS[word];
+    if (of !== kind) continue;
+    const named =
+      kind === 'caps'
+        ? held === features
+        : `,${held},`.includes(`,${features},`);
+    if (named) words.push(word);
+  }
+  return words.join(' ') || 'normal';
+}
+
 export function fontVariantText(style: ComputedStyle): string {
   const {
     fontVariantLigatures: ligatures,
@@ -9766,6 +9823,8 @@ function whiteSpacePart(
   style.whiteSpace = wraps
     ? whiteSpaceOf(COLLAPSE_OF[style.whiteSpace], wrapsIn(from.whiteSpace))
     : whiteSpaceOf(COLLAPSE_OF[from.whiteSpace], wrapsIn(style.whiteSpace));
+  // `break-spaces` is what is kept of the white space, and goes with it
+  if (!wraps) style.breakSpaces = from.breakSpaces;
 }
 
 /**
@@ -9970,12 +10029,12 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'font-feature-settings': ['fontFeatureSettings'],
   'tab-size': ['tabSize', 'tabSizeIsLength'],
   '-moz-tab-size': ['tabSize', 'tabSizeIsLength'],
-  'white-space': ['whiteSpace'],
+  'white-space': ['whiteSpace', 'breakSpaces'],
   'overflow-wrap': ['overflowWrap'],
   'word-wrap': ['overflowWrap'],
   'word-break': ['wordBreak'],
   'line-break': ['lineBreakAnywhere'],
-  'white-space-collapse': ['whiteSpace'],
+  'white-space-collapse': ['whiteSpace', 'breakSpaces'],
   'text-wrap': ['whiteSpace', 'textWrapStyle'],
   'text-wrap-mode': ['whiteSpace'],
   'text-wrap-style': ['textWrapStyle'],
@@ -10240,9 +10299,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'aspect-ratio': ['aspectRatio'],
   'object-fit': ['objectFit'],
   'object-view-box': ['objectViewBox'],
-  appearance: ['appearance'],
-  '-webkit-appearance': ['appearance'],
-  '-moz-appearance': ['appearance'],
+  appearance: ['appearance', 'appearanceText'],
+  '-webkit-appearance': ['appearance', 'appearanceText'],
+  '-moz-appearance': ['appearance', 'appearanceText'],
   contain: ['contain'],
   'content-visibility': ['contentVisibility'],
   'container-type': [
@@ -10290,13 +10349,13 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'overflow-x': ['overflowX'],
   'overflow-y': ['overflowY'],
   'scrollbar-width': ['scrollbarWidth'],
-  'scrollbar-color': ['scrollbarThumbColor'],
+  'scrollbar-color': ['scrollbarThumbColor', 'scrollbarTrackColor'],
   'caret-color': ['caretColor'],
   opacity: ['opacity'],
   'scroll-snap-type': ['scrollSnapType'],
   'scroll-snap-align': ['scrollSnapAlign'],
   'scroll-snap-stop': ['scrollSnapStop'],
-  'touch-action': ['touchAction'],
+  'touch-action': ['touchAction', 'touchActionText'],
   'scroll-initial-target': ['scrollInitialTarget'],
   'scroll-padding': [
     'scrollPaddingTop',
@@ -10373,6 +10432,13 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'text-underline-offset': ['textUnderlineOffset'],
   'table-layout': ['tableLayout'],
 };
+
+/** The fields of a computed style a property sets, by its name: a
+ *  shorthand's are its longhands', which is how two properties are told to
+ *  overlap (Web Animations 1, 5.5). Empty for a name with none. */
+export function fieldsOfProperty(name: string): readonly string[] {
+  return INHERIT_TARGETS[name.toLowerCase()] ?? [];
+}
 
 /**
  * A decoration's thickness or an underline's offset: a length, a
@@ -10922,6 +10988,23 @@ function axisList(value: string): string | null {
  *  none of the property's: `auto | none | [pan-x | pan-left | pan-right] ||
  *  [pan-y | pan-up | pan-down] || pinch-zoom | manipulation`. A direction is
  *  its axis here, since nothing pans one way only. */
+/** A `touch-action` that parsed, its words in the order Chrome writes them:
+ *  across, then down, then `pinch-zoom`. */
+function touchActionText(value: string): string {
+  const rank = (w: string): number =>
+    /^pan-(?:x|left|right)$/.test(w)
+      ? 0
+      : /^pan-(?:y|up|down)$/.test(w)
+        ? 1
+        : 2;
+  return value
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .sort((a, b) => rank(a) - rank(b))
+    .join(' ');
+}
+
 function parseTouchAction(value: string): '' | 'x' | 'y' | 'xy' | null {
   const words = value.trim().toLowerCase().split(/\s+/);
   if (words.length === 1) {
