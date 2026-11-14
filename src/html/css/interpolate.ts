@@ -125,6 +125,25 @@ export function interpolateField(
         b as ClipPath | null,
         q,
       );
+    // a shape as `clip-path`'s goes, an image over at the middle, and
+    // where a circle is said where either end said it
+    case 'shapeOutside': {
+      if (!a || !b || typeof a !== 'object' || typeof b !== 'object') {
+        return undefined;
+      }
+      const x = a as ClipPath;
+      const y = b as ClipPath;
+      const out = interpolateClipPaths(
+        { ...x, atGiven: undefined },
+        { ...y, atGiven: undefined },
+        q,
+      ) as ClipPath | undefined;
+      return out && { ...out, atGiven: !!(x.atGiven || y.atGiven) };
+    }
+    case 'shapeImageThreshold':
+      return typeof a === 'number' && typeof b === 'number'
+        ? clamp(a + (b - a) * q, 0, 1)
+        : undefined;
     case 'fontSizeBasis':
       // a size part of the way between two is the length it comes to,
       // which no family scales, as Blink has an animated size; and the

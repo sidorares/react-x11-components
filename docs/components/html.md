@@ -6143,7 +6143,15 @@ not cut. A `shape()` is written back as CSS Shapes 2 has it — through
 `el.style`, which keeps it canonical and does not set one the property
 does not take, and through `getComputedStyle`, its positions percentages
 — and two of the same commands interpolate command by command, a `path()`
-read as the `shape()` it is. Inline elements
+read as the `shape()` it is. The other basic shapes are kept canonical
+through `el.style` too (`shape-outside.ts`): a `<position>` across first,
+of two values or four, a radius at its default left out, `inset()` as
+short as it goes, `nonzero` dropped. `shape-outside`, `shape-margin` and
+`shape-image-threshold` are read, written back and animated, a shape as
+`clip-path` reads one and computed as Chromium writes it, `rect()` and
+`xywh()` as the `inset()` they are, about the margin box where it names
+none; but no float lays its lines out along one, so a float's box is what
+lines go around. Inline elements
 have all of it but the
 sizes: an inline box's padding, border and margin take room on its line —
 the start side before its first fragment, the end side after its last, on

@@ -208,8 +208,32 @@ function positionOf(
   parts: readonly string[],
   length: (part: string) => Len | null,
 ): [Len, Len] | null {
-  if (!parts.length || parts.length > 2) return null;
   const words = parts.map((p) => p.toLowerCase());
+  // a keyword and an offset from its side, across and down in either order
+  // (CSS Values 4, 9.1), the far sides' as a percentage less the offset
+  if (parts.length === 4) {
+    let [a, b, c, d] = [0, 1, 2, 3];
+    if (words[0] === 'top' || words[0] === 'bottom')
+      [a, b, c, d] = [2, 3, 0, 1];
+    const h = words[a];
+    const v = words[c];
+    if ((h !== 'left' && h !== 'right') || (v !== 'top' && v !== 'bottom')) {
+      return null;
+    }
+    const x = length(parts[b]);
+    const y = length(parts[d]);
+    if (x === null || y === null) return null;
+    const from = (len: Len, far: boolean): Len => {
+      if (!far) return len;
+      if (typeof len === 'number')
+        return len ? { pct: 100, px: -len } : { pct: 100 };
+      return len === 'auto'
+        ? len
+        : { pct: 100 - len.pct, ...(len.px ? { px: -len.px } : {}) };
+    };
+    return [from(x, h === 'right'), from(y, v === 'bottom')];
+  }
+  if (!parts.length || parts.length > 2) return null;
   const across = (word: string, part: string): Len | null =>
     word === 'left'
       ? 0

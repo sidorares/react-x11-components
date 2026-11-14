@@ -19,6 +19,12 @@ import { parseEdges } from './triggers.js';
 import { parseShapeFunction } from './shape-function.js';
 import { specifiedColorText } from './color.js';
 import { parseObjectViewBox } from './object-view-box.js';
+import {
+  basicShapeSpecified,
+  shapeMarginSpecified,
+  shapeOutsideSpecified,
+  shapeThresholdSpecified,
+} from './shape-outside.js';
 import { parseZoom, splitValue } from './values.js';
 import { closingParen } from './vars.js';
 import { MARKER_LONGHANDS, SVG_PROPERTIES } from './svg-properties.js';
@@ -185,7 +191,14 @@ export function specifiedValue(
     if (read === undefined) return null;
     return read === null ? 'none' : word.replace(/\s+/g, ' ');
   }
+  // CSS Shapes 1, 6 (`shape-outside.ts`)
+  if (name === 'shape-outside') return shapeOutsideSpecified(value);
+  if (name === 'shape-margin') return shapeMarginSpecified(value);
+  if (name === 'shape-image-threshold') return shapeThresholdSpecified(value);
   if (name === 'clip-path' || name === '-webkit-clip-path') {
+    // a basic shape other than `shape()`, its arguments in canonical form
+    const basic = basicShapeSpecified(value);
+    if (basic !== undefined) return basic;
     if (!/\bshape\(/i.test(value)) return undefined;
     // a shape, and a box beside it or none, in either order
     const parts = splitValue(value.trim());

@@ -80,6 +80,14 @@ import {
 import { svgPaint } from './shapes.js';
 import { parseBasicShape } from './basic-shape.js';
 import { parseObjectViewBox } from './object-view-box.js';
+import {
+  isShapeImage,
+  namesShapeBox,
+  saysWhere,
+  shapeMarginComputed,
+  shapeOutsideSpecified,
+  shapeThresholdComputed,
+} from './shape-outside.js';
 import type { ObjectViewBox } from './object-view-box.js';
 import {
   anchorMathValue,
@@ -385,6 +393,9 @@ export interface ClipPath {
   /** `circle()`, `ellipse()`, `path()` or `shape()`, laid down as polygons
    *  in the box (`shapePolygons`); null for any other shape. */
   basic?: BasicShape | null;
+  /** Whether a circle or an ellipse said where it is, which its computed
+   *  value says only then: `shape-outside`'s alone. */
+  atGiven?: boolean;
   /** A `<clipPath>` element by its id, `url(#id)`, and the device pixels
    *  to its user unit; null for any other shape. */
   url?: { id: string; scale: number } | null;
@@ -1102,6 +1113,12 @@ export interface ComputedStyle {
    *  `object-position` place, and whose size is its natural size; null for
    *  `none`. Not inherited. */
   objectViewBox: ObjectViewBox | null;
+  /** `shape-outside`, `shape-margin` and `shape-image-threshold` (CSS
+   *  Shapes 1, 6), as they compute (`shape-outside.ts`): read back, and
+   *  not laid out along. Not inherited. */
+  shapeOutside: ClipPath | string | null;
+  shapeMargin: Len;
+  shapeImageThreshold: number;
   /** A form control's own look (`auto`), or `none`: the page draws it,
    *  with its own background, borders and padding (`ControlFace`). */
   appearance: 'auto' | 'none';
@@ -1980,6 +1997,9 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     aspectRatio: null,
     objectFit: 'fill',
     objectViewBox: null,
+    shapeOutside: null,
+    shapeMargin: 0,
+    shapeImageThreshold: 0,
     appearance: 'auto',
     appearanceText: 'auto',
     styledControl: false,
@@ -3017,6 +3037,34 @@ export function applyDeclaration(
     case 'object-view-box': {
       const box = parseObjectViewBox(value, ctx);
       if (box !== undefined) style.objectViewBox = box;
+      return;
+    }
+    case 'shape-outside': {
+      // a shape is read as `clip-path` reads one, whose interpolation it
+      // takes, about the margin box where it names none; an image is kept
+      // as written, and not laid out along (`shape-outside.ts`)
+      const v = value.trim();
+      if (/^none$/i.test(v)) style.shapeOutside = null;
+      else if (isShapeImage(v)) style.shapeOutside = v;
+      else if (shapeOutsideSpecified(v)) {
+        const shape = parseClipPath(v, ctx);
+        if (!shape) return;
+        style.shapeOutside = {
+          ...shape,
+          box: namesShapeBox(v) ? shape.box : 'margin-box',
+          atGiven: saysWhere(v),
+        };
+      }
+      return;
+    }
+    case 'shape-margin': {
+      const margin = shapeMarginComputed(value, ctx);
+      if (margin !== undefined) style.shapeMargin = margin;
+      return;
+    }
+    case 'shape-image-threshold': {
+      const t = shapeThresholdComputed(value);
+      if (t !== undefined) style.shapeImageThreshold = t;
       return;
     }
     case 'appearance':
@@ -10210,6 +10258,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'aspect-ratio': ['aspectRatio'],
   'object-fit': ['objectFit'],
   'object-view-box': ['objectViewBox'],
+  'shape-outside': ['shapeOutside'],
+  'shape-margin': ['shapeMargin'],
+  'shape-image-threshold': ['shapeImageThreshold'],
   appearance: ['appearance', 'appearanceText'],
   '-webkit-appearance': ['appearance', 'appearanceText'],
   '-moz-appearance': ['appearance', 'appearanceText'],
