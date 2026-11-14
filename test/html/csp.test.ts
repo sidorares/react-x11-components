@@ -665,3 +665,21 @@ scripted(
     page.unmount();
   },
 );
+
+scripted(
+  'a string timer a policy refuses is never set, and its handle is 0',
+  async () => {
+    const page = await policed(
+      `<meta http-equiv="Content-Security-Policy" content="script-src 'nonce-n'">`,
+      `<script nonce="n">
+      var errors = 0;
+      addEventListener('error', function () { errors += 1; });
+      var ids = [setTimeout("console.log('ran')", 0), setInterval("console.log('ran')", 0)];
+      setTimeout(function () { console.log('out ' + ids.join(',') + ' ' + errors); }, 50);
+    </script>`,
+    );
+    assert.equal(await page.until('out'), '0,0 0');
+    assert.ok(!page.logs.includes('log: ran'));
+    page.unmount();
+  },
+);
