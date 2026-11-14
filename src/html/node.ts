@@ -3458,7 +3458,9 @@ export class HtmlViewNode extends Node {
         ref.kind === 'inline'
           ? documentBase
           : this._resources.sheetBase(ref.href);
-      if (linked) this._noteSheetOrigin(text, base ?? ref.href);
+      if (linked && ref.kind !== 'inline') {
+        this._noteSheetOrigin(text, base ?? ref.href);
+      }
       read.push({
         text,
         encoding,
