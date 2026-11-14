@@ -41876,6 +41876,9 @@ export function installDom(
       fire: trusted,
       base64OfBytes,
       bytesOfBase64,
+      streams: streamInternals,
+      AbortSignal,
+      setTimer: (fn: () => void, ms: number) => setTimer(fn, ms, [], false),
     });
     for (const name of Object.getOwnPropertyNames(interfaces)) {
       define(name, interfaces[name]);
