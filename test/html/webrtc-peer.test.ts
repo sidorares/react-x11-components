@@ -989,7 +989,11 @@ test('an AudioContext’s oscillator into a stream destination is an audio track
     log('running', ctx.state);
     var t0 = ctx.currentTime;
     await new Promise(function (r) { setTimeout(r, 50); });
-    log('clock', ctx.currentTime > t0, (ctx.currentTime * ctx.sampleRate) % 128);
+    // in whole render quanta: a count of frames over the rate, which times
+    // the rate again comes a hair off the count at some counts, as 28
+    // quanta, 75ms, does (4.5e-13)
+    var frame = ctx.currentTime * ctx.sampleRate;
+    log('clock', ctx.currentTime > t0, Math.round(frame) % 128, Math.abs(frame - Math.round(frame)) < 1e-6);
     var ended = new Promise(function (r) { osc.onended = r; });
     osc.stop(ctx.currentTime + 0.02);
     await ended;
@@ -1014,7 +1018,7 @@ test('an AudioContext’s oscillator into a stream destination is an audio track
     'params|440|440|sine|1|true',
     'refused|InvalidStateError|InvalidStateError|IndexSizeError|NotSupportedError|TypeError|RangeError',
     'running|running',
-    'clock|true|0',
+    'clock|true|0|true',
     'ended|true',
     'decode|EncodingError|true',
     'buffer|0.1|2|4800',
