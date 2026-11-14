@@ -81,14 +81,21 @@ export interface ResourceRequest {
    *  `Referrer-Policy` and its `<meta name="referrer">`. Absent, the
    *  default, `strict-origin-when-cross-origin`. */
   referrerPolicy?: string;
+  /** Where a redirect is followed to, asked before that request is sent:
+   *  the URL it leads to as it is to be asked for, or null where it may not
+   *  be followed. What the document's Content Security Policy refuses is
+   *  never asked for, at any hop (Fetch 4.1, "main fetch", step 7).
+   *  `HtmlNetwork` asks it; a host that cannot is held to where the
+   *  resource landed, by its `url` and `redirects`. */
+  nextHop?: (url: string) => string | null;
 }
 
 /** Who asked for a resource, where that is not the document the host was
- *  handed (`ResourceRequest.client`, `opaqueOrigin`), and under what policy
- *  (`referrerPolicy`). */
+ *  handed (`ResourceRequest.client`, `opaqueOrigin`), under what policy
+ *  (`referrerPolicy`), and where it may be redirected to (`nextHop`). */
 export type ResourceAsker = Pick<
   ResourceRequest,
-  'client' | 'opaqueOrigin' | 'referrerPolicy'
+  'client' | 'opaqueOrigin' | 'referrerPolicy' | 'nextHop'
 >;
 
 /** A CORS request for a resource (HTML 2.5.4, a CORS settings attribute):

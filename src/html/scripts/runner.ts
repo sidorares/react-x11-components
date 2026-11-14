@@ -715,10 +715,25 @@ export class ScriptRunner {
         };
       }
     }
-    const response = await this._options.fetch(request, signal);
-    // and where it landed (CSP 3, 4.1.3)
+    const worker = destination === 'worker' || destination === 'sharedworker';
+    const response = await this._options.fetch(
+      worker && this.host.csp.policies.length
+        ? {
+            ...request,
+            // each request a redirect makes, before it is sent
+            nextHop: (url) =>
+              this.host.csp.request({ url: request.url, destination }, null, [
+                url,
+              ])
+                ? url
+                : null,
+          }
+        : request,
+      signal,
+    );
+    // and where it landed (CSP 3, 4.1.3), where the network could not ask
     if (
-      (destination === 'worker' || destination === 'sharedworker') &&
+      worker &&
       response.url &&
       response.url !== request.url &&
       !this.host.csp.request({ url: request.url, destination }, null, [
@@ -1628,8 +1643,18 @@ export class ScriptRunner {
     };
     this.host.cspScan(element);
     if (!this.host.csp.request(csp, element)) return null;
+    // and at each hop a redirect makes, before it is asked for
+    const nextHop = this.host.csp.policies.length
+      ? (to: string) => (this.host.csp.request(csp, element, [to]) ? to : null)
+      : undefined;
     const loaded = await this._options
-      .load(url, element, cors, type === 'javascript' ? undefined : type, asker)
+      .load(
+        url,
+        element,
+        cors,
+        type === 'javascript' ? undefined : type,
+        nextHop ? { ...asker, nextHop } : asker,
+      )
       .catch(() => null);
     const through = laterHops(url, loaded);
     if (through.length && !this.host.csp.request(csp, element, through)) {

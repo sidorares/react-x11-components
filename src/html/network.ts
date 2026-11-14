@@ -932,10 +932,13 @@ export class HtmlNetwork {
     /** What it says of how it was made (`Sec-Fetch-*`), worked out again at
      *  each hop, since a redirect may leave the site or a secure URL. */
     metadata: FetchMetadata | null = null,
+    /** Where a redirect is followed to, or null where it may not be, asked
+     *  before the next hop is sent (`FetchRequest.nextHop`). */
+    nextHop: ((url: string) => string | null) | null = null,
   ): Promise<ResponseLike> {
     const jar = cookies?.credentials === 'omit' ? null : this._cookies;
     const carrying = jar && cookies ? { jar, cookies } : null;
-    if (!carrying && !hops && !cors && !metadata) {
+    if (!carrying && !hops && !cors && !metadata && !nextHop) {
       return this._send(url, {
         ...init,
         redirect: manual ? 'manual' : 'follow',
@@ -1034,6 +1037,13 @@ export class HtmlNetwork {
       if (scheme !== 'http' && scheme !== 'https') {
         throw new TypeError(`Failed to fetch: a redirect to ${scheme}:.`);
       }
+      // what the page's policies refuse is never asked for (Fetch 4.1,
+      // "main fetch", step 7, for each request a redirect makes)
+      const to = nextHop ? nextHop(next) : next;
+      if (to === null) {
+        throw new TypeError('Failed to fetch: a redirect the page refuses.');
+      }
+      next = to;
       if (cors) {
         const tainted = redirectTainted([...before, at, next], cors.origin);
         // a name in a URL is sent only where the page could have sent it
@@ -1486,6 +1496,7 @@ export class HtmlNetwork {
                 referrer: asker.client ?? page,
                 referrerPolicy: policy,
               },
+              asker.nextHop,
             );
     // what the memory holds of it until it is here, and after if it is
     // kept: what a later answer is checked against, so that one made after
@@ -1627,6 +1638,8 @@ export class HtmlNetwork {
     cors?: ResourceCors,
     opaque = false,
     metadata?: FetchMetadata,
+    /** Where a redirect is followed to (`ResourceRequest.nextHop`). */
+    nextHop?: (url: string) => string | null,
   ): Promise<Obtained> {
     const had = candidate ?? (await this._stored(key));
     // asked for before a hard reload: neither used nor asked about, and
@@ -1648,6 +1661,7 @@ export class HtmlNetwork {
         cors,
         opaque,
         metadata,
+        nextHop,
       }),
     );
     if (answer.fetched.status === 304 && stored && validators) {
@@ -1996,6 +2010,8 @@ export class HtmlNetwork {
       /** Its `Referer`, worked out (`FetchRequest.referrer`): null for none,
        *  absent for the client's under the default policy. */
       referrer?: string | null;
+      /** Where a redirect is followed to (`FetchRequest.nextHop`). */
+      nextHop?: (url: string) => string | null;
     },
     page: string,
     signal: AbortSignalLike,
@@ -2185,6 +2201,7 @@ export class HtmlNetwork {
             ...(request.through?.length ? { through: request.through } : {}),
             ...(request.user ? { user: true } : {}),
           },
+          request.nextHop ?? null,
         );
       });
     } catch (error) {
@@ -2480,6 +2497,7 @@ export class HtmlNetwork {
       cors?: ResourceCors;
       opaque?: boolean;
       metadata?: FetchMetadata;
+      nextHop?: (url: string) => string | null;
     },
   ): Promise<Answer> {
     try {
@@ -2502,6 +2520,7 @@ export class HtmlNetwork {
       cors?: ResourceCors;
       opaque?: boolean;
       metadata?: FetchMetadata;
+      nextHop?: (url: string) => string | null;
     },
   ): Promise<Answer> {
     const stall = stallTimer(this._timeout);
@@ -2533,6 +2552,7 @@ export class HtmlNetwork {
         cors ? hops : null,
         cors ? { origin: cors.origin, credentials } : null,
         options.metadata ?? null,
+        options.nextHop ?? null,
       );
       const responseTime = Date.now();
       this._responded(id, response, url);
