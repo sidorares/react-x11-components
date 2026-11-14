@@ -2353,13 +2353,11 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         if (remote && type !== 'rollback') {
           s.canTrickle = /^a=ice-options:.*\btrickle\b/m.test(sdp);
         }
-        // the credentials to replace go once a local description that
-        // holds none of them is set, or a remote answer to one
-        if (
-          s.iceRestart &&
-          type !== 'rollback' &&
-          (!remote || type !== 'offer')
-        ) {
+        // the credentials to replace go once an answer, local or remote,
+        // leaves a current local description that holds none of them, and
+        // not before: a restart's offer rolled back leaves them to replace
+        // still (WebRTC 1.0, 4.4.1.6)
+        if (s.iceRestart && type === 'answer') {
           const local = remote ? descriptionsOf(s).currentLocal : sdp;
           if (!ufragsOf(local).some((u) => s.iceCredentials.has(u))) {
             s.iceRestart = false;

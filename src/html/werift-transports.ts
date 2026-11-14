@@ -53,6 +53,9 @@ export interface WIce {
   readonly connection?: { remoteCandidates?: unknown[] };
   /** The peer's candidates it has, but those it found as peer-reflexive. */
   getRemoteCandidates?(): unknown[];
+  /** Its own candidates as it tells them, and undefined after the last of
+   *  a generation. */
+  readonly onIceCandidate?: WEvent<[WCandidate | undefined]>;
 }
 
 export interface WDtls {
@@ -357,6 +360,15 @@ function channelOptions(init: RTCDataChannelInitLike): Record<string, unknown> {
 
 // --- transports -------------------------------------------------------------
 
+/** A transport's candidate generations, each by its ufrag: the one its
+ *  candidates are told in now, the last whose end was told, and every
+ *  candidate told, so one told again is not. */
+interface Generations {
+  now: string | null;
+  done: string | null;
+  told: Set<string>;
+}
+
 /** An association that is up (werift's `SCTP_STATE.ESTABLISHED`). */
 const ESTABLISHED = 4;
 
@@ -372,6 +384,8 @@ export class WeriftTransports {
   /** Each transport's selected pair as told last, and how often it moved. */
   private readonly _pairs = new Map<number, string>();
   private readonly _pairChanges = new Map<number, number>();
+  /** Each transport's candidates, by generation (`Generations`). */
+  private readonly _generations = new Map<number, Generations>();
   /** The association being watched, and what was last told of it. */
   private _association: WAssociation | null = null;
   private _sctpTold = 'connecting';
@@ -385,12 +399,16 @@ export class WeriftTransports {
     pc.onIceCandidate.subscribe((c) => {
       if (this._closed()) return;
       this.watch();
+      const transport = c ? this._ofMid(c.sdpMid ?? null) : null;
+      // one werift tells again, as an answer commits a restart, the page
+      // has had
+      if (c && transport !== null && !this._fresh(transport, c)) return;
       // a transport is gathering before its first candidate is told, and
       // complete only after its last
       this.tell();
-      if (!c) return;
-      const transport = this._ofMid(c.sdpMid ?? null);
-      if (transport !== null) this._events.candidate(transport, candidateOf(c));
+      if (c && transport !== null) {
+        this._events.candidate(transport, candidateOf(c));
+      }
     });
     pc.onDataChannel.subscribe((ch) => {
       // werift announces a channel before it opens it and queues its DCEP
@@ -450,6 +468,14 @@ export class WeriftTransports {
       };
       dtls.onStateChange.subscribe(changed);
       dtls.iceTransport.onStateChange.subscribe(changed);
+      const id = this._transports.get(dtls)!;
+      // the end of a generation's candidates
+      dtls.iceTransport.onIceCandidate?.subscribe((c) => {
+        const g = this._generations.get(id);
+        if (c !== undefined || !g || g.now === null || this._closed()) return;
+        g.done = g.now;
+        this.tell();
+      });
     }
     this._watchAssociation();
   }
@@ -578,10 +604,61 @@ export class WeriftTransports {
     };
   }
 
+  /** Whether a candidate is one the page has not had, noting its
+   *  generation: by its ufrag, or its transport's where it has none. */
+  private _fresh(id: number, c: WCandidate): boolean {
+    let g = this._generations.get(id);
+    if (!g) {
+      g = { now: null, done: null, told: new Set() };
+      this._generations.set(id, g);
+    }
+    let ufrag = c.usernameFragment ?? null;
+    if (ufrag === null) {
+      for (const [dtls, n] of this._transports) {
+        if (n !== id) continue;
+        try {
+          ufrag = dtls.iceTransport.getLocalParameters().usernameFragment;
+        } catch {}
+      }
+    }
+    const key = `${ufrag} ${candidateOf(c).candidate}`;
+    if (g.told.has(key)) return false;
+    g.told.add(key);
+    if (ufrag !== null) g.now = ufrag;
+    return true;
+  }
+
+  /**
+   * A transport's gathering state as a browser tells it, from werift's and
+   * the generations its candidates were told in. werift stages an ICE
+   * restart's candidates from the sockets it has, and tells them as the
+   * description that carries them is set, staying `complete` throughout;
+   * a browser gathers for the new credentials, `gathering` until their last
+   * candidate. And as the answer commits the restart, werift goes `new`
+   * and gathers again, telling the same candidates, where a browser has
+   * finished: what the page has had stays `complete`.
+   */
+  private _gathering(id: number, state: RTCTransportStateLike): void {
+    const g = this._generations.get(id);
+    if (!g || g.now === null) return;
+    if (g.now !== g.done) {
+      if (state.gatheringState !== 'complete') return;
+      // the first generation ends with werift's own gathering
+      if (g.done === null) g.done = g.now;
+      else state.gatheringState = 'gathering';
+    } else if (
+      state.gatheringState !== 'complete' &&
+      state.localParameters?.usernameFragment === g.done
+    ) {
+      state.gatheringState = 'complete';
+    }
+  }
+
   /** Tells each transport whose state changed since it was last told. */
   tell(): void {
     for (const [dtls, id] of this._transports) {
       const state = this._snapshot(dtls);
+      this._gathering(id, state);
       const was = this._iceTold.get(id) ?? 'new';
       state.iceState = iceStateAfter(was, state.iceState, !!state.selectedPair);
       // it checks nothing before it has one of the peer's candidates, where

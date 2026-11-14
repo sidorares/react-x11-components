@@ -712,7 +712,20 @@ export function installRtcTransports(
   /** The aggregate states, worked out again from the transports in use, and
    *  told where they moved (WebRTC 1.0, 4.3.2 and 4.3.3). */
   const updateStates = (s: Any): void => {
-    if (s.closed) return;
+    moveStates(s)();
+  };
+
+  /** The aggregate states worked out again and set, and what tells the
+   *  page they moved: a transport's state is set, then the connection's,
+   *  then the transport's event fires and the connection's after it, so a
+   *  handler of either reads both as they are now (WebRTC 1.0, 4.3.2;
+   *  webrtc-pc#2894 for gathering). */
+  const moveStates = (s: Any): (() => void) => {
+    const told: (() => void)[] = [];
+    const tell = () => {
+      for (const f of told) if (!s.closed) f();
+    };
+    if (s.closed) return tell;
     const states: TransportState[] = transportsInUse(s).map(
       (id: number) => transportOf(s, id).state,
     );
@@ -751,22 +764,25 @@ export function installRtcTransports(
         : 'new';
     if (gatherState !== s.gathering) {
       s.gathering = gatherState;
-      simple(s.self, 'icegatheringstatechange');
-      if (gatherState === 'complete') {
-        fire(
-          s.self,
-          new RTCPeerConnectionIceEvent('icecandidate', { candidate: null }),
-        );
-      }
+      told.push(() => {
+        simple(s.self, 'icegatheringstatechange');
+        if (gatherState === 'complete') {
+          fire(
+            s.self,
+            new RTCPeerConnectionIceEvent('icecandidate', { candidate: null }),
+          );
+        }
+      });
     }
     if (iceState !== s.iceState) {
       s.iceState = iceState;
-      simple(s.self, 'iceconnectionstatechange');
+      told.push(() => simple(s.self, 'iceconnectionstatechange'));
     }
     if (connState !== s.connState) {
       s.connState = connState;
-      simple(s.self, 'connectionstatechange');
+      told.push(() => simple(s.self, 'connectionstatechange'));
     }
+    return tell;
   };
 
   // --- what the host tells ---------------------------------------------------
@@ -813,6 +829,7 @@ export function installRtcTransports(
     state: TransportState,
   ): void => {
     setTransportState(t, state);
+    const connection = moveStates(s);
     if (before.gatheringState !== state.gatheringState)
       simple(t.ice, 'gatheringstatechange');
     if (before.iceState !== state.iceState) simple(t.ice, 'statechange');
@@ -823,7 +840,7 @@ export function installRtcTransports(
       simple(t.ice, 'selectedcandidatepairchange');
     }
     if (before.dtlsState !== state.dtlsState) simple(t.dtls, 'statechange');
-    updateStates(s);
+    connection();
   };
 
   // a candidate was gathered: its transport has it, then the page hears it
