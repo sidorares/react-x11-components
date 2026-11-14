@@ -941,9 +941,12 @@ test('a transceiver stopped while its offer is still to be applied keeps its tra
     a.close(); b.close();
     log('done');
   `);
+  // b's own transceiver, made by addTransceiver, is no remote offer's to
+  // pair (JSEP 5.10), so the offer's m-section has one of its own that
+  // receives, and b's stays out of the session
   for (const line of [
-    'connected|connected|connected|stopped|sendrecv',
-    'renegotiated|0|0',
+    'connected|connected|connected|stopped|sendonly',
+    'renegotiated|0|1',
   ]) {
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }

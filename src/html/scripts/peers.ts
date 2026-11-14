@@ -317,6 +317,9 @@ export class PagePeers {
       case 'rtcStopTransceiver':
         this._transceivers.get(Number(a))?.transceiver.stop();
         return null;
+      case 'rtcByTrack':
+        this._transceivers.get(Number(a))?.transceiver.madeByAddTrack?.();
+        return null;
       case 'rtcStreams': {
         const ids = json(b);
         this._transceivers
@@ -841,6 +844,7 @@ export class PagePeers {
       output?: string;
       streams?: string[];
       sendEncodings?: unknown[];
+      addTrack?: boolean;
     };
     const kind = i.kind === 'video' ? 'video' : 'audio';
     const source =
@@ -854,6 +858,7 @@ export class PagePeers {
       trackId: source ? (i.trackId ?? null) : null,
       streams: (i.streams ?? []).map(String),
       sendEncodings: (i.sendEncodings ?? []) as never,
+      addTrack: i.addTrack === true,
     });
     const t = this._transceiver(peer, transceiver);
     t.sending = source;

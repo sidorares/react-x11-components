@@ -1351,6 +1351,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           out.sdpFmtpLine = String(c.sdpFmtpLine);
         return out;
       });
+      s.pc.changes++;
       call('rtcCodecs', s.id, stringify(s.codecPreferences));
     }
     getHeaderExtensionsToNegotiate(): Any[] {
@@ -1424,6 +1425,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
    *  offers and answers from. */
   const setToNegotiate = (s: Any, list: Any[]): void => {
     s.extensionsToNegotiate = list;
+    s.pc.changes++;
     call('rtcExtensions', s.id, stringify(list));
   };
 
@@ -1802,7 +1804,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       }
       if (!s.updateOnEmpty) return;
       s.updateOnEmpty = false;
-      updateNegotiationNeeded(s);
+      checkNegotiationNeeded(s);
     };
     s.ops.push(run);
     if (s.ops.length === 1) run();
@@ -1878,8 +1880,15 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
   const ufragsOf = (sdp: string | null): string[] =>
     sdp ? [...sdp.matchAll(/^a=ice-ufrag:(\S+)/gm)].map((m: Any) => m[1]) : [];
 
-  /** WebRTC 1.0, 4.7.3, "update the negotiation-needed flag". */
+  /** WebRTC 1.0, 4.7.3, "update the negotiation-needed flag", for a change
+   *  to what an offer holds: the last offer and answer created hold what
+   *  was before it, and are no longer the ones a parameterless
+   *  `setLocalDescription` sets (4.4.1.5). */
   const updateNegotiationNeeded = (s: Any): void => {
+    s.changes++;
+    checkNegotiationNeeded(s);
+  };
+  const checkNegotiationNeeded = (s: Any): void => {
     if (s.closed) return;
     if (s.ops.length) {
       s.updateOnEmpty = true;
@@ -1993,6 +2002,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     const text = stringify(sender.encodings);
     if (sender.toldEncodings === text) return;
     sender.toldEncodings = text;
+    t.pc.changes++;
     call('rtcEncodings', t.id, text);
   };
 
@@ -2050,8 +2060,9 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       }
       if (sends(st.currentDirection)) t.sent = true;
       // a local description sets the transports, and a remote answer, but
-      // a remote offer leaves them as they were (WebRTC 1.0, 4.4.1.6)
-      if (!(remote && type === 'offer')) {
+      // a remote offer leaves them as they were, and one no m-section has
+      // has none (WebRTC 1.0, 4.4.1.6)
+      if (!(remote && type === 'offer') && t.mid !== null) {
         t.transport =
           st.sender?.transport ?? st.receiver?.transport ?? t.transport;
       }
@@ -2223,6 +2234,12 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           if (remote) t.fromRemoteOffer = false;
           return true;
         }
+        // what it received goes from the streams with it (WebRTC 1.0,
+        // 4.4.1.6: the removal of a remote track)
+        const r = apply(wmGet, slots, [t.receiver]);
+        for (const old of t.remoteStreams) removed.push([old, r.track]);
+        t.remoteStreams = [];
+        t.receiving = false;
         stopTransceiver(t, true);
         t.mid = null;
         t.transport = null;
@@ -2311,6 +2328,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       ),
       (state: Any) => {
         if (s.closed) return;
+        s.changes++;
         if (!remote) s.everSetLocal = true;
         // which descriptions are current and which pending, and of what type
         const ty = s.types;
@@ -2503,6 +2521,11 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         negotiationNeeded: false,
         lastOffer: '',
         lastAnswer: '',
+        // what had changed when each was created: one is still valid while
+        // nothing has since ([[LastCreatedOffer]], WebRTC 1.0, 4.4.1.5)
+        changes: 0,
+        lastOfferAt: -1,
+        lastAnswerAt: -1,
         // every description createOffer and createAnswer made, the latest
         // last: one of them that is no longer the last is refused
         created: [] as string[],
@@ -2680,6 +2703,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           );
         }
         legacyOfferOptions(s, options);
+        const at = s.changes;
         return then(
           ask((req) =>
             call(
@@ -2691,6 +2715,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           ),
           (sdp: string) => {
             s.lastOffer = sdp;
+            s.lastOfferAt = at;
             noteCreated(s, sdp);
             return { type: 'offer', sdp };
           },
@@ -2715,10 +2740,12 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
             invalidState(`Cannot create an answer in state ${s.signaling}.`),
           );
         }
+        const at = s.changes;
         return then(
           ask((req) => call('rtcAnswer', s.id, req)),
           (sdp: string) => {
             s.lastAnswer = sdp;
+            s.lastAnswerAt = at;
             noteCreated(s, sdp);
             return { type: 'answer', sdp };
           },
@@ -2779,17 +2806,24 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           }
           return setDescription(s, false, type, sdpGiven);
         }
-        // no description: the one the state calls for, made now
+        // no description: the last one created where nothing has changed
+        // since, or else the one the state calls for, made now (WebRTC 1.0,
+        // 4.4.1.5)
         if (type === 'offer') {
           if (s.signaling !== 'stable' && s.signaling !== 'have-local-offer') {
             return rejected(
               invalidState(`Cannot set a local offer in state ${s.signaling}.`),
             );
           }
+          if (s.lastOffer && s.lastOfferAt === s.changes) {
+            return setDescription(s, false, 'offer', s.lastOffer);
+          }
+          const at = s.changes;
           return then(
             ask((req) => call('rtcOffer', s.id, req, s.iceRestart)),
             (sdp: string) => {
               s.lastOffer = sdp;
+              s.lastOfferAt = at;
               noteCreated(s, sdp);
               return setDescription(s, false, 'offer', sdp);
             },
@@ -2803,10 +2837,15 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
             invalidState(`Cannot set a local ${type} in state ${s.signaling}.`),
           );
         }
+        if (s.lastAnswer && s.lastAnswerAt === s.changes) {
+          return setDescription(s, false, type, s.lastAnswer);
+        }
+        const at = s.changes;
         return then(
           ask((req) => call('rtcAnswer', s.id, req)),
           (sdp: string) => {
             s.lastAnswer = sdp;
+            s.lastAnswerAt = at;
             noteCreated(s, sdp);
             return setDescription(s, false, type, sdp);
           },
@@ -3030,6 +3069,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       }
       next.certificates = before.certificates;
       s.config = next;
+      s.changes++;
       call('rtcConfigure', s.id, requestOf(next));
     }
     close(): void {
@@ -3149,8 +3189,11 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           apply(wmGet, slots, [t.sender]).track === null,
       );
       if (reused) {
-        // a rollback of the remote offer that made it keeps it now
+        // a rollback of the remote offer that made it keeps it now, and from
+        // then on a remote offer pairs with it as with one `addTrack` made
+        // (JSEP 4.1.8.2, 5.10)
         reused.addTracked = true;
+        if (reused.fromRemoteOffer) call('rtcByTrack', reused.id);
         const sender = apply(wmGet, slots, [reused.sender]);
         sender.track = track;
         sender.streams = ids;
@@ -3176,6 +3219,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         track,
         ids,
         encodingsOf([], track.kind),
+        true,
       );
       return t.sender;
     }
@@ -3285,6 +3329,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     track: Any,
     streams: string[],
     encodings: Any[],
+    addTrack = false,
   ): Any => {
     const text = call(
       'rtcAddTransceiver',
@@ -3297,6 +3342,8 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         output: track ? media.output(track) : 'ended',
         streams,
         sendEncodings: encodings,
+        // which a remote offer's m-section may be paired with (JSEP 5.10)
+        addTrack,
       }),
     );
     const made = typeof text === 'string' ? parse(text) : { id: 0, source: -1 };

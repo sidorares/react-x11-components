@@ -344,6 +344,187 @@ function refusedMedia(sdp: string): string | null {
   return null;
 }
 
+/** A description's lines, the session's and each m-section's in order. */
+function linesOf(sdp: string): { session: string[]; media: string[][] } {
+  const session: string[] = [];
+  const media: string[][] = [];
+  for (const raw of sdp.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith('m=')) media.push([line]);
+    else if (media.length) media[media.length - 1].push(line);
+    else session.push(line);
+  }
+  return { session, media };
+}
+
+/** An m-section's port, mid and direction, the session's direction its
+ *  default. */
+function shapeOf(
+  lines: string[],
+  session: string[],
+): { port: number; mid: string | null; direction: RTCDirectionLike } {
+  const direction = (list: string[]): RTCDirectionLike | null => {
+    for (const l of list) {
+      const name = l.slice(2);
+      if (l.startsWith('a=') && DIRECTIONS.has(name))
+        return name as RTCDirectionLike;
+    }
+    return null;
+  };
+  const mid = lines.find((l) => l.startsWith('a=mid:'));
+  return {
+    port: Number(lines[0].split(' ')[1]),
+    mid: mid ? mid.slice(6).trim() : null,
+    direction: direction(lines) ?? direction(session) ?? 'sendrecv',
+  };
+}
+
+/**
+ * Why a remote description's ICE credentials are not ICE's, or null: an
+ * ice-ufrag or an ice-pwd of a character other than a letter, a digit, `+`
+ * or `/` (RFC 8839, 5.4), which a browser refuses as an
+ * `InvalidAccessError`. werift takes it.
+ */
+function badIceCredentials(sdp: string): string | null {
+  for (const m of sdp.matchAll(/^a=ice-(ufrag|pwd):(.*)$/gm)) {
+    const value = m[2].trim();
+    if (!/^[A-Za-z0-9+/]+$/.test(value)) {
+      return `The ice-${m[1]} ${JSON.stringify(value)} is not made of ice-chars.`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Why a remote description has no DTLS to key its media with, or null: an
+ * m-section that is not rejected, in a description with no
+ * `a=fingerprint` anywhere. SDES's `a=crypto` keys nothing a browser
+ * speaks (RFC 8826, 4.3.1), and a browser refuses such a description as an
+ * `InvalidAccessError`; werift takes it and its DTLS never completes.
+ */
+function lacksFingerprint(sdp: string): string | null {
+  if (/^a=fingerprint:/m.test(sdp)) return null;
+  const { media } = linesOf(sdp);
+  if (!media.some((m) => Number(m[0].split(' ')[1]) !== 0)) return null;
+  return 'The description has no DTLS fingerprint.';
+}
+
+/**
+ * Why an answer's directions are not ones its offer allows, or null: an
+ * m-section that sends where its offer's does not receive, or receives
+ * where its offer's does not send (RFC 3264, 6.1), which a browser refuses
+ * as an `InvalidAccessError`. werift takes it. An answer's m-section is its
+ * offer's by mid, or by its place where it has none.
+ */
+function incompatibleAnswer(answer: string, offer: string): string | null {
+  const a = linesOf(answer);
+  const o = linesOf(offer);
+  const offered = o.media.map((m) => shapeOf(m, o.session));
+  for (let i = 0; i < a.media.length; i++) {
+    const answered = shapeOf(a.media[i], a.session);
+    const of =
+      (answered.mid !== null
+        ? offered.find((m) => m.mid === answered.mid)
+        : undefined) ?? offered[i];
+    if (!of || answered.port === 0 || of.port === 0) continue;
+    const sends = (d: RTCDirectionLike) => d === 'sendrecv' || d === 'sendonly';
+    const receives = (d: RTCDirectionLike) =>
+      d === 'sendrecv' || d === 'recvonly';
+    if (sends(answered.direction) && !receives(of.direction)) {
+      return `The answer's m-section ${i} sends what its offer's (${of.direction}) does not receive.`;
+    }
+    if (receives(answered.direction) && !sends(of.direction)) {
+      return `The answer's m-section ${i} receives what its offer's (${of.direction}) does not send.`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Why two of a remote description's m-sections are one track, or null: the
+ * same `a=msid` stream and track in each, which RFC 8830, 2 does not allow,
+ * or the same SSRC, which names one source (RFC 8843, 9.2), as a section
+ * written out twice has even where its `a=msid` names no track. Firefox
+ * refuses either as an `OperationError`; werift takes them.
+ */
+function duplicateTrack(sdp: string): string | null {
+  const tracks = new Set<string>();
+  const ssrcs = new Set<string>();
+  for (const m of linesOf(sdp).media) {
+    if (Number(m[0].split(' ')[1]) === 0) continue;
+    const ids = new Set(
+      m
+        .filter((l) => l.startsWith('a=msid:'))
+        .map((l) => l.slice(7).trim().split(/\s+/))
+        .filter((v) => v.length === 2)
+        .map((v) => v.join(' ')),
+    );
+    for (const id of ids) {
+      if (tracks.has(id)) return `Two m-sections carry the track ${id}.`;
+      tracks.add(id);
+    }
+    const sources = new Set(
+      m.flatMap((l) => /^a=ssrc:(\d+)/.exec(l)?.slice(1) ?? []),
+    );
+    for (const ssrc of sources) {
+      if (ssrcs.has(ssrc)) return `Two m-sections carry the SSRC ${ssrc}.`;
+      ssrcs.add(ssrc);
+    }
+  }
+  return null;
+}
+
+/**
+ * Why an answer's m-section is of another kind than its offer's, or null:
+ * RFC 3264, 6 has an answer's media type be its offer's, an unknown one
+ * among them (RFC 9429, 5.3.1), and a browser refuses one that is not.
+ * werift reads neither unknown kind, so it cannot tell `m=unicorns` from
+ * `m=dragons`.
+ */
+function substitutedKind(answer: string, offer: string): string | null {
+  const a = linesOf(answer).media;
+  const o = linesOf(offer).media;
+  const kind = (m: string[]) => m[0].slice(2).split(' ')[0];
+  const offered = o.map((m) => ({ kind: kind(m), mid: shapeOf(m, []).mid }));
+  for (let i = 0; i < a.length; i++) {
+    const mid = shapeOf(a[i], []).mid;
+    const of =
+      (mid !== null ? offered.find((m) => m.mid === mid) : undefined) ??
+      offered[i];
+    if (of && of.kind !== kind(a[i])) {
+      return `The answer's m-section ${i} is ${kind(a[i])}, where its offer's is ${of.kind}.`;
+    }
+  }
+  return null;
+}
+
+/**
+ * A remote description with an `a=mid` for each m-section that has none:
+ * an answer's that of the offer's m-section in its place, an offer's its
+ * place, as libwebrtc fills them in (`FillInMissingRemoteMids`). A
+ * description from before RFC 8843 has none, and werift throws "mid not
+ * assigned" for one; a browser takes it.
+ */
+function withMids(sdp: string, offer: string | null): string {
+  const { session, media } = linesOf(sdp);
+  if (media.every((m) => m.some((l) => l.startsWith('a=mid:')))) return sdp;
+  const offered = offer
+    ? linesOf(offer).media.map((m) => shapeOf(m, []).mid)
+    : [];
+  const used = new Set(
+    media.map((m) => shapeOf(m, session).mid).filter((x) => x !== null),
+  );
+  const out = media.map((m, i) => {
+    if (m.some((l) => l.startsWith('a=mid:'))) return m;
+    let mid = offered[i] ?? String(i);
+    while (used.has(mid)) mid = `${mid}_`;
+    used.add(mid);
+    return [m[0], `a=mid:${mid}`, ...m.slice(1)];
+  });
+  return [...session, ...out.flat(), ''].join('\r\n');
+}
+
 /** Each m-section's header extensions, by its mid: id to URI. */
 function extmapsOf(sdp: string): Map<string, Map<number, string>> {
   const out = new Map<string, Map<number, string>>();
@@ -561,6 +742,10 @@ class WeriftTransceiver implements RTCTransceiverLike {
   everSent = false;
   /** `stop()` was asked for, whether or not werift was told yet. */
   stopAsked = false;
+  /** Made by `addTrack`, or given a track by it after a remote offer made
+   *  it: what a remote offer's m-section may be paired with (`pairAsJsep`),
+   *  and what a rollback keeps (`heldForAddTrack`). */
+  byTrack = false;
 
   constructor(
     readonly t: WTransceiver,
@@ -838,6 +1023,9 @@ class WeriftTransceiver implements RTCTransceiverLike {
    * and werift is told of the stop as the next offer or answer is made
    * (`flushStop`).
    */
+  madeByAddTrack(): void {
+    this.byTrack = true;
+  }
   stop(): void {
     this.stopAsked = true;
     this._send?.stop();
@@ -1166,6 +1354,202 @@ function routeByMid(pc: WPeer): void {
   };
 }
 
+/**
+ * Pairs a remote offer's m-section with a transceiver as JSEP 5.10 has it:
+ * the one its mid names, or else one `addTrack` made that no m-section has
+ * yet, and that only where the m-section receives (sendrecv or recvonly);
+ * anything else gets a new transceiver. werift 0.27.0 pairs it with any
+ * transceiver of its kind no m-section has, one `addTransceiver` made or an
+ * m-section that only sends among them, so a polite peer's glare turned
+ * its own sendonly transceiver sendrecv (werift#816). werift's `develop`
+ * has it behind `transceiverPairing: "standard"`, which knows a
+ * transceiver's origin from werift's own `addTrack`, and the adapter makes
+ * every transceiver with `addTransceiver`; so this wraps werift's
+ * `remoteMedia.findTransceiver`, which an offer's codecs are planned and its
+ * m-sections applied through, and asks `madeByTrack` the origin. A werift
+ * without it pairs as before.
+ */
+function pairAsJsep(
+  pc: WPeer,
+  madeByTrack: (t: WTransceiver) => boolean,
+): void {
+  type Media = {
+    kind: string;
+    port: number;
+    direction?: string;
+    rtp: { muxId?: string };
+  };
+  type Pairable = WTransceiver & { mLineIndex?: number };
+  const app = (
+    pc as unknown as {
+      remoteMedia?: {
+        findTransceiver?: (
+          media: Media,
+          index: number,
+          associated: Set<WTransceiver>,
+        ) => WTransceiver | undefined;
+      };
+    }
+  ).remoteMedia;
+  if (!app || typeof app.findTransceiver !== 'function') return;
+  app.findTransceiver = (media, index, associated) => {
+    const candidates = (pc.getTransceivers() as Pairable[]).filter(
+      (t) => !associated.has(t) && t.kind === media.kind,
+    );
+    const mid = media.rtp.muxId;
+    const named =
+      mid !== undefined ? candidates.find((t) => t.mid === mid) : undefined;
+    if (named) return named;
+    if (media.port === 0) return undefined;
+    if (media.direction === 'sendonly' || media.direction === 'inactive')
+      return undefined;
+    const free = candidates.filter(
+      (t) => t.mid == null && !t.stopping && !t.stopped && madeByTrack(t),
+    );
+    return free.find((t) => t.mLineIndex === index) ?? free[0];
+  };
+}
+
+/**
+ * Recycles a rejected m-section for a new transceiver of another kind, as
+ * JSEP 5.2.2 lets an offer do, where none of its own kind takes it: an
+ * audio m-section stopped and negotiated away carries a video transceiver
+ * added after, under a new mid, where werift 0.27.0 keeps it rejected and
+ * adds an m-section ("a stopped position is reused only by the same kind").
+ * werift has no option for it, so this wraps its `sdpManager.buildOfferSdp`,
+ * and for the one call tells it each such m-section is of the kind of the
+ * transceiver it is to carry; werift then recycles it as one of that kind,
+ * and the m-section it writes is the transceiver's. A werift without the
+ * method offers as before.
+ */
+function recycleAnyKind(pc: WPeer): void {
+  type Media = { kind: string; port: number; rtp: { muxId?: string } };
+  type Offered = WTransceiver & { mLineIndex?: number };
+  const manager = (
+    pc as unknown as {
+      sdpManager?: {
+        buildOfferSdp?: (transceivers: Offered[], sctp: unknown) => unknown;
+        currentLocalDescription?: { media: Media[] };
+        currentRemoteDescription?: { media: Media[] };
+      };
+    }
+  ).sdpManager;
+  const build = manager?.buildOfferSdp;
+  if (!manager || typeof build !== 'function') return;
+  manager.buildOfferSdp = (transceivers, sctp) => {
+    const media = manager.currentLocalDescription?.media ?? [];
+    const remote = manager.currentRemoteDescription?.media ?? [];
+    // what werift recycles: an m-section no live transceiver has, rejected,
+    // for a new transceiver of its kind, in the order they come
+    const left = transceivers.filter(
+      (t) =>
+        t.mid == null &&
+        t.mLineIndex === undefined &&
+        !t.stopping &&
+        !t.stopped,
+    );
+    const open: Media[] = [];
+    media.forEach((m, i) => {
+      if (m.kind === 'application') return;
+      const owner = transceivers.find(
+        (t) => !!m.rtp.muxId && t.mid === m.rtp.muxId,
+      );
+      if (owner && !owner.stopped) return;
+      if (m.port !== 0 && remote[i]?.port !== 0) return;
+      const at = left.findIndex((t) => t.kind === m.kind);
+      if (at >= 0) left.splice(at, 1);
+      else open.push(m);
+    });
+    const lent: [Media, string][] = [];
+    for (const m of open) {
+      const t = left.shift();
+      if (!t) break;
+      lent.push([m, m.kind]);
+      m.kind = t.kind;
+    }
+    try {
+      return build.call(manager, transceivers, sctp);
+    } finally {
+      for (const [m, kind] of lent) m.kind = kind;
+    }
+  };
+}
+
+/** Marks werift's ICE transport as made to restart with ice-chars. */
+const ICE_CHARS = Symbol('restarts with ice-chars');
+
+/**
+ * ICE credentials of ice-chars alone (RFC 8839, 5.4: letters, digits, `+`
+ * and `/`) for an ICE restart. werift 0.27.0 makes a restart's ufrag and pwd
+ * of base64url, `-` and `_` among them, which libwebrtc refuses as Chrome
+ * sets the description that carries them, and so does the adapter
+ * (`badIceCredentials`). Each `-` is written `+` and each `_` `/`, which maps
+ * base64url's alphabet onto base64's one for one, so they are as random as
+ * werift made them. werift has no way to choose them, so this wraps its ICE
+ * transport's `stageLocalRestart`, and puts the generation it made under the
+ * new credentials before anything has read it; worth filing upstream. A
+ * werift without it restarts as before.
+ */
+function restartsWithIceChars(w: WeriftModule): void {
+  type Generation = {
+    usernameFragment: string;
+    password: string;
+    candidates: { ufrag?: string }[];
+    gatherOptions?: unknown;
+  };
+  type IceTransport = {
+    stageLocalRestart?(...args: unknown[]): void;
+    stagedLocalRestart?: Generation;
+    localGenerations?: Map<string, Generation>;
+    connection?: {
+      stageLocalCredentials?(u: string, p: string, options: unknown): void;
+      discardStagedLocalCredentials?(u: string): void;
+    };
+    [ICE_CHARS]?: true;
+  };
+  const proto = (
+    w as unknown as { RTCIceTransport?: { prototype: IceTransport } }
+  ).RTCIceTransport?.prototype;
+  const stage = proto?.stageLocalRestart;
+  if (!proto || typeof stage !== 'function' || proto[ICE_CHARS]) return;
+  proto[ICE_CHARS] = true;
+  const chars = (s: string) => s.replace(/-/g, '+').replace(/_/g, '/');
+  proto.stageLocalRestart = function (this: IceTransport, ...args) {
+    const before = this.stagedLocalRestart;
+    stage.apply(this, args);
+    const g = this.stagedLocalRestart;
+    if (!g || g === before) return;
+    const ufrag = chars(g.usernameFragment);
+    const pwd = chars(g.password);
+    if (ufrag === g.usernameFragment && pwd === g.password) return;
+    this.connection?.discardStagedLocalCredentials?.(g.usernameFragment);
+    this.localGenerations?.delete(g.usernameFragment);
+    g.usernameFragment = ufrag;
+    g.password = pwd;
+    for (const c of g.candidates) c.ufrag = ufrag;
+    this.localGenerations?.set(ufrag, g);
+    this.connection?.stageLocalCredentials?.(ufrag, pwd, g.gatherOptions);
+  };
+}
+
+/**
+ * Keeps on a rollback a transceiver a remote offer made that `addTrack`
+ * gave a track, as JSEP 4.1.8.2 has it, whatever its sender sends by then.
+ * werift 0.27.0 keeps one only while its sender has a track, so a
+ * `replaceTrack(null)` after the `addTrack` had the rollback take it away
+ * (werift#817). werift decides with its transceiver's `heldByApplication`,
+ * which this answers for the transceiver, asking its wrapper too; a werift
+ * without the getter goes on as before.
+ */
+function heldForAddTrack(t: WTransceiver, w: WeriftTransceiver): void {
+  if (!('heldByApplication' in t)) return;
+  const sender = t.sender as { track?: unknown };
+  Object.defineProperty(t, 'heldByApplication', {
+    configurable: true,
+    get: () => !!sender.track || w.byTrack,
+  });
+}
+
 function codecFor(
   w: WeriftModule,
   c: (typeof OFFERED_CODECS)['audio'][number],
@@ -1217,9 +1601,12 @@ class WeriftConnection implements RTCConnectionLike {
     certificates: Map<number, WCertificate>,
   ) {
     const config = configOf(request, _w, certificates);
+    restartsWithIceChars(_w);
     this._pc = new _w.RTCPeerConnection(config);
     keepExtensionIds(this._pc);
     routeByMid(this._pc);
+    pairAsJsep(this._pc, (t) => this._wrapped.get(t)?.byTrack === true);
+    recycleAnyKind(this._pc);
     keepPreferredCodecs(this._pc);
     const codecs = config.codecs as { audio: WCodec[]; video: WCodec[] };
     this._codecs = [...codecs.audio, ...codecs.video];
@@ -1283,6 +1670,7 @@ class WeriftConnection implements RTCConnectionLike {
         (x, side) => this._selected(x, side),
       );
       this._wrapped.set(t, w);
+      heldForAddTrack(t, w);
     }
     return w;
   }
@@ -1424,14 +1812,32 @@ class WeriftConnection implements RTCConnectionLike {
           { errorDetail: 'sdp-syntax-error', sdpLineNumber: line },
         );
       }
+      const answering = type === 'answer' || type === 'pranswer';
+      if (side === 'local' && answering) {
+        // the offer as the page has it, an unknown kind as its own
+        const offer = this._pc.pendingRemoteDescription?.sdp;
+        const swapped = offer
+          ? substitutedKind(sdp, restoreUnknown(offer, this._unknown))
+          : null;
+        if (swapped) throw rtcError('InvalidModificationError', swapped);
+      }
       if (side === 'remote') {
+        const pending = this._pc.pendingLocalDescription?.sdp;
+        const offer =
+          answering && pending ? restoreUnknown(pending, this._unknown) : null;
         const refused =
           refusedMedia(sdp) ??
+          badIceCredentials(sdp) ??
+          lacksFingerprint(sdp) ??
+          (offer ? substitutedKind(sdp, offer) : null) ??
+          (offer ? incompatibleAnswer(sdp, offer) : null) ??
           reassignedExtension(
             sdp,
             this._pc.currentRemoteDescription?.sdp ?? '',
           );
         if (refused) throw rtcError('InvalidAccessError', refused);
+        const twice = duplicateTrack(sdp);
+        if (twice) throw rtcError('OperationError', twice);
       }
     }
     try {
@@ -1440,7 +1846,17 @@ class WeriftConnection implements RTCConnectionLike {
       // WPT writes its own so — ran its lines together
       let text = sdp.replace(/\r?\n/g, '\r\n');
       if (side === 'local') text = withoutNoStream(text);
-      else text = asWeriftReads(udpCandidatesOnly(text));
+      else {
+        text = asWeriftReads(udpCandidatesOnly(text));
+        if (type !== 'rollback') {
+          text = withMids(
+            text,
+            type === 'offer'
+              ? null
+              : (this._pc.pendingLocalDescription?.sdp ?? null),
+          );
+        }
+      }
       if (type !== 'rollback') {
         // a kind werift does not read throws in its parser: it is handed a
         // rejected audio m-section in that one's place, and the answer
@@ -1575,6 +1991,7 @@ class WeriftConnection implements RTCConnectionLike {
         : {}),
     });
     const wrapped = this._wrap(t);
+    wrapped.byTrack = init.addTrack === true;
     void wrapped.setParameters({ encodings: init.sendEncodings });
     wrapped.sendFrom(init.source, track);
     return wrapped;
@@ -1657,7 +2074,9 @@ class WeriftConnection implements RTCConnectionLike {
     try {
       const offer = (await this._offer({ iceRestart: options.iceRestart })).sdp;
       this._offered = true;
-      return namingNoStream(offer);
+      // an m-section of a kind werift does not read stays in every offer
+      // after, rejected, as its own kind (RFC 9429, 5.2.2)
+      return namingNoStream(restoreUnknown(offer, this._unknown));
     } catch (error) {
       throw asRtcError(error);
     }

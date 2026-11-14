@@ -1065,15 +1065,34 @@ on Node 22 and later and on Bun, so `webrtc-werift.test.ts` skips on Node
 `src/html/rtc-codecs.ts`, which `getCapabilities` answers from before
 werift is loaded. Where werift differs from a browser the adapter
 corrects what it can, and docs/prd-webrtc.md lists the rest as issues to
-file upstream. **The adapter reaches into werift twice**, each for what
-werift has no public way to do, and a werift without the field goes on as
-before. An empty message, which werift sends as nothing, is put on its
-`RTCSctpTransport`'s own send queue as RFC 8831's one byte under payload
-protocol 56 or 57 (`WeriftChannel._sendEmpty`). And a
-packet of an SSRC no description named, with no rid, is routed by its MID
-(`routeByMid`, wrapping its router's `routeRtp`): werift drops it, and WPT's
-simulcast harness receives every layer so. Ask werift for each of these
-before reaching in anywhere else. Two more went with 0.27.0, which is why the
+file upstream. **The adapter reaches into werift only where werift has no
+public way to do what a browser does**, each reach named with the issue it
+stands in for, and a werift without the field goes on as before. An empty
+message, which werift sends as nothing, is put on its `RTCSctpTransport`'s
+own send queue as RFC 8831's one byte under payload protocol 56 or 57
+(`WeriftChannel._sendEmpty`). A packet of an SSRC no description named,
+with no rid, is routed by its MID (`routeByMid`, wrapping its router's
+`routeRtp`): werift drops it, and WPT's simulcast harness receives every
+layer so. What a codec preference means is held through werift's
+transceiver manager (`keepPreferredCodecs`). And three are negotiation's.
+A remote offer's m-section is paired as JSEP 5.10 has it, only with a
+transceiver `addTrack` made and only where the m-section receives
+(`pairAsJsep`, wrapping `remoteMedia.findTransceiver`; werift#816). werift's
+`develop` has that behind `transceiverPairing: "standard"`, which knows a
+transceiver's origin from werift's own `addTrack` alone, and the adapter
+makes every transceiver with `addTransceiver`, so **a transceiver `addTrack`
+makes says so to the host** (`RTCTransceiverInit.addTrack`), and so does one
+a remote offer made that `addTrack` gave a track (`madeByAddTrack`). A
+rollback keeps that one whatever it sends by then (`heldForAddTrack`,
+answering its `heldByApplication`; werift#817). And a rejected m-section is
+recycled for a new transceiver of any kind (`recycleAnyKind`, which tells
+`sdpManager.buildOfferSdp`, for the one call, that the m-section is of the
+transceiver's kind), where werift recycles one only for its own. An ICE
+restart's credentials, which werift makes of base64url, are written in
+ice-chars as werift stages them (`restartsWithIceChars`, wrapping its ICE
+transport's `stageLocalRestart`): libwebrtc refuses a `-` or a `_` in one, and
+so does the adapter's own check of a remote description. Ask werift for each
+of these before reaching in anywhere else. Two more went with 0.27.0, which is why the
 peer range starts there: a page that names no STUN server asks none
 (`iceUseDefaultStunServer: false`, where werift asked Google's and held
 `setLocalDescription` for five seconds on a network that did not answer),
