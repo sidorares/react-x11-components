@@ -49,13 +49,24 @@ export interface WIce {
   getRemoteParameters(): { usernameFragment: string; password: string } | null;
   /** What gathers for it, and the peer's candidates it checks, a
    *  peer-reflexive one among them, which `getRemoteCandidates()` leaves
-   *  out. */
-  readonly connection?: { remoteCandidates?: unknown[] };
+   *  out; and the pair it nominated, with what it has heard on it. */
+  readonly connection?: {
+    remoteCandidates?: unknown[];
+    nominated?: WHeardPair;
+  };
   /** The peer's candidates it has, but those it found as peer-reflexive. */
   getRemoteCandidates?(): unknown[];
   /** Its own candidates as it tells them, and undefined after the last of
    *  a generation. */
   readonly onIceCandidate?: WEvent<[WCandidate | undefined]>;
+}
+
+/** A candidate pair's counts of what came in on it, werift's `CandidatePair`. */
+export interface WHeardPair {
+  readonly id: string;
+  readonly packetsReceived: number;
+  readonly requestsReceived: number;
+  readonly responsesReceived: number;
 }
 
 export interface WDtls {
@@ -386,6 +397,13 @@ export class WeriftTransports {
   private readonly _pairChanges = new Map<number, number>();
   /** Each transport's candidates, by generation (`Generations`). */
   private readonly _generations = new Map<number, Generations>();
+  /** What each connected transport last heard on its pair, and since when
+   *  it has heard nothing more (`_listen`). */
+  private readonly _heard = new Map<
+    number,
+    { pair: string; count: number; since: number; quiet: boolean }
+  >();
+  private _listening: unknown = null;
   /** The association being watched, and what was last told of it. */
   private _association: WAssociation | null = null;
   private _sctpTold = 'connecting';
@@ -486,6 +504,56 @@ export class WeriftTransports {
    * for each time and watched once found.
    */
   private _held: unknown = null;
+  /**
+   * WebRTC 1.0's `disconnected`, which werift never tells: a connected
+   * transport that has heard nothing on its pair for `QUIET_MS` is
+   * disconnected, and connected again as anything comes. werift checks
+   * consent every 4 to 6 seconds and has its peer's checks as often, so an
+   * idle connection hears something in every 6 seconds, and `QUIET_MS` is
+   * past that; it fails only as consent expires, 30 seconds on. Looked at
+   * each second while any transport is connected or disconnected.
+   */
+  private _listen(): void {
+    if (this._listening !== null) return;
+    const look = () => {
+      this._listening = null;
+      if (this._closed()) return;
+      const now = Date.now();
+      let moved = false;
+      let any = false;
+      for (const [dtls, id] of this._transports) {
+        const told = this._iceTold.get(id);
+        const pair = dtls.iceTransport.connection?.nominated;
+        if (!pair || (!CONNECTED.has(told ?? '') && told !== 'disconnected')) {
+          if (this._heard.get(id)?.quiet) moved = true;
+          this._heard.delete(id);
+          continue;
+        }
+        any = true;
+        const count =
+          pair.packetsReceived + pair.requestsReceived + pair.responsesReceived;
+        const was = this._heard.get(id);
+        if (!was || was.pair !== pair.id || was.count !== count) {
+          if (was?.quiet) moved = true;
+          this._heard.set(id, {
+            pair: pair.id,
+            count,
+            since: now,
+            quiet: false,
+          });
+        } else if (!was.quiet && now - was.since >= QUIET_MS) {
+          was.quiet = true;
+          moved = true;
+        }
+      }
+      if (moved) this.tell();
+      if (any) this._listen();
+    };
+    const timer = setTimeout(look, 1000);
+    (timer as { unref?(): void }).unref?.();
+    this._listening = timer;
+  }
+
   /** Looks again, while a transport is held at `new`, for the candidate
    *  that lets it check. */
   private _holdNew(): void {
@@ -678,7 +746,12 @@ export class WeriftTransports {
       if (was === 'new' && CONNECTED.has(state.iceState)) {
         this._send(id, { ...state, iceState: 'checking' });
       }
+      // what has heard nothing for a while is disconnected (`_listen`)
+      if (CONNECTED.has(state.iceState) && this._heard.get(id)?.quiet) {
+        state.iceState = 'disconnected';
+      }
       this._send(id, state);
+      if (CONNECTED.has(state.iceState)) this._listen();
     }
   }
 
@@ -760,6 +833,9 @@ export class WeriftTransports {
 }
 
 const CONNECTED = new Set(['connected', 'completed']);
+/** How long a connected transport hears nothing before it is
+ *  disconnected: past werift's consent cadence (`_listen`). */
+const QUIET_MS = 7000;
 
 /**
  * A remote candidate's stats as a page may read them. One the agent learned
