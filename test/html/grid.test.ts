@@ -913,6 +913,30 @@ test("a grid's align-items: stretch stretches an image, and normal does not", as
   assert.deepStrictEqual(size('h'), [10, 40]);
 });
 
+metric(
+  "a row's items aligned by their baselines meet the lowest of them",
+  async () => {
+    // CSS Box Alignment 3, 9.3: b is moved down to a's baseline, which a's
+    // padding puts 20px lower, and not stretched; the row is as tall as that
+    // makes it, and c, aligned to the start, is left at the top
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/20px sans-serif}</style>' +
+        '<div id="g" style="display:grid;grid-template-columns:repeat(3,100px);' +
+        'align-items:baseline"><div id="a" style="padding-top:20px">a</div>' +
+        '<div id="b">b</div><div id="c" style="align-self:start">c</div></div>',
+    );
+    const el = view(node);
+    const at = (id: string) => {
+      const box = boxOf(el, id);
+      return [box.y - boxOf(el, 'g').y, box.height].map(Math.round);
+    };
+    assert.deepStrictEqual(at('a'), [0, 40]);
+    assert.deepStrictEqual(at('b'), [20, 20], 'moved down, and not stretched');
+    assert.deepStrictEqual(at('c'), [0, 20]);
+    assert.strictEqual(Math.round(boxOf(el, 'g').height), 40);
+  },
+);
+
 test('place-content sets align-content then justify-content, the second the first again', async () => {
   // melbcss.com centres its page with `body { display: grid; place-content:
   // center }`: unread, the column stretched across the body and the page
