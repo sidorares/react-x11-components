@@ -3830,6 +3830,12 @@ in a frame of another's, refuses. The frame shows that it did, in a document of
 no origin, and hears `load`, as it would for any failure to show one. A
 service worker's answer is held to the same.
 
+**A frame whose document is a network error shows an error page of no
+origin** — a connection that failed, a response the runtime's HTTP parser
+refuses — and hears `load`, as Chromium's does: its `contentDocument` is
+null, where it was the `about:blank` it had before, the page's to reach into
+(WPT's `fetch/h1-parsing`). A 404 is no network error: its page is shown.
+
 **A `file:` page's `file:` frame is another origin**, as Chromium and Firefox
 have it: the page has its window by a number and no `contentDocument`, and it
 loads where the host's `fetch` answers it. `data:` frames are loaded from their
