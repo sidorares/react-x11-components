@@ -4641,15 +4641,18 @@ export class DomHost {
         return null;
       }
       case 'style':
-        return declarationValue(this._element(a).attribs.style, text(b));
+        return declarationValue(this._inlineStyle(this._element(a)), text(b));
       case 'stylePriority':
-        return declarationPriority(this._element(a).attribs.style, text(b));
+        return declarationPriority(
+          this._inlineStyle(this._element(a)),
+          text(b),
+        );
       case 'styleNames':
-        return declarationNames(this._element(a).attribs.style);
+        return declarationNames(this._inlineStyle(this._element(a)));
       // `style.cssText`, serialized as CSSOM serializes a block, each
       // declaration ended: CodeMirror appends `visibility: hidden` to it
       case 'styleText':
-        return declarationText(this._element(a).attribs.style);
+        return declarationText(this._inlineStyle(this._element(a)));
       // an element's nonce, and one a script sets without its attribute
       case 'nonce': {
         const el = this._element(a);
@@ -4666,7 +4669,13 @@ export class DomHost {
       case 'setStyle': {
         const el = this._element(a);
         const oldValue = el.attribs.style ?? null;
-        const written = withDeclaration(oldValue, text(b), text(c), d);
+        // a block a policy kept from being parsed holds nothing to add to
+        const written = withDeclaration(
+          this._inlineStyle(el) ?? null,
+          text(b),
+          text(c),
+          d,
+        );
         if (written === null) return null;
         if (written) el.attribs.style = written;
         else delete el.attribs.style;
@@ -5696,7 +5705,11 @@ export class DomHost {
             : []),
           ...DomUtils.findAll(
             (el) =>
-              (tagOf(el) === 'style' && isStyleOrScript(el)) ||
+              (tagOf(el) === 'style' &&
+                isStyleOrScript(el) &&
+                // one a policy refuses makes no sheet (HTML 4.2.6,
+                // "update a style block")
+                this._styleSheetAllowed(el)) ||
               (tagOf(el) === 'link' &&
                 !isForeign(el) &&
                 /(?:^|\s)stylesheet(?:\s|$)/i.test(el.attribs.rel ?? '') &&
@@ -10297,12 +10310,30 @@ export class DomHost {
   /** Whether a `<style>`'s text may style the document (HTML 4.2.6,
    *  "update a style block"; `style-src-elem`), or an element's `style`
    *  attribute (`style-src-attr`): what CSSOM wrote there may. */
+  /** A `style` attribute's text as CSSOM reads its declarations: none
+   *  where the document's policies refuse it as inline style, since its
+   *  block is then never parsed (CSSOM 6.7.1, HTML's `style` attribute). */
+  private _inlineStyle(el: Element): string | undefined {
+    const text = el.attribs.style;
+    if (text === undefined || !this.csp.policies.length) return text;
+    return this._styleAllowed(el, text, 'style attribute') ? text : undefined;
+  }
+
+  /** Whether a `<style>` makes a sheet, which one its document's policies
+   *  refuse does not. */
+  private _styleSheetAllowed(el: Element): boolean {
+    return (
+      !this.csp.policies.length ||
+      this._styleAllowed(el, DomUtils.textContent(el), 'style')
+    );
+  }
+
   private _styleAllowed(
     el: Element,
     text: string,
     type: 'style' | 'style attribute',
   ): boolean {
-    if (!this._policed(el)) return true;
+    if (!this._policed(el) || !this._policedBefore(el)) return true;
     const attribute = type === 'style attribute';
     if (attribute && this._styleByCssom.get(el) === text) return true;
     let asked = this._styleAsked.get(el);
@@ -10918,8 +10949,24 @@ export class DomHost {
         'content-security-policy' &&
       node.attribs.content !== undefined
     ) {
+      const before = this.csp.policies.length;
       this.csp.addMeta(node, node.attribs.content);
+      if (this.csp.policies.length > before) this._cspMetas.push(node);
     }
+  }
+  /** The `<meta>`s that made a policy, in the order the parser met them. */
+  private readonly _cspMetas: Element[] = [];
+  /** Whether a policy was in force where the parser met an element: one
+   *  from a header, or a `<meta>` before it. A `<meta>` holds back what the
+   *  parser meets after it alone, so `<html style>` is the page's whatever a
+   *  policy in its head says (WPT's `inline-style-attribute-on-html`). */
+  private _policedBefore(el: Element): boolean {
+    if (this.csp.policies.some((p) => p.source !== 'meta')) return true;
+    // domutils answers where its first node is from its second: PRECEDING
+    // is a `<meta>` before the element, which never holds it
+    return this._cspMetas.some(
+      (meta) => DomUtils.compareDocumentPosition(meta, el) & 2,
+    );
   }
   /** The `<meta>` policies the parser has put in the head: those before
    *  `upTo` where a check is about an element, since a policy the parser
@@ -11044,6 +11091,8 @@ export class DomHost {
         const el = node instanceof Element ? node : null;
         return this.csp.allowsUrl('form-action', text(a), el, where);
       }
+      case 'style':
+        return this._styleSheetAllowed(this._element(a));
       case 'nav': {
         // no element where the document itself was sent there
         const node = b ? this._node(b) : null;
