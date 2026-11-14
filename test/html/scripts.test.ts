@@ -2012,15 +2012,21 @@ function spin(ms: number): void {
 
 /** `<Html>`'s `_update` made `ms` slower for the next `times` calls,
  *  inside the timing of its layouts (`_counted`) as a real layout is; and
- *  what ends that sooner. */
-function slowLayouts(view: HtmlViewNode, ms: number, times = 1): () => void {
+ *  what ends that sooner. `spend` is how the time passes: spun on the wall
+ *  clock, or moved on on a clock the test holds. */
+function slowLayouts(
+  view: HtmlViewNode,
+  ms: number,
+  times = 1,
+  spend: (ms: number) => void = spin,
+): () => void {
   const node = view as unknown as { _update(target: number): void };
   const update = node._update;
   let left = times;
   node._update = function (this: unknown, target: number) {
     if (left > 0) {
       left -= 1;
-      spin(ms);
+      spend(ms);
     }
     return update.call(this, target);
   };
@@ -2060,7 +2066,12 @@ test('a script that runs past its own time is thrown a TimeoutError at what it n
   assert.equal(doc.timeouts, 1);
 });
 
-test('no op is begun so near the ceiling that it could be cut half way: it is refused, and nothing is left half made', async () => {
+test('no op is begun so near the ceiling that it could be cut half way: it is refused, and nothing is left half made', async (t) => {
+  // the engine's clock held, and moved on by each layout as far as it
+  // spun: spun on the wall clock, a layout begun just short of four fifths
+  // of the ceiling ran past it on a slow runner, and the watchdog cut it
+  let now = 0;
+  t.mock.method(taskClock, 'now', () => now);
   const doc = await hosted('<p id="out">-</p><p id="p"></p>', {
     timeout: 200,
   });
@@ -2069,7 +2080,7 @@ test('no op is begun so near the ceiling that it could be cut half way: it is re
   // fifths of the ceiling are laid out, and the next is refused rather
   // than begun and cut by it — as the catch running says, which a cut
   // would have skipped
-  const fast = slowLayouts(doc.view, 100, 20);
+  const fast = slowLayouts(doc.view, 100, 20, (ms) => void (now += ms));
   doc.run(
     "var p = document.getElementById('p'); var read = 0;" +
       'try { for (var i = 0; i < 20; i++) { p.style.width = i + "px"; getComputedStyle(p).width; read += 1; } }' +
