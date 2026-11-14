@@ -3156,7 +3156,14 @@ element's font. Each element has its interface, `createSVGMatrix` and
 `createSVGPoint` among what an `<svg>` makes. A CSS transform on a shape does
 not count, since its matrices are read from the attribute.
 `isPointInFill` and `isPointInStroke` go by the same outlines, the fill rule,
-the stroke's width, caps and dashes, and take every join as round.
+the stroke's width, caps and dashes, and take every join as round. So does what
+a point over an inline drawing is over (`svgElementAt`): `elementFromPoint`,
+and every press, move and hover, find the shape drawn topmost there through
+the transforms around it, its fill where `pointer-events` asks for a
+painted or any fill and its stroke likewise, a text's run by the box it
+takes up, an image's rectangle, and the `<svg>` itself where the point is
+over none. What a rule of the document's says of `pointer-events`, `fill` or
+`visibility` is not read there, only the attributes and `style`.
 
 **A path's `d` is segments to a script** (SVG Paths, `SVGPathData`,
 `src/html/scripts/path-data.ts`). `getPathData()` reads the attribute as

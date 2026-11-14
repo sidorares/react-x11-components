@@ -443,7 +443,7 @@ import {
 } from './layout/inline.js';
 import type { FontsLike } from './layout/inline.js';
 import type { SvgMeasure } from './scripts/svg-geometry.js';
-import { bboxOf } from './scripts/svg-geometry.js';
+import { bboxOf, svgElementAt } from './scripts/svg-geometry.js';
 import { ShapeAnimations } from './css/shape-animations.js';
 import type { TextRun } from '../richtext/index.js';
 // Through the inline module rather than a second cache: the offsets table for
@@ -9608,6 +9608,21 @@ export class HtmlViewNode extends Node {
           this._capturedHoles(tree),
         );
     if (hit) {
+      // an inline drawing is the shape drawn topmost at the point, by its
+      // geometry and `pointer-events` (SVG 2, 15.6), and otherwise itself
+      if (tagOf(hit) === 'svg' && hit.children.length) {
+        const box = this._ownBoxOf(tree, hit);
+        if (box) {
+          const s = this._scale;
+          const shape = svgElementAt(
+            hit,
+            (local.x - box.x - box.borderLeft - box.padLeft) / s,
+            (local.y - box.y - box.borderTop - box.padTop) / s,
+            this._svgMeasureNow(),
+          );
+          if (shape) return shape;
+        }
+      }
       // an image with a map is its areas (HTML 4.8.14), where a point of it
       // is in one, and otherwise the image
       if (tagOf(hit) === 'img' && attr(hit, 'usemap')) {
