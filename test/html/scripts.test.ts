@@ -2339,6 +2339,52 @@ test('a shared worker is one thread for a script and a name, which each SharedWo
   );
 });
 
+test('a module worker hears what was posted to it, and a module shared worker its connection, only once its graph has run', async () => {
+  const body: Record<string, string> = {
+    // what sets the listeners is a module the worker's script imports
+    'shared.js':
+      'onconnect = function (e) { e.ports[0].postMessage("connected"); };',
+    'dedicated.js':
+      'onmessage = function (e) { postMessage("heard " + e.data); };',
+  };
+  const doc = await hosted(
+    '<p id="shared"></p><p id="dedicated"></p><script>' +
+      'var base = new URL("lib/", location.href).href;' +
+      'function blob(name) { return URL.createObjectURL(new Blob(["import \\"" + base + name + "\\";"], { type: "text/javascript" })); }' +
+      'var s = new SharedWorker(blob("shared.js"), { type: "module" });' +
+      's.port.onmessage = function (e) { document.getElementById("shared").textContent = e.data; };' +
+      'var d = new Worker(blob("dedicated.js"), { type: "module" });' +
+      'd.onmessage = function (e) { document.getElementById("dedicated").textContent = e.data; };' +
+      // posted before the worker's graph is in
+      'd.postMessage("early");' +
+      '</script>',
+    {
+      answer: (request) => {
+        const found = body[request.url.slice(request.url.lastIndexOf('/') + 1)];
+        if (!found) return null;
+        return {
+          url: request.url,
+          status: 200,
+          statusText: 'OK',
+          redirected: false,
+          headers: [['content-type', 'text/javascript']],
+          body: found,
+        };
+      },
+    },
+  );
+  assert.equal(
+    await settled(doc, 'shared', (t) => t !== '', 15000),
+    'connected',
+    doc.logs.join('\n'),
+  );
+  assert.equal(
+    await settled(doc, 'dedicated', (t) => t !== '', 15000),
+    'heard early',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a service worker is registered for a scope, installed and activated in a thread of its own, and hears its page and answers it', async () => {
   const sw =
     'self.addEventListener("install", function (e) {' +

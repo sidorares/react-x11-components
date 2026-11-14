@@ -970,7 +970,10 @@ charset }` — the `<script>` is the request's `element`, and the root
   text module's may say anything, and its default export is its value, made
   in the page's realm. A module two `<script>`s name is one module, run once,
   and what it threw is reported for each. A worker has no CSS modules: there
-  `type: 'css'` is a `TypeError`, and nothing is asked for.
+  `type: 'css'` is a `TypeError`, and nothing is asked for. A module worker
+  hears what was posted to it, and a module shared worker its `connect`, once
+  its graph has run, as a classic one hears them after its script: what sets
+  `onconnect` is often a module the worker's script imports.
   Each is a module of its own beside the script at the same URL. Another
   type, `type: 'javascript'` among them, is a `TypeError`, and an attribute
   but `type` a `SyntaxError` in an `import` and a `TypeError` in an

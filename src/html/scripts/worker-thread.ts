@@ -488,9 +488,24 @@ const followPage = (): void => {
   Atomics.add(new Int32Array(stopped), 0, kept ? 1 : -1);
 };
 
+/**
+ * What was posted to a module worker before its script ran, held until it
+ * has (HTML 10.2.4, "run a worker": the port's message queue is enabled
+ * after the script runs). A classic script runs before any message is read;
+ * a module's graph is fetched first, and a shared worker's `connect` heard
+ * in the meantime reached no `onconnect` the module had yet to set.
+ */
+let unheard: unknown[] | null = init.type === 'module' ? [] : null;
+const hearHeld = (): void => {
+  const held = unheard;
+  unheard = null;
+  for (const data of held ?? []) engine.call('__workerMessage', [0, data]);
+};
+
 port.on('message', (m: ToWorker) => {
   if (m.kind === 'message') {
-    engine.call('__workerMessage', [0, m.data]);
+    if (unheard) unheard.push(m.data);
+    else engine.call('__workerMessage', [0, m.data]);
   } else if (m.kind === 'service') {
     engine.call('__sw', [m.text]);
     engine.call('__swDispatched', null);
@@ -545,6 +560,7 @@ script = () => {
       0,
     );
     if (init.service) engine.call('__serviceStarted', [false]);
+    hearHeld();
   } else if (init.type === 'module') {
     void engine.module(source, init.url, init.source === null).then((ran) => {
       // one whose graph did not all come is its worker's `error`, as one
@@ -558,6 +574,7 @@ script = () => {
         );
       }
       if (init.service) engine.call('__serviceStarted', [ran === 'ran']);
+      hearHeld();
     });
   } else {
     const ran = engine.exec(source, init.url, 0);
