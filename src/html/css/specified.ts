@@ -482,6 +482,27 @@ export function withoutHighlights(selector: string): string[] {
     .filter((complex) => complex && !highlightsIn(complex)?.length);
 }
 
+/** A pseudo-element at the end of a complex selector, after which only a
+ *  user action's pseudo-class may come (Selectors 4, 3.6.3): the ones
+ *  css-select refuses, which a query is valid with and matches nothing by,
+ *  since what it names is no element. */
+const TRAILING_PSEUDO_ELEMENT =
+  /(?:::(?:before|after|first-line|first-letter|marker|placeholder|selection|backdrop|file-selector-button|target-text|spelling-error|grammar-error|cue|details-content|checkmark|picker-icon|scroll-marker|scroll-marker-group|scroll-button\([^()]*\)|picker\([^()]*\)|part\([^()]*\)|slotted\([^()]*\)|cue\([^()]*\))|:(?:before|after|first-line|first-letter))(?::(?:hover|focus|focus-visible|focus-within|active))*\s*$/i;
+
+/** A selector list's complex selectors that end in no pseudo-element, or
+ *  null where none is left, which matches nothing. */
+export function withoutPseudoElements(selector: string): string | null {
+  if (!/:(?::|before|after|first-l)/i.test(selector)) return selector;
+  const kept: string[] = [];
+  let dropped = false;
+  for (const complex of splitTopLevel(selector)) {
+    if (TRAILING_PSEUDO_ELEMENT.test(complex)) dropped = true;
+    else kept.push(complex.trim());
+  }
+  if (!dropped) return selector;
+  return kept.filter(Boolean).length ? kept.join(', ') : null;
+}
+
 /** A valid selector list with each `::highlight()`'s name written as CSSOM
  *  serializes an identifier (`CSS.escape`): `::highlight(\31\32\33)` is
  *  `::highlight(\31 23)`, as `selectorText` reads it. */

@@ -330,6 +330,9 @@ export function installDom(
     'pointIn',
     'movesHeard',
     'selectionHeard',
+    'slotsHeard',
+    'signalSlots',
+    'ceIs',
     'parent',
     'owner',
     'doctype',
@@ -490,6 +493,7 @@ export function installDom(
     'adjacent',
     'setTitle',
     'write',
+    'assignSlot',
   ]);
   const idList = (s: Any): number[] =>
     typeof s === 'string' && s ? s.split(',').map(Number) : [];
@@ -1376,11 +1380,18 @@ export function installDom(
   ]);
   let movesHeard = false;
   let selectionHeard = false;
+  /** Whether a page listens for `slotchange`, which has the host watch
+   *  slot assignment (`_slotsMoved`) from then on. */
+  let slotsHeard = false;
   /** A page came to listen for `type`. Told once, however many listen, with
    *  what the pointer is over answered, so that it hears nothing of having
    *  been there all along. */
   const noteHeard = (type: string): void => {
     if (type === 'pointerrawupdate') rawUpdateHeard = true;
+    if (type === 'slotchange' && !slotsHeard) {
+      slotsHeard = true;
+      call('slotsHeard');
+    }
     if (type === 'selectionchange' && !selectionHeard) {
       selectionHeard = true;
       call('selectionHeard');
@@ -6875,11 +6886,16 @@ export function installDom(
     static readonly DOCUMENT_NODE = 9;
     static readonly DOCUMENT_TYPE_NODE = 10;
     static readonly DOCUMENT_FRAGMENT_NODE = 11;
+    // the node types no node has any more, kept for what reads them
+    static readonly ENTITY_REFERENCE_NODE = 5;
+    static readonly ENTITY_NODE = 6;
+    static readonly NOTATION_NODE = 12;
     static readonly DOCUMENT_POSITION_DISCONNECTED = 1;
     static readonly DOCUMENT_POSITION_PRECEDING = 2;
     static readonly DOCUMENT_POSITION_FOLLOWING = 4;
     static readonly DOCUMENT_POSITION_CONTAINS = 8;
     static readonly DOCUMENT_POSITION_CONTAINED_BY = 16;
+    static readonly DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC = 32;
     _id = 0;
     _name = '';
     constructor() {
@@ -6980,7 +6996,13 @@ export function installDom(
       return child;
     }
     insertBefore(child: Any, before: Any): Any {
-      call('insert', this._id, idOf(child), before ? idOf(before) : 0);
+      // `Node? child` is nullable and not optional (DOM 4.4)
+      if (arguments.length < 2) {
+        throw new TypeError(
+          "Failed to execute 'insertBefore' on 'Node': 2 arguments required.",
+        );
+      }
+      call('insert', this._id, idOf(child), before == null ? 0 : idOf(before));
       return child;
     }
     removeChild(child: Any): Any {
@@ -7190,9 +7212,11 @@ export function installDom(
       this.insertBefore(node, child);
     }
     querySelector(selector: Any): Any {
+      if (!arguments.length) throw new TypeError('1 argument required.');
       return wrap(Number(call('query', this._id, str(selector), false)));
     }
     querySelectorAll(selector: Any): Any {
+      if (!arguments.length) throw new TypeError('1 argument required.');
       return list(wrapAll(call('query', this._id, str(selector), true)));
     }
     getElementsByTagName(tag: Any): Any {
@@ -7502,7 +7526,7 @@ export function installDom(
       return adoptedRegistry(shadowRegistryOf(this), this.host.ownerDocument);
     }
     get slotAssignment(): string {
-      return 'named';
+      return str(call('shadowFlags', this._id))[2] === '1' ? 'manual' : 'named';
     }
     get innerHTML(): string {
       return String(call('html', this._id, false));
@@ -7549,88 +7573,193 @@ export function installDom(
    *  to its host where the event is composed, as most a user makes are. */
   // --- elements ------------------------------------------------------------------
 
-  /** A `DOMTokenList` over an attribute: `classList`, `relList`, and the
-   *  tokens it supports where it has any (`supports`). */
+  /**
+   * A `DOMTokenList` over an attribute (DOM 7.1): `classList`, `relList`,
+   * and the tokens it supports where it has any (`supports`). A legacy
+   * platform object, whose indices are its tokens, so a list like the
+   * others (`listMade`), reading the attribute at each use: its token set
+   * is the attribute's value parsed as an ordered set, each token once.
+   */
+  /** A valid attribute local name (DOM 4.9): not empty, and none of ASCII
+   *  white space, NUL, `/`, `=` or `>` in it. */
+  const validAttributeName = (n: string): boolean =>
+    n.length > 0 && !/[\t\n\f\r \u0000/=>]/.test(n);
   class DOMTokenList {
-    _el: Any;
-    _attr: string;
-    _supported: readonly string[] | null;
-    constructor(
-      el: Any,
-      attr: string,
-      supported: readonly string[] | null = null,
-    ) {
-      this._el = el;
-      this._attr = attr;
-      this._supported = supported;
+    constructor() {
+      throw new TypeError('Illegal constructor');
     }
     /** Whether a token is one the attribute does something with (DOM
      *  7.1, "validation steps"), ASCII case-insensitively; a list with
      *  no supported tokens, `classList`, throws. */
     supports(token: Any): boolean {
-      if (!this._supported) {
+      const state = listState(this);
+      if (!arguments.length) throw new TypeError('1 argument required.');
+      if (!state.supported) {
         throw new TypeError(
-          `The '${this._attr}' attribute has no supported tokens.`,
+          `The '${state.attr}' attribute has no supported tokens.`,
         );
       }
-      return this._supported.includes(str(token).toLowerCase());
-    }
-    _tokens(): string[] {
-      return (this._el.getAttribute(this._attr) ?? '')
-        .split(/[\t\n\f\r ]+/)
-        .filter(Boolean);
-    }
-    _set(tokens: string[]): void {
-      this._el.setAttribute(this._attr, [...new Set(tokens)].join(' '));
+      return state.supported.includes(asciiLower(str(token)));
     }
     get length(): number {
-      return this._tokens().length;
+      return itemsOf(listState(this)).length;
     }
     get value(): string {
-      return this._el.getAttribute(this._attr) ?? '';
+      const state = listState(this);
+      const v = call('attr', state.el._id, state.attr);
+      return typeof v === 'string' ? v : '';
     }
     set value(v: Any) {
-      this._el.setAttribute(this._attr, str(v));
+      const state = listState(this);
+      state.el._setAttr(state.attr, str(v));
     }
-    item(i: number): string | null {
-      return this._tokens()[i] ?? null;
+    item(index: Any): string | null {
+      const state = listState(this);
+      if (!arguments.length) throw new TypeError('1 argument required.');
+      return itemsOf(state)[Number(index) >>> 0] ?? null;
     }
     contains(token: Any): boolean {
-      return this._tokens().includes(str(token));
+      const state = listState(this);
+      if (!arguments.length) throw new TypeError('1 argument required.');
+      return itemsOf(state).includes(str(token));
     }
     add(...tokens: Any[]): void {
-      this._set([...this._tokens(), ...tokens.map(str)]);
+      const state = listState(this);
+      const given = tokens.map(validToken);
+      const set = itemsOf(state).slice();
+      for (const t of given) if (!set.includes(t)) set.push(t);
+      updateTokens(state, set);
     }
     remove(...tokens: Any[]): void {
-      const gone = new Set(tokens.map(str));
-      this._set(this._tokens().filter((t) => !gone.has(t)));
+      const state = listState(this);
+      const given = tokens.map(validToken);
+      updateTokens(
+        state,
+        itemsOf(state).filter((t: string) => !given.includes(t)),
+      );
     }
-    toggle(token: Any, force?: boolean): boolean {
-      const t = str(token);
-      const has = this.contains(t);
-      const on = force === undefined ? !has : !!force;
-      if (on && !has) this.add(t);
-      if (!on && has) this.remove(t);
-      return on;
+    toggle(token: Any, force?: Any): boolean {
+      const state = listState(this);
+      if (!arguments.length) throw new TypeError('1 argument required.');
+      const t = validToken(token);
+      const set = itemsOf(state).slice();
+      if (set.includes(t)) {
+        if (force === undefined || !force) {
+          updateTokens(
+            state,
+            set.filter((x: string) => x !== t),
+          );
+          return false;
+        }
+        return true;
+      }
+      if (force === undefined || force) {
+        set.push(t);
+        updateTokens(state, set);
+        return true;
+      }
+      return false;
     }
-    replace(old: Any, next: Any): boolean {
-      const tokens = this._tokens();
-      const at = tokens.indexOf(str(old));
-      if (at < 0) return false;
-      tokens[at] = str(next);
-      this._set(tokens);
+    replace(token: Any, newToken: Any): boolean {
+      const state = listState(this);
+      if (arguments.length < 2) throw new TypeError('2 arguments required.');
+      const old = str(token);
+      const next = str(newToken);
+      if (!old || !next) {
+        throw new DOMException('The token must not be empty.', 'SyntaxError');
+      }
+      if (/[\t\n\f\r ]/.test(old) || /[\t\n\f\r ]/.test(next)) {
+        throw new DOMException(
+          'The token must not contain whitespace.',
+          'InvalidCharacterError',
+        );
+      }
+      const set = itemsOf(state);
+      if (!set.includes(old)) return false;
+      // the first of either is the new one, and no other is left (DOM
+      // 4.1's ordered set "replace")
+      const out: string[] = [];
+      let placed = false;
+      for (const t of set) {
+        if (t === old || t === next) {
+          if (!placed) out.push(next);
+          placed = true;
+        } else out.push(t);
+      }
+      updateTokens(state, out);
       return true;
     }
-    forEach(fn: Any, self?: Any): void {
-      this._tokens().forEach((t, i) => fn.call(self, t, i, this));
-    }
-    [Symbol.iterator](): Iterator<string> {
-      return this._tokens()[Symbol.iterator]();
-    }
     toString(): string {
-      return this.value;
+      return (this as Any).value;
     }
   }
+  for (const name of ['entries', 'forEach', 'keys', 'values']) {
+    Object.defineProperty(DOMTokenList.prototype, name, {
+      value: (Array.prototype as Any)[name],
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  Object.defineProperty(DOMTokenList.prototype, Symbol.iterator, {
+    value: Array.prototype.values,
+    writable: true,
+    configurable: true,
+  });
+  /** A token an `add()`, a `remove()` or a `toggle()` is handed, or the
+   *  exception it is (DOM 7.1, "validation"). */
+  const validToken = (token: Any): string => {
+    const t = str(token);
+    if (!t) {
+      throw new DOMException('The token must not be empty.', 'SyntaxError');
+    }
+    if (/[\t\n\f\r ]/.test(t)) {
+      throw new DOMException(
+        `The token provided ('${t}') contains HTML space characters, which are not valid in tokens.`,
+        'InvalidCharacterError',
+      );
+    }
+    return t;
+  };
+  /** The update steps: the set written as the attribute, but for a list
+   *  with no attribute and no tokens, which sets none. */
+  const updateTokens = (state: Any, set: string[]): void => {
+    if (
+      !set.length &&
+      typeof call('attr', state.el._id, state.attr) !== 'string'
+    ) {
+      return;
+    }
+    state.el._setAttr(state.attr, set.join(' '));
+  };
+  /** The token list over `el`'s `attr`. */
+  const tokenList = (
+    el: Any,
+    attr: string,
+    supported: readonly string[] | null = null,
+  ): Any => {
+    const self = listMade(
+      DOMTokenList,
+      [],
+      () => {
+        const v = call('attr', el._id, attr);
+        const out: string[] = [];
+        if (typeof v !== 'string') return out;
+        for (const t of v.split(/[\t\n\f\r ]+/)) {
+          if (t && !out.includes(t)) out.push(t);
+        }
+        return out;
+      },
+      false,
+      null,
+    );
+    const state = self[LIST];
+    state.unkept = true;
+    state.el = el;
+    state.attr = attr;
+    state.supported = supported;
+    return self;
+  };
 
   /** `el.style`: the `style` attribute's declarations, read and written by
    *  the host with `<Html>`'s own parser, so a page and the cascade agree
@@ -8211,7 +8340,7 @@ export function installDom(
     declare className: string;
     declare slot: string;
     get classList(): Any {
-      return (this._classList ??= new DOMTokenList(this, 'class'));
+      return (this._classList ??= tokenList(this, 'class'));
     }
     // `[PutForwards=value]`: the list's value, which is the attribute
     set classList(v: Any) {
@@ -8318,7 +8447,7 @@ export function installDom(
     }
     /** An attribute set by the name it is kept under. */
     _setAttr(n: string, value: Any): void {
-      if (!/^[^\s"'>/=\u0000-\u001f]+$/.test(n)) {
+      if (!validAttributeName(n)) {
         throw new DOMException(
           `'${n}' is not a valid attribute name.`,
           'InvalidCharacterError',
@@ -8419,6 +8548,15 @@ export function installDom(
       if (key !== null) this._removeAttr(key);
     }
     toggleAttribute(name: Any, force?: boolean): boolean {
+      // a name that is no attribute's throws whatever `force` says (DOM
+      // 4.9, step 1)
+      const n = this._attrName(name);
+      if (!validAttributeName(n)) {
+        throw new DOMException(
+          `'${n}' is not a valid attribute name.`,
+          'InvalidCharacterError',
+        );
+      }
       const has = this.hasAttribute(name);
       const on = force === undefined ? !has : !!force;
       if (on && !has) {
@@ -8488,12 +8626,15 @@ export function installDom(
       return el;
     }
     matches(selector: Any): boolean {
+      if (!arguments.length) throw new TypeError('1 argument required.');
       return !!call('matches', this._id, str(selector));
     }
     webkitMatchesSelector(selector: Any): boolean {
+      if (!arguments.length) throw new TypeError('1 argument required.');
       return this.matches(selector);
     }
     closest(selector: Any): Any {
+      if (!arguments.length) throw new TypeError('1 argument required.');
       return wrap(Number(call('closest', this._id, str(selector))));
     }
     getBoundingClientRect(): Any {
@@ -8926,6 +9067,20 @@ export function installDom(
           `Failed to execute 'attachShadow' on 'Element': The provided value '${String(mode)}' is not a valid enum value of type ShadowRootMode.`,
         );
       }
+      // only an HTML element hosts one (DOM 4.9, "attach a shadow root")
+      if (this.namespaceURI !== HTML_NS) {
+        throw new DOMException(
+          "Failed to execute 'attachShadow' on 'Element': This element does not support attachShadow",
+          'NotSupportedError',
+        );
+      }
+      const assignment =
+        init?.slotAssignment === undefined ? 'named' : str(init.slotAssignment);
+      if (assignment !== 'named' && assignment !== 'manual') {
+        throw new TypeError(
+          `Failed to execute 'attachShadow' on 'Element': The provided value '${assignment}' is not a valid enum value of type SlotAssignmentMode.`,
+        );
+      }
       // the document's registry, whatever the host's, but where one is
       // named (HTML 4.13.4, scoped registries)
       const own = documentRegistryOf(this.ownerDocument);
@@ -8940,7 +9095,7 @@ export function installDom(
             this._id,
             mode,
             !!init?.delegatesFocus,
-            `${init?.clonable ? 1 : 0},${init?.serializable ? 1 : 0}`,
+            `${init?.clonable ? 1 : 0},${init?.serializable ? 1 : 0},${assignment === 'manual' ? 1 : 0}`,
           ),
         ),
       );
@@ -9029,8 +9184,8 @@ export function installDom(
   // "false"` and shows it by the attribute, `.dropdown[aria-hidden=true]
   // { visibility: hidden }`: an expando took what the script set, and the
   // menu stayed hidden. The element references (`ariaControlsElements`
-  // and the rest) are not here.
-  for (const name of [
+  // and the rest) are below.
+  const ARIA_STRINGS = [
     'role',
     'ariaAtomic',
     'ariaAutoComplete',
@@ -9075,7 +9230,8 @@ export function installDom(
     'ariaValueMin',
     'ariaValueNow',
     'ariaValueText',
-  ]) {
+  ];
+  for (const name of ARIA_STRINGS) {
     const attr = name === 'role' ? name : `aria-${name.slice(4).toLowerCase()}`;
     Object.defineProperty(Element.prototype, name, {
       get(this: Any): string | null {
@@ -9147,7 +9303,7 @@ export function installDom(
     enumerable: true,
     configurable: true,
   });
-  for (const name of [
+  const ARIA_ELEMENT_LISTS = [
     'ariaControlsElements',
     'ariaDescribedByElements',
     'ariaDetailsElements',
@@ -9155,7 +9311,8 @@ export function installDom(
     'ariaFlowToElements',
     'ariaLabelledByElements',
     'ariaOwnsElements',
-  ]) {
+  ];
+  for (const name of ARIA_ELEMENT_LISTS) {
     const attr = `aria-${name.slice(4, -8).toLowerCase()}`;
     Object.defineProperty(Element.prototype, name, {
       get(this: Any): Any {
@@ -10317,7 +10474,7 @@ export function installDom(
           const lists = (this._tokenLists ??= new Map<string, Any>());
           let list = lists.get(attr);
           if (!list) {
-            list = new DOMTokenList(this, attr, supported);
+            list = tokenList(this, attr, supported);
             lists.set(attr, list);
           }
           return list;
@@ -11991,7 +12148,8 @@ export function installDom(
     return liveList(going, true, RadioNodeList);
   };
 
-  const CONTROLS = 'button,fieldset,input,object,output,select,textarea';
+  const CONTROLS =
+    'button,fieldset,input,object,output,select,textarea,:-rx-form-associated';
 
   class HTMLFormElement extends HTMLElement {
     /** The controls the form owns: those in it, and those in its tree
@@ -12006,7 +12164,9 @@ export function installDom(
             const controls = wrapAll(call('query', scope._id, CONTROLS, true));
             return controls.filter(
               (el) =>
-                el.form === this &&
+                (customOf.get(el)?.def?.formAssociated
+                  ? formOf(el)
+                  : el.form) === this &&
                 !(el.localName === 'input' && el.type === 'image'),
             );
           },
@@ -18254,6 +18414,20 @@ export function installDom(
     assignedElements(options?: Any): Any[] {
       return this.assignedNodes(options).filter((n) => n.nodeType === 1);
     }
+    /** What a shadow root whose slot assignment is manual assigns the
+     *  slot: elements and texts, in their order (HTML 4.12.4). */
+    assign(...nodes: Any[]): void {
+      const ids: number[] = [];
+      for (const node of nodes) {
+        if (!(node instanceof Element) && !(node instanceof Text)) {
+          throw new TypeError(
+            "Failed to execute 'assign' on 'HTMLSlotElement': The provided value is not of type '(Element or Text)'.",
+          );
+        }
+        ids.push(node._id);
+      }
+      call('assignSlot', this._id, ids.join(','));
+    }
   }
   // an element's or a text's slot (DOM 4.2.9, `Slottable`), where it is in
   // an open tree
@@ -21286,6 +21460,9 @@ export function installDom(
   class Document extends ParentNode {
     /** The URL a document made at one of its own has (`parseHTMLUnsafe`). */
     declare _ownUrl?: string;
+    /** Made by `createDocument`, `createHTMLDocument` or `new Document()`,
+     *  whose URL is `about:blank` (DOM 4.5), its base the page's still. */
+    declare _blank?: boolean;
     _ready = 'loading';
     _current: Any = null;
     /** An XML document's content type; null for an HTML one. */
@@ -21418,6 +21595,7 @@ export function installDom(
       return this._current;
     }
     get URL(): string {
+      if (this._blank) return 'about:blank';
       return this._ownUrl ?? String(call('location'));
     }
     /** `Document.parseHTMLUnsafe` (HTML 8.5.1): markup made a document at
@@ -24415,8 +24593,10 @@ export function installDom(
     // a document of its own, out of the one drawn: what a sanitizer
     // parses markup into, whose scripts nothing runs
     createHTMLDocument: (title?: Any) =>
-      wrap(
-        Number(call('newDocument', title === undefined ? null : str(title))),
+      madeBlank(
+        wrap(
+          Number(call('newDocument', title === undefined ? null : str(title))),
+        ),
       ),
     createDocumentType(name: Any, publicId: Any, systemId: Any): Any {
       const n = str(name);
@@ -24454,9 +24634,13 @@ export function installDom(
         : null;
       if (doctype) made.appendChild(doctype);
       if (root) made.appendChild(root);
-      return made;
+      return madeBlank(made);
     },
   });
+  const madeBlank = (doc: Any): Any => {
+    doc._blank = true;
+    return doc;
+  };
   Object.defineProperty(Document.prototype, 'nodeName', {
     get: () => '#document',
   });
@@ -24470,7 +24654,7 @@ export function installDom(
         "Failed to construct 'Document': Please use the 'new' operator, this DOM object constructor cannot be called as a function.",
       );
     }
-    return wrap(Number(call('newXml', 'application/xml')));
+    return madeBlank(wrap(Number(call('newXml', 'application/xml'))));
   } as unknown as Any;
   DocumentConstructor.prototype = Document.prototype;
   Object.setPrototypeOf(DocumentConstructor, Object.getPrototypeOf(Document));
@@ -27791,17 +27975,27 @@ export function installDom(
   /** What a traversal's `whatToShow` and `filter` say of a node (DOM 6.1,
    *  "filter"): shown or not by its type, and then the filter's answer. */
   class Traversal {
-    readonly root: Any;
-    readonly whatToShow: number;
-    readonly filter: Any;
+    _root: Any;
+    _whatToShow: number;
+    _filter: Any;
     _active = false;
     constructor(root: Any, whatToShow: Any, filter: Any) {
-      this.root = root;
-      this.whatToShow =
+      this._root = root;
+      this._whatToShow =
         whatToShow === undefined
           ? NodeFilter.SHOW_ALL
           : Number(whatToShow) >>> 0;
-      this.filter = filter ?? null;
+      this._filter = filter ?? null;
+    }
+    // readonly attributes, on the interface (DOM 6.1 and 6.2)
+    get root(): Any {
+      return this._root;
+    }
+    get whatToShow(): number {
+      return this._whatToShow;
+    }
+    get filter(): Any {
+      return this._filter;
     }
     _accept(node: Any): number {
       if (this._active) {
@@ -30921,6 +31115,20 @@ export function installDom(
         );
       }
       for (const el of Array.from((form as Any).elements) as Any[]) {
+        // a form-associated custom element's submission value (HTML
+        // 4.10.21.4, step 5.12): a `FormData`'s entries, or one entry
+        const custom = customOf.get(el);
+        if (custom?.def?.formAssociated) {
+          if (el.matches(':disabled')) continue;
+          const value = custom.internals?._value;
+          if (value instanceof FormData) {
+            for (const [n, v] of value._entries) this.append(n, v);
+          } else if (value !== null && value !== undefined) {
+            const name = el.getAttribute('name');
+            if (name) this.append(name, value);
+          }
+          continue;
+        }
         const name = el.getAttribute('name');
         if (!name || isDisabled(el)) continue;
         if (el instanceof HTMLSelectElement) {
@@ -30958,13 +31166,13 @@ export function installDom(
               type: value.type,
             });
       }
-      return str(value);
+      return usv(value);
     }
     append(name: Any, value: Any, filename?: Any): void {
-      this._entries.push([str(name), this._value(value, filename)]);
+      this._entries.push([usv(name), this._value(value, filename)]);
     }
     set(name: Any, value: Any, filename?: Any): void {
-      const key = str(name);
+      const key = usv(name);
       const at = this._entries.findIndex(([k]) => k === key);
       const entry: [string, Any] = [key, this._value(value, filename)];
       if (at < 0) {
@@ -34531,11 +34739,14 @@ export function installDom(
    *  observer what it was queued, in the order they were made. A callback
    *  that changes the tree again queues the next. */
   const mutated = (): void => {
-    if (notifying || !observing.size) return;
+    if (notifying || (!observing.size && !slotsHeard)) return;
     notifying = true;
     Promise.resolve().then(() => {
       notifying = false;
-      for (const id of idList(call('observed'))) {
+      // the slots signalled up to now, taken before any callback runs
+      // (DOM 4.3, "notify mutation observers", steps 2 and 3)
+      const slots = slotsHeard ? idList(call('signalSlots')) : [];
+      for (const id of observing.size ? idList(call('observed')) : []) {
         const observer = observing.get(id);
         if (!observer) continue;
         const records = observer.takeRecords();
@@ -34545,6 +34756,9 @@ export function installDom(
         } catch (e) {
           report(e);
         }
+      }
+      for (const id of slots) {
+        dispatch(wrap(id), trusted(new Event('slotchange', { bubbles: true })));
       }
     });
   };
@@ -38969,7 +39183,13 @@ export function installDom(
    *  none of this one's. */
   const definitionFor = (el: Any): CustomDefinition | null => {
     if (el.namespaceURI !== HTML_NS) return null;
-    return lookUp(registryOf(el), el.localName, el.getAttribute('is'));
+    // its `is` value, which a copy keeps, or the attribute's
+    const is = call('ceIs', el._id);
+    return lookUp(
+      registryOf(el),
+      el.localName,
+      typeof is === 'string' ? is : null,
+    );
   };
 
   /** Each constructor an upgrade or a `createElement` is running, with the
@@ -39154,7 +39374,12 @@ export function installDom(
       def.stack.pop();
     }
     custom.state = 'custom';
-    call('ceDefined', el._id, !!def.formAssociated);
+    call(
+      'ceDefined',
+      el._id,
+      !!def.formAssociated,
+      def.localName === def.name ? null : def.name,
+    );
   };
 
   /** A custom element's `super()` (HTML 3.2.3, `[HTMLConstructor]`): the
@@ -39180,7 +39405,12 @@ export function installDom(
       Object.setPrototypeOf(el, target.prototype);
       pinRegistry(el, registry);
       customOf.set(el, { state: 'custom', def, queue: [], internals: null });
-      call('ceDefined', el._id, !!def.formAssociated);
+      call(
+        'ceDefined',
+        el._id,
+        !!def.formAssociated,
+        def.localName === def.name ? null : def.name,
+      );
       return el;
     }
     const el = stack[stack.length - 1];
@@ -39591,7 +39821,7 @@ export function installDom(
     }
     get form(): Any {
       return customOf.get(this._el)?.def?.formAssociated
-        ? this._el.closest('form')
+        ? formOf(this._el)
         : null;
     }
     get labels(): Any {
@@ -39607,7 +39837,26 @@ export function installDom(
       return { valid: this._valid };
     }
     setFormValue(value: Any): void {
-      this._value = value;
+      // a copy of a `FormData`, which the page may go on changing
+      if (value instanceof FormData) {
+        const copy = new FormData();
+        copy._entries = value._entries.slice();
+        this._value = copy;
+      } else this._value = value;
+      // what the host's form submission reads (HTML 4.13.7.3): a
+      // `FormData`'s entries, a file by its name, or a string
+      const asText = (v: Any): string => (v instanceof File ? v.name : str(v));
+      if (value === null || value === undefined) {
+        call('formValue', this._el._id, null);
+      } else if (value instanceof FormData) {
+        const entries: [string, string][] = [];
+        for (const [n, v] of (FormData.prototype as Any).entries.call(value)) {
+          entries.push([str(n), asText(v)]);
+        }
+        call('formValue', this._el._id, JSON.stringify(entries), true);
+      } else {
+        call('formValue', this._el._id, asText(value));
+      }
     }
     setValidity(flags?: Any, message?: Any): void {
       this._valid = !flags || !Object.values(flags).some(Boolean);
@@ -39625,6 +39874,72 @@ export function installDom(
     reportValidity(): boolean {
       return this._valid;
     }
+  }
+  // ARIAMixin on the internals too (HTML 4.13.7.6): a custom element's
+  // default semantics, which no content attribute holds, each null until
+  // a page sets it
+  const internalsAria = new WeakMap<object, Map<string, Any>>();
+  const internalsAriaOf = (self: Any): Map<string, Any> => {
+    if (!(self instanceof ElementInternals)) {
+      throw new TypeError('Illegal invocation');
+    }
+    let map = internalsAria.get(self);
+    if (!map) internalsAria.set(self, (map = new Map()));
+    return map;
+  };
+  for (const name of ARIA_STRINGS) {
+    Object.defineProperty(ElementInternals.prototype, name, {
+      get(this: Any): string | null {
+        return internalsAriaOf(this).get(name) ?? null;
+      },
+      set(this: Any, v: Any) {
+        const map = internalsAriaOf(this);
+        if (v === null || v === undefined) map.delete(name);
+        else map.set(name, str(v));
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  Object.defineProperty(
+    ElementInternals.prototype,
+    'ariaActiveDescendantElement',
+    {
+      get(this: Any): Any {
+        return internalsAriaOf(this).get('ariaActiveDescendantElement') ?? null;
+      },
+      set(this: Any, v: Any) {
+        if (v !== null && v !== undefined && !(v instanceof Element)) {
+          throw ARIA_ELEMENT_ERROR('ariaActiveDescendantElement');
+        }
+        const map = internalsAriaOf(this);
+        if (v == null) map.delete('ariaActiveDescendantElement');
+        else map.set('ariaActiveDescendantElement', v);
+      },
+      enumerable: true,
+      configurable: true,
+    },
+  );
+  for (const name of ARIA_ELEMENT_LISTS) {
+    Object.defineProperty(ElementInternals.prototype, name, {
+      get(this: Any): Any {
+        return internalsAriaOf(this).get(name) ?? null;
+      },
+      set(this: Any, v: Any) {
+        const map = internalsAriaOf(this);
+        if (v === null || v === undefined) {
+          map.delete(name);
+          return;
+        }
+        const items = [...v];
+        for (const item of items) {
+          if (!(item instanceof Element)) throw ARIA_ELEMENT_ERROR(name);
+        }
+        map.set(name, Object.freeze(items));
+      },
+      enumerable: true,
+      configurable: true,
+    });
   }
   /** HTML 4.13.7.1, `attachInternals()`. */
   const attachInternals = (el: Any): Any => {
@@ -42093,6 +42408,24 @@ export function installDom(
     // an interface's prototype says its name to `Object.prototype.toString`
     // (Web IDL 3.7.3), so a `<div>` is `[object HTMLDivElement]`
     const proto = typeof value === 'function' ? value.prototype : null;
+    // and its constants are the interface object's and the prototype's,
+    // neither writable nor configurable (Web IDL 3.7.5)
+    if (proto) {
+      for (const key of Object.getOwnPropertyNames(value)) {
+        const v = value[key];
+        if (typeof v !== 'number' || !/^[A-Z][A-Z0-9_]*$/.test(key)) continue;
+        const constant = {
+          value: v,
+          writable: false,
+          enumerable: true,
+          configurable: false,
+        };
+        Object.defineProperty(value, key, constant);
+        if (!Object.prototype.hasOwnProperty.call(proto, key)) {
+          Object.defineProperty(proto, key, constant);
+        }
+      }
+    }
     if (
       proto &&
       value.name === name &&

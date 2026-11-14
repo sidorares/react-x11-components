@@ -864,6 +864,9 @@ export class ShadowRoot extends DomDocument {
   /** What a page's script adopted (`adoptedStyleSheets`): this tree's last
    *  sheets, after its own, as CSSOM orders them. */
   adopted: readonly AdoptedSheet[] = [];
+  /** `slotAssignment` (DOM 4.2.2.3): `'named'` assigns a host's children
+   *  by their `slot`, and `'manual'` only what a slot's `assign()` named. */
+  slotAssignment: 'named' | 'manual' = 'named';
   private _assignedAt = -1;
   /** The nodes assigned to each slot, in tree order. */
   private _assigned = new Map<Element, ChildNode[]>();
@@ -899,11 +902,41 @@ export class ShadowRoot extends DomDocument {
    * slot in a `<template>`'s content, or in a shadow tree inside this one,
    * which are other trees. Kept until a tree changes (`treesChanged`).
    */
+  /** Every slot of this tree with what it is assigned, in tree order: the
+   *  slots none is assigned to as well, with nothing. */
+  assignment(): Map<Element, readonly ChildNode[]> {
+    this._assign();
+    const out = new Map<Element, readonly ChildNode[]>();
+    for (const el of elementsIn(this, NON_RENDERED)) {
+      if (tagOf(el) === 'slot') out.set(el, this._assigned.get(el) ?? EMPTY);
+    }
+    return out;
+  }
+
+  /** A `slot` or a `name` changed, which moves no tree's generation. */
+  forgetAssignment(): void {
+    this._assignedAt = -1;
+  }
+
   private _assign(): void {
     if (this._assignedAt === generation) return;
     this._assignedAt = generation;
     this._assigned.clear();
     this._slots.clear();
+    if (this.slotAssignment === 'manual') {
+      // each slot's own list, in the order `assign()` named them, of what
+      // is a child of the host still (DOM 4.2.2.3, "find slottables")
+      for (const el of elementsIn(this, NON_RENDERED)) {
+        if (tagOf(el) !== 'slot') continue;
+        const nodes = (MANUAL_ASSIGNED.get(el) ?? EMPTY).filter(
+          (n) => n.parent === this.host && !this._slots.has(n),
+        );
+        if (!nodes.length) continue;
+        this._assigned.set(el, nodes);
+        for (const n of nodes) this._slots.set(n, el);
+      }
+      return;
+    }
     let named: Map<string, Element> | null = null;
     for (const el of elementsIn(this, NON_RENDERED)) {
       if (tagOf(el) !== 'slot') continue;
@@ -927,6 +960,33 @@ export class ShadowRoot extends DomDocument {
       nodes.push(child);
     }
   }
+}
+
+/** A slot's manually assigned nodes, and the slot each node was last
+ *  assigned to (DOM 4.2.2.1): kept whatever tree either is in, and read
+ *  only by a root whose `slotAssignment` is manual. */
+const MANUAL_ASSIGNED = new WeakMap<Element, ChildNode[]>();
+const MANUAL_SLOT = new WeakMap<ChildNode, Element>();
+
+/** `slot.assign(...nodes)` (HTML 4.12.4): `nodes` are the slot's, in
+ *  their order and once each, and no other slot's. */
+export function assignToSlot(slot: Element, nodes: readonly ChildNode[]): void {
+  for (const node of MANUAL_ASSIGNED.get(slot) ?? EMPTY) {
+    if (MANUAL_SLOT.get(node) === slot) MANUAL_SLOT.delete(node);
+  }
+  const set: ChildNode[] = [];
+  for (const node of nodes) {
+    const was = MANUAL_SLOT.get(node);
+    if (was && was !== slot) {
+      const list = MANUAL_ASSIGNED.get(was);
+      const at = list ? list.indexOf(node) : -1;
+      if (at >= 0) list!.splice(at, 1);
+    }
+    MANUAL_SLOT.set(node, slot);
+    if (!set.includes(node)) set.push(node);
+  }
+  MANUAL_ASSIGNED.set(slot, set);
+  treesChanged();
 }
 
 /** The elements the parser made with a `customelementregistry` attribute,
@@ -1420,10 +1480,12 @@ export function attachShadow(
     delegatesFocus?: boolean;
     clonable?: boolean;
     serializable?: boolean;
+    slotAssignment?: 'named' | 'manual';
   },
 ): ShadowRoot | null {
   if (SHADOW_ROOTS.has(host) || !canHostShadow(host)) return null;
   const root = new ShadowRoot(host, init.mode, init.delegatesFocus ?? false);
+  root.slotAssignment = init.slotAssignment ?? 'named';
   root.clonable = !!init.clonable;
   root.serializable = !!init.serializable;
   SHADOW_ROOTS.set(host, root);

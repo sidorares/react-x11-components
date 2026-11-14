@@ -6,7 +6,7 @@
 // edits are recorded, observed and drawn as a page's are. A node
 // iterator's place is the same kind of thing (`NodeIterators`), moved by
 // a removal under it.
-import { Comment, Document, Text } from 'domhandler';
+import { Comment, Document, ProcessingInstruction, Text } from 'domhandler';
 import type { AnyNode, ChildNode, ParentNode } from 'domhandler';
 
 /** What a range does to the tree, through the host that keeps it. */
@@ -35,7 +35,7 @@ export interface RangeHost {
 }
 
 /** A text, a comment or a processing instruction: a node with data. */
-export type CharacterData = Text | Comment;
+export type CharacterData = Text | Comment | ProcessingInstruction;
 
 /** A range: its two boundary points. */
 export class LiveRange {
@@ -52,8 +52,12 @@ export class LiveRange {
 
 export const isDoctype = (node: AnyNode): boolean =>
   node.type === 'directive' && (node as { name?: string }).name?.[0] === '!';
+/** A text, a comment or a processing instruction (DOM 4.10): a node whose
+ *  length is its data's, which a range's offsets count in. */
 export const isCharacterData = (node: AnyNode): node is CharacterData =>
-  node instanceof Text || node instanceof Comment;
+  node instanceof Text ||
+  node instanceof Comment ||
+  (node instanceof ProcessingInstruction && !isDoctype(node));
 
 /** A node's length (DOM 4.2): a doctype's none, a text's its data's, and
  *  anything else's its children. */
@@ -516,7 +520,11 @@ export class Ranges {
     }
     const fragment = this.contents(r, true);
     const held = parent as unknown as ParentNode;
-    for (const child of held.children.slice()) this._host.remove(child);
+    // a text has no children to give up, and it is appending what the
+    // range held to it that throws (DOM 5.5, step 7)
+    for (const child of (held.children ?? []).slice()) {
+      this._host.remove(child);
+    }
     this.insertNode(r, parent);
     this._host.insert(held, fragment as unknown as ChildNode, null);
     this.selectNode(r, parent);

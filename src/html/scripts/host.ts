@@ -75,6 +75,7 @@ import {
   indicatedElement,
   isCustomized,
   assignedSlot,
+  assignToSlot,
   isDefinedElement,
   isForeign,
   isStyleOrScript,
@@ -137,6 +138,7 @@ import {
   specifiedValue,
   transitionSelectorValid,
   withoutHighlights,
+  withoutPseudoElements,
 } from '../css/specified.js';
 import { eventPath, retarget, shadowIncludingHolds } from './event-path.js';
 import { NO_MODIFIERS } from '../dom-events.js';
@@ -212,6 +214,8 @@ import {
   indeterminateSet,
   isDisabled,
   markFormAssociated,
+  isFormAssociated,
+  setCustomFormValue,
   setCheckedDefault,
   setCustomError,
   setIndeterminate,
@@ -1340,6 +1344,30 @@ function templateContent(template: Element): Document {
     CONTENT_FRAGMENTS.add(content);
   }
   return content;
+}
+
+/** Each customized built-in's `is` value, where it is no attribute's:
+ *  `createElement(name, { is })` and `new` make such an element. */
+const IS_VALUES = new WeakMap<Element, string>();
+
+/** A copy's `is` values (DOM 4.4, "clone a node", which creates each
+ *  element with its original's): the two trees are alike, so their
+ *  elements are found in the same order. */
+function copyIsValues(node: AnyNode, copy: AnyNode, deep: boolean): void {
+  const stack: [AnyNode, AnyNode][] = [[node, copy]];
+  while (stack.length) {
+    const [a, b] = stack.pop()!;
+    if (a instanceof Element && b instanceof Element) {
+      const is = IS_VALUES.get(a);
+      if (is !== undefined) IS_VALUES.set(b, is);
+    }
+    if (!deep) return;
+    const from = (a as { children?: AnyNode[] }).children ?? [];
+    const to = (b as { children?: AnyNode[] }).children ?? [];
+    for (let i = 0; i < from.length && i < to.length; i += 1) {
+      stack.push([from[i], to[i]]);
+    }
+  }
 }
 
 /**
@@ -3369,6 +3397,18 @@ export class DomHost {
     this.entries.call('__selectionMoved', null);
   }
   private _selectionHeard = false;
+  /** Whether a page listens for `slotchange` anywhere: from then on each
+   *  change is asked what it did to slot assignment (`_slotsMoved`). */
+  private _slotsWatched = false;
+  /** Each shadow root's slots and what each was assigned, as a page last
+   *  saw them; a root not here was empty. */
+  private _slotsTold = new WeakMap<
+    ShadowRoot,
+    Map<Element, readonly ChildNode[]>
+  >();
+  /** The slots a change signalled (DOM 4.2.2.5, "signal a slot change"),
+   *  each once, for the page's next mutation observer microtask. */
+  private _signalSlots: Element[] = [];
   private _selectionSeen = '';
 
   renderingMoved(): void {
@@ -3793,6 +3833,7 @@ export class DomHost {
   private _clone(node: AnyNode, deep: boolean): ChildNode {
     const clone = node.cloneNode(deep) as ChildNode;
     copyMadeAsHtml(node, clone);
+    copyIsValues(node, clone, deep);
     this._cloneShadows(node, clone, deep);
     this._copiedScripts(node, clone, deep);
     this._copiedNonces(node, clone, deep);
@@ -3918,6 +3959,7 @@ export class DomHost {
           delegatesFocus: root.delegatesFocus,
           clonable: root.clonable,
           serializable: root.serializable,
+          slotAssignment: root.slotAssignment,
         });
         if (made) {
           made.registryNull = root.registryNull;
@@ -4181,6 +4223,16 @@ export class DomHost {
         return cut;
       }
       // a page came to listen for its selection's changes
+      case 'slotsHeard':
+        this._watchSlots();
+        return null;
+      // the slots signalled since the last microtask asked, in order
+      case 'signalSlots': {
+        const slots = this._signalSlots;
+        if (!slots.length) return '';
+        this._signalSlots = [];
+        return slots.map((slot) => this.idOf(slot)).join(',');
+      }
       case 'selectionHeard':
         this._selectionHeard = true;
         this._selectionSeen = this._handle.selectionKey?.() ?? '';
@@ -4751,12 +4803,13 @@ export class DomHost {
             "Failed to execute 'attachShadow' on 'Element': Shadow root cannot be created on a host which already hosts a shadow tree.",
           );
         }
-        const [clonable, serializable] = text(d).split(',');
+        const [clonable, serializable, manual] = text(d).split(',');
         const root = attachShadow(host, {
           mode,
           delegatesFocus: c === true,
           clonable: clonable === '1',
           serializable: serializable === '1',
+          slotAssignment: manual === '1' ? 'manual' : 'named',
         });
         if (!root) {
           throw new DomError(
@@ -4779,7 +4832,22 @@ export class DomHost {
       // a shadow root's `clonable` and `serializable`
       case 'shadowFlags': {
         const root = this._node(a) as ShadowRoot;
-        return `${root.clonable ? 1 : 0}${root.serializable ? 1 : 0}`;
+        return `${root.clonable ? 1 : 0}${root.serializable ? 1 : 0}${root.slotAssignment === 'manual' ? 1 : 0}`;
+      }
+      // `slot.assign(...nodes)`: the slot's manually assigned nodes, which
+      // a root whose slot assignment is manual draws (HTML 4.12.4)
+      case 'assignSlot': {
+        const slot = this._element(a);
+        const nodes = text(b)
+          ? text(b)
+              .split(',')
+              .map((id) => this._node(Number(id)) as ChildNode)
+          : [];
+        const before = nodes.map((n) => assignedSlot(n));
+        assignToSlot(slot, nodes);
+        this._slotsMoved(slot);
+        for (const was of before) if (was) this._slotsMoved(was);
+        return null;
       }
       // the slot a node is assigned to (DOM 4.2.2.3), where its tree is
       // open, or whatever its tree where the flat tree is asked for
@@ -4897,8 +4965,26 @@ export class DomHost {
         return JSON.stringify(log);
       }
       // an element a definition made a custom element: `:defined` from now
+      // what a form-associated custom element submits: a string, entries
+      // as JSON, or null for nothing
+      case 'formValue': {
+        const el = this._element(a);
+        const value = typeof b === 'string' ? b : null;
+        setCustomFormValue(
+          el,
+          value === null ? null : c === true ? JSON.parse(value) : value,
+        );
+        return null;
+      }
+      // an element's `is` value (DOM 4.9): what made it a customized
+      // built-in, which a copy keeps, or the `is` it was parsed with
+      case 'ceIs': {
+        const el = this._element(a);
+        return IS_VALUES.get(el) ?? el.attribs.is ?? null;
+      }
       case 'ceDefined': {
         const el = this._element(a);
+        if (typeof c === 'string') IS_VALUES.set(el, c);
         markCustomized(el);
         if (b === true) markFormAssociated(el);
         if (this._isDocument(shadowIncludingRoot(el))) {
@@ -7913,8 +7999,24 @@ export class DomHost {
     const moving = this._isFragment(node)
       ? (node as Document).children.slice()
       : [node as ChildNode];
-    if (child.parent && child !== node) this._take(child as ChildNode);
-    this._put(parent, moving, reference);
+    // the node out of where it was, a record of its own, and then the
+    // child out and the node in as one (DOM 4.2.3, "replace")
+    this._takeOut(moving);
+    const removed: ChildNode[] = [];
+    const previous =
+      child.parent === parent
+        ? child.prev
+        : reference
+          ? reference.prev
+          : (parent.children.at(-1) ?? null);
+    this._quietly(() => {
+      if (child.parent === parent) {
+        removed.push(child as ChildNode);
+        this._take(child as ChildNode);
+      }
+      this._put(parent, moving, reference);
+    });
+    this._record(parent, moving, removed, previous, reference);
   }
 
   /**
@@ -7929,8 +8031,21 @@ export class DomHost {
     child: AnyNode | null,
     replacing: boolean,
   ): void {
-    if (this._isDocument(node)) throw hierarchy('A document cannot be moved.');
-    for (let at: AnyNode | null = parent; at; at = at.parent) {
+    // only a document, a fragment or an element holds anything (step 1)
+    if (
+      !(parent instanceof Element) &&
+      !this._isDocument(parent) &&
+      !this._isFragment(parent) &&
+      !(parent instanceof ShadowRoot)
+    ) {
+      throw hierarchy('That node cannot have children.');
+    }
+    // a host-including inclusive ancestor, through a shadow root's host
+    for (
+      let at: AnyNode | null = parent;
+      at;
+      at = at instanceof ShadowRoot ? at.host : at.parent
+    ) {
       if (at === node) {
         throw hierarchy('The new child element contains the parent.');
       }
@@ -7943,6 +8058,7 @@ export class DomHost {
           : 'The node before which the new node is to be inserted is not a child of this node.',
       );
     }
+    if (this._isDocument(node)) throw hierarchy('A document cannot be moved.');
     const fragment = this._isFragment(node);
     const doctype = isDoctype(node);
     if (
@@ -8088,7 +8204,7 @@ export class DomHost {
     nodes: readonly ChildNode[],
     before: ChildNode | null,
   ): void {
-    for (const node of nodes) if (node.parent) this._take(node);
+    this._takeOut(nodes);
     if (!nodes.length) return;
     const previous = before ? before.prev : (parent.children.at(-1) ?? null);
     const index = before ? indexOf(before) : parent.children.length;
@@ -8101,6 +8217,62 @@ export class DomHost {
     this._ranges.inserted(parent, index, nodes.length);
     this._childList(parent, nodes, [], previous, before);
     this._connected(nodes, parent);
+  }
+
+  /** While above 0, a change queues no observer's record: one that is
+   *  part of a record of its own (DOM 4.2.3's "suppress observers flag"). */
+  private _unobserved = 0;
+  private _quietly(fn: () => void): void {
+    this._unobserved += 1;
+    try {
+      fn();
+    } finally {
+      this._unobserved -= 1;
+    }
+  }
+  /** A tree mutation record for the observers, as one change. */
+  private _record(
+    parent: ParentNode,
+    added: readonly AnyNode[],
+    removed: readonly AnyNode[],
+    previous: AnyNode | null,
+    next: AnyNode | null,
+  ): void {
+    if (!this._observers.size || (!added.length && !removed.length)) return;
+    this._queue(parent, {
+      type: 'childList',
+      target: parent,
+      added,
+      removed,
+      previous,
+      next,
+      attributeName: null,
+      oldValue: null,
+    });
+  }
+
+  /** Nodes about to go somewhere, out of where they are: each a record of
+   *  its own, but a fragment's children, which leave it as one (DOM 4.2.3,
+   *  "insert", step 4), and what is in `keep`, whose own record says. */
+  private _takeOut(
+    nodes: readonly ChildNode[],
+    keep: ParentNode | null = null,
+  ): void {
+    const from = nodes[0]?.parent;
+    if (
+      from &&
+      this._isFragment(from) &&
+      nodes.every((n) => n.parent === from)
+    ) {
+      this._quietly(() => {
+        for (const node of nodes) this._take(node);
+      });
+      this._record(from, [], nodes, null, null);
+      return;
+    }
+    for (const node of nodes) {
+      if (node.parent && node.parent !== keep) this._take(node);
+    }
   }
 
   /** A node taken out of its parent, recorded. */
@@ -8122,7 +8294,7 @@ export class DomHost {
   /** What `parent` holds replaced by `nodes`, as one record (DOM 4.2.3,
    *  "replace all"). */
   private _replaceAll(parent: ParentNode, nodes: readonly ChildNode[]): void {
-    for (const node of nodes) if (node.parent) this._take(node);
+    this._takeOut(nodes, parent);
     const removed = parent.children.slice();
     const owner = this._ownerOf(parent);
     // With no range or iterator live, which the removing steps move a
@@ -8246,7 +8418,7 @@ export class DomHost {
         }
       }
     }
-    if (this._observers.size) {
+    if (this._observers.size && !this._unobserved) {
       this._queue(parent, {
         type: 'childList',
         target: parent,
@@ -8278,7 +8450,7 @@ export class DomHost {
     if (!(node instanceof Element)) return false;
     const names = this._custom!.names;
     if (names.has(node.name)) return true;
-    const is = node.attribs.is;
+    const is = IS_VALUES.get(node) ?? node.attribs.is;
     return (is !== undefined && names.has(is)) || isCustomized(node);
   }
 
@@ -8355,7 +8527,9 @@ export class DomHost {
    *  custom highlight, which match no element; null where nothing is
    *  left, and one written as no selector takes it is a syntax error
    *  (`highlightSelectorValid`). */
-  private _withoutHighlights(selector: string): string | null {
+  private _withoutHighlights(given: string): string | null {
+    const selector = withoutPseudoElements(given);
+    if (selector === null) return null;
     const valid = highlightSelectorValid(selector);
     if (valid === null) return selector;
     if (!valid) {
@@ -8377,6 +8551,9 @@ export class DomHost {
       ...CONTROL_PSEUDOS,
       ...NAMESPACE_PSEUDOS,
       defined: (el) => isDefinedElement(el),
+      // a form-associated custom element, a form's listed element (HTML
+      // 4.10.2), which the facade asks a form's controls for by this
+      '-rx-form-associated': (el) => isFormAssociated(el),
       // the element its own document's URL indicates: a frame's document of
       // this realm's goes by the frame's
       target: (el) => {
@@ -8790,7 +8967,104 @@ export class DomHost {
     return answer;
   }
 
+  /**
+   * What a change did to slot assignment, once a page listens for it: each
+   * shadow root it can have moved — a host's whose children changed, the
+   * tree's a slot was put in, taken out or renamed in, a host's whose
+   * child took another `slot` — has its slots compared with what was last
+   * seen of them, and a slot assigned other nodes, or none, is signalled.
+   * So is a slot whose children changed while it is assigned nothing,
+   * since its fallback is what it shows (DOM 4.2.2.4 and 4.2.3, the
+   * insertion and removal steps).
+   */
+  private _slotsMoved(node: AnyNode, change?: HtmlChange): void {
+    if (change?.type === 'characterData' || change?.type === 'shadowRoot') {
+      return;
+    }
+    if (
+      change?.type === 'attributes' &&
+      change.attributeName !== 'slot' &&
+      change.attributeName !== 'name'
+    ) {
+      return;
+    }
+    const roots: ShadowRoot[] = [];
+    const add = (root: ShadowRoot | null | undefined): void => {
+      if (root && !roots.includes(root)) roots.push(root);
+    };
+    const around = (n: AnyNode): ShadowRoot | null =>
+      n instanceof ShadowRoot ? n : shadowRootAround(n);
+    if (!change) {
+      add(around(node));
+    } else if (change.type === 'childList') {
+      if (node instanceof Element) add(shadowRootOf(node));
+      add(around(node));
+    } else if (change.type === 'attributes') {
+      if (change.attributeName === 'slot') {
+        const parent = node.parent;
+        if (parent instanceof Element) add(shadowRootOf(parent));
+      } else if (
+        change.attributeName === 'name' &&
+        node instanceof Element &&
+        node.name === 'slot'
+      ) {
+        add(around(node));
+      }
+    }
+    // the host's changes move no tree's generation, which what a root
+    // assigned is kept by: they go through domutils
+    for (const root of roots) root.forgetAssignment();
+    if (!this._slotsWatched) return;
+    for (const root of roots) {
+      const was = this._slotsTold.get(root);
+      const now = root.assignment();
+      for (const [slot, nodes] of now) {
+        const before = was?.get(slot) ?? [];
+        if (
+          before.length !== nodes.length ||
+          before.some((n, i) => n !== nodes[i])
+        ) {
+          this._signalSlot(slot);
+        }
+      }
+      if (was) {
+        for (const [slot, nodes] of was) {
+          if (nodes.length && !now.has(slot)) this._signalSlot(slot);
+        }
+      }
+      this._slotsTold.set(root, now);
+    }
+    if (
+      change?.type === 'childList' &&
+      node instanceof Element &&
+      node.name === 'slot'
+    ) {
+      const root = shadowRootAround(node);
+      if (root && !root.assignedTo(node).length) this._signalSlot(node);
+    }
+  }
+
+  private _signalSlot(slot: Element): void {
+    if (!this._signalSlots.includes(slot)) this._signalSlots.push(slot);
+  }
+
+  /** A page came to listen for `slotchange`: what each shadow root of the
+   *  document is assigned now is what a later change is compared with. */
+  private _watchSlots(): void {
+    if (this._slotsWatched) return;
+    this._slotsWatched = true;
+    const walk = (parent: ParentNode): void => {
+      for (const el of elementsIn(parent, (e) => !!shadowRootOf(e))) {
+        const root = shadowRootOf(el)!;
+        this._slotsTold.set(root, root.assignment());
+        walk(root);
+      }
+    };
+    walk(this.document);
+  }
+
   private _tell(node: AnyNode, change: HtmlChange): void {
+    this._slotsMoved(node, change);
     // a query after it asks of the tree as it is now, ahead of the flush
     controlsMoved();
     // and so does the page's base URL, which a `<base>` may have changed
@@ -13090,7 +13364,11 @@ export class DomHost {
     };
     const pa = path(a);
     const pb = path(b);
-    if (pa[0] !== pb[0]) return 1 | 32 | 2;
+    // in two trees: an order of the trees' own, the same whichever is
+    // asked of the other (DOM 4.4, step 6)
+    if (pa[0] !== pb[0]) {
+      return 1 | 32 | (this.idOf(pa[0]) < this.idOf(pb[0]) ? 4 : 2);
+    }
     let i = 0;
     while (i < pa.length && i < pb.length && pa[i] === pb[i]) i += 1;
     if (i === pa.length) return 16 | 4; // b is inside a
