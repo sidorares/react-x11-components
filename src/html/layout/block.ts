@@ -206,7 +206,13 @@ import {
   uncutWidth,
   widestWord,
 } from './inline.js';
-import type { FontsLike, InlineOptions, InlineResult } from './inline.js';
+import type {
+  FaceMetrics,
+  FontsLike,
+  InlineOptions,
+  InlineResult,
+} from './inline.js';
+import { overEdge, underEdge } from '../css/text-box.js';
 import type { TextRun } from '../../richtext/index.js';
 import { forgetGridItem } from './css-grid.js';
 import {
@@ -1369,6 +1375,17 @@ function noteBlockers(
     // the page, so no block in it is kept alone
     if (framed.any && FRAMES.has(box)) {
       const held = [box];
+      while (held.length) {
+        const at = held.pop()!;
+        blockers.add(at);
+        for (const child of at.children) held.push(child);
+      }
+    }
+    // what a box trims its first or last line in is moved and cut down by
+    // the trim after its own layout, which a layout keeping it would do
+    // again: the box is kept whole, or laid out whole
+    if (box.style.textBoxTrim !== 'none') {
+      const held = [...box.children];
       while (held.length) {
         const at = held.pop()!;
         blockers.add(at);
@@ -4282,6 +4299,10 @@ function layoutBoxAt(
     ];
     height = Math.max(height, line);
   }
+  // its first and last lines trimmed to their text (CSS Inline 3, 5.1)
+  if (box.style.textBoxTrim !== 'none' && rows === null && !columns) {
+    if (ctx.fonts) height = trimTextBox(box, height, ctx.fonts);
+  }
   // A box that establishes a formatting context contains its own floats, so
   // it has to be at least as tall as they are. One that does not, does not —
   // that is the classic "collapsed parent" every author has met.
@@ -4839,6 +4860,169 @@ function markerAscent(box: Box, marker: Marker, fonts: FontsLike): number {
 }
 
 /** The first line box anywhere under a box, in layout order. */
+/** The lines a box trimmed at their start or end (`trimTextBox`): a box
+ *  trims a line no box in it trimmed already, since the innermost trim
+ *  wins (CSS Inline 3, 5.1). */
+const START_TRIMMED = new WeakSet<LineBox>();
+const END_TRIMMED = new WeakSet<LineBox>();
+
+/**
+ * `text-box-trim` (CSS Inline 3, 5.1): a block container's first formatted
+ * line trimmed at its top to its root inline box's over edge, and its last
+ * at its bottom to the under edge, as `text-box-edge` names them — the half
+ * leading, and the face's room above a capital or an x, or below the
+ * baseline. The content moves up by what the top loses, and the box and
+ * the blocks between it and the line come out shorter by what each side
+ * loses. Answers the box's content height, trimmed. A side with border or
+ * padding between the box and its line, or a box that is no block
+ * container on the way, a flex box or a table, keeps it.
+ */
+function trimTextBox(box: Box, height: number, fonts: FontsLike): number {
+  const trim = box.style.textBoxTrim;
+  if (trim !== 'trim-end') {
+    const found = edgeLine(box, false);
+    if (found && !START_TRIMMED.has(found.line)) {
+      START_TRIMMED.add(found.line);
+      const { line, holder, path } = found;
+      // in the font `::first-line` gives the line, where it gives one
+      const style = firstLineOf(holder) ?? holder.style;
+      const by = line.baseline - edgeMetric(fonts, style, true);
+      if (by) {
+        moveContent(box, -by);
+        for (const between of path) {
+          between.y += by;
+          between.height -= by;
+        }
+        height -= by;
+      }
+    }
+  }
+  if (trim !== 'trim-start') {
+    const found = edgeLine(box, true);
+    if (found && !END_TRIMMED.has(found.line)) {
+      END_TRIMMED.add(found.line);
+      const { line, holder, path } = found;
+      const by =
+        line.height - line.baseline - edgeMetric(fonts, holder.style, false);
+      if (by) {
+        for (const between of path) between.height -= by;
+        height -= by;
+      }
+    }
+  }
+  return height;
+}
+
+/**
+ * A block container's first formatted line, or its last, and the box that
+ * holds it with the blocks between: its own lines, or those of its first
+ * in-flow child, or its last, that is a block container with nothing
+ * holding the side apart — no border or padding there, and an `auto`
+ * height. A first child that holds no line, an empty block or an inline
+ * box with edges and no text, is where the line would be, and there is
+ * none (CSS Inline 3, 5.1, after CSS 2.1's first formatted line); the
+ * anonymous block the fix-up wraps white space between blocks in is no
+ * box a browser makes, and is passed over.
+ */
+function edgeLine(
+  box: Box,
+  end: boolean,
+): { line: LineBox; holder: Box; path: Box[] } | null {
+  const path: Box[] = [];
+  for (let at = box; ;) {
+    if (at.lines?.length) {
+      const line = end ? at.lines[at.lines.length - 1] : at.lines[0];
+      return { line, holder: at, path };
+    }
+    let next: Box | null = null;
+    const children = at.children;
+    for (let i = 0; i < children.length; i += 1) {
+      const child = children[end ? children.length - 1 - i : i];
+      if (child.outOfFlow || child.isFloat || whiteSpaceAlone(child)) continue;
+      next = child;
+      break;
+    }
+    if (
+      !next ||
+      next.kind !== 'block' ||
+      (end
+        ? next.borderBottom || next.padBottom
+        : next.borderTop || next.padTop) ||
+      specifiedHeight(next) !== null ||
+      next.style.minHeight !== AUTO
+    ) {
+      return null;
+    }
+    path.push(next);
+    at = next;
+  }
+}
+
+/** An anonymous block of white space that collapses away alone, and of
+ *  inline boxes that make no line of it either (`phantom`) — the pieces an
+ *  inline box broken around a block leaves either side of it. */
+function whiteSpaceAlone(box: Box): boolean {
+  return (
+    box.el === null &&
+    box.kind === 'block' &&
+    !box.lines?.length &&
+    box.children.every((child) =>
+      child.kind === 'text' ? makesNoLine(child) : phantom(child) === 1,
+    )
+  );
+}
+
+/**
+ * How far above the baseline a root inline box's over edge is that
+ * `text-box-edge` names, or below it its under edge: the face's ascent or
+ * descent for `text`, the height of a capital or an x for `cap` and `ex`,
+ * nothing for `alphabetic`, and an em box centred between the ascent and
+ * the descent for the ideographic edges (CSS Inline 3, 3.3), which no face
+ * here says. A face that gives no capital or x height has one synthesized
+ * from its size.
+ */
+function edgeMetric(
+  fonts: FontsLike,
+  style: ComputedStyle,
+  over: boolean,
+): number {
+  const face = faceExtentOf(fonts, style);
+  const kind = over
+    ? overEdge(style.textBoxEdge)
+    : underEdge(style.textBoxEdge);
+  switch (kind) {
+    case 'text':
+      return over ? face.ascent : face.descent;
+    case 'alphabetic':
+      return 0;
+    case 'cap':
+    case 'ex': {
+      const size = style.fontSize;
+      let metrics: FaceMetrics | null = null;
+      try {
+        metrics = fonts
+          .match(style.fontFamily, {
+            size,
+            weight: style.fontWeight,
+            style: style.fontStyle,
+          })
+          .metrics(size);
+      } catch {
+        // a face that cannot be had is measured as none
+      }
+      const measured = kind === 'cap' ? metrics?.capHeight : metrics?.xHeight;
+      return typeof measured === 'number' && measured > 0
+        ? measured
+        : size * (kind === 'cap' ? 0.7 : 0.5);
+    }
+    default: {
+      const centre = (face.ascent - face.descent) / 2;
+      const half = style.fontSize / 2;
+      return over ? centre + half : half - centre;
+    }
+  }
+}
+
 function firstLineIn(box: Box): LineBox | null {
   if (box.lines?.length) return box.lines[0];
   for (const child of box.children) {
