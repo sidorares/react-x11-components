@@ -2762,7 +2762,13 @@ takes, a transform list its components. A value with a `var()` in it is a
 `attributeStyleMap` and a rule's `styleMap` are its `style` as a map, which
 set a value only where the property takes it — a numeric value's type held
 to the property's through a `calc()` of it, which is also what keeps one out
-of the property's range — and append only to a list-valued property. The colour classes are there as well, `CSSRGB` to `CSSOKLCH` and `CSSColor`,
+of the property's range — and append only to a list-valued property. What numbers a property takes as all of its value, and which of them its
+range holds below nought, is a table of the properties Typed OM 1 knows
+(`typed-om-numbers.ts`): a number of a kind a property does not take is a
+TypeError, as a time on `backdrop-filter` is. A CSS-wide keyword reads as a
+keyword whatever the property, a colour's name as a `CSSStyleValue` where
+`currentcolor` is a keyword, and a family's names, a counter, a grid line or a
+`vertical-align` as a `CSSStyleValue`, which Typed OM 1 has no class for. The colour classes are there as well, `CSSRGB` to `CSSOKLCH` and `CSSColor`,
 each holding a channel to what its function takes — a bare number the fraction
 a percentage is, or the number or the degrees it is, by the channel, and
 anything else a SyntaxError — and `CSSColorValue.parse()` reads a function's

@@ -260,3 +260,30 @@ test('a colour holds each channel to the kind of value its function takes, and p
     '!TypeError',
   ]);
 });
+
+test('a style map sets a number only where the property takes its kind, a negative one where the range holds none in a calc()', async () => {
+  const out = await inPage(
+    "e.attributeStyleMap.set('backdrop-filter', CSS.s(0))",
+    "e.attributeStyleMap.set('opacity', CSS.deg(0))",
+    "(function () { e.attributeStyleMap.set('opacity', CSS.number(0.5)); return e.style.opacity; })()",
+    "(function () { e.attributeStyleMap.set('padding-top', CSS.px(-3)); return e.style.paddingTop + ' ' + e.attributeStyleMap.get('padding-top').constructor.name; })()",
+    "(function () { e.attributeStyleMap.set('margin-top', CSS.px(-3)); return e.style.marginTop; })()",
+    "(function () { e.attributeStyleMap.set('width', CSS.px(1).add(CSS.percent(2))); return e.style.width; })()",
+    "(function () { e.style.marginBottom = 'initial'; return e.attributeStyleMap.get('margin-bottom').constructor.name; })()",
+    "(function () { e.style.color = 'red'; return e.attributeStyleMap.get('color').constructor.name; })()",
+    "(function () { e.style.color = 'currentcolor'; return e.attributeStyleMap.get('color').constructor.name; })()",
+    "(function () { e.style.fontFamily = 'serif'; return e.attributeStyleMap.get('font-family').constructor.name; })()",
+  );
+  assert.deepEqual(out, [
+    '!TypeError',
+    '!TypeError',
+    '0.5',
+    'calc(-3px) CSSMathSum',
+    '-3px',
+    'calc(2% + 1px)',
+    'CSSKeywordValue',
+    'CSSStyleValue',
+    'CSSKeywordValue',
+    'CSSStyleValue',
+  ]);
+});
