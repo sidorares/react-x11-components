@@ -95,12 +95,23 @@ export function interpolateField(
     case 'flexBasisSize':
       return mixSizes(a as SizeOf | null, b as SizeOf | null, q);
     case 'filter':
-      return interpolateFilters(
+    case 'backdropFilter': {
+      // an amount past the ends of its range, as an easing that overshoots
+      // takes one, stops at them (CSS Filter Effects 1, 13)
+      const list = interpolateFilters(
         a as FilterFunction[] | null,
         b as FilterFunction[] | null,
         q,
         mix,
       );
+      return list ? list.map(inRange) : list;
+    }
+    case 'columnRule':
+    case 'rowRule': {
+      // and a rule is no thinner than nothing
+      const rule = mix(a, b, q) as { width: number } | undefined;
+      return rule && { ...rule, width: Math.max(0, rule.width) };
+    }
     case 'transform':
       return interpolateTransforms(
         a as TransformFunction[] | null,
@@ -520,6 +531,27 @@ export function same(a: unknown, b: unknown): boolean {
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+/** A filter function with its amount in the range it takes: none below
+ *  nothing, and no more than all of it for those whose amount is a share. */
+function inRange(fn: FilterFunction): FilterFunction {
+  switch (fn.fn) {
+    case 'grayscale':
+    case 'invert':
+    case 'opacity':
+    case 'sepia':
+      return { ...fn, amount: clamp(fn.amount, 0, 1) };
+    case 'brightness':
+    case 'contrast':
+    case 'saturate':
+      return { ...fn, amount: Math.max(0, fn.amount) };
+    case 'blur':
+      return { ...fn, radius: Math.max(0, fn.radius) };
+    case 'drop-shadow':
+      return { ...fn, blur: Math.max(0, fn.blur) };
+  }
+  return fn;
 }
 
 // --- transforms --------------------------------------------------------------
