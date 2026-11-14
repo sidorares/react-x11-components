@@ -36,6 +36,12 @@ export interface WebSocketDeps {
   fire(target: unknown, event: unknown): void;
   base64OfBytes(bytes: Uint8Array): string;
   bytesOfBase64(text: string): Uint8Array;
+  /** The realm's streams, which a `WebSocketStream`'s readable and
+   *  writable are made by (`streams.ts`). */
+  streams?: unknown;
+  AbortSignal?: unknown;
+  /** A task, `ms` from now. */
+  setTimer?(fn: () => void, ms: number): unknown;
 }
 
 export function installWebSocket(deps: WebSocketDeps): Record<string, unknown> {
@@ -55,6 +61,41 @@ export function installWebSocket(deps: WebSocketDeps): Record<string, unknown> {
   const fire: Any = D.fire;
   const base64OfBytes: Any = D.base64OfBytes;
   const bytesOfBase64: Any = D.bytesOfBase64;
+  const streams: Any = D.streams;
+  const AbortSignalClass: Any = D.AbortSignal;
+  const later = (fn: () => void): void => {
+    if (D.setTimer) D.setTimer(fn, 0);
+    else Promise.resolve().then(fn);
+  };
+  const resizableOf: Any = Object.getOwnPropertyDescriptor(
+    ArrayBuffer.prototype,
+    'resizable',
+  )?.get;
+  const sabByteLength: Any =
+    typeof SharedArrayBuffer === 'function'
+      ? Object.getOwnPropertyDescriptor(
+          SharedArrayBuffer.prototype,
+          'byteLength',
+        )?.get
+      : undefined;
+  /** Whether a buffer is one a `BufferSource` takes no view of: shared,
+   *  or resizable (Web IDL 3.2.24, no [AllowShared] or [AllowResizable]). */
+  const unacceptedBuffer = (buffer: Any): boolean => {
+    if (!isObject(buffer)) return false;
+    if (sabByteLength) {
+      try {
+        apply(sabByteLength, buffer, []);
+        return true;
+      } catch {
+        // not shared
+      }
+    }
+    try {
+      return !!(resizableOf && apply(resizableOf, buffer, []));
+    } catch {
+      return false;
+    }
+  };
 
   const apply: Any = Reflect.apply;
   const WM: Any = WeakMap;
@@ -169,6 +210,59 @@ export function installWebSocket(deps: WebSocketDeps): Record<string, unknown> {
     return [String(value)];
   };
 
+  /** A socket's URL, as "get a URL record" has it, for the constructor of
+   *  `what`: `http` and `https` are `ws` and `wss`, and no fragment. */
+  const socketUrl = (url: Any, what: string): string => {
+    const text = usv(url);
+    let parsed: Any;
+    try {
+      parsed = new URLClass(text, D.base());
+    } catch {
+      throw domError(
+        `Failed to construct '${what}': The URL '${text}' is invalid.`,
+        'SyntaxError',
+      );
+    }
+    let href = String(parsed.href);
+    const scheme = String(parsed.protocol);
+    if (scheme === 'http:') href = 'ws' + href.slice(4);
+    else if (scheme === 'https:') href = 'wss' + href.slice(5);
+    else if (scheme !== 'ws:' && scheme !== 'wss:') {
+      throw domError(
+        `Failed to construct '${what}': The URL's scheme must be either 'http', 'https', 'ws', or 'wss'. '${scheme.slice(0, -1)}' is not allowed.`,
+        'SyntaxError',
+      );
+    }
+    if (href.includes('#')) {
+      throw domError(
+        `Failed to construct '${what}': The URL contains a fragment identifier ('${href.slice(href.indexOf('#'))}'). Fragment identifiers are not allowed in WebSocket URLs.`,
+        'SyntaxError',
+      );
+    }
+    return href;
+  };
+  /** The protocols, tokens and none twice whatever its case. */
+  const checkedProtocols = (list: string[], what: string): string[] => {
+    const seen = new Set<string>();
+    for (const protocol of list) {
+      if (!PROTOCOL.test(protocol)) {
+        throw domError(
+          `Failed to construct '${what}': The subprotocol '${protocol}' is invalid.`,
+          'SyntaxError',
+        );
+      }
+      const key = protocol.toLowerCase();
+      if (seen.has(key)) {
+        throw domError(
+          `Failed to construct '${what}': The subprotocol '${protocol}' is duplicated.`,
+          'SyntaxError',
+        );
+      }
+      seen.add(key);
+    }
+    return list;
+  };
+
   // --- CloseEvent ----------------------------------------------------------
 
   class CloseEvent extends Event {
@@ -224,52 +318,8 @@ export function installWebSocket(deps: WebSocketDeps): Record<string, unknown> {
           "Failed to construct 'WebSocket': 1 argument required, but only 0 present.",
         );
       }
-      // the URL, as "get a URL record" has it
-      const text = usv(url);
-      let parsed: Any;
-      try {
-        parsed = new URLClass(text, D.base());
-      } catch {
-        throw domError(
-          `Failed to construct 'WebSocket': The URL '${text}' is invalid.`,
-          'SyntaxError',
-        );
-      }
-      let href = String(parsed.href);
-      const scheme = String(parsed.protocol);
-      if (scheme === 'http:') href = 'ws' + href.slice(4);
-      else if (scheme === 'https:') href = 'wss' + href.slice(5);
-      else if (scheme !== 'ws:' && scheme !== 'wss:') {
-        throw domError(
-          `Failed to construct 'WebSocket': The URL's scheme must be either 'http', 'https', 'ws', or 'wss'. '${scheme.slice(0, -1)}' is not allowed.`,
-          'SyntaxError',
-        );
-      }
-      if (href.includes('#')) {
-        throw domError(
-          `Failed to construct 'WebSocket': The URL contains a fragment identifier ('${href.slice(href.indexOf('#'))}'). Fragment identifiers are not allowed in WebSocket URLs.`,
-          'SyntaxError',
-        );
-      }
-      // the protocols: tokens, none twice whatever its case
-      const list = protocolsOf(protocols, true);
-      const seen = new Set<string>();
-      for (const protocol of list) {
-        if (!PROTOCOL.test(protocol)) {
-          throw domError(
-            `Failed to construct 'WebSocket': The subprotocol '${protocol}' is invalid.`,
-            'SyntaxError',
-          );
-        }
-        const key = protocol.toLowerCase();
-        if (seen.has(key)) {
-          throw domError(
-            `Failed to construct 'WebSocket': The subprotocol '${protocol}' is duplicated.`,
-            'SyntaxError',
-          );
-        }
-        seen.add(key);
-      }
+      const href = socketUrl(url, 'WebSocket');
+      const list = checkedProtocols(protocolsOf(protocols, true), 'WebSocket');
       super();
       const id = ++seq;
       const s = {
@@ -407,12 +457,356 @@ export function installWebSocket(deps: WebSocketDeps): Record<string, unknown> {
     });
   }
 
+  // --- WebSocketError and WebSocketStream ----------------------------------
+  //
+  // The WebSocketStream explainer and WPT's `websockets/stream/tentative/`:
+  // a socket whose messages are a readable stream and whose sends are a
+  // writable one, its opening and its closing promises. Over the same host
+  // half as `WebSocket` (the `ws…` ops, the `__ws…` entries), its socket
+  // told apart by `stream`.
+
+  const PromiseClass: Any = Promise;
+  const promiseThen: Any = Promise.prototype.then;
+  /** A promise and its two settlers; marked handled, as the explainer
+   *  marks `opened` and `closed`, so one nobody waits on reports nothing. */
+  const deferred = (): Any => {
+    let resolve: Any;
+    let reject: Any;
+    const promise = new PromiseClass((ok: Any, fail: Any) => {
+      resolve = ok;
+      reject = fail;
+    });
+    apply(promiseThen, promise, [undefined, () => undefined]);
+    return { promise, resolve, reject };
+  };
+
+  /** A close's code and reason, from a dictionary of `closeCode` and
+   *  `reason`, checked as `close()` checks them: a reason with no code is
+   *  sent with 1000, and nothing with none. */
+  const closeInfo = (
+    init: Any,
+    what: string,
+  ): { code: Any; reason: string } => {
+    if (init !== undefined && init !== null && !isObject(init)) {
+      throw typeError(
+        `Failed to execute '${what}': The provided value is not of type 'WebSocketCloseInfo'.`,
+      );
+    }
+    const i = init ?? {};
+    const closeCode = i.closeCode;
+    const reasonIn = i.reason;
+    let code: Any = null;
+    if (closeCode !== undefined) {
+      code = clampShort(closeCode);
+      if (code !== 1000 && (code < 3000 || code > 4999)) {
+        throw domError(
+          `Failed to execute '${what}': The close code must be either 1000, or between 3000 and 4999. ${code} is neither.`,
+          'InvalidAccessError',
+        );
+      }
+    }
+    const reason = reasonIn === undefined ? '' : usv(reasonIn);
+    if (utf8Length(reason) > 123) {
+      throw domError(
+        `Failed to execute '${what}': The close reason must not be greater than 123 UTF-8 bytes.`,
+        'SyntaxError',
+      );
+    }
+    if (code === null && reason !== '') code = 1000;
+    return { code, reason };
+  };
+
+  class WebSocketError extends DOMException {
+    constructor(message: Any = '', init: Any = undefined) {
+      const { code, reason } = closeInfo(init, 'WebSocketError');
+      super(message === undefined ? '' : String(message), 'WebSocketError');
+      apply(wmSet, slots, [this, { wsError: true, closeCode: code, reason }]);
+    }
+    get closeCode(): number | null {
+      return slotOf(this, 'wsError').closeCode;
+    }
+    get reason(): string {
+      return slotOf(this, 'wsError').reason;
+    }
+  }
+  /** A `WebSocketError` the user agent makes, its code whatever came. */
+  const socketError = (message: string, code: Any, reason: string): Any => {
+    const e = new WebSocketError(message);
+    const slot = apply(wmGet, slots, [e]);
+    slot.closeCode = code;
+    slot.reason = reason;
+    return e;
+  };
+  /** What an abort or a cancel closes with: a `WebSocketError`'s code and
+   *  reason, and nothing for any other reason. */
+  const reasonCode = (reason: Any): [Any, string] => {
+    const slot = isObject(reason) ? apply(wmGet, slots, [reason]) : null;
+    return slot?.wsError ? [slot.closeCode, slot.reason] : [null, ''];
+  };
+
+  // a readable stream's default controller's methods, taken before any
+  // page code can put its own there
+  let enqueueOf: Any = null;
+  let closeOf: Any = null;
+  if (streams) {
+    const probe = streams.readable(
+      () => undefined,
+      () => PromiseClass.resolve(),
+      () => PromiseClass.resolve(),
+    );
+    const proto = Object.getPrototypeOf(streams.controllerOf(probe));
+    enqueueOf = proto.enqueue;
+    closeOf = proto.close;
+  }
+
+  class WebSocketStream {
+    constructor(url: Any, options: Any = undefined) {
+      if (arguments.length < 1) {
+        throw typeError(
+          "Failed to construct 'WebSocketStream': 1 argument required, but only 0 present.",
+        );
+      }
+      if (options !== undefined && options !== null && !isObject(options)) {
+        throw typeError(
+          "Failed to construct 'WebSocketStream': The provided value is not of type 'WebSocketStreamOptions'.",
+        );
+      }
+      const o = options ?? {};
+      // a dictionary's members in their names' order
+      const protocolsIn = o.protocols;
+      const signal = o.signal;
+      let list: string[] = [];
+      if (protocolsIn !== undefined) {
+        if (
+          !isObject(protocolsIn) ||
+          typeof protocolsIn[iterator] !== 'function'
+        ) {
+          throw typeError(
+            "Failed to construct 'WebSocketStream': The provided value cannot be converted to a sequence.",
+          );
+        }
+        list = protocolsOf(protocolsIn, false);
+      }
+      if (
+        signal !== undefined &&
+        !(AbortSignalClass && signal instanceof AbortSignalClass)
+      ) {
+        throw typeError(
+          "Failed to construct 'WebSocketStream': Failed to read the 'signal' property from 'WebSocketStreamOptions': Failed to convert value to 'AbortSignal'.",
+        );
+      }
+      const href = socketUrl(url, 'WebSocketStream');
+      checkedProtocols(list, 'WebSocketStream');
+      const id = ++seq;
+      const s: Any = {
+        stream: true,
+        self: this,
+        id,
+        url: href,
+        state: 'connecting',
+        opened: deferred(),
+        closed: deferred(),
+        aborted: false,
+        readable: null,
+        writable: null,
+        /** Writes waiting for their bytes to go: how many are left of each. */
+        writes: [] as Any[],
+        closing: null as Any,
+      };
+      apply(wmSet, slots, [this, s]);
+      if (signal?.aborted) {
+        s.aborted = true;
+        s.state = 'closed';
+        s.opened.reject(signal.reason);
+        s.closed.reject(signal.reason);
+        return;
+      }
+      sockets.set(id, s);
+      call('wsOpen', id, href, stringify(list));
+      if (signal) {
+        signal.addEventListener('abort', () => {
+          if (s.state !== 'connecting') return;
+          s.aborted = true;
+          s.state = 'closed';
+          sockets.delete(id);
+          call('wsClose', id, null, '');
+          s.opened.reject(signal.reason);
+          s.closed.reject(signal.reason);
+        });
+      }
+    }
+    get url(): string {
+      return slotOf(this, 'stream').url;
+    }
+    get opened(): Any {
+      return slotOf(this, 'stream').opened.promise;
+    }
+    get closed(): Any {
+      return slotOf(this, 'stream').closed.promise;
+    }
+    close(closeInfoIn: Any = undefined): void {
+      const s = slotOf(this, 'stream');
+      const { code, reason } = closeInfo(
+        closeInfoIn,
+        "close' on 'WebSocketStream",
+      );
+      streamClose(s, code, reason);
+    }
+  }
+
+  /** Start a stream's closing handshake, or fail its connection where it
+   *  has none yet; nothing once it is closing, or was aborted. */
+  const streamClose = (s: Any, code: Any, reason: string): void => {
+    if (s.aborted || s.state === 'closing' || s.state === 'closed') return;
+    s.state = 'closing';
+    call('wsClose', s.id, code, reason);
+  };
+
+  /** The opening handshake succeeded: a readable of the messages, a
+   *  writable of the sends. */
+  const streamOpened = (s: Any, protocol: string, extensions: string): void => {
+    s.state = 'open';
+    s.readable = streams.readable(
+      () => undefined,
+      () => PromiseClass.resolve(),
+      (reason: Any) => {
+        const [code, why] = reasonCode(reason);
+        streamClose(s, code, why);
+        return PromiseClass.resolve();
+      },
+      1,
+    );
+    s.writable = streams.writable(
+      () => undefined,
+      (chunk: Any) => {
+        if (s.state !== 'open') {
+          return PromiseClass.reject(
+            domError('The WebSocket is not open.', 'InvalidStateError'),
+          );
+        }
+        // a `BufferSource`, or anything else as a `USVString`, either of
+        // which a write rejects where it is not one
+        let bytes: Uint8Array | null = bufferBytes(chunk);
+        let text = '';
+        try {
+          if (bytes && unacceptedBuffer(chunk)) {
+            throw typeError('A resizable or shared buffer cannot be sent.');
+          }
+          if (!bytes && isView(chunk)) {
+            if (unacceptedBuffer(chunk.buffer)) {
+              throw typeError(
+                'A view on a resizable or shared buffer cannot be sent.',
+              );
+            }
+            bytes = new U8(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+          }
+          if (!bytes) text = usv(chunk);
+        } catch (e) {
+          return PromiseClass.reject(e);
+        }
+        const size = bytes ? bytes.byteLength : utf8Length(text);
+        const write = deferred();
+        if (size === 0) write.resolve();
+        else s.writes.push({ left: size, done: write });
+        if (bytes) call('wsSend', s.id, true, base64OfBytes(bytes), size);
+        else call('wsSend', s.id, false, text, size);
+        return write.promise;
+      },
+      () => {
+        const done = deferred();
+        s.closing = done;
+        streamClose(s, null, '');
+        return done.promise;
+      },
+      (reason: Any) => {
+        const [code, why] = reasonCode(reason);
+        streamClose(s, code, why);
+        return PromiseClass.resolve();
+      },
+      1,
+    );
+    s.opened.resolve({
+      readable: s.readable,
+      writable: s.writable,
+      extensions,
+      protocol,
+    });
+  };
+
+  /** The connection closed: `closed` settles, and the two streams end, a
+   *  task later, so that a page that waits on `closed` has its handlers on
+   *  its writes before they reject. What was still to be sent makes the
+   *  close unclean, and is what the writable is errored with. */
+  const streamClosedNow = (
+    s: Any,
+    code: number,
+    reason: string,
+    wasClean: boolean,
+  ): void => {
+    if (s.aborted) return;
+    s.state = 'closed';
+    if (!s.readable) {
+      // never opened: its handshake failed, or a close failed it
+      const e = socketError(
+        'The WebSocket connection could not be established.',
+        null,
+        '',
+      );
+      s.opened.reject(e);
+      s.closed.reject(e);
+      return;
+    }
+    const clean = wasClean && !s.writes.length;
+    const e = clean
+      ? null
+      : socketError(
+          'The WebSocket connection was closed uncleanly.',
+          code,
+          reason,
+        );
+    if (clean) {
+      try {
+        apply(closeOf, streams.controllerOf(s.readable), []);
+      } catch {
+        // cancelled, or closed already
+      }
+      s.closed.resolve({ closeCode: code, reason });
+    } else {
+      streams.errorReadable(s.readable, e);
+      s.closed.reject(e);
+    }
+    // the writable errored at once, as a page that waits on `closed` finds
+    // it, and a write still in flight with the error it keeps: what it
+    // rejects with comes a task later, its handlers on it by then
+    const stopped = domError('The WebSocket is closed.', 'InvalidStateError');
+    const writes = s.writes;
+    s.writes = [];
+    if (s.closing && !writes.length) {
+      const closing = s.closing;
+      if (clean) closing.resolve();
+      else later(() => closing.reject(e));
+    } else {
+      streams.errorWritable(
+        s.writable,
+        writes.length ? stopped : (e ?? stopped),
+      );
+      if (writes.length)
+        later(() => writes.forEach((w: Any) => w.done.reject(stopped)));
+    }
+  };
+
   // --- what the host tells -------------------------------------------------
 
   // the opening handshake succeeded: OPEN, and what the server chose
   entry('__wsOpen', () => {
     const [id, protocol, extensions] = input() as [number, string, string];
     const s = sockets.get(id);
+    if (s?.stream) {
+      if (s.state === 'connecting') {
+        streamOpened(s, String(protocol ?? ''), String(extensions ?? ''));
+      }
+      return null;
+    }
     if (!s || s.readyState !== 0) return null;
     s.readyState = 1;
     s.protocol = String(protocol ?? '');
@@ -424,6 +818,18 @@ export function installWebSocket(deps: WebSocketDeps): Record<string, unknown> {
   entry('__wsMessage', () => {
     const [id, binary, payload] = input() as [number, boolean, string];
     const s = sockets.get(id);
+    if (s?.stream) {
+      if (s.state !== 'open' || !s.readable) return null;
+      const chunk = binary
+        ? new U8(bytesOfBase64(String(payload)))
+        : String(payload);
+      try {
+        apply(enqueueOf, streams.controllerOf(s.readable), [chunk]);
+      } catch {
+        // cancelled: nothing reads on
+      }
+      return null;
+    }
     if (!s || s.readyState !== 1) return null;
     let data: Any = String(payload);
     if (binary) {
@@ -441,6 +847,20 @@ export function installWebSocket(deps: WebSocketDeps): Record<string, unknown> {
     const [id, bytes] = input() as [number, number];
     const s = sockets.get(id);
     if (!s) return null;
+    if (s.stream) {
+      // each write is done once all its bytes have gone
+      let left = Number(bytes);
+      while (left > 0 && s.writes.length) {
+        const w = s.writes[0];
+        const take = Math.min(left, w.left);
+        w.left -= take;
+        left -= take;
+        if (w.left > 0) break;
+        s.writes.shift();
+        w.done.resolve();
+      }
+      return null;
+    }
     s.bufferedAmount = Math.max(0, s.bufferedAmount - Number(bytes));
     return null;
   });
@@ -457,6 +877,10 @@ export function installWebSocket(deps: WebSocketDeps): Record<string, unknown> {
     const s = sockets.get(id);
     if (!s) return null;
     sockets.delete(id);
+    if (s.stream) {
+      streamClosedNow(s, Number(code), String(reason ?? ''), !!wasClean);
+      return null;
+    }
     s.readyState = 3;
     if (failed) fire(s.self, new Event('error'));
     fire(
@@ -470,7 +894,9 @@ export function installWebSocket(deps: WebSocketDeps): Record<string, unknown> {
     return null;
   });
 
-  const interfaces: Record<string, Any> = { WebSocket, CloseEvent };
+  const interfaces: Record<string, Any> = streams
+    ? { WebSocket, CloseEvent, WebSocketStream, WebSocketError }
+    : { WebSocket, CloseEvent };
   // Web IDL's: members enumerable, and objects' class strings their names
   for (const name of Object.getOwnPropertyNames(interfaces)) {
     const C = interfaces[name];

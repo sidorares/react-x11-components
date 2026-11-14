@@ -1343,7 +1343,18 @@ option bag, `{ protocols }`, is taken as WPT has it. `close()` takes 1000
 or 3000 to 4999 (`InvalidAccessError` for anything else) and a reason of at
 most 123 bytes (`SyntaxError`); `send()` before the socket is open throws
 `InvalidStateError`, and once it is closing only counts what it was given
-in `bufferedAmount`. What carries a socket is `scripts.webSocket`, an
+in `bufferedAmount`. `WebSocketStream` (the WebSocketStream explainer,
+tentative) is a socket over the same seam whose `opened` gives a readable
+of its messages — a string for text, a `Uint8Array` for bytes — and a
+writable that sends a string or a `BufferSource` and is done when the
+seam has let it go; `closed` gives the code and reason of a clean close
+and rejects with a `WebSocketError` for any other, a write still unsent at
+the close making it unclean. `close({ closeCode, reason })`, an abort of
+the writable or a cancel of the readable with a `WebSocketError` close with
+its code, and an `AbortSignal` in the options fails the handshake with its
+reason. `WebSocketError` is a `DOMException` with a `closeCode` and a
+`reason`, checked as `close()` checks them. What it does not do yet is
+hold back what the server sends while nothing reads. What carries a socket is `scripts.webSocket`, an
 `HtmlWebSocket`: handed the URL, the origin of the document or worker that
 opened it and the protocols it offers, it tells the socket's `open`, each
 message, a `closed` with the close frame's code and reason, or `failed`,
