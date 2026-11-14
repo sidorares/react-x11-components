@@ -7640,6 +7640,17 @@ in a script written without spaces is cut regardless, as the engine finds
 no words in it — CoreText, on macOS, cuts a word too long whatever the
 style says), `direction`,
 `unicode-bidi`, `vertical-align`,
+`text-box-trim`, `text-box-edge` and `text-box` (CSS Inline 3, 5: a block
+container's first formatted line trimmed at its top, and its last at its
+bottom, to its root inline box's `text`, `cap` or `ex` over edge and its
+`text` or `alphabetic` under edge, the content moving up and the box and
+the blocks between it and the line coming out shorter; border or padding
+between the box and its line, a height of its own on a block between, or
+a flex box or a table on the way holds a side, and the innermost trim wins; a
+face that says no capital or x height has one of 0.7em or 0.5em; the
+ideographic edges are an em box centred on the text, as no face here says
+where its ideographic baselines are; trimming an inline box's content
+area, and a multicol container's columns, are not done),
 `text-decoration` in all five rule styles, with `text-decoration-thickness`
 and `text-underline-offset`. Left at `auto`, an underline is a tenth of the
 font size thick and half of that under the baseline, a pixel each at the
@@ -8185,7 +8196,7 @@ flow has, `border` and its eight edges, `outline`, `overflow`, `gap`,
 `place-items`, `place-self`, `grid-row`, `grid-column`, `grid-area`,
 `list-style`, `background`, `columns`, `column-rule`, `row-rule`, `rule`,
 `transition`, `animation`, `animation-range`, `scroll-timeline`,
-`view-timeline`, `position-try`, `container`, `text-wrap`,
+`view-timeline`, `position-try`, `container`, `text-wrap`, `text-box`,
 `text-decoration`, `font-variant` and `font`. `animation` and `transition`
 take their lists in turn as far as their names go, so
 `animation-name: a, b; animation-duration: 1s` reads `1s a, 1s b`.
@@ -8194,7 +8205,7 @@ Two limits. `grid` and `grid-template` read as nothing,
 since a grid's tracks resolve to what a layout came to and a box does not
 say. So do `mask` and `border-image`, whose images a style keeps in no form
 a page can read, and what a style holds nothing of: `overscroll-behavior`,
-`offset`, `marker`, `text-emphasis`, `text-box` and `font-synthesis`, the
+`offset`, `marker`, `text-emphasis` and `font-synthesis`, the
 `corner-*-shape` pairs, and the `-webkit-` spellings.
 
 What `getComputedStyle` reads back for `color`, `background-color`, the

@@ -28,6 +28,12 @@ import {
 } from './shape-outside.js';
 import { parseDecorationInset } from './decoration-inset.js';
 import { parseTextTransform } from './text-transform.js';
+import {
+  parseTextBox,
+  parseTextBoxEdge,
+  parseTextBoxTrim,
+  textBoxText,
+} from './text-box.js';
 import { parseZoom, splitValue } from './values.js';
 import {
   GRID_SPECIFIED,
@@ -242,6 +248,20 @@ export function specifiedValue(
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
     return parseTextTransform(word) ?? null;
+  }
+  // CSS Inline 3, 5: each as it computes, and the shorthand as its
+  // longhands serialize it
+  if (
+    name === 'text-box-trim' ||
+    name === 'text-box-edge' ||
+    name === 'text-box'
+  ) {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    if (name === 'text-box-trim') return parseTextBoxTrim(word) ?? null;
+    if (name === 'text-box-edge') return parseTextBoxEdge(word) ?? null;
+    const box = parseTextBox(word);
+    return box ? textBoxText(box.trim, box.edge) : null;
   }
   if (name === 'clip-path' || name === '-webkit-clip-path') {
     // a basic shape other than `shape()`, its arguments in canonical form

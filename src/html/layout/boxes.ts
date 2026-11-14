@@ -1332,6 +1332,10 @@ export interface BoxTree {
   /** Whether any positioned box has a negative `z-index`: where none has,
    *  paint has no layer below the flow to find. */
   negative: boolean;
+  /** Whether any box has a `text-box-trim` (`trimTextBox`): what such a
+   *  box holds is moved and cut down after its own layout, so a face that
+   *  arrives is taken into the tree whole, never a block at a time. */
+  trims: boolean;
   /** Whether any block has a `::first-line` style (`FIRST_LINE`): where
    *  none has, layout looks for none. */
   firstLine: boolean;
@@ -1547,6 +1551,7 @@ interface SubtreeBuild {
     | 'readingFlow'
     | 'anchors'
     | 'negative'
+    | 'trims'
     | 'nestedOutOfLine'
     | 'movedInline'
     | 'clipText'
@@ -2513,6 +2518,7 @@ export function buildSubtrees(
     readingFlow: flag('readingFlow'),
     anchors: flag('anchors'),
     negative: flag('negative'),
+    trims: flag('trims'),
     nestedOutOfLine: flag('nestedOutOfLine'),
     movedInline: flag('movedInline'),
     clipText: flag('clipText'),
@@ -3654,6 +3660,7 @@ class Builder {
   private _turnBack = new Map<Box, ComputedStyle['writingMode']>();
   private _readingFlow = false;
   private _anchors = false;
+  private _trims = false;
   private _negative = false;
   private _firstLine = false;
   private _nestedOutOfLine = false;
@@ -4002,6 +4009,7 @@ class Builder {
         readingFlow: this._readingFlow,
         anchors: this._anchors,
         negative: this._negative,
+        trims: this._trims,
         nestedOutOfLine: this._nestedOutOfLine,
         movedInline: this._movedInline,
         clipText: this._clipText,
@@ -4086,6 +4094,7 @@ class Builder {
       readingFlow: this._readingFlow || rootStyle.readingFlow !== 'normal',
       anchors: this._anchors || rootStyle.anchorNames !== null,
       negative: this._negative,
+      trims: this._trims,
       firstLine: this._firstLine,
       firstLineStyler: this._firstLine ? this._firstLineStyler() : null,
       selectionStyler: cascade.hasSelection ? this._selectionStyler() : null,
@@ -4400,6 +4409,7 @@ class Builder {
     if (style.anchorNames !== null || mayAnchorImplicitly(style)) {
       this._anchors = true;
     }
+    if (style.textBoxTrim !== 'none') this._trims = true;
     if (style.backgroundClipText) this._clipText = true;
     if (style.verticalAlign !== 'baseline' && style.display === 'inline') {
       this._movedInline = true;

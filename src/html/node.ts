@@ -1979,7 +1979,8 @@ export class HtmlViewNode extends Node {
       tree.anchors ||
       tree.vertical ||
       tree.firstLine ||
-      tree.foreign
+      tree.foreign ||
+      tree.trims
     ) {
       this._owedDone();
       // inside `_update`, and the arrival asked for the frame
