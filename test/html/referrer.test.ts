@@ -8,6 +8,10 @@ import {
 } from '../../src/html/referrer.js';
 import { HtmlNetwork } from '../../src/html/network.js';
 import type { HtmlTransport } from '../../src/html/network.js';
+import React from 'react';
+import { act, renderX11 } from 'react-x11/test';
+import { Html } from '../../src/html/index.js';
+import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
 import { render } from './harness.js';
 
 const PAGE = 'https://user:pw@a.example/dir/page?q=1#frag';
@@ -188,3 +192,37 @@ test("<Html> asks for what an element loads under its referrerpolicy, else the d
     ['no-referrer', 'unsafe-url'],
   );
 });
+
+(SCRIPTS_CONTAINED ? test : test.skip)(
+  "what a page asks for after its script moved its address is asked as the page's address is now, which its Referer says",
+  async () => {
+    const asked = new Map<string, string | undefined>();
+    const result = await renderX11(
+      React.createElement(Html, {
+        source:
+          '<!doctype html><html><body><script>' +
+          "history.replaceState(null, '', '/moved/here?x#y');" +
+          "var i = document.createElement('img'); i.src = '/late.png';" +
+          'document.body.appendChild(i);' +
+          '</script></body></html>',
+        partial: false,
+        baseUrl: 'https://a.example/first.html',
+        onResource: (r: { url: string; client?: string }) => {
+          asked.set(r.url, r.client);
+          return null;
+        },
+        scripts: {},
+      }),
+      { backend: 'mock' },
+    );
+    const end = Date.now() + 5000;
+    while (!asked.has('https://a.example/late.png') && Date.now() < end) {
+      await act(() => new Promise((r) => setTimeout(r, 10)));
+    }
+    assert.equal(
+      asked.get('https://a.example/late.png'),
+      'https://a.example/moved/here?x#y',
+    );
+    result.unmount();
+  },
+);

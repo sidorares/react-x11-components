@@ -1081,7 +1081,10 @@ from what the hop before came to, so one that went to another origin under
 `origin-when-cross-origin` stays the origin when it comes home, and a
 redirect's own `Referrer-Policy` holds from there on. A preflight carries
 its request's. `onResource` is handed the policy as `referrerPolicy`, and
-`HtmlNetwork` sends what it says. Not yet: a stylesheet's `url()`s are
+`HtmlNetwork` sends what it says. Where a document's scripts have moved its
+address with `history.pushState` or `replaceState`, what it asks for after
+is asked as of the address it has now (`client`), which the `Referer` is
+made from, where the host was handed the one it was loaded at. Not yet: a stylesheet's `url()`s are
 asked for as the document's, where CSS has them the sheet's, and a
 top-level navigation carries a `Referer` only for a form's POST, under the
 default policy.

@@ -169,6 +169,14 @@ export async function throughWorker(
    *  `srcdoc`, which has the policies of the document it is in. */
   policed?: DomHost | null,
 ): Promise<unknown> {
+  // asked by the document as its address is now, which `history.pushState`
+  // and `replaceState` move: a request's referrer is its client's URL
+  // (Fetch 4.1, step 3; Referrer Policy 8.3), where the host was handed the
+  // one the document was loaded at. A frame's request says its own already
+  const now = scripts.runner?.()?.host.url;
+  if (now && request.client === undefined && /^https?:/i.test(now)) {
+    request = { ...request, client: now };
+  }
   // held to the document's policies before it is asked for, and by where it
   // landed after (CSP 3, 4.1.2 and 4.1.3); a script's are the runner's
   const doc = policed ?? scripts.runner?.()?.host;
