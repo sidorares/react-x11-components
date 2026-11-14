@@ -798,12 +798,12 @@ metric(
 metric(
   'a box in a vertical writing mode that no frame holds is laid out as though the document had no frame',
   async () => {
-    // A grid makes no frame, so its text is level whatever else is on the
-    // page. With a frame elsewhere it was made a line at a time and set
-    // upright for a paint that only a frame's root does
+    // A flex container makes no frame, so its text is level whatever else
+    // is on the page. With a frame elsewhere it was made a line at a time
+    // and set upright for a paint that only a frame's root does
     const sheet =
       '<style>body{margin:0}.r{writing-mode:vertical-rl;height:40px}' +
-      '.g{display:grid;width:30px;writing-mode:vertical-lr;' +
+      '.g{display:flex;width:30px;writing-mode:vertical-lr;' +
       'text-orientation:upright}</style>';
     const laid = async (before: string) => {
       const { node, result } = await render(
@@ -850,3 +850,176 @@ metric(
     );
   },
 );
+
+test('a vertical grid is laid out in its frame: its columns run down the page, and its rows across from where its lines start', async () => {
+  // CSS Writing Modes 4, 7.3, and CSS Grid 1, 7.1: a grid's columns are
+  // its inline axis's tracks and its rows its block axis's
+  const grid = (mode: string) =>
+    `<div style="display:grid;writing-mode:${mode};` +
+    'grid-template-columns:20px 30px;grid-template-rows:40px 50px">' +
+    `<div id="${mode}-a" style="grid-area:1/1"></div>` +
+    `<div id="${mode}-b" style="grid-area:1/2"></div>` +
+    `<div id="${mode}-c" style="grid-area:2/1"></div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' + grid('vertical-rl') + grid('vertical-lr'),
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const r = rectOf(el, id);
+    return [r.x, r.y, r.width, r.height];
+  };
+  // as wide as its rows and as tall as its columns, the first row at its
+  // right in vertical-rl
+  assert.deepStrictEqual(at('vertical-rl-a'), [50, 0, 40, 20]);
+  assert.deepStrictEqual(at('vertical-rl-b'), [50, 20, 40, 30]);
+  assert.deepStrictEqual(at('vertical-rl-c'), [0, 0, 50, 20]);
+  // and at its left in vertical-lr
+  assert.deepStrictEqual(at('vertical-lr-a'), [0, 50, 40, 20]);
+  assert.deepStrictEqual(at('vertical-lr-b'), [0, 70, 40, 30]);
+  assert.deepStrictEqual(at('vertical-lr-c'), [40, 50, 50, 20]);
+});
+
+test("an absolutely positioned item of a vertical-lr grid has its lines left to right, as the grid's own items do", async () => {
+  // a positioned box is laid out after its frame is put back across
+  // (`reflectFrame`), and was left in vertical-rl's order
+  const { node } = await render(
+    '<style>body{margin:0}.g{display:grid;writing-mode:vertical-lr;' +
+      'position:relative;grid-template:100px/100px;font:10px/10px monospace}' +
+      '.g>div{grid-area:1/1}.abs{position:absolute}</style>' +
+      '<div class="g"><div><span id="f1">a</span><br><span id="f2">b</span></div>' +
+      '<div class="abs"><span id="a1">a</span><br><span id="a2">b</span></div></div>',
+  );
+  const el = view(node);
+  const x = (id: string) => rectOf(el, id).x;
+  assert.ok(x('f1') < x('f2'), `the flow's lines: ${x('f1')}, ${x('f2')}`);
+  assert.ok(x('a1') < x('a2'), `the positioned box's: ${x('a1')}, ${x('a2')}`);
+  assert.strictEqual(x('a1'), x('f1'));
+});
+
+test("a subgrid has no frame, and what is in it is orthogonal to its grid's writing mode or not", async () => {
+  // A subgrid is laid out in its grid's axes, whatever its own writing
+  // mode (CSS Grid 2, 9), so an item of a vertical subgrid of a horizontal
+  // grid is an orthogonal flow, and a horizontal item of a horizontal
+  // subgrid of a vertical grid is turned back
+  const { node } = await render(
+    '<style>body{margin:0;font:10px/10px monospace}' +
+      '.g{display:grid;justify-items:start;align-items:start}' +
+      '.s{display:grid;grid-template:subgrid/subgrid}' +
+      '.v{writing-mode:vertical-rl}.h{writing-mode:horizontal-tb}</style>' +
+      '<div class="g h"><div class="g s v"><div class="v" id="down">abcdef</div></div></div>' +
+      '<div class="g v"><div class="g s h"><div class="h" id="across">abcdef</div></div></div>',
+  );
+  const el = view(node);
+  const down = rectOf(el, 'down');
+  assert.ok(
+    down.height > down.width,
+    `runs down: ${down.width}x${down.height}`,
+  );
+  const across = rectOf(el, 'across');
+  assert.ok(
+    across.width > across.height,
+    `runs across: ${across.width}x${across.height}`,
+  );
+});
+
+test('a horizontal grid in a vertical flow is a frame of its own, which turns back what the flow turned', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style><div style="writing-mode:vertical-rl">' +
+      '<div style="display:grid;writing-mode:horizontal-tb;' +
+      'grid-template-columns:30px 40px;grid-template-rows:10px">' +
+      '<div id="a"></div><div id="b"></div></div></div>',
+  );
+  const el = view(node);
+  const a = rectOf(el, 'a');
+  const b = rectOf(el, 'b');
+  // its columns across the page, side by side
+  assert.deepStrictEqual(
+    [a.width, a.height, b.width, b.height],
+    [30, 10, 40, 10],
+  );
+  assert.deepStrictEqual([b.x - a.x, b.y - a.y], [30, 0]);
+});
+
+test('vertical grid lanes run their lanes down the page and stack across it', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}.l{display:grid-lanes;writing-mode:vertical-rl;' +
+      'grid-template-columns:20px 30px}.l>div{inline-size:auto;block-size:10px}</style>' +
+      '<div class="l"><div id="a"></div><div id="b"></div><div id="c"></div></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const r = rectOf(el, id);
+    return [r.x, r.y, r.width, r.height];
+  };
+  // the first item of each lane at the lanes' right, where vertical-rl's
+  // lines start, and the third under the shorter, the first
+  assert.deepStrictEqual(at('a'), [10, 0, 10, 20]);
+  assert.deepStrictEqual(at('b'), [10, 20, 10, 30]);
+  assert.deepStrictEqual(at('c'), [0, 0, 10, 20]);
+});
+
+test("a vertical-lr grid's items aligned by their baselines meet at them, though its rows are put back across", async () => {
+  // Laid out as vertical-rl's and moved whole to the other side, an item's
+  // baseline is as far from its far edge as it was from its near one. A
+  // glyph's baseline divides its box across the line in one ratio at every
+  // size, so where items of three sizes meet gives the ratio, which is the
+  // ratio down a horizontal line's, from the other side: sideways text has
+  // its descent at its left. Aligned on their baselines' mirror, the items
+  // meet too, at the mirror's ratio
+  const grid = (mode: string, id: string) =>
+    `<div class="g" style="writing-mode:${mode}">` +
+    `<div style="font-size:10px"><span id="${id}s">a</span></div>` +
+    `<div style="font-size:20px"><span id="${id}m">a</span></div>` +
+    `<div style="font-size:40px"><span id="${id}l">a</span></div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}.g{display:grid;text-orientation:sideways;' +
+      'grid-auto-flow:column;align-items:baseline;font-family:monospace;' +
+      'line-height:1;margin-bottom:10px}</style>' +
+      grid('vertical-lr', 'v') +
+      grid('horizontal-tb', 'h'),
+  );
+  const el = view(node);
+  const ratio = (id: string, at: 'x' | 'y', size: 'width' | 'height') => {
+    const [s, m, l] = ['s', 'm', 'l'].map((n) => rectOf(el, id + n));
+    // baseline = at + size × r, the same r for each: r from two pairs
+    const r1 = (m[at] - s[at]) / (s[size] - m[size]);
+    const r2 = (l[at] - s[at]) / (s[size] - l[size]);
+    assert.ok(Math.abs(r1 - r2) < 0.02, `${id}: they meet: ${r1} ${r2}`);
+    return r1;
+  };
+  const down = ratio('h', 'y', 'height');
+  assert.ok(down > 0.5 && down < 1, `a baseline below the middle: ${down}`);
+  const across = ratio('v', 'x', 'width');
+  assert.ok(Math.abs(across - (1 - down)) < 0.02, `${across} vs ${1 - down}`);
+});
+
+test("self-start and self-end are an item's own start and end in its grid, by its direction and its writing mode", async () => {
+  // CSS Box Alignment 3, 4.1; WPT's css-grid/alignment/grid-self-alignment
+  const cell = (grid: string, item: string, id: string) =>
+    `<div class="g" style="${grid}"><div id="${id}" style="${item};` +
+    'justify-self:self-start;align-self:self-start"></div></div>';
+  const { node } = await render(
+    '<style>body{margin:0}.g{display:grid;grid-template:20px/20px;' +
+      'width:20px;height:20px}.g>div{width:10px;height:10px}</style>' +
+      // an rtl item starts at the right of an ltr grid's columns
+      cell('', 'direction:rtl', 'rtl') +
+      // a vertical-rl item's block axis starts at the right, and its
+      // lines at the top
+      cell('', 'writing-mode:vertical-rl', 'orthogonal') +
+      // and in a vertical-lr grid, whose rows start at the left, an rtl
+      // horizontal item starts at its right, and at the top of its column
+      cell(
+        'writing-mode:vertical-lr',
+        'writing-mode:horizontal-tb;direction:rtl',
+        'across',
+      ),
+  );
+  const el = view(node);
+  const at = (id: string, top: number) => {
+    const r = rectOf(el, id);
+    return [r.x, r.y - top];
+  };
+  assert.deepStrictEqual(at('rtl', 0), [10, 0]);
+  assert.deepStrictEqual(at('orthogonal', 20), [10, 0]);
+  assert.deepStrictEqual(at('across', 40), [10, 0]);
+});

@@ -5876,7 +5876,10 @@ start margin at the right of an area, and `left` and `right` in
 `auto` edges are read the same way, and a gap's rules are drawn there. A
 subgrid whose `direction` is the other from its grid's takes the grid's
 columns over its span the other way round (CSS Grid 2, 9), its lines and
-their names with them.
+their names with them. `self-start` and `self-end` are the item's own
+start and end, by its direction and its writing mode: an item whose
+`direction` is `rtl` in a grid whose is `ltr` is at the right of its area at
+`justify-self: self-start` (CSS Box Alignment 3, 4.1).
 Grid lanes lay their lanes, or their stacking range, out from the right the
 same way. An item is stretched to its area or aligned in it by
 `justify-self`, `align-self` and its `auto` margins, and one that is not
@@ -8011,7 +8014,8 @@ the page however long their text comes to, so that they are across it
 where a line in any other vertical mode would be. An absolute box at its static position in
 `vertical-lr` starts at the left, where the flow it would have been in
 starts: laid out after the flow, which is laid out as `vertical-rl`'s and
-put back across, it is put back by its own size once it has one. An inline element in a writing mode its
+put back across, it is put back by its own size once it has one, and what
+it holds is put back across it then. An inline element in a writing mode its
 parent is not in is an inline-block (3.1). The root is laid out by its
 parent as any box is, in the page's axes. Its width is its block size,
 which is its content's where it has none of its own (7.3.2): a block, a
@@ -8061,6 +8065,19 @@ scroll container among such boxes scrolls as the page has it and draws its
 bars at the page's right and bottom. An anchor in it is followed and seen as
 any is.
 
+A grid, or grid lanes, in a vertical writing mode in a horizontal parent is
+an orthogonal flow's root too, and its frame is the grid: the root is a
+block around it, and the grid is laid out in the frame's axes, its columns
+down the page along its inline axis and its rows across it from where its
+lines start, at the right in `vertical-rl` and the left in `vertical-lr`
+(CSS Grid 1, 7.1). An absolutely positioned item's grid area and its
+alignment in it, and the gap rules, follow the rows. A horizontal grid in a
+vertical flow's frame turns back what the frame turned, as a block does. A
+subgrid has no frame of its own whatever its writing mode, since it is laid
+out in its grid's axes (CSS Grid 2, 9), and what is in it is orthogonal, or
+not, by its grid's writing mode: a vertical item of a vertical subgrid of a
+horizontal grid draws its text down the page.
+
 Not yet: `text-combine-upright` and its kin, a horizontal block inside a
 `vertical-lr` flow (laid out turned with the flow, which is put back across
 after its layout), the root element in a vertical writing mode scrolled from its
@@ -8068,7 +8085,9 @@ block start, the principal writing mode handed from the `<body>` or the root
 element to the viewport (8) — so a vertical body is as wide as the line
 where a browser makes it as wide as its lines and puts it at the right, and
 a block in it as tall as its text where a browser makes it the viewport's
-height — a vertical flex box, grid or table, images and form controls
+height — a vertical flex box or table, a subgrid's tracks across writing
+modes (its columns are its grid's columns, where they are its grid's rows),
+images and form controls
 set in a vertical line (a control is mounted where the flow's turn puts its
 box, and is drawn level), backgrounds and gradients of the boxes inside a
 vertical flow (drawn turned with them, where the root's own are drawn as

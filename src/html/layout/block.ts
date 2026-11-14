@@ -237,8 +237,10 @@ import {
   frameRectOf,
   frameSideOf,
   pageSideOf,
+  putBackAcross,
   reflectFrame,
   reflects,
+  ROWS_MIRRORED,
   turnsUp,
 } from './writing.js';
 import type { PhysicalSide } from './writing.js';
@@ -2051,6 +2053,12 @@ export function layoutDocument(
     // laid out in the strip of the columns it is inside, and cut into them
     const strip = inColumns(box, containing);
     layoutPositioned(box, containing, ctx);
+    // a frame is put back across as it is laid out (`layoutFramed`), and a
+    // box positioned in one is laid out after that: what it holds is put
+    // back across its own content box once it is
+    if (putBackAcross(box)) {
+      reflectFrame(box, box.contentHeight, translate, moveLine);
+    }
     if (strip) {
       cutIntoColumns(box, strip.geometry, (b, dx, dy) =>
         translate(b, dx, dy, () => false),
@@ -10052,7 +10060,16 @@ function positionedIn(
     anchoring,
     containing.style.direction === 'rtl',
   );
-  const alignY = selfAligned(box, true, cbY, cbHeight, top, bottom, anchoring);
+  const alignY = selfAligned(
+    box,
+    true,
+    cbY,
+    cbHeight,
+    top,
+    bottom,
+    anchoring,
+    framed.any && ROWS_MIRRORED.has(containing),
+  );
   if (alignX) {
     left = alignX.startInset;
     right = alignX.endInset;
@@ -10728,14 +10745,19 @@ function gridArea(
     pad.width,
     mirror !== undefined,
   );
+  // and rows put back across a `vertical-lr` frame from its bottom
+  const down = framed.any ? ROWS_MIRRORED.get(containing) : undefined;
   const [y, height] = areaSpan(
     style.gridRowStart,
     style.gridRowEnd,
-    tracks.rows,
+    down === undefined
+      ? tracks.rows
+      : tracks.rows.map(([a, b]) => [down - b, down - a]),
     tracks.rowLines,
     containing.contentY,
     pad.y,
     pad.height,
+    down !== undefined,
   );
   return { x, y, width, height };
 }
@@ -11283,6 +11305,9 @@ function staticAlignment(
       if (rows ? fill : track) across = 1 - across;
       if (rows ? track : fill) down = 1 - down;
     }
+    // and its start down is its far edge where a `vertical-lr` frame put
+    // its rows back across (`ROWS_MIRRORED`)
+    if (framed.any && ROWS_MIRRORED.has(container)) down = 1 - down;
     return { across, down };
   }
   const justify = style.justifyContent;
