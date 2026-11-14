@@ -175,8 +175,11 @@ export async function throughWorker(
   const destination = destinationOf(request);
   if (doc && destination) {
     doc.cspScan(request.element);
+    // sent securely where the document's policies upgrade its insecure
+    // requests (Upgrade Insecure Requests, 4.1)
+    const sent = doc.csp.upgrade(request.url);
     const csp = {
-      url: request.url,
+      url: sent,
       destination,
       nonce: request.element ? doc.nonceOf(request.element) : '',
     };
@@ -184,23 +187,28 @@ export async function throughWorker(
     // violation is of, and not at the element that asked (CSP 3, 4.1.2,
     // "create a violation object for request": it has no element)
     if (!doc.csp.request(csp, null)) return null;
-    // and at each hop a redirect makes, before it is asked for
-    const asked = doc.csp.policies.length
-      ? {
-          ...request,
-          nextHop: (to: string) =>
-            doc.csp.request(csp, null, [to]) ? to : null,
-        }
-      : request;
+    // and at each hop a redirect makes, before it is asked for: under a
+    // policy, or the insecure requests policy a frame or a worker inherited
+    const asked =
+      doc.csp.policies.length || doc.csp.upgrades
+        ? {
+            ...request,
+            url: sent,
+            nextHop: (to: string) => {
+              const upgraded = doc.csp.upgrade(to);
+              return doc.csp.request(csp, null, [upgraded]) ? upgraded : null;
+            },
+          }
+        : request;
     const result = (await answer(scripts, asked, host)) as {
       url?: string;
       redirects?: string[];
     } | null;
     if (result && typeof result === 'object') {
-      const final = result.url ?? request.url;
+      const final = result.url ?? sent;
       const through = result.redirects?.length
         ? [...result.redirects.slice(1), final]
-        : final === request.url
+        : final === sent
           ? []
           : [final];
       if (through.length && !doc.csp.request(csp, null, through)) {

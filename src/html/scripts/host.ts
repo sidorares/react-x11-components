@@ -489,6 +489,10 @@ export interface WorkerInit {
    *  them, which a worker whose script is a blob's or a `data:` URL's has
    *  (CSP 3, 4.2.1). */
   csp?: [string, string][];
+  /** Whether its owner upgrades its insecure requests, which a worker's own
+   *  are then too, whatever its policies say (Upgrade Insecure Requests,
+   *  3.3). */
+  upgrades?: boolean;
   /** A shared worker's (HTML 10.2.6.4), whose global takes connections
    *  rather than messages of its own. */
   shared?: boolean;
@@ -5291,6 +5295,10 @@ export class DomHost {
           WorkerInit,
           'source' | 'origin'
         >;
+        // its script asked for securely where the document's policies
+        // upgrade insecure requests (Upgrade Insecure Requests, 4.1)
+        this.cspScan();
+        init.url = this.csp.upgrade(String(init.url));
         // the facade asks first, for the error a page should see, and what
         // it hands over is a page's to change
         if (!this._workerAllowed(String(init.url), typeof b === 'string')) {
@@ -5336,6 +5344,7 @@ export class DomHost {
               : 'content-security-policy-report-only',
             p.text,
           ]),
+          ...(this.csp.upgrades && { upgrades: true }),
         });
       }
       case 'workerPost':
@@ -9337,6 +9346,13 @@ export class DomHost {
     // the page in itself without end (HTML 7.8.1, the iframe's "process the
     // iframe attributes", an ancestor's URL)
     if (src && src.split('#')[0] === this.url.split('#')[0]) src = null;
+    // sent securely where its document's policies upgrade insecure requests,
+    // a frame's navigation as much as a subresource (Upgrade Insecure
+    // Requests, 4.1: a nested browsing context's)
+    if (src) {
+      this.cspScan(frame);
+      src = this.csp.upgrade(src);
+    }
     // nor one its document's policies refuse (`frame-src`, CSP 3, 4.2.4): it
     // shows nothing of what it was sent to, and still hears its `load`
     const destination = frameDestination(frame);
@@ -9405,6 +9421,18 @@ export class DomHost {
               // and where it was made from, under the frame's referrer
               // policy or its document's (HTML 2.5.5)
               referrer: this._frameReferrer(frame, src),
+              // each hop a redirect makes sent securely where the policies
+              // upgrade, and asked of them before it is sent
+              ...(this.csp.policies.length && {
+                nextHop: (to: string) => {
+                  const upgraded = this.csp.upgrade(to);
+                  return this.csp.request({ url: src!, destination }, frame, [
+                    upgraded,
+                  ])
+                    ? upgraded
+                    : null;
+                },
+              }),
             },
             new AbortController().signal,
             this._frameSandbox(frame),
@@ -10805,6 +10833,12 @@ export class DomHost {
         origin: () => this._origin(),
         address: () => this.url,
         policies: () => this._cspPolicies(),
+        // `ws:` as `wss:` where the document's policies upgrade insecure
+        // requests
+        upgrade: (url) => {
+          this.cspScan();
+          return this.csp.upgrade(url);
+        },
         log: (level, text) => this._seams.log(level, text),
         tell: (name, input) => {
           if (!this._disposed) this.entries?.call(name, input);
@@ -12142,6 +12176,9 @@ export class DomHost {
       referrerPolicyOf(request.referrerPolicy) || this.documentReferrerPolicy();
     this.cspScan();
     for (;;) {
+      // sent securely where the document's policies upgrade its insecure
+      // requests, at each hop (Fetch 4.1, "main fetch", step 4)
+      if (this.csp.upgrades) hop = { ...hop, url: this.csp.upgrade(hop.url) };
       // held to the document's policies at each hop, and reported by the URL
       // it was first asked for (CSP 3, 4.1.2; Fetch 4.4, step 15)
       if (
@@ -12306,9 +12343,12 @@ export class DomHost {
     const keeper = this._seams.serviceWorkers;
     // no origin of its own to be a client of any scope in
     if (!(sandbox & SB_ORIGIN) && keeper?.controls(request.url)) {
+      // what crosses to the worker's thread is data: the hop a redirect
+      // makes is asked of again as its answer comes back
+      const { nextHop: _hop, ...data } = request;
       const answered = await keeper.navigation(
         {
-          ...request,
+          ...data,
           mode: 'navigate',
           destination: request.destination ?? 'iframe',
           credentials: 'include',

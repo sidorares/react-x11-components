@@ -361,6 +361,8 @@ host.referrerPolicy = referrerPolicyOf(init.referrerPolicy);
 // and its policies, which one fetched has from its response's headers
 // instead (`importScript`)
 if (/^(blob|data):/i.test(init.url)) host.csp.addHeaders(init.csp ?? []);
+// and its owner's insecure requests policy, whatever its own says
+host.csp.upgradeInherited = !!init.upgrades;
 /** What the worker's own script is to Fetch (HTML 10.2.5.1). */
 const OWN_SCRIPT = {
   destination: init.service

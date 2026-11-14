@@ -572,6 +572,24 @@ function prefixedHashMatches(
 export const wantsSample = (list: readonly string[]): boolean =>
   has(list, "'report-sample'");
 
+/** The URL an insecure request is sent to under `upgrade-insecure-requests`
+ *  (Upgrade Insecure Requests, 4.1, "Upgrade request to a potentially
+ *  trustworthy URL"): an `http:` one as `https:` and a `ws:` one as `wss:`,
+ *  port 80 as 443, any other port as it was. Any other URL is as it was. */
+export function upgradedUrl(url: string): string {
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1]?.toLowerCase();
+  if (scheme !== 'http' && scheme !== 'ws') return url;
+  let u: InstanceType<typeof URL>;
+  try {
+    u = new URL(url);
+  } catch {
+    return url;
+  }
+  // a default port is none in a URL, so port 80 comes to https's own
+  u.protocol = scheme === 'http' ? 'https:' : 'wss:';
+  return u.href;
+}
+
 /** A URL as a report may carry it (CSP 3, 5.4, "Strip URL for use in
  *  reports"): of a scheme the network has no say over, the scheme alone; of
  *  any other, with no fragment and no credentials. */
