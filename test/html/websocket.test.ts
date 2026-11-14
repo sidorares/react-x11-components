@@ -12,7 +12,11 @@ import { act, cleanup, renderX11 } from 'react-x11/test';
 
 import { Html, preloadHtmlScripts } from '../../src/html/index.js';
 import { CookieJar } from '../../src/html/cookies.js';
-import { HtmlNetwork, stallClock } from '../../src/html/network.js';
+import {
+  addressSpaceOf,
+  HtmlNetwork,
+  stallClock,
+} from '../../src/html/network.js';
 import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
 import { NO_WEBSOCKET } from '../../src/html/socket.js';
 import type { HtmlWebSocket } from '../../src/html/socket.js';
@@ -592,6 +596,77 @@ runtimeTest(
       assert.equal(chat.headers['sec-websocket-protocol'], 'chat, other');
     } finally {
       channels.unsubscribe('undici:websocket:open', heard);
+      await server.stop();
+    }
+  },
+);
+
+test('an address space is classified as Local Network Access has it, loopback, local and public', () => {
+  assert.deepEqual(
+    [
+      '127.0.0.1',
+      '127.8.9.1',
+      '::1',
+      '10.1.2.3',
+      '172.20.0.1',
+      '192.168.1.5',
+      '169.254.0.1',
+      'fd00::1',
+      'fe80::1',
+      '::ffff:192.168.0.1',
+      '8.8.8.8',
+      '172.32.0.1',
+      '2001:db8::1',
+    ].map(addressSpaceOf),
+    [
+      'loopback',
+      'loopback',
+      'loopback',
+      'local',
+      'local',
+      'local',
+      'local',
+      'local',
+      'local',
+      'local',
+      'public',
+      'public',
+      'public',
+    ],
+  );
+});
+
+runtimeTest(
+  "a socket's targetAddressSpace is an enumeration, and one that is not where the host is fails the connection",
+  async () => {
+    const server = await wsServer({ text: (s, t) => s.sendText(t) });
+    try {
+      const network = new HtmlNetwork({});
+      const ws = `ws://127.0.0.1:${server.port}/echo`;
+      const p = await page(
+        LOG +
+          'var bad = [];' +
+          '["private", "unknown"].forEach(function (s) { try { new WebSocket("' +
+          ws +
+          '", { targetAddressSpace: s }); } catch (e) { bad.push(e.name); } });' +
+          'log("bad", bad.join(","));' +
+          `var a = new WebSocket("${ws}", { targetAddressSpace: "loopback" });` +
+          'a.onopen = function () { log("loopback open"); a.close(); };' +
+          `var b = new WebSocket("${ws}", { targetAddressSpace: "public" });` +
+          'b.onerror = function () { log("public refused", b.readyState); };',
+        {
+          url: `http://127.0.0.1:${server.port}/page.html`,
+          webSocket: network.webSockets(
+            `http://127.0.0.1:${server.port}/page.html`,
+          ),
+        },
+      );
+      assert.equal(await p.until('bad|'), 'TypeError,TypeError');
+      await p.until('loopback open');
+      assert.equal(await p.until('public refused|'), '3');
+      // the one refused asked the server for nothing
+      assert.equal(server.handshakes.length, 1);
+    } finally {
       await server.stop();
     }
   },

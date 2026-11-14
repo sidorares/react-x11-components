@@ -28,6 +28,10 @@ export interface WebSocketConnectRequest {
   /** The subprotocols the page offers, in its order
    *  (`Sec-WebSocket-Protocol`). */
   protocols: string[];
+  /** The address space the page expects the host to be in (Local Network
+   *  Access, `targetAddressSpace`): a connection to a host in another is
+   *  failed. Absent where the page named none. */
+  targetAddressSpace?: 'local' | 'loopback' | 'public';
 }
 
 /** What the connection was established with. */

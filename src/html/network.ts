@@ -2685,6 +2685,73 @@ function socketTurn(
 
 /** A connection over the runtime's `WebSocket`, its events told in the
  *  order they came. */
+/**
+ * The address space a URL's host resolves into (Local Network Access): a
+ * loopback address, a private or link-local one, which is `local`, or any
+ * other, which is `public`. Null where it does not resolve, or the runtime
+ * cannot ask.
+ */
+async function addressSpaceOfHost(
+  url: string,
+): Promise<'local' | 'loopback' | 'public' | null> {
+  let host: string;
+  try {
+    host = new URL(url).hostname.replace(/^\[|\]$/g, '');
+  } catch {
+    return null;
+  }
+  let address = host;
+  if (!/^[\d.]+$/.test(host) && !host.includes(':')) {
+    try {
+      // through `dns.lookup`, which is what the runtime's own connections
+      // ask, and what a host that maps names of its own patches
+      type Lookup = {
+        lookup(
+          host: string,
+          done: (error: unknown, address: string) => void,
+        ): void;
+      };
+      // the module object, whose `lookup` a patch replaces, and not the
+      // namespace's binding, which keeps the first one
+      const ns = await nodeModule<Lookup & { default?: Lookup }>('dns');
+      const dns = ns.default ?? ns;
+      address = await new Promise<string>((resolve, reject) =>
+        dns.lookup(host, (error, found) =>
+          error ? reject(error) : resolve(found),
+        ),
+      );
+    } catch {
+      return null;
+    }
+  }
+  return addressSpaceOf(address);
+}
+
+/** An IP address's space, IPv4 or IPv6. */
+export function addressSpaceOf(
+  address: string,
+): 'local' | 'loopback' | 'public' {
+  const v4 = /^(?:::ffff:)?(\d+)\.(\d+)\.(\d+)\.(\d+)$/i.exec(address);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 127) return 'loopback';
+    if (
+      a === 10 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254) ||
+      (a === 100 && b >= 64 && b <= 127)
+    ) {
+      return 'local';
+    }
+    return 'public';
+  }
+  const v6 = address.toLowerCase();
+  if (v6 === '::1') return 'loopback';
+  if (/^f[cd]/.test(v6) || /^fe[89ab]/.test(v6)) return 'local';
+  return 'public';
+}
+
 function runtimeSocket(
   request: WebSocketConnectRequest,
   events: WebSocketEvents,
@@ -2812,8 +2879,25 @@ function runtimeSocket(
       });
   };
   // the handshake's answer is watched for where there is a jar to keep its
-  // cookies in, before the first socket is made
-  void Promise.all([turn.ready, jar && watchHandshakes()]).then(make);
+  // cookies in, before the first socket is made; and a host the page named
+  // an address space for is in that one, or the connection fails (Local
+  // Network Access, `targetAddressSpace`)
+  const space = request.targetAddressSpace;
+  void Promise.all([
+    turn.ready,
+    jar && watchHandshakes(),
+    space ? addressSpaceOfHost(request.url) : null,
+  ]).then(([, , found]) => {
+    if (space && found !== space) {
+      done = true;
+      turn.done();
+      events.failed(
+        `the host is in the ${found ?? 'unknown'} address space, not the ${space} one the page named.`,
+      );
+      return;
+    }
+    make();
+  });
   return {
     send(data) {
       ws?.send(data);
