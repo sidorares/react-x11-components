@@ -5592,7 +5592,9 @@ it was laid out at. `track-reverse` fills the lanes from the last, and
 itself and at that edge of the container under `normal` alignment. Along
 the lanes, `align-content` (`justify-content` for row lanes) places the
 stacking range as a whole, and an item's own alignment moves it in the hole
-after it; across them, items align in their lanes as a grid's do, and
+after it, which for the last in a lane runs out to the container's far
+edge, as the engines have it, where the specification stops at the
+stacking range's. Across the lanes, items align as a grid's do, and
 `flow-start` and `flow-end` follow the order the lanes fill in. An item's
 negative margin can take back the gap after it, as the engines have it,
 where the specification floors its size at nought first; a lane's running
@@ -5603,10 +5605,16 @@ absolutely positioned child's static position turns round with the lanes.
 The `grid-lanes` shorthand sets the lanes' template, an area string and the
 direction. Beside an auto repetition every track has to be a fixed size, as
 CSS Grid 2's grammar has it, in a grid as much as in grid lanes:
-`max-content repeat(auto-fill, 100px)` is no track list. Not read yet:
-subgrids in the lanes — an item with `subgrid` is laid out as a grid of its
-own — the items' own baseline alignment, fragmentation, and `direction:
-rtl`, which no grid here reads either.
+`max-content repeat(auto-fill, 100px)` is no track list. A grid item of the
+lanes with `subgrid` on their axis takes the lanes it spans for its tracks
+(3.2), and its items size them in its place: where it has a line of its
+own, in the lanes it spans, with its margin, border and padding at its
+edges, and where the lanes place it, each wherever it could go in any of
+them (3.4.1), its lines then taking none of the lanes' names. Not read yet:
+a subgrid of the stacking axis, which the specification turns into lanes
+of its own, and so a grid lanes container that subgrids its parent; the
+items' own baseline alignment; fragmentation; and `direction: rtl`, which
+no grid here reads either.
 A table's borders collapse where it asks: one border along each edge of its
 grid, centred on it, chosen from the cells, rows, row groups, columns,
 column groups and the table that meet there as CSS 2.1 17.6.2.1 chooses —
