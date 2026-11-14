@@ -80,7 +80,10 @@ import {
 import { svgPaint } from './shapes.js';
 import { parseBasicShape } from './basic-shape.js';
 import { parseObjectViewBox } from './object-view-box.js';
-import { parseTextTransform } from './text-transform.js';
+import {
+  parseTextTransform,
+  parseWordSpaceTransform,
+} from './text-transform.js';
 import {
   parseTextBox,
   parseTextBoxEdge,
@@ -853,6 +856,10 @@ export interface ComputedStyle {
    *  each at most once and in that order. One string, so two styles
    *  transform alike where it is the same. */
   textTransform: string;
+  /** `word-space-transform` (CSS Text 4, 2.2) as written and checked
+   *  (`parseWordSpaceTransform`): what a zero width space and a `<wbr>`
+   *  are set as. Inherited. */
+  wordSpaceTransform: string;
   letterSpacing: number;
   wordSpacing: number;
   /** The shadows its text casts, front to back, as `boxShadow`'s are but
@@ -1773,6 +1780,7 @@ export const INHERITED = [
   'textIndent',
   'textTransform',
   'textBoxEdge',
+  'wordSpaceTransform',
   'textUnderlineOffset',
   'letterSpacing',
   'wordSpacing',
@@ -1945,6 +1953,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     alignBlocks: null,
     textIndent: 0,
     textTransform: 'none',
+    wordSpaceTransform: 'none',
     letterSpacing: 0,
     wordSpacing: 0,
     textShadow: null,
@@ -2367,6 +2376,7 @@ export function inherit(
   out.textIndent = parent.textIndent;
   out.textTransform = parent.textTransform;
   out.textBoxEdge = parent.textBoxEdge;
+  out.wordSpaceTransform = parent.wordSpaceTransform;
   out.letterSpacing = parent.letterSpacing;
   out.wordSpacing = parent.wordSpacing;
   out.textShadow = parent.textShadow;
@@ -4591,6 +4601,11 @@ export function applyDeclaration(
     case 'text-indent': {
       const len = parseLength(value, ctx);
       if (len !== null && len !== AUTO) style.textIndent = len;
+      return;
+    }
+    case 'word-space-transform': {
+      const v = parseWordSpaceTransform(value);
+      if (v !== undefined) style.wordSpaceTransform = v;
       return;
     }
     case 'text-transform': {
@@ -9585,6 +9600,7 @@ const INHERITED_NAMES = new Set<string>([
   'text-indent',
   'text-transform',
   'text-box-edge',
+  'word-space-transform',
   'letter-spacing',
   'word-spacing',
   'white-space',
@@ -10193,6 +10209,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'text-justify': ['textJustify'],
   'text-indent': ['textIndent'],
   'text-transform': ['textTransform'],
+  'word-space-transform': ['wordSpaceTransform'],
   'letter-spacing': ['letterSpacing'],
   'word-spacing': ['wordSpacing'],
   'font-variant': [

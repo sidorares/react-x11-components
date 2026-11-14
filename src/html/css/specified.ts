@@ -33,7 +33,10 @@ import {
   shapeThresholdSpecified,
 } from './shape-outside.js';
 import { parseDecorationInset } from './decoration-inset.js';
-import { parseTextTransform } from './text-transform.js';
+import {
+  parseTextTransform,
+  parseWordSpaceTransform,
+} from './text-transform.js';
 import {
   parseTextBox,
   parseTextBoxEdge,
@@ -254,6 +257,12 @@ export function specifiedValue(
     return parts.length === 2 && parts[0] === parts[1]
       ? parts[0]
       : parts.join(' ');
+  }
+  // as written, once it is one (CSS Text 4, 2.2)
+  if (name === 'word-space-transform') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return parseWordSpaceTransform(word) ?? null;
   }
   // its keywords each at most once, in the order CSS Text 3, 2.1 gives them
   if (name === 'text-transform') {
