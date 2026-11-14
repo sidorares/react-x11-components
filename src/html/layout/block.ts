@@ -77,6 +77,8 @@ import {
   scrolls,
   scrollsAlong,
 } from '../css/style.js';
+import { viewBoxIn } from '../css/object-view-box.js';
+import type { ObjectViewBox } from '../css/object-view-box.js';
 import {
   about,
   drawnThrough,
@@ -5213,7 +5215,11 @@ export function replacedRatio(box: Box): number {
  * through this, the flex item's least size and basis among them.
  */
 export function ownIntrinsic(box: Box): Intrinsic | null {
-  if (!contained(box, CONTAIN_SIZE)) return box.intrinsic;
+  if (!contained(box, CONTAIN_SIZE)) {
+    const own = box.intrinsic;
+    if (!own || !box.style.objectViewBox) return own;
+    return viewedIntrinsic(box, own);
+  }
   const style = box.style;
   return {
     width: style.containIntrinsicWidth ?? 0,
@@ -5221,6 +5227,51 @@ export function ownIntrinsic(box: Box): Intrinsic | null {
     ratio: 0,
     missing: 0,
   };
+}
+
+/**
+ * Where a replaced element's `object-view-box` is in its content (CSS
+ * Images 5, 6.6), in the device pixels of its natural size, or null where
+ * it has none to stand for: no view box, one of no area, content with no
+ * natural size to resolve it in — an SVG with no width or height — or a
+ * frame, whose 300 by 150 is a default and no size of its content's.
+ */
+export function viewBoxOf(
+  box: Box,
+): { x: number; y: number; width: number; height: number } | null {
+  const view = box.style.objectViewBox;
+  const own = box.intrinsic;
+  if (!view || !own || own.missing || !(own.width > 0 && own.height > 0)) {
+    return null;
+  }
+  if (box.replaced !== 'image' && !(box.replaced === 'frame' && own.ratio)) {
+    return null;
+  }
+  return viewBoxIn(view, own.width, own.height);
+}
+
+/** The natural size a view box gives: its own, and its ratio (`viewBoxOf`),
+ *  kept by the box while its content's size and its view box stand. */
+const VIEWED = new WeakMap<
+  Box,
+  { from: Intrinsic; view: ObjectViewBox; out: Intrinsic }
+>();
+
+function viewedIntrinsic(box: Box, own: Intrinsic): Intrinsic {
+  const view = box.style.objectViewBox!;
+  const kept = VIEWED.get(box);
+  if (kept && kept.from === own && kept.view === view) return kept.out;
+  const at = viewBoxOf(box);
+  const out = at
+    ? {
+        width: at.width,
+        height: at.height,
+        missing: 0,
+        ratio: at.width / at.height,
+      }
+    : own;
+  VIEWED.set(box, { from: own, view, out });
+  return out;
 }
 
 /** A border-box height through any box's ratio into its border-box width
