@@ -6264,15 +6264,19 @@ function alignKeyword(value: string): string | null {
   }
 }
 
+const MATH_FUNCTION = /^(?:calc|min|max|clamp|round|mod|rem|abs|sign)\(/i;
 function borderWidth(value: string, ctx: UnitContext): number | null {
   const kw = BORDER_WIDTH_KEYWORDS[value.trim().toLowerCase()];
   // The keywords are CSS pixels that never pass through `parseLength`, so
   // they take the display scale here.
   if (kw !== undefined) return snapBorderWidth(kw * ctx.scale);
   const len = parseLength(value, ctx);
+  if (typeof len !== 'number') return null;
   // a negative width is not a width: the declaration is dropped, and the
-  // one before it stands (CSS 2.1 8.5.1)
-  return typeof len === 'number' && len >= 0 ? snapBorderWidth(len) : null;
+  // one before it stands (CSS 2.1 8.5.1); but a math function is clamped
+  // to the range the property takes (CSS Values 4, 10.12)
+  if (len < 0) return MATH_FUNCTION.test(value.trim()) ? 0 : null;
+  return snapBorderWidth(len);
 }
 
 /**

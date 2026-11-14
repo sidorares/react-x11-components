@@ -547,7 +547,8 @@ export function borderDeclared(
   const v = value.trim();
   if (CSS_WIDE.test(v)) return namesOf(prop).map((n) => [n, v.toLowerCase()]);
   // `border-image` is read as its longhands only where `cssText` wrote it
-  if (prop === 'border-image') return v.toLowerCase() === 'none' ? IMAGE_RESET : null;
+  if (prop === 'border-image')
+    return v.toLowerCase() === 'none' ? IMAGE_RESET : null;
   const canonical = borderSpecified(prop, v);
   return canonical ? borderLonghands(prop, canonical) : null;
 }
