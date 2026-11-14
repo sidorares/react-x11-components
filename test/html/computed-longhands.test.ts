@@ -79,3 +79,24 @@ test('the longhands a page seldom reads compute as Chrome writes them', async ()
     'auto',
   ]);
 });
+
+test('a computed style is read only, and an element in no document reads empty strings', async () => {
+  const page = await scriptedPage(
+    `<div id="e"></div><script>
+      var cs = getComputedStyle(document.getElementById('e'));
+      var threw = [];
+      try { cs.setProperty('color', 'red'); } catch (x) { threw.push(x.name); }
+      try { cs.removeProperty('color'); } catch (x) { threw.push(x.name); }
+      var gone = getComputedStyle(document.createElement('div'));
+      console.log('out ' + JSON.stringify([threw, gone.color, gone.mask, gone.noSuchProperty === undefined]));
+    </script>`,
+  );
+  const out = JSON.parse(await page.until('out'));
+  page.result.unmount();
+  assert.deepEqual(out, [
+    ['NoModificationAllowedError', 'NoModificationAllowedError'],
+    '',
+    '',
+    true,
+  ]);
+});
