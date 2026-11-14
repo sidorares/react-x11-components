@@ -6331,6 +6331,24 @@ is a ring of two shades that change on the same line. A dotted, dashed,
 double, groove or ridge side on a rounded box has its border drawn
 straight.
 
+A script's `el.style` takes the borders' properties only as their grammars
+have them, as Chromium keeps them (`borders-specified.ts`): a width, a
+style or a colour of each side, `thin`, `medium`, `thick`, `hairline` or a
+length not below nought, `0` as `0px`; a colour in lower case, a hex, an
+`rgb()` or an `hsl()` as the `rgb()` it is, its alpha to the eighth bit;
+a corner's radius of one or two values, the second left out where it is
+the first. `border`, a side's, `border-width`, `border-style`,
+`border-color` and `border-radius` are set as their longhands — `border`
+sets `border-image`'s back to their initial values as well — and read
+back from them as short as they go, the initial ones left out, so
+`border: green double thin` reads `thin double green`. `cssText`, and the
+`style` attribute a script's change writes, have the shorthand where the
+block declares all its longhands, as CSSOM serializes a declaration block,
+those of more longhands first: `border: 1px solid` with `border-top-width`
+changed after it is `border-width: 2px 1px 1px; border-style: solid;
+border-color: currentcolor; border-image: none`. `background-color` is a
+colour as a border's is.
+
 **`corner-shape`** (CSS Borders 4) draws a corner's radii in another curve:
 `round`, `squircle`, `bevel`, `scoop`, `notch`, `square`, or
 `superellipse()` of a number or an infinity — 1 for round, 2 for a
