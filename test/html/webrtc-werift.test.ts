@@ -1554,6 +1554,48 @@ test('an RTCRtpScriptTransform on each side sees every VP8 frame in its worker, 
   }
 });
 
+test('a received video track’s settings are the size of what it last decoded, 0 by 0 before its first frame', async () => {
+  const logs = await run(`
+    ${CALL}
+    var canvas = document.createElement('canvas');
+    canvas.width = 160; canvas.height = 120;
+    document.documentElement.appendChild(canvas);
+    var g = canvas.getContext('2d');
+    var n = 0;
+    var timer = setInterval(function () {
+      n++;
+      g.fillStyle = 'rgb(' + (n * 20 % 255) + ',80,120)';
+      g.fillRect(0, 0, canvas.width, canvas.height);
+    }, 50);
+    var stream = canvas.captureStream();
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.addTrack(stream.getVideoTracks()[0], stream);
+    var track = new Promise(function (r) { pc2.ontrack = function (e) { r(e.track); }; });
+    await call(pc1, pc2);
+    var remote = await track;
+    var first = remote.getSettings();
+    log('before', first.width, first.height);
+    function size() { var s = remote.getSettings(); return s.width + 'x' + s.height; }
+    await wait('decoded', function () { return size() === '160x120'; });
+    log('decoded', size());
+    canvas.width = 240; canvas.height = 160;
+    await wait('resized', function () { return size() === '240x160'; });
+    log('resized', size());
+    clearInterval(timer);
+    pc1.close(); pc2.close();
+    log('ended', size());
+  `);
+  for (const line of [
+    'before|0|0',
+    'decoded|160x120',
+    'resized|240x160',
+    // an ended track keeps what it last was
+    'ended|240x160',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
 test('createEncodedStreams() hands the page each side’s VP8 frames on streams of its own, and what it writes back is what is sent and decoded', async () => {
   const logs = await run(`
     ${CALL}

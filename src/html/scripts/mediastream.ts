@@ -265,6 +265,9 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     home: Home | null;
     /** Whether it was handed to another realm (`[[IsDetached]]`). */
     detached: boolean;
+    /** Whether it is a peer connection receiver's, whose source's settings
+     *  are what the far side sends. */
+    remote?: boolean;
   }
 
   /**
@@ -356,6 +359,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
       c.settings = s.settings;
       c.capabilities = s.capabilities;
       c.constraints = s.constraints;
+      c.remote = s.remote;
       return copy;
     }
     stop(): void {
@@ -372,7 +376,20 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
       return { ...slotOf(this, (s) => s.track).constraints };
     }
     getSettings(): Any {
-      return { ...slotOf(this, (s) => s.track).settings };
+      const s: TrackSlot = slotOf(this, (x) => x.track);
+      // a received video track is as large as the last frame its source
+      // put together, and 0 by 0 before the first; an ended one keeps what
+      // it last was
+      if (s.remote && s.kind === 'video' && s.state === 'live' && !s.home) {
+        const text = call('mdSettings', s.source);
+        const now = typeof text === 'string' && text ? JSON.parse(text) : {};
+        s.settings = {
+          ...s.settings,
+          width: Number(now.width) || 0,
+          height: Number(now.height) || 0,
+        };
+      }
+      return { ...s.settings };
     }
     /** Settled by the host, which fits the track's source to the
      *  constraints (`constraints.ts`): the settings they came to, or an
@@ -1225,8 +1242,11 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     interfaces,
     mediaDevices: deps.secure ? mediaDevices : null,
     internals: {
-      track: (kind, source, label, muted) =>
-        makeTrack(kind, source, label, muted),
+      track: (kind, source, label, muted) => {
+        const track = makeTrack(kind, source, label, muted);
+        apply(wmGet, slots, [track]).remote = true;
+        return track;
+      },
       sourceOf: (track: Any) => {
         const s =
           track && typeof track === 'object'

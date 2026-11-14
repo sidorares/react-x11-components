@@ -208,6 +208,7 @@ type SyncAsk =
        *  (`Sec-Fetch-Dest`, `-Mode`). */
       destination?: string;
       mode?: FetchMode;
+      credentials?: 'omit' | 'same-origin' | 'include';
     }
   | { id: number; request: FetchRequest }
   | { id: number; abort: true }
@@ -396,7 +397,7 @@ export class PageWorkers implements PageWorkersLike {
       const own = m.destination !== undefined;
       void (
         this._seams.script?.(id, m.url, m.type) ??
-        this._load(m.url, id, m.destination, m.mode, own)
+        this._load(m.url, id, m.destination, m.mode, own, m.credentials)
       ).then((loaded) =>
         answer(
           typeof loaded === 'object' && loaded !== null
@@ -586,6 +587,7 @@ export class PageWorkers implements PageWorkersLike {
     destination = 'script',
     mode: FetchMode = 'no-cors',
     own = false,
+    credentials?: 'omit' | 'same-origin' | 'include',
   ): Promise<
     | string
     | null
@@ -600,7 +602,15 @@ export class PageWorkers implements PageWorkersLike {
     }
     try {
       const response = await this._seams.fetch(
-        { url, method: 'GET', headers: [], body: null, mode, destination },
+        {
+          url,
+          method: 'GET',
+          headers: [],
+          body: null,
+          mode,
+          destination,
+          ...(credentials ? { credentials } : {}),
+        },
         new AbortController().signal,
         id,
       );

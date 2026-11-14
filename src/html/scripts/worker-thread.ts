@@ -371,6 +371,10 @@ const OWN_SCRIPT = {
       ? 'sharedworker'
       : 'worker',
   mode: init.type === 'module' ? 'cors' : 'same-origin',
+  // a module worker's own script with the credentials its options name
+  ...(init.type === 'module' && init.credentials
+    ? { credentials: init.credentials }
+    : {}),
 } as const;
 const importScript = (
   url: string,
@@ -442,6 +446,7 @@ const engine = new ScriptEngine(host.bridge, {
           // a module worker's graph is fetched for the worker (HTML 8.1.5.1,
           // "fetch a module worker script graph"), a JSON or text one as such
           mode: 'cors',
+          credentials: init.credentials ?? 'same-origin',
           destination: type === 'javascript' ? OWN_SCRIPT.destination : type,
         },
         new AbortController().signal,

@@ -111,7 +111,6 @@ import {
   scriptForOther,
   scriptTypeOf,
   namespaceFor,
-  namespaceIn,
   namespaceOf,
   ATTRIBUTE_SPACES,
   CDATA_SECTIONS,
@@ -140,6 +139,7 @@ import {
   withoutHighlights,
   withoutPseudoElements,
 } from '../css/specified.js';
+import { ALIGN_SHORTHANDS, ALIGN_SPECIFIED } from '../css/align-specified.js';
 import { eventPath, retarget, shadowIncludingHolds } from './event-path.js';
 import { NO_MODIFIERS } from '../dom-events.js';
 import {
@@ -504,6 +504,9 @@ export interface WorkerInit {
    *  are then too, whatever its policies say (Upgrade Insecure Requests,
    *  3.3). */
   upgrades?: boolean;
+  /** What a module worker's graph is fetched with (`WorkerOptions`): its
+   *  owner's cookies by default, none, or any origin's. */
+  credentials?: 'omit' | 'same-origin' | 'include';
   /** A shared worker's (HTML 10.2.6.4), whose global takes connections
    *  rather than messages of its own. */
   shared?: boolean;
@@ -1430,10 +1433,18 @@ const XML_QUERY = {
  *  around it says whose it is. A `<script>` is HTML's here, which is where
  *  a page's scripts are run from. */
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const inDrawing = (el: Element): boolean =>
-  el.name !== 'script' &&
-  !MADE_AS_HTML.has(el) &&
-  namespaceIn(el.parent) === SVG_NS;
+/** The namespace an element the parser made has where it stands, where
+ *  that is SVG's or MathML's (HTML 13.2.6.5), by one walk up: a `<math>`
+ *  and what is in one that is no HTML integration point's are MathML's,
+ *  and in a drawing all but a `<script>` (`inDrawing`) are SVG's. */
+const MATHML_NS = 'http://www.w3.org/1998/Math/MathML';
+const foreignNamespace = (el: Element): string | undefined => {
+  if (MADE_AS_HTML.has(el)) return undefined;
+  const found = namespaceOf(el);
+  if (found === MATHML_NS) return found;
+  if (found === SVG_NS && el.name !== 'script') return found;
+  return undefined;
+};
 
 /** What a copy keeps of what was made of what it copies, which is a tree
  *  alike to it: that it was made as HTML, which in a drawing nothing else
@@ -1737,10 +1748,69 @@ function serializeDeclarations(
  *  `style` attribute, or what a rule's braces hold. */
 function declarationsIn(block: string | null | undefined) {
   if (!block) return [];
-  return parseDeclarations(block).map((d) => {
+  const out = parseDeclarations(block).flatMap((d) => {
     const value = tidyValue(d.value);
-    return value === d.value ? d : { ...d, value };
+    const decl = value === d.value ? d : { ...d, value };
+    // what a block says of box alignment, the gaps and flex layout is
+    // held to their grammars and its shorthands read as their longhands,
+    // as `el.style` sets them (`align-specified.ts`)
+    if (!ALIGN_SPECIFIED.has(decl.prop)) return [decl];
+    const specified = specifiedValue(decl.prop, value);
+    if (specified === null) return [];
+    if (specified === undefined) return [decl];
+    const longhands = expandShorthand(decl.prop, specified);
+    return longhands
+      ? longhands.map(([prop, v]) => ({
+          prop,
+          value: v,
+          important: decl.important,
+        }))
+      : [{ ...decl, value: specified }];
   });
+  // and of those, only a longhand's last declaration stands, as a block
+  // that parses one again keeps it (CSSOM 6.7, "set a CSS declaration")
+  if (!out.some((d) => ALIGN_LONGHAND.has(d.prop))) return out;
+  return out.filter(
+    (d, i) =>
+      !ALIGN_LONGHAND.has(d.prop) ||
+      !out.some((e, j) => j > i && e.prop === d.prop),
+  );
+}
+
+/** The longhands of the alignment, gap and flex shorthands. */
+const ALIGN_LONGHAND = new Set(Object.values(ALIGN_SHORTHANDS).flat());
+
+/** A block's declarations with the alignment, gap and flex shorthands
+ *  said where the block has all of a shorthand's longhands, each as
+ *  important as the rest, and their value makes one (CSSOM 6.7.2,
+ *  "serialize a CSS declaration block"). */
+function withAlignShorthands(
+  decls: { prop: string; value: string; important: boolean }[],
+): { prop: string; value: string; important: boolean }[] {
+  if (!decls.some((d) => ALIGN_LONGHAND.has(d.prop))) return decls;
+  const out: { prop: string; value: string; important: boolean }[] = [];
+  const said = new Set<string>();
+  for (const d of decls) {
+    if (said.has(d.prop)) continue;
+    const shorthand = Object.keys(ALIGN_SHORTHANDS).find((s) =>
+      ALIGN_SHORTHANDS[s].includes(d.prop),
+    );
+    const names = shorthand ? ALIGN_SHORTHANDS[shorthand] : null;
+    const parts = names?.map((n) => decls.find((e) => e.prop === n));
+    if (shorthand && parts!.every((p) => p && p.important === d.important)) {
+      const value = composeShorthand(
+        shorthand,
+        (n) => decls.find((e) => e.prop === n)?.value ?? null,
+      );
+      if (value) {
+        out.push({ prop: shorthand, value, important: d.important });
+        for (const n of names!) said.add(n);
+        continue;
+      }
+    }
+    out.push(d);
+  }
+  return out;
 }
 
 /** A number of a value as CSS serializes it: a fraction with a leading
@@ -1851,7 +1921,7 @@ function declarationNames(block: string | null | undefined): string {
 
 /** A block as CSSOM serializes it (`serializeDeclarations`). */
 function declarationText(block: string | null | undefined): string {
-  return serializeDeclarations(declarationsIn(block));
+  return serializeDeclarations(withAlignShorthands(declarationsIn(block)));
 }
 
 /**
@@ -4170,7 +4240,7 @@ export class DomHost {
         if (node instanceof Element) {
           // a namespace the element was made in, where it says one: `~`
           // for none
-          const ns = node.namespace ?? (inDrawing(node) ? SVG_NS : undefined);
+          const ns = node.namespace ?? foreignNamespace(node);
           return ns === undefined
             ? `1|${node.name}`
             : `1|${node.name}\u0000${ns || '~'}`;

@@ -976,7 +976,11 @@ charset }` — the `<script>` is the request's `element`, and the root
   `type: 'css'` is a `TypeError`, and nothing is asked for. A module worker
   hears what was posted to it, and a module shared worker its `connect`, once
   its graph has run, as a classic one hears them after its script: what sets
-  `onconnect` is often a module the worker's script imports.
+  `onconnect` is often a module the worker's script imports. A module
+  worker's graph is fetched with the `credentials` its options name, its
+  owner's cookies by default. A `SharedWorker` that names a shared worker
+  already running with another `type`, `credentials`, `extendedLifetime` or
+  `sameSiteCookies` connects to nothing and hears `error`, a task later.
   Each is a module of its own beside the script at the same URL. Another
   type, `type: 'javascript'` among them, is a `TypeError`, and an attribute
   but `type` a `SyntaxError` in an `import` and a `TypeError` in an
@@ -1529,7 +1533,9 @@ gives it, a stream played in a `<video>` or an `<audio>` (`srcObject`),
 and `getDisplayMedia`. Media flows over a connection whose stack carries
 it, as `HtmlNetwork.webRTC`'s does (below): a remote track is muted until
 its first packet and again once none has come for two seconds, plays in a
-`<video>` or an `<audio>` (`srcObject`), and its receiver's
+`<video>` or an `<audio>` (`srcObject`), a video one's `getSettings()` has
+the `width` and `height` of the last frame it put together, 0 by 0 before
+the first, and its receiver's
 `getSynchronizationSources` answers from the packets, an audio one's with
 its level; `getStats` has a sender's outbound-rtp from the answer that
 first negotiated it to send and a receiver's inbound-rtp from its first
@@ -3247,6 +3253,16 @@ A range's offset in a processing instruction counts its data.
 was made, and a form-associated custom element submits what `setFormValue`
 set. A query whose selector ends in a pseudo-element matches nothing rather
 than throwing.
+
+**What the parser makes in a `<math>` is MathML's** (HTML 13.2.6.5): a
+page reads a `<math>` and what it holds as `MathMLElement`s in MathML's
+namespace, but where an HTML integration point holds HTML, an `<mtext>`'s
+or an `<annotation-xml>` whose `encoding` is HTML's. A `MathMLElement` has
+`style`, `dataset`, focus, `tabIndex` and the event handlers, as an SVG
+element has them, and MathML's `<a>` is a `MathMLAnchorElement` with an
+HTML `<a>`'s hyperlink members, followed when it is clicked. What a script
+makes keeps the namespace it was made in. Nothing here lays MathML out as
+MathML Core does yet, so a float in one is still a float.
 
 **A drawing's geometry is worked out from its attributes.** No box stands for
 what an inline `<svg>` holds, so `getBBox`, `getCTM`, `getScreenCTM`,
@@ -5881,6 +5897,17 @@ direction. `@supports` answers a grid property by the same grammar, and
 the cascade reads `grid-template`'s strings with it: a strings' form with
 no slash is taken, and one with `none` or a `repeat()` for its columns, or
 a third group of names between rows, is not.
+The alignment properties, the gaps and the flex properties are held to
+their grammars the same way (`align-specified.ts`), and so is a `style`
+attribute or a rule as CSSOM reads it, which leaves out what its
+property does not take. `first baseline` reads as `baseline`, `legacy`
+before its side, and a unitless zero as `0px`. A place shorthand sets
+its justify value from its align value where it gives none, and sets
+`start` where that is a baseline `justify-content` does not take. `flex`
+sets its three longhands and reads as all three, so `none` is `0 0 auto`
+and a factor alone has a basis of `0%`. `flex-flow` leaves out a `row`
+and a `nowrap`, and `flex-wrap: wrap balance` reads as `balance`. The
+gaps' old names, `grid-gap` and its kin, take what the gaps do.
 Items a row aligns by their first baselines — `align-self` or `align-items`
 `baseline` — meet the lowest of their row's, an item spanning rows meeting
 its first row's, and are not stretched; the row is sized with what that
