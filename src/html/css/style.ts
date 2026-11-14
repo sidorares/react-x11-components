@@ -239,6 +239,9 @@ export interface GridTemplate {
 export interface SubgridNames {
   names: string[][];
   fill: { names: string[][]; after: string[][] } | null;
+  /** The groups as written after `subgrid`, each `repeat()` kept, which
+   *  an element that is no grid reads them as; '' for none. */
+  text: string;
 }
 
 /** `grid-template-areas` (CSS Grid 1, 7.3): how many rows and columns its
@@ -8479,14 +8482,17 @@ function fixedTrack(track: GridTrack): boolean {
  * anything else.
  */
 export function parseSubgrid(value: string): SubgridNames | undefined {
-  const out: SubgridNames = { names: [], fill: null };
+  const out: SubgridNames = { names: [], fill: null, text: '' };
   const parts = value.trim() ? trackParts(value) : [];
   if (!parts) return undefined;
   let into = out.names;
+  const group = (names: readonly string[]) => `[${names.join(' ')}]`;
+  const written: string[] = [];
   for (const part of parts) {
-    const group = lineNames(part);
-    if (group) {
-      into.push(group);
+    const names = lineNames(part);
+    if (names) {
+      into.push(names);
+      written.push(group(names));
       continue;
     }
     const repeat = /^repeat\((.*)\)$/is.exec(part);
@@ -8498,10 +8504,12 @@ export function parseSubgrid(value: string): SubgridNames | undefined {
       return undefined;
     }
     const n = count.trim().toLowerCase();
+    const inside = (groups as string[][]).map(group).join(' ');
     if (n === 'auto-fill') {
       if (out.fill) return undefined;
       out.fill = { names: groups as string[][], after: [] };
       into = out.fill.after;
+      written.push(`repeat(auto-fill, ${inside})`);
       continue;
     }
     const times = Number(n);
@@ -8509,7 +8517,9 @@ export function parseSubgrid(value: string): SubgridNames | undefined {
     for (let i = 0; i < times; i += 1) {
       for (const g of groups as string[][]) into.push([...g]);
     }
+    written.push(`repeat(${times}, ${inside})`);
   }
+  out.text = written.join(' ');
   return out;
 }
 

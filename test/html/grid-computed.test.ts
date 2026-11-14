@@ -107,3 +107,50 @@ metric(
     assert.strictEqual(block['grid-template-areas'], '"a" "b"');
   },
 );
+
+metric(
+  "a subgrid's axis reads as its own names for each line it spans",
+  async () => {
+    // CSS Grid 2, 7.2.6: four tracks are five lines, an auto-fill repeated
+    // into the room its other groups leave, the rest empty
+    const style = await computed(
+      '<div style="display:grid;grid-template-columns:repeat(6, 10px)">' +
+        '<div id="t" style="display:grid;grid-column:2 / span 4;' +
+        'grid-template-columns:subgrid [a] repeat(auto-fill, [b]) [c] [d]">' +
+        '</div></div>',
+    );
+    assert.strictEqual(
+      style['grid-template-columns'],
+      'subgrid [a] [b] [b] [c] [d]',
+    );
+  },
+);
+
+metric(
+  'subgrid is none on a grid with no grid around it, and as written on what is no grid',
+  async () => {
+    const grid = await computed(
+      '<div id="t" style="display:grid;' +
+        'grid-template-rows:subgrid repeat(2, [a] [b])"></div>',
+    );
+    assert.strictEqual(grid['grid-template-rows'], 'none');
+    // and with nothing in it, its columns, whose template is none, have no
+    // track, as the `none` read back sets them
+    assert.strictEqual(grid['grid-template-columns'], 'none');
+    // a box with layout containment keeps its layout apart from the grid
+    // around it, and so subgrids nothing either
+    const contained = await computed(
+      '<div style="display:grid;grid-template-columns:10px 10px">' +
+        '<div id="t" style="display:grid;contain:layout;grid-column:span 2;' +
+        'grid-template-columns:subgrid"></div></div>',
+    );
+    assert.strictEqual(contained['grid-template-columns'], 'none');
+    const block = await computed(
+      '<div id="t" style="grid-template-rows:subgrid [a] repeat(2, [c] [d e])"></div>',
+    );
+    assert.strictEqual(
+      block['grid-template-rows'],
+      'subgrid [a] repeat(2, [c] [d e])',
+    );
+  },
+);

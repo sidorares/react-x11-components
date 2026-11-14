@@ -77,7 +77,7 @@ export function subgridLines(
  * them as many times as there are lines for once the rest have theirs (7.2.3.2), and no
  * further than its last line.
  */
-function subgridNames(
+export function subgridNames(
   own: SubgridNames | undefined,
   lines: number,
 ): string[][] {
