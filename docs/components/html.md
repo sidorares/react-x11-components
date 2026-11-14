@@ -3490,7 +3490,10 @@ response's `Reporting-Endpoints` or `Report-To`, as the Reporting API's
 `application/reports+json`, and otherwise to each `report-uri`, resolved
 against the document's address and not its base, as CSP 2's
 `application/csp-report`. A report is the browser's own request, credentialed
-for the document's own origin alone, and held to no policy.
+for the document's own origin alone, and held to no policy. A document refused where its
+`frame-ancestors` names none of the origins it is framed in is reported by
+its own policies, a report-only one too, though it is never shown and no
+page hears of it.
 
 **A violation says where it was caused** (CSP 3, 5.3): where the page's code
 is running, by its innermost frame of its own — its script's address, and the

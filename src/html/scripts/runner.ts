@@ -56,6 +56,7 @@ import { DomHost, trustworthy, wholeBytes } from './host.js';
 import { corsSetting, judgeScript } from './script-origin.js';
 import type { LoadedScript, ModuleType, ValueModule } from './script-origin.js';
 import type { CspRequest } from '../csp.js';
+import { reportEndpointsOf } from './csp-host.js';
 import { SB_ORIGIN, sandboxOfPolicy } from './sandbox.js';
 import { referrerPolicyOf, referrerPolicyOfHeaders } from '../referrer.js';
 import { PageWorkers } from './workers.js';
@@ -1766,36 +1767,4 @@ function laterHops(asked: string, loaded: LoadedScript | null): string[] {
   const final = loaded.url ?? asked;
   if (loaded.redirects?.length) return [...loaded.redirects.slice(1), final];
   return final === asked ? [] : [final];
-}
-
-/** Where a `report-to` group sends (Reporting API): a response's
- *  `Reporting-Endpoints`, `group="url"` a member, and its `Report-To`, a
- *  JSON object a group. */
-function reportEndpointsOf(
-  headers: readonly (readonly [string, string])[],
-): Map<string, string> {
-  const out = new Map<string, string>();
-  for (const [name, value] of headers) {
-    const key = name.toLowerCase();
-    if (key === 'reporting-endpoints') {
-      for (const m of value.matchAll(/([A-Za-z0-9_-]+)\s*=\s*"([^"]*)"/g)) {
-        if (!out.has(m[1])) out.set(m[1], m[2]);
-      }
-    } else if (key === 'report-to') {
-      for (const piece of value.split(/(?<=\})\s*,\s*(?=\{)/)) {
-        try {
-          const group = JSON.parse(piece) as {
-            group?: string;
-            endpoints?: { url?: string }[];
-          };
-          const at = group.endpoints?.[0]?.url;
-          const nameOf = group.group ?? 'default';
-          if (at && !out.has(nameOf)) out.set(nameOf, at);
-        } catch {
-          // not a group
-        }
-      }
-    }
-  }
-  return out;
 }
