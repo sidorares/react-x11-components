@@ -7206,7 +7206,9 @@ lights as the element's own would be, its lengths in the element's font
 and in its container's units: the shadow under every glyph, the underline
 under the text and the line through over it. Its style is worked out as it
 is painted, so a change that turns one of its rules on or off paints the
-text again.
+text again. A highlight a page sets after a box was painted on a surface of
+its own — a vertical line's frame, a faded or turned box — is painted on a
+new one, as a selection is.
 
 **Target text:** `::target-text` is the text `baseUrl`'s text directives
 found, drawn as a custom highlight is, over the custom highlights and under
@@ -7293,7 +7295,9 @@ inherited (CSS Writing Modes 4). A block container whose writing mode is
 vertical in a parent whose writing mode is horizontal is the root of an
 orthogonal flow (7.3): its lines run down the page and stack right to left
 in `vertical-rl` and `sideways-rl` and left to right in `vertical-lr`, and
-run up the page in `sideways-lr`. An absolute box at its static position in
+run up the page in `sideways-lr`, whose lines start on a whole pixel down
+the page however long their text comes to, so that they are across it
+where a line in any other vertical mode would be. An absolute box at its static position in
 `vertical-lr` starts at the left, where the flow it would have been in
 starts: laid out after the flow, which is laid out as `vertical-rl`'s and
 put back across, it is put back by its own size once it has one. An inline element in a writing mode its
