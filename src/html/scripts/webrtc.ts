@@ -1794,6 +1794,9 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         'RTCTargetLatency',
         'lowest',
       ),
+      // WebRTC Extensions: an m-section for data in every offer, as though
+      // a data channel had been made with the connection
+      alwaysNegotiateDataChannels: !!c.alwaysNegotiateDataChannels,
       certificates,
     };
   };
@@ -1810,6 +1813,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       bundlePolicy: config.bundlePolicy,
       rtcpMuxPolicy: 'require',
       iceCandidatePoolSize: config.iceCandidatePoolSize,
+      alwaysNegotiateDataChannels: config.alwaysNegotiateDataChannels,
       certificates: config.certificates.map(
         (c: Any) => apply(wmGet, slots, [c]).id,
       ),
@@ -3075,6 +3079,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         rtcpMuxPolicy: c.rtcpMuxPolicy,
         iceCandidatePoolSize: c.iceCandidatePoolSize,
         targetLatency: c.targetLatency,
+        alwaysNegotiateDataChannels: c.alwaysNegotiateDataChannels,
         certificates: c.certificates.slice(),
       };
     }
@@ -3111,6 +3116,14 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       // change where the connection was made with the other
       if (next.targetLatency !== before.targetLatency) {
         throw typeError('The target latency cannot be changed.');
+      }
+      if (
+        next.alwaysNegotiateDataChannels !== before.alwaysNegotiateDataChannels
+      ) {
+        throw domError(
+          'Whether data is always negotiated cannot be changed.',
+          'InvalidModificationError',
+        );
       }
       if (
         next.iceCandidatePoolSize !== before.iceCandidatePoolSize &&

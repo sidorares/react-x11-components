@@ -1074,7 +1074,7 @@ own send queue as RFC 8831's one byte under payload protocol 56 or 57
 with no rid, is routed by its MID (`routeByMid`, wrapping its router's
 `routeRtp`): werift drops it, and WPT's simulcast harness receives every
 layer so. What a codec preference means is held through werift's
-transceiver manager (`keepPreferredCodecs`). And three are negotiation's.
+transceiver manager (`keepPreferredCodecs`). And four are negotiation's.
 A remote offer's m-section is paired as JSEP 5.10 has it, only with a
 transceiver `addTrack` made and only where the m-section receives
 (`pairAsJsep`, wrapping `remoteMedia.findTransceiver`; werift#816). werift's
@@ -1087,7 +1087,14 @@ rollback keeps that one whatever it sends by then (`heldForAddTrack`,
 answering its `heldByApplication`; werift#817). And a rejected m-section is
 recycled for a new transceiver of any kind (`recycleAnyKind`, which tells
 `sdpManager.buildOfferSdp`, for the one call, that the m-section is of the
-transceiver's kind), where werift recycles one only for its own. An ICE
+transceiver's kind), where werift recycles one only for its own. A
+connection made with `alwaysNegotiateDataChannels`, which werift has no
+option for, has werift's SCTP transport made before each offer, through its
+private `createSctpTransport`, and the m-section for data moved first of
+those the offer adds (`dataFirst`, wrapping `sdpManager.buildOfferSdp`),
+where werift writes it after every new transceiver's. `recycleAnyKind`,
+`dataFirst` and `restartsWithIceChars` name no werift issue yet: each is to
+be filed, and named here when it is. An ICE
 restart's credentials, which werift makes of base64url, are written in
 ice-chars as werift stages them (`restartsWithIceChars`, wrapping its ICE
 transport's `stageLocalRestart`): libwebrtc refuses a `-` or a `_` in one, and

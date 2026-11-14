@@ -66,6 +66,11 @@ export interface RTCConnectRequest {
   bundlePolicy: 'balanced' | 'max-compat' | 'max-bundle';
   rtcpMuxPolicy: 'require';
   iceCandidatePoolSize: number;
+  /** WebRTC Extensions' `alwaysNegotiateDataChannels`: every offer carries
+   *  an m-section for data, first of those it adds, whether or not a data
+   *  channel has been made. Fixed for the connection's life. A host from
+   *  before it is handed none, and offers as it did. */
+  alwaysNegotiateDataChannels?: boolean;
   /** The certificates the page passed, as `generateCertificate` numbered
    *  them. None, and the connection makes its own. */
   certificates: number[];

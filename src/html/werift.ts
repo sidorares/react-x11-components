@@ -175,6 +175,8 @@ interface WPeer {
   restartIce(): void;
   setConfiguration(config: Record<string, unknown>): void;
   createDataChannel(label: string, options: Record<string, unknown>): WChannel;
+  /** An SCTP transport with no data channel on it. */
+  createSctpTransport?(): unknown;
   getStats(): Promise<{ values(): Iterable<Record<string, unknown>> }>;
   close(): Promise<void>;
 }
@@ -1475,6 +1477,71 @@ function recycleAnyKind(pc: WPeer): void {
   };
 }
 
+/**
+ * Puts the m-section for data first of those an offer adds, after every
+ * m-section the current local description has, as WebRTC Extensions'
+ * `alwaysNegotiateDataChannels` has it: the connection is as though it made
+ * a data channel as it was made, before any transceiver was added. werift
+ * 0.27.0 has no such option, and writes the SCTP m-section after every new
+ * transceiver's, so this wraps its `sdpManager.buildOfferSdp`, moves the
+ * m-section where it belongs, and numbers again the m-line positions werift
+ * gave what comes after it and the order of the BUNDLE group. A werift
+ * without the method offers as before.
+ */
+function dataFirst(pc: WPeer): void {
+  type Media = { kind: string; port: number; rtp: { muxId?: string } };
+  type Positioned = { mid?: string; mLineIndex?: number };
+  type Built = {
+    media: Media[];
+    group: { semantic: string; items: string[] }[];
+  };
+  const manager = (
+    pc as unknown as {
+      sdpManager?: {
+        buildOfferSdp?: (transceivers: Positioned[], sctp: unknown) => unknown;
+        currentLocalDescription?: { media: Media[] };
+      };
+    }
+  ).sdpManager;
+  const build = manager?.buildOfferSdp;
+  if (!manager || typeof build !== 'function') return;
+  manager.buildOfferSdp = (transceivers, sctp) => {
+    const built = build.call(manager, transceivers, sctp) as Built;
+    const transport = sctp as Positioned | undefined;
+    if (!transport?.mid || !built?.media) return built;
+    const at = manager.currentLocalDescription?.media.length ?? 0;
+    const from = built.media.findIndex(
+      (m) => m.kind === 'application' && m.rtp.muxId === transport.mid,
+    );
+    if (from <= at) return built;
+    const before = built.media
+      .filter((m) => m.port !== 0 && m.rtp.muxId)
+      .map((m) => m.rtp.muxId as string);
+    const [data] = built.media.splice(from, 1);
+    built.media.splice(at, 0, data!);
+    for (const t of transceivers) {
+      if (
+        t.mLineIndex !== undefined &&
+        t.mLineIndex >= at &&
+        t.mLineIndex < from
+      )
+        t.mLineIndex++;
+    }
+    transport.mLineIndex = at;
+    const after = built.media
+      .filter((m) => m.port !== 0 && m.rtp.muxId)
+      .map((m) => m.rtp.muxId as string);
+    for (const g of built.group ?? []) {
+      if (g.semantic !== 'BUNDLE') continue;
+      // werift puts a negotiated tag first and the rest in m-line order
+      const tag = g.items[0] !== before[0] ? g.items[0] : undefined;
+      const order = after.filter((mid) => g.items.includes(mid));
+      g.items = tag ? [tag, ...order.filter((mid) => mid !== tag)] : order;
+    }
+    return built;
+  };
+}
+
 /** Marks werift's ICE transport as made to restart with ice-chars. */
 const ICE_CHARS = Symbol('restarts with ice-chars');
 
@@ -1570,6 +1637,8 @@ class WeriftConnection implements RTCConnectionLike {
   private readonly _wrapped = new Map<WTransceiver, WeriftTransceiver>();
   /** Whether an offer was made since a description was last applied. */
   private _offered = false;
+  /** WebRTC Extensions' `alwaysNegotiateDataChannels`. */
+  private readonly _dataFirst: boolean;
   /** Whether a negotiation is under way, which a transceiver's stop asks
    *  (`WeriftTransceiver.stop`). */
   private readonly _session = {
@@ -1607,6 +1676,8 @@ class WeriftConnection implements RTCConnectionLike {
     routeByMid(this._pc);
     pairAsJsep(this._pc, (t) => this._wrapped.get(t)?.byTrack === true);
     recycleAnyKind(this._pc);
+    this._dataFirst = request.alwaysNegotiateDataChannels === true;
+    if (this._dataFirst) dataFirst(this._pc);
     keepPreferredCodecs(this._pc);
     const codecs = config.codecs as { audio: WCodec[]; video: WCodec[] };
     this._codecs = [...codecs.audio, ...codecs.video];
@@ -2071,6 +2142,10 @@ class WeriftConnection implements RTCConnectionLike {
       w.flushStop();
       w.forOffer();
     }
+    // a connection that always negotiates data has an SCTP transport to
+    // offer, data channel or none
+    if (this._dataFirst && !this._pc.sctpTransport)
+      this._pc.createSctpTransport?.();
     try {
       const offer = (await this._offer({ iceRestart: options.iceRestart })).sdp;
       this._offered = true;
