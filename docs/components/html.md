@@ -1328,6 +1328,25 @@ ceiling, as long as `timeout`, so a forced layout is not cut half way
 through, and one cut anyway has the document styled and laid out again from
 nothing.
 
+**A page's stacks are its own frames.** An error's `stack` says where the
+page's scripts were, and nothing of `<Html>`'s or of the host's, as a browser
+shows none of its own. A page may set `Error.prepareStackTrace`, by assignment
+or with `Object.defineProperty`, as V8 lets a page in Chrome, and its formatter
+is handed call sites for those frames alone: of the page's own realm, answering
+what V8's do, with `getThis()` and `getFunction()` `undefined`, as V8 answers
+for strict code. An `Error.captureStackTrace` is formatted by it too. Three
+things differ from Chrome:
+
+- reading `Error.prepareStackTrace` gives a function of `<Html>`'s, where the
+  page set none, and a wrapper of the page's formatter where it did, since the
+  runtime reads it as a page does and must never be handed the page's own.
+  Assigned or defined, the wrapper is the formatter again, so a formatter read
+  and put back is the one there was;
+- `delete Error.prepareStackTrace` deletes nothing, and throws in strict code;
+- a stack first read while another is being formatted — inside a page's
+  formatter, or a getter on an error's `message` — is the runtime's own format,
+  with the host's frames in it, as no formatter is asked for one then.
+
 **`EventSource` is built on the page's own requests**, so a stream is held to
 CORS and to the document's network as a `fetch` is, and it connects again after
 `retry` with `Last-Event-ID`. What it sends of its own, `Cache-Control: no-cache`

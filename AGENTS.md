@@ -4327,15 +4327,38 @@ closes a way out a DOM binding opens by accident:
 - **A page's stacks are its own frames** (`stacks.ts`). Every task is
   entered from the host, and the runtime wrote every frame into an error's
   `stack`: any page read the user's home directory and the install's
-  layout off an error it made, and an error logger sent them home. The
-  context's `Error.prepareStackTrace` is locked to a formatter that keeps
-  the page's frames, drops the facade's and stops at the host's — a
-  `node:` module, an entry (`engine:__timer`), a file by its path. Node
-  asks the error's global for its `Error`, and a page that replaced
-  `window.Error` was handed the call sites, so that binding is locked too;
-  Bun's `captureStackTrace` asks no formatter, so it is wrapped there. A
-  page sees a native `Error.prepareStackTrace` and a `window.Error` it
-  cannot replace, where Chrome has neither. **Code the engine compiles
+  layout off an error it made, and an error logger sent them home. What
+  the runtime reads as `Error.prepareStackTrace` is always a function of
+  `lockStacks`'s, behind an accessor nothing can redefine: where the page
+  set none, a formatter that keeps the page's frames, drops the facade's
+  and stops at the host's — a `node:` module, an entry (`engine:__timer`),
+  a file by its path — and where it set one, that formatter's wrapper,
+  which hands it call sites of the page's realm for those frames
+  (`CallSite`), answering primitives, `getThis()` and `getFunction()`
+  `undefined`. vscode's extension host defines its formatter with
+  `Object.defineProperty`, so the page's property is kept beside the real
+  one (`own`), and `Object.defineProperty` and its kin answer for that one
+  property from it. Three things are load-bearing. **No reader of the
+  formatter is told from another**: Bun reads it outside the guard that
+  keeps it from formatting a stack inside a formatter, so nothing in the
+  getter can say who asked, and it answers the page what it answers the
+  runtime, the wrapper, which a write turns back into the formatter, so a
+  formatter read and put back is the formatter. **A call from the runtime
+  is told by its list**: one holding a call site of the runtime's, which no
+  page has, or a list of another realm's, as Bun's are, and anything else
+  is handed on as it came. And **nothing written once page code can have
+  run goes through `[[Set]]`**, which a setter on `Array.prototype` would
+  hear. Node asks the error's global for its `Error`, and a page that
+  replaced `window.Error` was handed the call sites, so that binding is
+  locked too; Bun's `captureStackTrace` asks no formatter, so it is wrapped
+  there, and hands the page's formatter the call sites of an error it has
+  the runtime format. **Page code that runs while the runtime formats a
+  stack is the way through left**: a page's formatter, or a getter on an
+  error's `message`, that reads another error's stack for the first time is
+  handed the runtime's own format, every frame in it, and nothing can stand
+  between. A page sees a native `Error.prepareStackTrace` where it set
+  none, its formatter's wrapper where it set one, and a `window.Error` it
+  cannot replace, where Chrome has none of the three. **Code the engine compiles
   into the context is named**: the facade's as `FACADE`, which a stack
   passes over, and an entry as `engine:…`, where the page's stack ends. A
   script with no name is `file:///` on Bun, which reads as the page's.

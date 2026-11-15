@@ -430,8 +430,10 @@ test('nothing of the host is reachable from a page', async () => {
       "r.push(document.constructor.constructor('return typeof process')());" +
       "try { document.querySelector('[[[') } catch (e) {" +
       "  r.push(e.name, e.constructor.constructor('return typeof process')()) }" +
-      'try { Error.prepareStackTrace = function (e, s) { return s.map(function (c) { return typeof c.getFunction() }) } } catch (e) {}' +
-      'r.push(String(Error.prepareStackTrace));' +
+      // a formatter of the page's, which is handed call sites of its own
+      // realm whose functions and receivers are no one's
+      "Error.prepareStackTrace = function (e, s) { return s.map(function (c) { return typeof c.getFunction() + typeof c.getThis() + c.constructor.constructor('return typeof process')() }).join() + s.constructor.constructor('return typeof process')() };" +
+      'r.push(String(Error.prepareStackTrace), new Error().stack);' +
       'r.push(typeof __bridge, typeof require, typeof Buffer);' +
       "document.body.addEventListener('x', function f() { r.push(String(f.caller)) });" +
       "document.body.dispatchEvent(new Event('x'));" +
@@ -457,8 +459,10 @@ test('nothing of the host is reachable from a page', async () => {
       'undefined',
       'SyntaxError',
       'undefined',
-      // the engine's, which the page's did not replace (`lockStacks`)
+      // the page's formatter, read as the wrapper the runtime is handed
+      // (`lockStacks`), and what it was handed for the script's one frame
       'function prepareStackTrace() { [native code] }',
+      'undefinedundefinedundefinedundefined',
       'undefined',
       'undefined',
       'undefined',
@@ -714,8 +718,9 @@ for (const global of ['own', 'object'] as const) {
         'r.push(document.constructor.constructor(reach)());' +
         'r.push(Object.getPrototypeOf(globalThis).constructor.constructor(reach)());' +
         "try { document.querySelector('[[[') } catch (e) { r.push(e.constructor.constructor(reach)()) }" +
-        'try { Error.prepareStackTrace = function () { return 1 } } catch (e) {}' +
-        'r.push(String(Error.prepareStackTrace), typeof __bridge, typeof globalThis.__in);' +
+        // a formatter of the page's, and every object it is handed
+        'Error.prepareStackTrace = function (e, s) { return s.map(function (c) { return c.constructor.constructor(reach)() + c.getFileName.constructor(reach)() + typeof c.getFunction() + typeof c.getThis() }).join() + s.constructor.constructor(reach)() + (this === Error) };' +
+        'r.push(String(Error.prepareStackTrace), new Error().stack, typeof __bridge, typeof globalThis.__in);' +
         "document.body.addEventListener('x', function f() { r.push(String(f.caller)) });" +
         "document.body.dispatchEvent(new Event('x'));" +
         // what a refusal settles is read into a slot of its own, since the
@@ -751,8 +756,11 @@ for (const global of ['own', 'object'] as const) {
       "error: WebSocket connection to 'wss://ws.test/' failed: there is no network.",
       'log: undefinedundefinedundefined,undefinedundefinedundefined,' +
         'undefinedundefinedundefined,undefinedundefinedundefined,' +
-        // the engine's `prepareStackTrace`, which the page's did not replace
-        'function prepareStackTrace() { [native code] },undefined,string,null,undefinedundefinedundefined ' +
+        // the page's `prepareStackTrace`, read as the wrapper the runtime is
+        // handed, and what it was handed for the script's one frame
+        'function prepareStackTrace() { [native code] },' +
+        'undefinedundefinedundefinedundefinedundefinedundefinedundefinedundefinedundefinedundefinedundefinedtrue,' +
+        'undefined,string,null,undefinedundefinedundefined ' +
         'offer=undefinedundefinedundefined:NotSupportedError,' +
         'session=undefinedundefinedundefined:WebTransportError,' +
         'socketError=undefinedundefinedundefined:error,' +
@@ -4425,11 +4433,14 @@ test("a page's stacks hold its own frames, and none of the facade's or the host'
       "try { null.x } catch (e) { note('null', e.stack) }" +
       "var held = {}; Error.captureStackTrace(held); note('captured', held.stack);" +
       "document.getElementById('b').click();" +
-      // and a page that points the runtime at a formatter of its own, as
-      // Node asks the global's `Error` for one
-      "try { Error.prepareStackTrace = function () { return 'mine' } } catch (e) {}" +
-      "try { window.Error = { prepareStackTrace: function () { return 'mine' } } } catch (e) {}" +
+      // and a page that sets a formatter of its own, and puts an `Error` of
+      // its own where Node asks the global for one: what its formatter is
+      // handed is its own frames, and the global's stays the realm's
+      'var before = Error.prepareStackTrace;' +
+      "Error.prepareStackTrace = function (e, s) { return 'mine:' + e.name + '|' + s.join('|') };" +
+      "try { window.Error = { prepareStackTrace: function () { return 'theirs' } } } catch (e) {}" +
       "note('replaced', new TypeError().stack);" +
+      'Error.prepareStackTrace = before;' +
       // once the external script has run, which `load` waits for and a
       // timer of the page's did not: the host answers for it
       "addEventListener('load', function () { setTimeout(function () { document.getElementById('out').textContent = JSON.stringify(stacks) }, 0) });" +
@@ -4495,10 +4506,119 @@ test("a page's stacks hold its own frames, and none of the facade's or the host'
   at(frames('null')[0]);
   // a stack captured onto an object of the page's
   assert.ok(stacks.captured.includes(`${PAGE}:`), all);
-  // and neither a formatter of the page's nor a global Error of its own
-  // turns any of it off
-  assert.equal(frames('replaced').length, 1, all);
-  at(frames('replaced')[0]);
+  // and a formatter of the page's is handed its frames, and no global Error
+  // of its own reaches the runtime
+  const replaced = stacks.replaced.split('|');
+  assert.equal(replaced[0], 'mine:TypeError', all);
+  assert.equal(replaced.length, 2, all);
+  at(`    at ${replaced[1]}`);
+});
+
+test("a page's own formatter is handed its frames, and nothing of the host's", async () => {
+  // A page may set `Error.prepareStackTrace` as a page in Chrome does —
+  // vscode's extension host defines one with `Object.defineProperty`, and
+  // a library that wants its caller's file sets one and puts the old one
+  // back — but the runtime hands a formatter its own call sites, the
+  // host's frames among them, whose functions are the host's: on Bun, the
+  // call sites are objects of the host's realm. What the page's formatter
+  // is handed is read here, everything it reaches asked for `process`.
+  const doc = await hosted(
+    '<p id="out"></p>' +
+      '<script>' +
+      'var out = {}; var seen = []; var held = {};' +
+      "var reach = 'return typeof process + typeof require + typeof Bun';" +
+      "function probe(o) { try { return o.constructor.constructor(reach)() } catch (e) { return 'threw ' + e } }" +
+      'function shown(v) { return v === null ? null : typeof v === "object" || typeof v === "function" ? typeof v : v === undefined ? "undefined" : v }' +
+      // every call site's every answer, and what each object it holds reaches
+      'function look(e, sites, self) {' +
+      '  var r = { self: self === Error, error: e instanceof Error ? "error" : e === held ? "held" : "other", array: Array.isArray(sites) + ":" + probe(sites), sites: [] };' +
+      '  for (var i = 0; i < sites.length; i++) {' +
+      '    var c = sites[i]; var proto = Object.getPrototypeOf(c);' +
+      '    var answers = {}; var reached = [probe(c), probe(proto), probe(proto.constructor)];' +
+      '    Object.getOwnPropertyNames(proto).forEach(function (n) {' +
+      "      if (n === 'constructor') return;" +
+      '      reached.push(probe(proto[n])); answers[n] = shown(c[n]());' +
+      '    });' +
+      '    r.sites.push({ answers: answers, reached: reached, own: Object.getOwnPropertyNames(c).length, name: proto.constructor.name });' +
+      '  }' +
+      '  return r;' +
+      '}' +
+      "var handed = function (e, sites) { seen.push(look(e, sites, this)); return 'formatted' };" +
+      // as vscode's extension host defines its own, for good
+      'var current = handed;' +
+      "Object.defineProperty(Error, 'prepareStackTrace', { configurable: false, get: function () { return current }, set: function (v) { current = v } });" +
+      "var d = Object.getOwnPropertyDescriptor(Error, 'prepareStackTrace');" +
+      "out.descriptor = [typeof d.get, typeof d.set, d.configurable, 'value' in d, d.get === Object.getOwnPropertyDescriptors(Error).prepareStackTrace.get].join();" +
+      "out.redefined = Reflect.defineProperty(Error, 'prepareStackTrace', { value: handed });" +
+      // a stack read in a script and in a listener, and one captured onto an
+      // object, as depd captures one
+      "function inScript() { return new Error('script').stack }" +
+      'out.script = inScript();' +
+      "document.body.addEventListener('x', function listener() { out.listener = new Error('listener').stack });" +
+      "document.body.dispatchEvent(new Event('x'));" +
+      'Error.captureStackTrace(held); out.captured = held.stack;' +
+      // the call sites themselves, as `callsites` takes them, and the
+      // formatter put back
+      'var before = Error.prepareStackTrace;' +
+      'Error.prepareStackTrace = function (_, s) { return s };' +
+      'var sites = new Error().stack;' +
+      'Error.prepareStackTrace = before;' +
+      "out.sites = Array.isArray(sites) ? sites.length + '|' + sites.map(String).join('|') + '|' + probe(sites) : typeof sites;" +
+      'out.putBack = current === handed;' +
+      // a call of the page's own is handed on as it came
+      'var fake = {}; Error.prepareStackTrace = function (e, s) { return s[0] === fake && s[1] === null && this === Error };' +
+      "out.forged = Error.prepareStackTrace.call(Error, new Error('forged'), [fake, null]);" +
+      'Error.prepareStackTrace = before;' +
+      "setTimeout(function timer() { out.timer = new Error('timer').stack; out.seen = seen; document.getElementById('out').textContent = JSON.stringify(out) }, 0);" +
+      '</script>',
+  );
+  const out = JSON.parse(await settled(doc, 'out', (t) => t !== ''));
+  const all = JSON.stringify(out, null, 1);
+  assert.equal(out.descriptor, 'function,function,false,false,true', all);
+  assert.equal(out.redefined, false, all);
+  for (const k of ['script', 'listener', 'captured', 'timer']) {
+    assert.equal(out[k], 'formatted', all);
+  }
+  assert.equal(out.putBack, true, all);
+  assert.equal(out.forged, true, all);
+  // the call sites `callsites` takes: the script's one frame
+  const [count, ...rest] = out.sites.split('|');
+  assert.equal(count, '1', all);
+  assert.match(rest[0], new RegExp(`^${PAGE.replace(/[.]/g, '[.]')}:`), all);
+  assert.equal(rest[1], 'undefinedundefinedundefined', all);
+  // script, listener, captured, timer: the page's frames, each a call site
+  // of the page's realm that answers nothing but primitives
+  assert.deepEqual(
+    out.seen.map((r: { sites: unknown[] }) => r.sites.length),
+    [2, 2, 1, 1],
+    all,
+  );
+  // each with what it is the stack of: an error, and the object captured onto
+  assert.deepEqual(
+    out.seen.map((r: { error: string }) => r.error),
+    ['error', 'error', 'held', 'error'],
+    all,
+  );
+  const host = /node:|engine:|evalmachine|runInContext|file:|[(@ ]\/|[A-Z]:\\/;
+  for (const r of out.seen) {
+    assert.equal(r.self, true, all);
+    assert.equal(r.array, 'true:undefinedundefinedundefined', all);
+    for (const c of r.sites) {
+      assert.equal(c.name, 'CallSite', all);
+      assert.equal(c.own, 0, all);
+      for (const reached of c.reached) {
+        assert.equal(reached, 'undefinedundefinedundefined', all);
+      }
+      assert.equal(c.answers.getThis, 'undefined', all);
+      assert.equal(c.answers.getFunction, 'undefined', all);
+      assert.equal(c.answers.getFileName, PAGE, all);
+      for (const answer of Object.values(c.answers)) {
+        if (typeof answer !== 'string') continue;
+        assert.doesNotMatch(answer, host, all);
+        assert.ok(!answer.includes(process.cwd()), all);
+      }
+    }
+  }
 });
 
 test('a module that throws, runs away or does not parse is reported, and the page goes on', async (t) => {

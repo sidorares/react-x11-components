@@ -112,7 +112,12 @@ one is the kind a DOM binding opens by accident:
    the host's `runInContext` itself**, from strict code. The fix is to
    lock `Error.prepareStackTrace` (non-writable, non-configurable) in the
    context before any page code runs. With that in place, no call site
-   reached a host function on either runtime.
+   reached a host function on either runtime. vscode's extension host then
+   needed a formatter of its own, so the lock became an accessor that
+   nothing can redefine, which hands the runtime a function of the
+   engine's, and that hands the page's formatter call sites of the page's
+   realm (`stacks.ts`): on Bun the runtime's are the host realm's objects,
+   list and all.
 4. **`caller`.** A context function called by a sloppy host function can
    read it through `listener.caller`, and get out. The rule is that host
    code that calls into the context is strict: ESM, which everything this

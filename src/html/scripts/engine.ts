@@ -11,11 +11,14 @@
 //      it is in the facade's closure and nowhere a page can reach; what goes
 //      in is strings, through `__in`, a data property the facade defines
 //      and a page cannot turn into a setter; what comes back is primitives.
-//   3. `Error.prepareStackTrace` is locked before any page code runs, and
-//      so is the global's `Error`, which Node asks for it, so no call site
-//      hands a page a function of the host's. What it is locked to writes
-//      the page's own frames and stops at the host's (`stacks.ts`): every
-//      task is entered from the host, and a stack named the host's files.
+//   3. What the runtime reads as `Error.prepareStackTrace` is a function of
+//      the engine's from before any page code runs, behind an accessor no
+//      page can redefine, and the global's `Error`, which Node asks for it,
+//      is locked, so no call site of the runtime's reaches a page. Where the
+//      page set no formatter it writes the page's own frames and stops at
+//      the host's (`stacks.ts`): every task is entered from the host, and a
+//      stack named the host's files. Where it set one, its formatter is
+//      handed call sites of its own realm for those frames.
 //   4. Every function of the host's that calls into the context is strict
 //      ESM, and it calls only through a `vm.Script`, never a page function
 //      directly, so no `caller` leads out.
@@ -342,7 +345,7 @@ const INSTALL = `(function () {
     try { Object.defineProperty(target, 'name', { value, configurable: true }); } catch {}
     return target;
   };
-  (${lockStacks.toString()})(${JSON.stringify(FACADE)});
+  const stackNatives = (${lockStacks.toString()})(${JSON.stringify(FACADE)});
   (${installMath.toString()})();
   const install = (${installDom.toString()});
   const webgl = (${installWebGL.toString()});
@@ -383,7 +386,7 @@ const INSTALL = `(function () {
   delete globalThis.__bridge;
   delete globalThis.__named;
   delete globalThis.__worker;
-  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, svgDom, webcrypto, transfers, clipboards, notifying, windowing, serviceWorkers, cacheStorage, uiEvents, pointers, editing, encoded, textTracks, csp, smil, storageManager, pathData, worklets, trustedTypes, resourceTiming, named, worker);
+  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, svgDom, webcrypto, transfers, clipboards, notifying, windowing, serviceWorkers, cacheStorage, uiEvents, pointers, editing, encoded, textTracks, csp, smil, storageManager, pathData, worklets, trustedTypes, resourceTiming, named, worker, stackNatives);
 })()`;
 
 /**
