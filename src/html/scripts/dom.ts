@@ -29869,7 +29869,7 @@ export function installDom(
       const parsed = parseMime(one);
       if (!parsed || `${parsed.type}/${parsed.subtype}` === '*/*') continue;
       mime = parsed;
-      const was = essence;
+      const was: string | null = essence;
       essence = `${parsed.type}/${parsed.subtype}`;
       const own = parsed.params.find(([n]) => n === 'charset');
       if (own) charset = own[1];
