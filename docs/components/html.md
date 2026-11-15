@@ -2093,6 +2093,17 @@ opaque response's body kept and handed back with no script reading it. What it
 keeps is `HtmlStorage.caches`: memory unless a host hands in a store, and the
 profile's in the example browser, where it and the registrations are a file of
 their own, `workers.sqlite`, and a page past 2 GB is told `QuotaExceededError`.
+A `put` or an `addAll` hands each body to the store as it is read, so a worker
+that caches a whole app at once — vscode.dev's caches 2,194 files, some 250 MB,
+in one `addAll` — holds the bodies still arriving and not all of them.
+
+**A worker's thread has a heap limit, and it is smaller than a browser's.**
+Each worker, dedicated, shared or service, is a thread whose V8 heap Node holds
+to 256 MB of old space and 64 MB of young, some 90 MB of which the engine uses
+before the worker's script runs; Chrome gives a worker gigabytes. Past it Node
+ends the thread, and a service worker's page logs
+`A service worker threw: Worker terminated due to reaching memory limit`. Bun
+does not enforce the limit.
 
 **What keeps them decides how long they last.** In memory, a registration goes
 with the process. With `HtmlProfile.serviceWorkers` a registration, its

@@ -7471,6 +7471,16 @@ export class DomHost {
       case 'cache':
         this._cacheOp(Number(a), text(b));
         return null;
+      // a body a `put` or an `addAll` hands over before its batch, as base64,
+      // or one it lets go of (`_cacheBodies`)
+      case 'cacheBody':
+        if (typeof b === 'string') {
+          this._cacheBodies.set(
+            Number(a),
+            new Uint8Array(Buffer.from(b, 'base64')),
+          );
+        } else this._cacheBodies.delete(Number(a));
+        return null;
       case 'image': {
         const el = this._node(a) as Element;
         if (b === 'clean') return this._imageClean(el);
@@ -13599,6 +13609,16 @@ export class DomHost {
     return askCaches(this._cacheStore(), origin, ask);
   }
 
+  /** The bodies a page's `put` and `addAll` handed over, by the number the
+   *  realm gave each, until the batch that keeps them reads them. A batch
+   *  names its bodies rather than carrying them: in one message, an `addAll`
+   *  had every body in the realm's heap as base64 at once, and the JSON of
+   *  all of it again, and vscode.dev's worker, caching its whole workbench of
+   *  some 250 MB, died of its heap limit there. A number names only what this
+   *  realm handed over itself, so one a page wrote reads nothing of anyone
+   *  else's. */
+  private _cacheBodies = new Map<number, Uint8Array>();
+
   /** A page's `caches`: bytes made of what crossed, the store asked, and what
    *  it answers told back through `__cache`. An opaque response's body stays
    *  here, as it did on the way in. */
@@ -13608,12 +13628,26 @@ export class DomHost {
       if (origin === 'null') return { error: 'SecurityError' };
       const ask = JSON.parse(json) as HtmlCacheAsk;
       if (ask.op === 'batch') {
-        for (const step of ask.operations as unknown as {
+        const steps = ask.operations as unknown as {
           bytes: Uint8Array;
-          base64?: string;
+          body?: number;
           held?: number;
           response?: unknown;
-        }[]) {
+        }[];
+        // each body the batch names is the batch's from here, whatever comes
+        // of it, so none is read twice and none outlives it: all of them are
+        // taken before anything is awaited
+        let gone = false;
+        for (const step of steps) {
+          if (typeof step.body !== 'number') continue;
+          const bytes = this._cacheBodies.get(step.body);
+          this._cacheBodies.delete(step.body);
+          delete step.body;
+          if (bytes) step.bytes = bytes;
+          else gone = true;
+        }
+        if (gone) return { error: 'TypeError', message: 'A body is gone.' };
+        for (const step of steps) {
           if ('held' in step && step.held !== undefined) {
             // what the number holds stays opaque whatever came with it:
             // `_held` is a field a page can write, and a body it put under
@@ -13622,9 +13656,6 @@ export class DomHost {
             step.bytes =
               (await this._opaqueBytes(step.held)) ?? new Uint8Array(0);
             delete step.held;
-          } else if (typeof step.base64 === 'string') {
-            step.bytes = new Uint8Array(Buffer.from(step.base64, 'base64'));
-            delete step.base64;
           }
         }
       }
