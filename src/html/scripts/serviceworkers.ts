@@ -582,6 +582,235 @@ export function installServiceWorkers(
     }
   }
   idlAttributes(ExtendableEvent);
+
+  // --- static routing -------------------------------------------------------------
+  //
+  // Service Workers 1, "addRoutes": the rules a worker adds while it installs,
+  // which the registry asks before it hands a request to the worker's `fetch`
+  // event. A rule's URL pattern crosses as what it was made of, the same JSON
+  // the host's `URLPattern` makes it of again.
+
+  const REQUEST_MODES = ['navigate', 'same-origin', 'no-cors', 'cors'];
+  const REQUEST_DESTINATIONS = [
+    '',
+    'audio',
+    'audioworklet',
+    'document',
+    'embed',
+    'font',
+    'frame',
+    'iframe',
+    'image',
+    'json',
+    'manifest',
+    'object',
+    'paintworklet',
+    'report',
+    'script',
+    'sharedworker',
+    'style',
+    'track',
+    'video',
+    'worker',
+    'xslt',
+  ];
+  const RUNNING_STATUSES = ['running', 'not-running'];
+  const ROUTER_SOURCES = [
+    'cache',
+    'fetch-event',
+    'network',
+    'race-network-and-fetch-handler',
+  ];
+  const METHOD_TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+  const NORMAL_METHODS = ['DELETE', 'GET', 'HEAD', 'OPTIONS', 'POST', 'PUT'];
+  /** "Check Router Registration Limit": how deep and how many. */
+  const ROUTER_DEPTH = 10;
+  const ROUTER_CONDITIONS = 1024;
+  /** How many conditions the worker has added so far. */
+  let routerConditions = 0;
+  const routerError = (message: string): Any =>
+    new TypeError(
+      `Failed to execute 'addRoutes' on 'InstallEvent': ${message}`,
+    );
+  /** A WebIDL enumeration's value, or a `TypeError`. */
+  const routerEnum = (v: Any, values: string[], name: string): string => {
+    const text = `${v}`;
+    if (!values.includes(text)) {
+      throw routerError(
+        `The provided value '${text}' is not a valid enum value of type ${name}.`,
+      );
+    }
+    return text;
+  };
+  /** A WebIDL dictionary member, read once. */
+  const member = (dict: Any, key: string): Any =>
+    dict === undefined || dict === null ? undefined : dict[key];
+  /** `RouterCondition` converted and verified ("Verify Router Condition"):
+   *  what it is as plain data, with its URL pattern made of what it was. */
+  const routerCondition = (raw: Any, depth: number): Any => {
+    if (raw !== undefined && raw !== null && typeof raw !== 'object') {
+      throw routerError("The provided value is not of type 'RouterCondition'.");
+    }
+    if (depth > ROUTER_DEPTH) throw routerError('The condition is too deep.');
+    routerConditions += 1;
+    // WebIDL reads a dictionary's members in their order
+    const not = member(raw, 'not');
+    const or = member(raw, 'or');
+    const requestDestination = member(raw, 'requestDestination');
+    const requestMethod = member(raw, 'requestMethod');
+    const requestMode = member(raw, 'requestMode');
+    const runningStatus = member(raw, 'runningStatus');
+    const urlPattern = member(raw, 'urlPattern');
+    const condition: Any = {};
+    if (urlPattern !== undefined) {
+      const URLPattern = D.URLPattern;
+      if (!URLPattern) throw routerError('URLPattern is not supported.');
+      const pattern =
+        urlPattern instanceof URLPattern
+          ? urlPattern
+          : typeof urlPattern === 'object' || typeof urlPattern === 'function'
+            ? new URLPattern(urlPattern)
+            : new URLPattern(`${urlPattern}`, D.base());
+      if (pattern.hasRegExpGroups) {
+        throw routerError(
+          'A URL pattern may not have regular expression groups.',
+        );
+      }
+      condition.urlPattern = pattern._made;
+    }
+    if (requestMethod !== undefined) {
+      const method = `${requestMethod}`;
+      // a ByteString
+      for (let i = 0; i < method.length; i++) {
+        if (method.charCodeAt(i) > 0xff) {
+          throw routerError('The request method is not a ByteString.');
+        }
+      }
+      if (!METHOD_TOKEN.test(method)) {
+        throw routerError(`'${method}' is not a valid HTTP method.`);
+      }
+      const upper = method.toUpperCase();
+      if (upper === 'CONNECT' || upper === 'TRACE' || upper === 'TRACK') {
+        throw routerError(`'${method}' HTTP method is unsupported.`);
+      }
+      condition.requestMethod = NORMAL_METHODS.includes(upper) ? upper : method;
+    }
+    if (requestMode !== undefined) {
+      condition.requestMode = routerEnum(
+        requestMode,
+        REQUEST_MODES,
+        'RequestMode',
+      );
+    }
+    if (requestDestination !== undefined) {
+      condition.requestDestination = routerEnum(
+        requestDestination,
+        REQUEST_DESTINATIONS,
+        'RequestDestination',
+      );
+    }
+    if (runningStatus !== undefined) {
+      condition.runningStatus = routerEnum(
+        runningStatus,
+        RUNNING_STATUSES,
+        'RunningStatus',
+      );
+    }
+    const has = Object.keys(condition).length > 0;
+    if (or !== undefined) {
+      if (has) throw routerError('`or` stands alone in a condition.');
+      if (typeof or !== 'object' || or === null || !(Symbol.iterator in or)) {
+        throw routerError("The provided value is not of type 'sequence'.");
+      }
+      condition.or = [...or].map((each: Any) =>
+        routerCondition(each, depth + 1),
+      );
+      if (not !== undefined) {
+        throw routerError('`not` stands alone in a condition.');
+      }
+    } else if (not !== undefined) {
+      if (has) throw routerError('`not` stands alone in a condition.');
+      condition.not = routerCondition(not, depth + 1);
+    } else if (!has) {
+      throw routerError('A condition has to say something.');
+    }
+    return condition;
+  };
+  /** `RouterSource`: one of its words, or a cache by name. */
+  const routerSource = (raw: Any): Any => {
+    if (raw === undefined) {
+      throw routerError("Required member is undefined: 'source'.");
+    }
+    if (raw === null || typeof raw === 'object' || typeof raw === 'function') {
+      const cacheName = member(raw, 'cacheName');
+      return cacheName === undefined ? {} : { cacheName: `${cacheName}` };
+    }
+    return routerEnum(raw, ROUTER_SOURCES, 'RouterSourceEnum');
+  };
+
+  /** Service Workers 1, 4.5: `install`, whose listeners may add the routes
+   *  the worker being installed is asked through. */
+  class InstallEvent extends ExtendableEvent {
+    constructor(type: Any, init?: Any) {
+      super(type, init);
+    }
+    addRoutes(rules: Any): Any {
+      try {
+        if (!this.isTrusted || (!this._dispatching && this._pending === 0)) {
+          throw new DOMException(
+            "Failed to execute 'addRoutes' on 'InstallEvent': The event is not being dispatched.",
+            'InvalidStateError',
+          );
+        }
+        const list =
+          rules !== null &&
+          typeof rules === 'object' &&
+          Symbol.iterator in rules
+            ? [...rules]
+            : [rules];
+        const before = routerConditions;
+        const routes: Any[] = [];
+        try {
+          for (const rule of list) {
+            if (
+              rule !== undefined &&
+              rule !== null &&
+              typeof rule !== 'object'
+            ) {
+              throw routerError(
+                "The provided value is not of type 'RouterRule'.",
+              );
+            }
+            const condition = member(rule, 'condition');
+            if (condition === undefined) {
+              throw routerError("Required member is undefined: 'condition'.");
+            }
+            const routed = routerCondition(condition, 1);
+            const source = routerSource(member(rule, 'source'));
+            if (
+              (source === 'fetch-event' ||
+                source === 'race-network-and-fetch-handler') &&
+              !D.heard(windowTarget, 'fetch')
+            ) {
+              throw routerError('The worker has no fetch handler.');
+            }
+            routes.push({ condition: routed, source });
+          }
+          if (routerConditions > ROUTER_CONDITIONS) {
+            throw routerError('There are too many conditions.');
+          }
+        } catch (error) {
+          routerConditions = before;
+          throw error;
+        }
+        send({ op: 'routes', rules: routes });
+        return resolved(undefined);
+      } catch (error) {
+        return rejected(error);
+      }
+    }
+  }
+  idlAttributes(InstallEvent);
   /** What is left of an event once its dispatch is over. A browser runs
    *  microtasks as each listener returns, with the event still dispatching,
    *  so `respondWith` from one is in time; here they run as the entry ends,
@@ -1013,7 +1242,11 @@ export function installServiceWorkers(
       return;
     }
     // `install` and `activate`
-    void lifetime(new ExtendableEvent(m.event)).then((ok: boolean) => {
+    const ev =
+      m.event === 'install'
+        ? new InstallEvent('install')
+        : new ExtendableEvent(m.event);
+    void lifetime(ev).then((ok: boolean) => {
       send({ op: 'done', e: m.n, ok });
     });
   };
@@ -1129,6 +1362,7 @@ export function installServiceWorkers(
     ServiceWorkerRegistration,
     ServiceWorkerContainer,
     ExtendableEvent,
+    InstallEvent,
     ExtendableMessageEvent,
     NotificationEvent,
     FetchEvent,
@@ -1159,6 +1393,7 @@ export function installServiceWorkers(
       const define = D.define;
       define('ServiceWorkerGlobalScope', scope('ServiceWorkerGlobalScope'));
       define('ExtendableEvent', ExtendableEvent);
+      define('InstallEvent', InstallEvent);
       define('ExtendableMessageEvent', ExtendableMessageEvent);
       define('FetchEvent', FetchEvent);
       define('Client', Client);

@@ -2112,6 +2112,24 @@ route of it. A hard reload asks past the worker (`network.document`'s
 `serviceWorkers: 'bypass'`), and what it brings is uncontrolled. A worker's
 requests go to the network the host gave it and no worker hears them.
 
+**A worker's routes are asked before its `fetch` event** (Service Workers'
+static routing). As a worker installs, `addRoutes()` on its `install` event adds
+rules, each a condition and a source. A condition is a URL pattern (a
+`URLPattern`, its init dictionary, or a string resolved against the worker's
+script), a method, a mode, a destination, the worker's running status, or `or`
+and `not` of other conditions. The source is `network`, `cache` (any cache, or
+one by name), `fetch-event`, or `race-network-and-fetch-handler`, which takes
+whichever answers first. The registry asks the first rule whose condition the
+request meets. A route to the cache goes to the network where nothing is kept,
+and a route to the network starts no worker. The rules are kept with the worker,
+in the profile as well. A rule the realm turns down rejects `addRoutes()` with a
+`TypeError`: an empty condition, `or` or `not` beside another condition, a
+pattern with regular expression groups, a method that is no token or is
+forbidden, a condition more than 10 deep, more than 1024 conditions in all, or a
+`fetch-event` source on a worker with no `fetch` handler. Routing needs
+`URLPattern`, so a worker on a runtime with none has its `urlPattern` conditions
+refused.
+
 **`caches` is every secure page's and every worker's**, whether or not it has
 service workers, and is what a worker usually answers from: `CacheStorage` and
 `Cache`, with `Vary`, `ignoreSearch`, `ignoreMethod` and `ignoreVary`, and an

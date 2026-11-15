@@ -33599,6 +33599,9 @@ export function installDom(
     get URL() {
       return URL;
     },
+    get URLPattern() {
+      return call('urlPattern', 'has', '') === true ? URLPattern : null;
+    },
     MessagePort,
   } as Any);
   const CACHES = cachesApi({
