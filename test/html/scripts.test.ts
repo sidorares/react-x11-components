@@ -2658,6 +2658,46 @@ test('a worker is at the URL its script came from after a redirect, with the fra
   );
 });
 
+test('a page and its worker match URLs with URLPattern, each in its own realm, as the host matches them', async (t) => {
+  if (
+    typeof (globalThis as { URLPattern?: unknown }).URLPattern !== 'function'
+  ) {
+    t.skip('this runtime has no URLPattern');
+    return;
+  }
+  const check =
+    'var p = new URLPattern({ pathname: "/books/:id(\\\\d+)?" }, { ignoreCase: true });' +
+    'var r = p.exec("https://example.test/BOOKS");' +
+    // what a bad pattern throws and what a match hands back are the realm's
+    // own, with nothing of the host's to reach through them
+    'var bad; try { new URLPattern("(") } catch (e) { bad = e instanceof TypeError && e.constructor.constructor === Function && Object.getPrototypeOf(e) === TypeError.prototype; }' +
+    'var own = Object.getPrototypeOf(r) === Object.prototype && Object.getPrototypeOf(r.pathname.groups) === Object.prototype && r.inputs instanceof Array && r.pathname.constructor.constructor === Function;' +
+    'var out = [p.pathname, p.hasRegExpGroups, p.test({ pathname: "/books/12" }),' +
+    ' r.pathname.input, "id" in r.pathname.groups, r.pathname.groups.id === undefined,' +
+    ' p.exec("https://example.test/films") === null, bad, own,' +
+    ' new URLPattern("/a/*", "https://example.test").protocol].join(" ");';
+  const doc = await hosted(
+    '<p id="out"></p><p id="worker"></p><script>' +
+      check +
+      'document.getElementById("out").textContent = out;' +
+      `var w = new Worker(URL.createObjectURL(new Blob([${JSON.stringify(check + 'postMessage(out);')}], { type: "application/javascript" })));` +
+      'w.onmessage = function (e) { document.getElementById("worker").textContent = e.data; };' +
+      '</script>',
+  );
+  const expected =
+    '/books/:id(\\d+)? true true /BOOKS true true true true true https';
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    expected,
+    doc.logs.join('\n'),
+  );
+  assert.equal(
+    await settled(doc, 'worker', (t) => t !== '', 15000),
+    expected,
+    doc.logs.join('\n'),
+  );
+});
+
 test('a data: worker runs on any page, at an origin of none, a secure context where its page is', async () => {
   // HTML 10.2.5.1: a dedicated worker's `data:` script is fetched whatever
   // its page's origin, and runs opaque; WebRTC's encoded-transform tests make

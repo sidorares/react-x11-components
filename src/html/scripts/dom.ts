@@ -237,6 +237,7 @@ export function installDom(
       op !== 'crypto' &&
       op !== 'random' &&
       op !== 'uuid' &&
+      op !== 'urlPattern' &&
       op !== 'eventPath' &&
       op !== 'svgLength' &&
       !op.startsWith('block')
@@ -425,6 +426,7 @@ export function installDom(
     'characterSet',
     'encodingLabel',
     'textDecode',
+    'urlPattern',
     'url',
     'random',
     'uuid',
@@ -27741,6 +27743,168 @@ export function installDom(
     });
   }
 
+  /** A `URLPatternInit`'s members, in the order WebIDL reads a
+   *  dictionary's, and a pattern's parts, in the order the IDL has them. */
+  const URL_PATTERN_INIT = [
+    'baseURL',
+    'hash',
+    'hostname',
+    'password',
+    'pathname',
+    'port',
+    'protocol',
+    'search',
+    'username',
+  ] as const;
+  const URL_PATTERN_PARTS = [
+    'protocol',
+    'username',
+    'password',
+    'hostname',
+    'port',
+    'pathname',
+    'search',
+    'hash',
+  ] as const;
+  /** WebIDL's `USVString` of what a page hands in, which a symbol is not. */
+  const patternString = (v: Any, what: string): string => {
+    if (typeof v === 'symbol') {
+      throw new TypeError(
+        `Failed to ${what} on 'URLPattern': Cannot convert a Symbol value to a string`,
+      );
+    }
+    return usv(v);
+  };
+  /** A `URLPatternInput`: a string, or a `URLPatternInit` read member by
+   *  member, as nothing at all is the empty dictionary. */
+  const patternInput = (v: Any, what: string): Any => {
+    if (v === undefined || v === null) return {};
+    if (typeof v !== 'object' && typeof v !== 'function') {
+      return patternString(v, what);
+    }
+    const init: Record<string, string> = {};
+    for (const key of URL_PATTERN_INIT) {
+      const value = v[key];
+      if (value !== undefined) init[key] = patternString(value, what);
+    }
+    return init;
+  };
+  /** What the host answered, or the page's own `TypeError` of its message. */
+  const patternAnswer = (op: string, json: string, what: string): Any => {
+    const answer = JSON.parse(str(call('urlPattern', op, json)));
+    if ('e' in answer) {
+      throw new TypeError(`Failed to ${what} on 'URLPattern': ${answer.e}`);
+    }
+    return answer.r;
+  };
+  /** A component's match, its groups made again with what did not
+   *  participate as `undefined`, which JSON has no way to say. */
+  const patternComponent = (part: Any): Any => {
+    const groups: Record<string, string | undefined> = {};
+    for (const [key, value] of part.groups) groups[key] = value;
+    return { input: part.input, groups };
+  };
+
+  /**
+   * `URLPattern` (URL Pattern), its parsing and matching the host's, which
+   * has the standard: Node and Bun both ship one. A pattern crosses as what
+   * it was made of, a string the host keeps the pattern it made by, so the
+   * page holds nothing of the host's, and only strings cross. Where the host
+   * has none, the page has none (`classes`).
+   */
+  class URLPattern {
+    /** What it was made of, as JSON: its input, its base and `ignoreCase`. */
+    _made: string;
+    _parts: Record<string, string>;
+    _regExp: boolean;
+    constructor(input: Any = undefined, base: Any = undefined, options?: Any) {
+      const what = "construct 'URLPattern'";
+      // the overload of two arguments takes a dictionary of options second,
+      // which a string is not
+      const takesOptions =
+        arguments.length < 3 &&
+        (base === undefined ||
+          base === null ||
+          typeof base === 'object' ||
+          typeof base === 'function');
+      const converted = patternInput(input, what);
+      const baseURL = takesOptions ? null : patternString(base, what);
+      const opts = takesOptions ? base : options;
+      if (
+        opts !== undefined &&
+        opts !== null &&
+        typeof opts !== 'object' &&
+        typeof opts !== 'function'
+      ) {
+        throw new TypeError(
+          `Failed to ${what}: The provided value is not of type 'URLPatternOptions'.`,
+        );
+      }
+      const ignoreCase = opts == null ? false : !!opts.ignoreCase;
+      this._made = JSON.stringify([converted, baseURL, ignoreCase]);
+      const made = patternAnswer('new', this._made, what);
+      this._parts = made.parts;
+      this._regExp = made.regExp;
+    }
+    get protocol(): string {
+      return this._parts.protocol;
+    }
+    get username(): string {
+      return this._parts.username;
+    }
+    get password(): string {
+      return this._parts.password;
+    }
+    get hostname(): string {
+      return this._parts.hostname;
+    }
+    get port(): string {
+      return this._parts.port;
+    }
+    get pathname(): string {
+      return this._parts.pathname;
+    }
+    get search(): string {
+      return this._parts.search;
+    }
+    get hash(): string {
+      return this._parts.hash;
+    }
+    get hasRegExpGroups(): boolean {
+      return this._regExp;
+    }
+    test(input: Any = undefined, base: Any = undefined): boolean {
+      const what = "execute 'test'";
+      const converted = patternInput(input, what);
+      const baseURL = base === undefined ? null : patternString(base, what);
+      return !!patternAnswer(
+        'test',
+        JSON.stringify([this._made, converted, baseURL]),
+        what,
+      );
+    }
+    exec(input: Any = undefined, base: Any = undefined): Any {
+      const what = "execute 'exec'";
+      const converted = patternInput(input, what);
+      const baseURL = base === undefined ? null : patternString(base, what);
+      const found = patternAnswer(
+        'exec',
+        JSON.stringify([this._made, converted, baseURL]),
+        what,
+      );
+      if (!found) return null;
+      const result: Record<string, Any> = { inputs: found.inputs };
+      for (const part of URL_PATTERN_PARTS) {
+        result[part] = patternComponent(found[part]);
+      }
+      return result;
+    }
+  }
+  idlAttributes(URLPattern);
+  for (const name of ['test', 'exec']) {
+    Object.defineProperty(URLPattern.prototype, name, { enumerable: true });
+  }
+
   /** `URL` (WHATWG URL), its parsing the host's, which has the standard. */
   class URL {
     // its parts, on the prototype below
@@ -45229,6 +45393,7 @@ export function installDom(
     FileList,
     URL,
     URLSearchParams,
+    URLPattern,
     Headers,
     WheelEvent,
     Worker,
@@ -45534,6 +45699,9 @@ export function installDom(
       (classes as Any)[name] = Interface;
     }
   }
+  // the host's, which a runtime before URLPattern does not have
+  if (call('urlPattern', 'has', '') !== true)
+    delete (classes as Any).URLPattern;
   // and their interfaces with it, which a page tells a service worker by
   if (serviceWorkersOn) Object.assign(classes, SW.interfaces);
   for (const [name, value] of Object.entries(classes)) {
