@@ -29767,6 +29767,142 @@ export function installDom(
    * timeout covers a wait on a socket. What `responseType` reads is text,
    * JSON or an `ArrayBuffer`; a `document` and a `Blob` are not here.
    */
+  /** A MIME type as MIME Sniffing 4.4 parses it: its type and subtype,
+   *  lowercased, and its parameters in the order they came, the first of
+   *  each name kept. Null where it parses as none. */
+  const parseMime = (
+    input: string,
+  ): { type: string; subtype: string; params: [string, string][] } | null => {
+    const token = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+    const quoted = /^[\t\u0020-\u007e\u0080-\u00ff]*$/;
+    const s = input.replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, '');
+    let at = s.indexOf('/');
+    if (at < 0) return null;
+    const type = s.slice(0, at);
+    if (!type || !token.test(type)) return null;
+    at += 1;
+    let end = s.indexOf(';', at);
+    if (end < 0) end = s.length;
+    const subtype = s.slice(at, end).replace(/[\t\n\r ]+$/, '');
+    if (!subtype || !token.test(subtype)) return null;
+    const params: [string, string][] = [];
+    at = end;
+    while (at < s.length) {
+      at += 1; // the ';'
+      while (at < s.length && /[\t\n\r ]/.test(s[at])) at += 1;
+      let nameEnd = at;
+      while (nameEnd < s.length && s[nameEnd] !== ';' && s[nameEnd] !== '=') {
+        nameEnd += 1;
+      }
+      const name = s.slice(at, nameEnd).toLowerCase();
+      at = nameEnd;
+      if (at < s.length && s[at] === ';') continue;
+      if (at >= s.length) break;
+      at += 1; // the '='
+      let value: string;
+      if (s[at] === '"') {
+        // an HTTP quoted string, its value extracted
+        value = '';
+        at += 1;
+        while (at < s.length) {
+          const c = s[at];
+          if (c === '\\') {
+            at += 1;
+            if (at >= s.length) {
+              value += '\\';
+              break;
+            }
+            value += s[at];
+            at += 1;
+          } else if (c === '"') {
+            at += 1;
+            break;
+          } else {
+            value += c;
+            at += 1;
+          }
+        }
+        while (at < s.length && s[at] !== ';') at += 1;
+      } else {
+        let valueEnd = s.indexOf(';', at);
+        if (valueEnd < 0) valueEnd = s.length;
+        value = s.slice(at, valueEnd).replace(/[\t\n\r ]+$/, '');
+        at = valueEnd;
+        if (!value) continue;
+      }
+      if (
+        name &&
+        token.test(name) &&
+        quoted.test(value) &&
+        !params.some(([n]) => n === name)
+      ) {
+        params.push([name, value]);
+      }
+    }
+    return { type: type.toLowerCase(), subtype: subtype.toLowerCase(), params };
+  };
+  /** A parsed MIME type written out (MIME Sniffing 4.5): a value that is no
+   *  token is quoted, its quotes and backslashes escaped. */
+  const serializeMime = (mime: {
+    type: string;
+    subtype: string;
+    params: [string, string][];
+  }): string => {
+    let out = `${mime.type}/${mime.subtype}`;
+    for (const [name, value] of mime.params) {
+      const plain = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(value);
+      out += `;${name}=${plain ? value : `"${value.replace(/(["\\])/g, '\\$1')}"`}`;
+    }
+    return out;
+  };
+  /** Fetch's "extract a MIME type" from a `Content-Type`: the last of its
+   *  values that parses, a charset kept from an earlier one of the same
+   *  essence where the later one has none. */
+  const extractMime = (
+    value: string | null,
+  ): { type: string; subtype: string; params: [string, string][] } | null => {
+    if (value === null) return null;
+    let mime: Any = null;
+    let charset: string | null = null;
+    let essence: string | null = null;
+    for (const one of splitHeaderValues(value)) {
+      const parsed = parseMime(one);
+      if (!parsed || `${parsed.type}/${parsed.subtype}` === '*/*') continue;
+      mime = parsed;
+      const was = essence;
+      essence = `${parsed.type}/${parsed.subtype}`;
+      const own = parsed.params.find(([n]) => n === 'charset');
+      if (own) charset = own[1];
+      else if (charset !== null && essence === was) {
+        mime.params.push(['charset', charset]);
+      } else charset = null;
+    }
+    return mime;
+  };
+  /** A header's values, split at the commas outside quotes (Fetch 2.2.2,
+   *  "get, decode, and split"). */
+  const splitHeaderValues = (value: string): string[] => {
+    const out: string[] = [];
+    let at = '';
+    let quoted = false;
+    for (let i = 0; i < value.length; i += 1) {
+      const c = value[i];
+      if (quoted) {
+        at += c;
+        if (c === '\\' && i + 1 < value.length) at += value[++i];
+        else if (c === '"') quoted = false;
+      } else if (c === '"') {
+        quoted = true;
+        at += c;
+      } else if (c === ',') {
+        out.push(at.replace(/^[\t ]+|[\t ]+$/g, ''));
+        at = '';
+      } else at += c;
+    }
+    out.push(at.replace(/^[\t ]+|[\t ]+$/g, ''));
+    return out;
+  };
+
   class XMLHttpRequestEventTarget extends EventTarget {
     constructor() {
       super();
@@ -30176,7 +30312,27 @@ export function installDom(
           'InvalidStateError',
         );
       }
-      this._override = str(mime);
+      // what is no MIME type is `application/octet-stream` (XHR 3.6.8)
+      const parsed = parseMime(str(mime));
+      this._override = parsed
+        ? serializeMime(parsed)
+        : 'application/octet-stream';
+    }
+    /** XHR 3.6.8's "final MIME type": the override where there is one, else
+     *  the response's, else `text/xml`. */
+    _finalMime(): {
+      type: string;
+      subtype: string;
+      params: [string, string][];
+    } {
+      if (this._override !== null) return parseMime(this._override)!;
+      return (
+        extractMime(this._response?.headers.get('content-type') ?? null) ?? {
+          type: 'text',
+          subtype: 'xml',
+          params: [],
+        }
+      );
     }
     get responseText(): string {
       if (this.responseType !== '' && this.responseType !== 'text') {
@@ -30200,9 +30356,12 @@ export function installDom(
       }
       if (type === 'arraybuffer') return this._raw.slice().buffer;
       if (type === 'blob') {
-        return new Blob([this._raw], {
-          type: this._response?.headers.get('content-type') ?? '',
-        });
+        // its type is the final MIME type as it serializes, which keeps the
+        // case of what its parameters say, where `Blob`'s constructor
+        // lowercases what it is given (XHR 3.6.9, "get a blob response")
+        const blob = new Blob([this._raw]);
+        blob._type = serializeMime(this._finalMime());
+        return blob;
       }
       return null;
     }
