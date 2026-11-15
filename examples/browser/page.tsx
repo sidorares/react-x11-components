@@ -115,7 +115,6 @@ import {
   preloadHtmlScripts,
   publicSuffixList,
   readHtmlFiles,
-  resourceResult,
   schemeOf,
   htmlTextDecoder,
   readyFor,
@@ -147,7 +146,6 @@ import type {
   HtmlScripts,
   HtmlSessionEntry,
   PostData,
-  ResourceKind,
   ResourceRequest,
   ResourceResult,
   ViewportOverflow,
@@ -1263,9 +1261,8 @@ export default function Page(props: PageProps): ReactElement {
             : { kind: 'video' as const, src },
         );
       }
-      const kind = request.kind;
       return requestsOf(view.n).resource((signal) =>
-        resource(request.url, kind, pageUrl, signal),
+        resource(request, pageUrl, signal),
       );
     };
 
@@ -2457,15 +2454,21 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   return out;
 }
 
-/** The subresource a page asked for, as `<Html>` takes it back. */
-async function resource(
-  url: string,
-  kind: ResourceKind,
+/**
+ * The subresource a page asked for, as `<Html>` takes it back: through the
+ * network's own `onResource`, which hands on all the request says of itself
+ * — its CORS mode, a module's type, the document that asked, its referrer
+ * policy and its clock. Asked by its URL and kind alone, a module went with
+ * no `Origin`, and a CDN that answers CORS only to a request that names one
+ * (`Vary: Origin`) sent nothing the module could be let through by:
+ * vscode.dev's workbench failed to load.
+ */
+function resource(
+  request: ResourceRequest,
   page: string,
   signal: AbortSignal,
 ): Promise<ResourceResult | null> {
-  const fetched = await network.resource(url, kind, page, signal);
-  return fetched ? resourceResult(fetched, kind) : null;
+  return network.resources(page, { signal })(request) ?? Promise.resolve(null);
 }
 
 /** Decoded icons by URL, for every document this process shows: a site's

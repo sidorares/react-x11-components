@@ -25,7 +25,10 @@ import React from 'react';
 import { act, cleanup, renderX11 } from 'react-x11/test';
 import { Html, preloadHtmlScripts } from '../../src/html/index.js';
 import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
-import type { FetchRequest } from '../../src/html/scripts/host.js';
+import type {
+  FetchRequest,
+  FetchResponse,
+} from '../../src/html/scripts/host.js';
 import type { ResourceRequest } from '../../src/html/resources.js';
 
 const SELF = 'https://example.test:8443/page.html';
@@ -258,6 +261,8 @@ async function policed(
   head: string,
   body: string,
   headers: [string, string][] = [],
+  /** What the network answers a request with, where it is not a 204. */
+  answer: (request: FetchRequest) => FetchResponse | null = () => null,
 ): Promise<{
   logs: string[];
   sent: FetchRequest[];
@@ -286,14 +291,16 @@ async function policed(
           void logs.push(`${level}: ${text}`),
         fetch: async (request: FetchRequest) => {
           sent.push(request);
-          return {
-            url: request.url,
-            status: 204,
-            statusText: 'No Content',
-            redirected: false,
-            headers: [],
-            body: '',
-          };
+          return (
+            answer(request) ?? {
+              url: request.url,
+              status: 204,
+              statusText: 'No Content',
+              redirected: false,
+              headers: [],
+              body: '',
+            }
+          );
         },
       },
     }),
@@ -582,6 +589,76 @@ scripted(
       ],
     ]);
     assert.ok(!page.sent.some((r) => r.url === 'https://example.test/w.js'));
+    page.unmount();
+  },
+);
+
+scripted(
+  'a worker’s import() is held to its own script-src, and its own graph to the document’s worker-src',
+  async () => {
+    // vscode.dev's extension host: a module worker made of a blob, in a
+    // document whose worker-src is its own origin's, imports its code from
+    // a CDN that its script-src names (WPT's
+    // workers/modules/dedicated-worker-import-csp.html)
+    const page = await policed(
+      `<meta http-equiv="Content-Security-Policy" content="worker-src 'self' blob:; script-src 'nonce-n' https://cdn.test blob:">`,
+      `<script nonce="n">
+      var out = [];
+      function start(name, url) {
+        var w = new Worker(url, { type: 'module' });
+        w.onmessage = function (e) { out.push(name + ' ' + e.data); told(); };
+        w.onerror = function () { out.push(name + ' error'); told(); };
+      }
+      function told() {
+        if (out.length === 3) console.log('out ' + JSON.stringify(out.sort()));
+      }
+      function blob(src) {
+        return URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+      }
+      start('dynamic', blob("import('https://cdn.test/m.js').then(function (m) { postMessage(m.x); }, function (e) { postMessage(e.name); });"));
+      start('static', blob("import { x } from 'https://cdn.test/m.js'; postMessage(x);"));
+      start('own', 'https://example.test/w.js');
+    </script>`,
+      [],
+      (request) => {
+        const script = (body: string, headers: [string, string][] = []) => ({
+          url: request.url,
+          status: 200,
+          statusText: 'OK',
+          redirected: false,
+          headers: [
+            ['content-type', 'text/javascript'],
+            ['access-control-allow-origin', '*'],
+            ...headers,
+          ] as [string, string][],
+          body,
+        });
+        if (request.url === 'https://cdn.test/m.js') {
+          return script('export const x = 7;');
+        }
+        // a worker whose own policy names no CDN: its import() is refused,
+        // whatever the document's says
+        if (request.url === 'https://example.test/w.js') {
+          return script(
+            "import('https://cdn.test/m.js').then(function () { postMessage('imported'); }, function (e) { postMessage(e.name); });",
+            [['content-security-policy', "script-src 'self'"]],
+          );
+        }
+        return null;
+      },
+    );
+    assert.deepEqual(JSON.parse(await page.until('out')), [
+      'dynamic 7',
+      'own TypeError',
+      'static error',
+    ]);
+    // asked for as a script, and the static import never asked for
+    assert.deepEqual(
+      page.sent
+        .filter((r) => r.url === 'https://cdn.test/m.js')
+        .map((r) => r.destination),
+      ['script'],
+    );
     page.unmount();
   },
 );
