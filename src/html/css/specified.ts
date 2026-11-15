@@ -5,6 +5,7 @@
 // kept as it was written, as it always was here, so a value a page sets and
 // reads back is never lost to a grammar this has not got.
 
+import { PASSIVE } from './passive-properties.js';
 import { backgroundSpecified } from './backgrounds-specified.js';
 import {
   borderComposed,
@@ -121,6 +122,14 @@ export function specifiedValue(
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
     return svg.specified(word);
+  }
+  // what is held and read back and nothing here draws yet
+  // (`passive-properties.ts`)
+  const passive = PASSIVE[name];
+  if (passive) {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return passive.take(word);
   }
   // one keyword (CSS UI 4, 6.1)
   // keywords a property takes and nothing else (CSS Position 4, 3.2; CSS

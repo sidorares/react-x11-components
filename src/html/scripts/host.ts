@@ -168,6 +168,7 @@ import {
 } from '../css/color.js';
 import {
   SHORTHAND_NAMES,
+  COMPOSED_NAMES,
   comesFromBox,
   cssomShorthands,
   cssomStyle,
@@ -6645,7 +6646,7 @@ export class DomHost {
         return send(handle.computedStyle(this._element(a), part));
       }
       case 'computedShorthands':
-        return JSON.stringify(SHORTHAND_NAMES);
+        return JSON.stringify(COMPOSED_NAMES);
       case 'computedSvg':
         return JSON.stringify(Object.keys(SVG_PROPERTIES));
       // the document's `medium` in CSS pixels, which its keyword sizes are

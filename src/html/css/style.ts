@@ -12,6 +12,7 @@
 //  - **Nothing here depends on the containing block.** Percentages and `auto`
 //    survive as `Len`s (see values.ts). A style computed at one width is
 //    correct at every width, which is the whole of the resize story.
+import { NO_PASSIVE, PASSIVE } from './passive-properties.js';
 import {
   AUTO,
   alphaOf,
@@ -1207,6 +1208,12 @@ export interface ComputedStyle {
    *  to say, for a modal dialog (`Cascade._cascadeStyle`), and no page's:
    *  `overlay` is the user agent's alone. Not inherited. */
   overlay: 'none' | 'auto';
+  /** What was set of the properties a style holds and nothing here lays
+   *  out or paints by yet (`passive-properties.ts`): the ones that do not
+   *  inherit, and the ones that do. A property missing is at its initial
+   *  value, and a record is new at each change. */
+  passive: Readonly<Record<string, string>>;
+  passiveInherited: Readonly<Record<string, string>>;
   objectPositionX: Len;
   objectPositionY: Len;
   overflowX: 'visible' | 'hidden' | 'scroll' | 'auto' | 'clip';
@@ -1772,6 +1779,7 @@ export interface ComputedStyle {
  *  same list. */
 export const INHERITED = [
   'color',
+  'passiveInherited',
   'colorSource',
   'interpolateSize',
   'scrollbarThumbColor',
@@ -2100,6 +2108,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     styledControl: false,
     itemsThrough: false,
     overlay: 'none',
+    passive: NO_PASSIVE,
+    passiveInherited: NO_PASSIVE,
     objectPositionX: { pct: 50 },
     objectPositionY: { pct: 50 },
     overflowX: 'visible',
@@ -2385,6 +2395,7 @@ export function inherit(
   out.colorScheme = parent.colorScheme;
   out.colorSchemeKeywords = parent.colorSchemeKeywords;
   out.textFillColor = parent.textFillColor;
+  out.passiveInherited = parent.passiveInherited;
   out.fontFamily = parent.fontFamily;
   out.familyWritten = parent.familyWritten;
   out.fontFamilyText = parent.fontFamilyText;
@@ -2744,6 +2755,7 @@ const PREFIXED_ALIASES: Record<string, string> = {
  *  finds `in` a style: anything with a `case` is in one of these. */
 export function declaredProperties(): string[] {
   return [
+    ...Object.keys(PASSIVE),
     ...Object.keys(PREFIXED_ALIASES),
     ...Object.keys(LOGICAL),
     ...Object.keys(INHERIT_TARGETS),
@@ -2831,6 +2843,16 @@ export function applyDeclaration(
   // writing it in an inline style, where it still wins by being last.
   if (/!\s*important$/i.test(value)) {
     value = value.replace(/!\s*important$/i, '').trim();
+  }
+  // what is held and read back and nothing here draws yet
+  // (`passive-properties.ts`)
+  const passive = PASSIVE[name];
+  if (passive) {
+    const taken = passive.take(value);
+    if (taken === null) return;
+    const key = passive.inherited ? 'passiveInherited' : 'passive';
+    style[key] = { ...style[key], [name]: taken };
+    return;
   }
   // a system colour is a `light-dark()` of its own, in a property that
   // takes a colour: `Menu` is a font in `font`, and `Mark` a family's name
@@ -9620,6 +9642,7 @@ function camel(name: string): string {
 }
 
 const INHERITED_NAMES = new Set<string>([
+  ...Object.keys(PASSIVE).filter((name) => PASSIVE[name].inherited),
   'color',
   'interpolate-size',
   'scrollbar-color',
@@ -9869,6 +9892,17 @@ function inheritOne(
   parent: ComputedStyle,
   name: string,
 ): void {
+  // a passive property is its record's entry, the parent's taken over
+  const passive = PASSIVE[name];
+  if (passive) {
+    const key = passive.inherited ? 'passiveInherited' : 'passive';
+    const next = { ...style[key] };
+    const v = parent[key][name];
+    if (v === undefined) delete next[name];
+    else next[name] = v;
+    style[key] = next;
+    return;
+  }
   const list = MASK_LISTS[name];
   if (list) {
     style.mask = { ...style.mask, [list]: parent.mask[list] };

@@ -10,6 +10,10 @@
 // padding — are the used values a layout came to, where the element has a
 // box, and the computed ones where it has none; and a colour is `rgb()` or
 // `rgba()`, as a browser serializes every one.
+import { PASSIVE, passiveValue } from './css/passive-properties.js';
+
+/** The passive properties, in the order a computed style lists them. */
+const PASSIVE_NAMES = Object.keys(PASSIVE);
 import type { BasicShape } from './css/basic-shape.js';
 import type { ObjectViewBox } from './css/object-view-box.js';
 import { pathSegments, pathText } from './css/shape-outside.js';
@@ -2422,8 +2426,8 @@ const SHORTHANDS: Record<string, Composer> = {
  */
 const COMPOSED: object = Object.create(
   null,
-  Object.fromEntries(
-    Object.entries(SHORTHANDS).map(([name, compose]) => [
+  Object.fromEntries([
+    ...Object.entries(SHORTHANDS).map(([name, compose]) => [
       name,
       {
         get(this: Longhands): string {
@@ -2432,7 +2436,23 @@ const COMPOSED: object = Object.create(
         },
       },
     ]),
-  ),
+    // and what is held and read back and nothing here draws yet, at what
+    // its record has or its initial value (`passive-properties.ts`): read
+    // as a shorthand is, since thirty keys more in the record would make
+    // it a dictionary
+    ...PASSIVE_NAMES.map((name) => [
+      name,
+      {
+        get(this: Longhands): string {
+          const [style] = this[READ_FROM];
+          return passiveValue(
+            PASSIVE[name].inherited ? style.passiveInherited : style.passive,
+            name,
+          );
+        },
+      },
+    ]),
+  ]),
 );
 
 /** The shorthands a computed style answers by name, and that are no item of
@@ -2440,11 +2460,19 @@ const COMPOSED: object = Object.create(
  *  as html2canvas does, would set them over those. */
 export const SHORTHAND_NAMES: readonly string[] = Object.keys(SHORTHANDS);
 
+/** What a computed style answers by name and composes as it is read: its
+ *  shorthands, and the passive properties, which a page's realm asks for
+ *  with them. */
+export const COMPOSED_NAMES: readonly string[] = [
+  ...SHORTHAND_NAMES,
+  ...PASSIVE_NAMES,
+];
+
 /** A record's shorthands as they compose, all of them, for a page's realm. */
 export function cssomShorthands(
   all: Record<string, string>,
 ): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const name of SHORTHAND_NAMES) out[name] = all[name];
+  for (const name of COMPOSED_NAMES) out[name] = all[name];
   return out;
 }
