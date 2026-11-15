@@ -791,6 +791,43 @@ metric(
 );
 
 metric(
+  'a line before the explicit grid makes implicit tracks there',
+  async () => {
+    // CSS Grid 1, 7.5, and WPT's grid-implicit-tracks-before-explicit: a
+    // negative line past the explicit grid's first is an implicit track
+    // before it, sized by grid-auto-rows and grid-auto-columns, and the
+    // auto placement starts from the implicit grid's first track
+    const tall = (n: number) => `<div style="height:${n}px;width:10px"></div>`;
+    const { node } = await render(
+      '<style>body{margin:0}.g{display:grid;grid:50px/100px;' +
+        'justify-content:start}</style>' +
+        `<div class="g" id="g1"><div id="a" style="grid-row:-3;grid-column:1">${tall(10)}</div>` +
+        `<div id="b">${tall(10)}</div></div>` +
+        `<div class="g" id="g2"><div id="c" style="grid-row:-4;grid-column:-3">${tall(10)}</div>` +
+        `<div id="d" style="grid-row:1;grid-column:1">${tall(10)}</div>` +
+        `<div id="e">${tall(10)}</div></div>`,
+    );
+    const el = view(node);
+    const at = (id: string) => {
+      const b = boxOf(el, id);
+      const g = boxOf(el, 'ab'.includes(id) ? 'g1' : 'g2');
+      return [b.x - g.x, b.y - g.y, b.width, b.height];
+    };
+    // a row of its content's height before the explicit 50px one, which
+    // the auto placed item goes on to, the first row's column being taken
+    assert.deepStrictEqual(at('a'), [0, 0, 100, 10]);
+    assert.deepStrictEqual(at('b'), [0, 10, 100, 50]);
+    // two rows and a column before: the explicit cell is at the third row
+    // and the second column, the second row, empty and `auto`, nothing
+    // tall, and the auto placed item takes the first cell free, beside
+    // the item before the grid
+    assert.deepStrictEqual(at('c'), [0, 0, 10, 10]);
+    assert.deepStrictEqual(at('d'), [10, 10, 100, 50]);
+    assert.deepStrictEqual(at('e'), [10, 0, 100, 10]);
+  },
+);
+
+metric(
   'a percentage row of a grid with no height is of the height its rows come to',
   async () => {
     // CSS Grid 1, 7.2.1: sized as `auto` to find the grid's height, and then

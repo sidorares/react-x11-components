@@ -5892,7 +5892,12 @@ It places its items by line, span, line name or the area
 `grid-template-areas` names, or in order into the first cells free, along
 the rows or down the columns by `grid-auto-flow`, `dense` or not — in
 `order`, and in the document's where two have the same, which is the order
-they are painted in too, as flex items are (CSS Grid 1, 6.3 and 6.5) — and
+they are painted in too, as flex items are (CSS Grid 1, 6.3 and 6.5). A
+line before the explicit grid's first, a negative number past it or a name
+counted back past it, makes implicit tracks there, sized by
+`grid-auto-columns` and `grid-auto-rows` as those after it are, and the
+cells free are looked for from the first of them (7.5); grid lanes make
+them along their lanes the same way. It
 sizes its columns and its rows by the track sizing algorithm:
 an item spanning several tracks grows the ones its content sizes, and the
 `fr` rows of a grid with a height or a `min-height` fill it, which puts a

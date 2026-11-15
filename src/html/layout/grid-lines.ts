@@ -15,6 +15,33 @@ export interface GridLines {
   named: Map<string, number[]>;
   names: readonly (readonly string[])[];
   areas: readonly AreaSpan[];
+  /** How many implicit tracks come before the explicit grid (CSS Grid 1,
+   *  7.5), which every line here is counted past: the explicit grid's
+   *  first line is `lead` (`withLead`). */
+  lead?: number;
+}
+
+/** A grid's lines with `lead` implicit tracks before its explicit grid:
+ *  each line, its names and its areas' moved on by as many. */
+export function withLead(lines: GridLines, lead: number): GridLines {
+  if (lead <= 0) return lines;
+  const names: (readonly string[])[] = [];
+  for (let i = 0; i < lead; i += 1) names.push([]);
+  names.push(...lines.names);
+  const named = new Map<string, number[]>();
+  for (const [name, list] of lines.named) {
+    named.set(
+      name,
+      list.map((l) => l + lead),
+    );
+  }
+  return {
+    tracks: lines.tracks,
+    named,
+    names,
+    areas: lines.areas.map(([name, a, b]) => [name, a + lead, b + lead]),
+    lead: (lines.lead ?? 0) + lead,
+  };
 }
 
 /** A named area's lines on one axis: its name, and its start and end. */
@@ -143,10 +170,14 @@ function linesNamed(
 export function namedLine(lines: GridLines, name: string, n: number): number {
   const list = lines.named.get(name) ?? [];
   if (n > 0) {
-    return n <= list.length ? list[n - 1] : lines.tracks + (n - list.length);
+    return n <= list.length
+      ? list[n - 1]
+      : (lines.lead ?? 0) + lines.tracks + (n - list.length);
   }
   const k = -n;
-  return k <= list.length ? list[list.length - k] : -(k - list.length);
+  return k <= list.length
+    ? list[list.length - k]
+    : (lines.lead ?? 0) - (k - list.length);
 }
 
 /**
@@ -162,7 +193,10 @@ export function lineOf(
   if (!line || 'span' in line) return null;
   if ('line' in line) {
     if (line.name !== undefined) return namedLine(lines, line.name, line.line);
-    return line.line > 0 ? line.line - 1 : lines.tracks + 1 + line.line;
+    const lead = lines.lead ?? 0;
+    return line.line > 0
+      ? lead + line.line - 1
+      : lead + lines.tracks + 1 + line.line;
   }
   const edge = lines.named.get(`${line.name}-${side}`);
   if (edge?.length) return edge[0];
@@ -185,11 +219,13 @@ export function spanToName(
   if (forward) {
     const after = list.filter((l) => l > from);
     if (count <= after.length) return after[count - 1];
-    return Math.max(from, lines.tracks) + (count - after.length);
+    return (
+      Math.max(from, (lines.lead ?? 0) + lines.tracks) + (count - after.length)
+    );
   }
   const before = list.filter((l) => l < from);
   if (count <= before.length) return before[before.length - count];
-  return Math.min(from, 0) - (count - before.length);
+  return Math.min(from, lines.lead ?? 0) - (count - before.length);
 }
 
 /**
@@ -202,6 +238,9 @@ export function placement(
   start: GridLine,
   end: GridLine,
   lines: GridLines,
+  /** Whether a line before the first may be answered, as a negative
+   *  start, where the grid makes implicit tracks there (`withLead`). */
+  before = false,
 ): [number | null, number] {
   let from = lineOf(lines, start, 'start');
   let to = lineOf(lines, end, 'end');
@@ -226,7 +265,7 @@ export function placement(
     return [null, s && s.name === undefined ? s.span : 1];
   }
   // the grid here has no tracks before its first line
-  if (from < 0) {
+  if (from < 0 && !before) {
     to = Math.max(1, to + -from);
     from = 0;
   }
