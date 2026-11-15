@@ -9,7 +9,10 @@
 // a query reads it are the host's (`../cache-storage.ts`), which a worker
 // reaches across its thread, so a page and its worker read one store. What a
 // page holds — the promises, the requests, the responses, every rejection —
-// is made here, of the page's own classes.
+// is made here, of the page's own classes. A body a page keeps goes over by
+// itself, through `cacheBody`, as it is read, and its batch names it by
+// number (`handing`): one message carrying every body of an `addAll` is no
+// heap's to make.
 //
 // An opaque response's body is no business of the realm's: a `no-cors`
 // response another origin answered crosses as a number (`_held`), and what it
@@ -151,11 +154,41 @@ export function installCaches(deps: CachesDeps): CachesInternals {
     return null;
   };
 
-  /** A response's part of a batch: its head, and its bytes or the number
-   *  they are held by. */
-  const puttable = async (request: Any, response: Any): Promise<Any> => {
+  /** The bodies one `put` or `addAll` handed the host before its batch
+   *  (`cacheBody`), each by a number of this realm's, and let go of where it
+   *  fails. A body goes over as it is read, and on its own: a batch that
+   *  carried them all held every one in this heap as base64 at once, and the
+   *  JSON of the lot again, which an `addAll` of a whole app's files does not
+   *  fit in. A body read once the call has failed is not handed over. */
+  let nextBody = 1;
+  const handing = (): Any => {
+    const given: number[] = [];
+    let over = false;
+    return {
+      give(bytes: Uint8Array): number {
+        const n = nextBody;
+        nextBody += 1;
+        if (over) return n;
+        call('cacheBody', n, base64OfBytes(bytes));
+        given.push(n);
+        return n;
+      },
+      letGo(): void {
+        over = true;
+        for (const n of given.splice(0)) call('cacheBody', n);
+      },
+    };
+  };
+
+  /** A response's part of a batch: its head, and the number its body was
+   *  handed over by, or the number an opaque one is held by. */
+  const puttable = async (
+    request: Any,
+    response: Any,
+    bodies: Any,
+  ): Promise<Any> => {
     const held = response._held ?? null;
-    const bytes = held === null ? await drain(response) : null;
+    const body = held === null ? bodies.give(await drain(response)) : null;
     return {
       type: 'put',
       request: requestOf(request),
@@ -167,7 +200,7 @@ export function installCaches(deps: CachesDeps): CachesInternals {
         url: response.url,
         redirected: response.redirected,
       },
-      ...(held === null ? { base64: base64OfBytes(bytes) } : { held }),
+      ...(held === null ? { body } : { held }),
     };
   };
 
@@ -221,6 +254,7 @@ export function installCaches(deps: CachesDeps): CachesInternals {
         return rejected(e);
       }
       const name = this._name;
+      const bodies = handing();
       return P.all(
         list.map((made: Any) =>
           // by its own signal, which what is aborted is told through
@@ -235,15 +269,20 @@ export function installCaches(deps: CachesDeps): CachesInternals {
             }
             const refused = refusal(response, 'addAll');
             if (refused) throw new TypeError(refused);
-            return response;
+            // read and handed over as it comes, so that what this realm
+            // holds is the bodies still arriving and not all of them
+            return puttable(made, response, bodies);
           }),
         ),
       )
-        .then((responses: Any[]) =>
-          P.all(responses.map((r: Any, i: number) => puttable(list[i], r))),
-        )
         .then((operations: Any[]) => ask({ op: 'batch', name, operations }))
-        .then(() => undefined);
+        .then(
+          () => undefined,
+          (error: Any) => {
+            bodies.letGo();
+            throw error;
+          },
+        );
     }
     put(request: Any, response: Any): Any {
       if (arguments.length < 2) return short('put', arguments.length, 2);
@@ -284,11 +323,18 @@ export function installCaches(deps: CachesDeps): CachesInternals {
         );
       }
       const name = this._name;
-      return puttable(made, response)
+      const bodies = handing();
+      return puttable(made, response, bodies)
         .then((operation: Any) =>
           ask({ op: 'batch', name, operations: [operation] }),
         )
-        .then(() => undefined);
+        .then(
+          () => undefined,
+          (error: Any) => {
+            bodies.letGo();
+            throw error;
+          },
+        );
     }
     delete(request: Any, options?: Any): Any {
       if (!arguments.length) return short('delete', 0, 1);

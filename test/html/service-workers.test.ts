@@ -501,6 +501,77 @@ test('a page looking for what is not here finds nothing it can trip on', async (
   assert.equal(await page.text('out'), 'false false false false false false');
 });
 
+/** A register page that says what became of the worker: `activated`, or
+ *  `redundant` where its install failed or its thread died. */
+const INSTALLS = `<!doctype html><p id="state"></p><script>
+navigator.serviceWorker.register('/sw.js').then(function (r) {
+  var w = r.installing || r.waiting || r.active;
+  function say() { document.getElementById('state').textContent = w.state; }
+  w.addEventListener('statechange', say);
+  say();
+});
+</script>`;
+
+test("a worker's addAll hands each body to the host as it comes, so what it caches is never in its heap at once", async (t) => {
+  // vscode.dev's worker caches its whole workbench in one `addAll`, 2,194
+  // files and some 250 MB, and every body went to the host as base64 in one
+  // message: the thread died of its heap limit. This is that in small, 48 MB
+  // under a limit of 160, which the one message took a thread past at 256 as
+  // well, and which the bodies one at a time keep under at 96
+  const PARTS = 24;
+  const SIZE = 2 * 1024 * 1024;
+  const part = (p: number): Uint8Array => {
+    const bytes = new Uint8Array(SIZE);
+    for (let i = 0; i < SIZE; i++) bytes[i] = (p * 31 + i) & 255;
+    return bytes;
+  };
+  const pages: Record<string, Page> = {
+    '/register': INSTALLS,
+    '/page': ANSWERED,
+    '/sw.js': `var PARTS = ${PARTS};
+      var urls = [];
+      for (var i = 0; i < PARTS; i++) urls.push('/part' + i + '.bin');
+      self.addEventListener('install', function (e) {
+        e.waitUntil(caches.open('big').then(function (c) { return c.addAll(urls); }));
+      });
+      self.addEventListener('fetch', function (e) {
+        if (new URL(e.request.url).pathname !== '/made') return;
+        e.respondWith(caches.open('big').then(function (c) {
+          return Promise.all([c.keys(), c.match('/part' + (PARTS - 1) + '.bin')]);
+        }).then(function (got) {
+          return got[1].arrayBuffer().then(function (buffer) {
+            var bytes = new Uint8Array(buffer);
+            var p = PARTS - 1;
+            var same = bytes[0] === ((p * 31) & 255) &&
+              bytes[bytes.length - 1] === ((p * 31 + bytes.length - 1) & 255);
+            return new Response(got[0].length + ' ' + bytes.length + ' ' + same);
+          });
+        }));
+      });`,
+  };
+  for (let p = 0; p < PARTS; p++) {
+    pages[`/part${p}.bin`] = ['application/octet-stream', part(p)];
+  }
+  const site = await serve(pages, t);
+  const { workerResourceLimits } =
+    await import('../../src/html/scripts/workers.js');
+  const limits = { ...workerResourceLimits };
+  workerResourceLimits.maxOldGenerationSizeMb = 160;
+  t.after(() => void Object.assign(workerResourceLimits, limits));
+  const keeper = new HtmlServiceWorkers();
+  t.after(() => keeper.dispose());
+  const network = new HtmlNetwork({ serviceWorkers: keeper });
+  const register = await show(site.url('/register'), network, keeper);
+  const state = await register.text(
+    'state',
+    (text) => text === 'activated' || text === 'redundant',
+  );
+  assert.equal(state, 'activated', register.logs.join('\n'));
+  cleanup();
+  const page = await show(site.url('/page'), network, keeper);
+  assert.equal(await page.text('out'), `${PARTS} ${SIZE} true`);
+});
+
 test('a worker with nothing to do gives its thread up, and comes back for what it hears', async (t) => {
   const site = await serve(
     {

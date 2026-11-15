@@ -5271,7 +5271,17 @@ thousand responses costs a `match` one body and a `keys()` none. A worker reache
 it across its thread (`cachesThrough`), and the profile's is `workers.sqlite`, a
 third file for the reason the HTTP cache is a second. **Anything new a cache's
 semantics need goes in `askCaches`**, not in a store or a facade, or memory and
-the profile come apart: `test/html/cache-storage.test.ts` runs over both.
+the profile come apart: `test/html/cache-storage.test.ts` runs over both. **A
+body a page keeps crosses the bridge by itself, as it is read** (`cacheBody`,
+`handing` in `caches.ts`), and its batch names it by number (`_cacheBodies`):
+one message with every body of an `addAll` in it held each in the realm's heap
+as base64 at once, and the JSON of the lot again, and vscode.dev's worker,
+caching its whole workbench of some 250 MB, died of the thread's 256 MB limit
+there. So anything new that hands the host a page's bytes for a cache goes a
+body at a time, and the limit stays where it is: a thread has some 160 MB of
+it once the engine is in. The other way is not done yet: `matchAll()` answers
+every body it matched in one message, which a page that reads a whole app's
+cache back at once would meet.
 
 **A page's streams are the standard's, and none of their state is the
 page's** (`streams.ts`, source text as `dom.ts` is). Every abstract

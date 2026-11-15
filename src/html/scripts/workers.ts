@@ -273,10 +273,15 @@ interface Running {
 const MAX_WORKERS = 64;
 
 /** What a worker's thread may hold, in megabytes of V8's old and young
- *  space. Node ends a thread that grows past it with
- *  `ERR_WORKER_OUT_OF_MEMORY`; Bun 1.4 does not enforce it (the pane's own
- *  bounds are the backstop there), so it is a hint, not a guarantee. */
-const WORKER_RESOURCE_LIMITS = {
+ *  space, read as each thread starts. Node ends a thread that grows past it
+ *  with `ERR_WORKER_OUT_OF_MEMORY`; Bun 1.4 does not enforce it (the pane's
+ *  own bounds are the backstop there), so it is a hint, not a guarantee. A
+ *  thread uses some 90 MB of it before its worker's script does anything, so
+ *  the worker's own code has the rest, where Chrome gives one gigabytes: a
+ *  worker that holds a lot at once is ours to keep small (`handing` in
+ *  `caches.ts`). Exported from this module though not from the package, so a
+ *  test can lower it, as `stallClock` is held. */
+export const workerResourceLimits = {
   maxOldGenerationSizeMb: 256,
   maxYoungGenerationSizeMb: 64,
 };
@@ -359,7 +364,7 @@ export class PageWorkers implements PageWorkersLike {
       transferList: [port2],
       name: init.name || init.url,
       eval: typeof source === 'string',
-      resourceLimits: WORKER_RESOURCE_LIMITS,
+      resourceLimits: { ...workerResourceLimits },
     });
     /** Who holds the file locks this worker takes (`opfs.ts`), let go as
      *  its thread ends. */
