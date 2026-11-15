@@ -145,7 +145,10 @@ declare const TextEncoder: new () => { encode(text: string): Uint8Array };
 declare const ReadableStream: new (source: {
   start(controller: { enqueue(chunk: Uint8Array): void; close(): void }): void;
 }) => object;
-declare const TextDecoder: new (label?: string) => {
+declare const TextDecoder: new (
+  label?: string,
+  options?: { fatal?: boolean },
+) => {
   decode(bytes: Uint8Array): string;
 };
 declare const atob: (data: string) => string;
@@ -1022,7 +1025,7 @@ export class HtmlNetwork {
       }
       if (sending) {
         const header = sending.jar.header(at, sending.context);
-        if (header) headers.cookie = header;
+        if (header) headers.cookie = utf8Bytes(header);
       }
       const response = await this._send(at, {
         ...init,
@@ -2668,10 +2671,45 @@ function transient(error: unknown): boolean {
   );
 }
 
-/** A response's `Set-Cookie` fields, each apart. */
+/** A response's `Set-Cookie` fields, each apart, read as UTF-8. */
 function setCookies(headers: ResponseLike['headers']): string[] {
-  if (headers.getSetCookie) return headers.getSetCookie();
-  return splitSetCookie(headers.get('set-cookie'));
+  const fields = headers.getSetCookie
+    ? headers.getSetCookie()
+    : splitSetCookie(headers.get('set-cookie'));
+  return fields.map(utf8Field);
+}
+
+/** A field's text as the UTF-8 bytes it is sent in, a byte a character,
+ *  which is what `fetch` takes a header's value as. */
+function utf8Bytes(field: string): string {
+  if (!/[^\x00-\x7f]/.test(field)) return field;
+  let out = '';
+  for (const byte of new TextEncoder().encode(field)) {
+    out += String.fromCharCode(byte);
+  }
+  return out;
+}
+
+/** A header field as the bytes it came in, which `fetch` hands over a
+ *  byte a character, read as UTF-8 where they are, as a browser reads a
+ *  cookie's name and value (RFC 6265bis, 5.6: a user agent stores them as
+ *  their octets, and `document.cookie` is their UTF-8 decoding). Bytes
+ *  that are no UTF-8 are left as they came. */
+function utf8Field(field: string): string {
+  let high = false;
+  for (let i = 0; i < field.length; i += 1) {
+    const code = field.charCodeAt(i);
+    if (code > 0xff) return field;
+    if (code > 0x7f) high = true;
+  }
+  if (!high) return field;
+  const bytes = new Uint8Array(field.length);
+  for (let i = 0; i < field.length; i += 1) bytes[i] = field.charCodeAt(i);
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return field;
+  }
 }
 
 /** `Set-Cookie` fields joined with commas, apart: an `Expires` date has a
@@ -2871,7 +2909,7 @@ function runtimeSocket(
     'accept-language': options.language,
   };
   const cookie = jar?.header(request.url, context);
-  if (cookie) headers.cookie = cookie;
+  if (cookie) headers.cookie = utf8Bytes(cookie);
 
   const turn = socketTurn(options.turns, request.url);
   let ws: RuntimeWebSocket | null = null;
