@@ -5601,6 +5601,11 @@ export function installEditing(deps: EditingDeps): EditingInternals {
     var stripWrappers =
       'stripWrappers' in flags ? Boolean(flags.stripWrappers) : true;
     var direction = 'direction' in flags ? flags.direction : 'forward';
+    // a selection the user made, where a key's or a command's own range is
+    // not: one that ends at the start of a block inside the one it starts
+    // in leaves that block's first line where it is (WPT's
+    // delete-without-unwrapping-first-line-of-child-block)
+    var selected = Boolean(flags.selected);
 
     // "If the active range is null, abort these steps and do nothing."
     if (!getActiveRange()) {
@@ -5732,6 +5737,31 @@ export function installEditing(deps: EditingDeps): EditingInternals {
       isHtmlElement(endBlock, ['td', 'th'])
     ) {
       endBlock = null;
+    }
+
+    // whether the selection ends in a block inside the one it starts in,
+    // and holds something before it, a line or a line break: what it ends
+    // in is then left whole, its first line where it was (WPT's
+    // delete-without-unwrapping-first-line-of-child-block). One that holds
+    // nothing before the block joins the two as a Backspace there would.
+    var keepEndBlock = false;
+    if (
+      selected &&
+      startBlock &&
+      endBlock &&
+      isAncestor(startBlock, endBlock)
+    ) {
+      var before = document.createRange();
+      before.setStart(
+        getActiveRange().startContainer,
+        getActiveRange().startOffset,
+      );
+      before.setEnd(endBlock, 0);
+      if (!before.collapsed) {
+        var held = before.cloneContents();
+        keepEndBlock =
+          held.textContent != '' || !!held.querySelector('br, img, hr');
+      }
     }
 
     // "Record current states and values, and let overrides be the result."
@@ -5869,8 +5899,17 @@ export function installEditing(deps: EditingDeps): EditingInternals {
       !startBlock ||
       !endBlock ||
       !inSameEditingHost(startBlock, endBlock) ||
-      startBlock == endBlock
+      startBlock == endBlock ||
+      keepEndBlock
     ) {
+      // the caret at the start of what is left of the block kept whole
+      if (keepEndBlock && endBlock.parentNode) {
+        getSelection().collapse(endBlock, 0);
+        getActiveRange().setStart(endBlock, 0);
+        getActiveRange().collapse(true);
+        restoreStatesAndValues(overrides);
+        return;
+      }
       // "If direction is "forward", call collapseToStart() on the context
       // object's Selection."
       if (direction == 'forward') {
@@ -7555,7 +7594,7 @@ export function installEditing(deps: EditingDeps): EditingInternals {
       // "If the active range is not collapsed, delete the selection and
       // return true."
       if (!getActiveRange().collapsed) {
-        deleteSelection();
+        deleteSelection({ selected: true });
         return true;
       }
 
@@ -8270,7 +8309,7 @@ export function installEditing(deps: EditingDeps): EditingInternals {
       // "If the active range is not collapsed, delete the selection and
       // return true."
       if (!getActiveRange().collapsed) {
-        deleteSelection();
+        deleteSelection({ selected: true });
         return true;
       }
 
@@ -9606,7 +9645,7 @@ export function installEditing(deps: EditingDeps): EditingInternals {
       var edgeMoves = typing && linkEdgeMoves(getActiveRange());
 
       // "Delete the selection, with strip wrappers false."
-      deleteSelection({ stripWrappers: false });
+      deleteSelection({ stripWrappers: false, selected: true });
 
       // And out of what a `<select>` holds, after it, as every engine puts
       // text typed there; or nowhere, where the select is the host.
