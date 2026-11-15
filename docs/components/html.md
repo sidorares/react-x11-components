@@ -1348,6 +1348,15 @@ on the way and comes back is still a number. What a page sets on `Math`, `Number
 or `BigInt` afterwards does not change its answer. pdf.js's worker adds up the
 tables of each font it rebuilds with it.
 
+**`URLPattern` is the runtime's, asked across the bridge**, in a page, a frame's
+realm and every kind of worker. Node and Bun both have one, and where the runtime
+has none, a page has no `URLPattern` either. A pattern crosses as what it was made
+of, and the host keeps the 256 it was last asked about. A page reads its parts,
+`hasRegExpGroups`, `test()` and `exec()` from its own realm's objects, and the
+`TypeError` a bad pattern throws is its own realm's too. The tentative
+`URLPattern.compareComponent` and `generate()` are not there, since neither
+runtime has them.
+
 **A page's streams are the standard's** (WHATWG Streams): readable
 streams of chunks and of bytes, a reader that brings its own buffer
 (`getReader({ mode: 'byob' })`, `read(view, { min })`), the controllers'

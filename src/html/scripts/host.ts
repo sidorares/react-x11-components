@@ -1274,6 +1274,38 @@ const KEEPS_ANSWERS = /:(?:has|i?contains)\(/i;
 /** How many compiled queries a page keeps (`_query`). */
 const KEPT_QUERIES = 1000;
 
+/** The parts of a URL a pattern has, as the host's `URLPattern` names them. */
+const URL_PATTERN_PARTS = [
+  'protocol',
+  'username',
+  'password',
+  'hostname',
+  'port',
+  'pathname',
+  'search',
+  'hash',
+] as const;
+/** How many of the patterns pages made the host keeps made. */
+const URL_PATTERNS_KEPT = 256;
+/** What of the runtime's `URLPattern` the host reads, written out, since
+ *  `src/` names none of the runtime's globals. */
+interface HostUrlPatternComponent {
+  input: string;
+  groups: Record<string, string | undefined>;
+}
+type HostUrlPattern = {
+  readonly [part in (typeof URL_PATTERN_PARTS)[number]]: string;
+} & {
+  readonly hasRegExpGroups: boolean;
+  test(...args: unknown[]): boolean;
+  exec(...args: unknown[]):
+    | ({ inputs: unknown[] } & {
+        [part in (typeof URL_PATTERN_PARTS)[number]]: HostUrlPatternComponent;
+      })
+    | null;
+};
+type HostUrlPatternClass = new (...args: unknown[]) => HostUrlPattern;
+
 /** The elements that hold a document of their own: a frame's. */
 const FRAME_TAGS = new Set(['iframe', 'frame', 'object', 'embed']);
 
@@ -7495,6 +7527,8 @@ export class DomHost {
         );
       case 'encodingLabel':
         return encodingOf(text(a)) ?? '';
+      case 'urlPattern':
+        return this._urlPattern(text(a), text(b));
       case 'textDecode':
         return this._textDecode(Number(a), text(b), text(c), Number(d));
       case 'decodeResponse':
@@ -11343,6 +11377,81 @@ export class DomHost {
 
   /** A `TextDecoder`'s bytes, in any encoding but UTF-8, which the realm
    *  decodes itself. A decoder lasts while a stream is going through it. */
+  /** The patterns a page's `URLPattern`s stand for, by what each was made
+   *  of, at most `URL_PATTERNS_KEPT` of them: one is made again where it
+   *  was let go. */
+  private _urlPatterns = new Map<string, HostUrlPattern>();
+  /** The host's `URLPattern` asked for a page's (URL Pattern), every answer
+   *  JSON: `{ r }`, or `{ e }` with what it threw. `new` makes one of a
+   *  page's input, base and `ignoreCase` and answers its parts; `test` and
+   *  `exec` take what it was made of, an input and a base, and `exec`'s
+   *  groups are pairs, a group that did not participate a key alone, since
+   *  JSON has no `undefined`. */
+  private _urlPattern(op: string, json: string): Primitive {
+    const Pattern = (globalThis as { URLPattern?: HostUrlPatternClass })
+      .URLPattern;
+    if (op === 'has') return typeof Pattern === 'function';
+    if (!Pattern) return JSON.stringify({ e: 'URLPattern is not supported' });
+    try {
+      if (op === 'new') {
+        const pattern = this._urlPatternOf(Pattern, json);
+        const parts: Record<string, string> = {};
+        for (const part of URL_PATTERN_PARTS) parts[part] = pattern[part];
+        return JSON.stringify({
+          r: { parts, regExp: pattern.hasRegExpGroups },
+        });
+      }
+      const [made, input, base] = JSON.parse(json) as [
+        string,
+        unknown,
+        string | null,
+      ];
+      const pattern = this._urlPatternOf(Pattern, made);
+      const args = base === null ? [input] : [input, base];
+      if (op === 'test') return JSON.stringify({ r: pattern.test(...args) });
+      const found = pattern.exec(...args);
+      if (!found) return JSON.stringify({ r: null });
+      const r: Record<string, unknown> = { inputs: found.inputs };
+      for (const part of URL_PATTERN_PARTS) {
+        const { input: matched, groups } = found[part];
+        r[part] = {
+          input: matched,
+          groups: Object.entries(groups).map(([key, value]) =>
+            value === undefined ? [key] : [key, value],
+          ),
+        };
+      }
+      return JSON.stringify({ r });
+    } catch (e) {
+      return JSON.stringify({ e: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  private _urlPatternOf(
+    Pattern: HostUrlPatternClass,
+    made: string,
+  ): HostUrlPattern {
+    const kept = this._urlPatterns.get(made);
+    if (kept) {
+      // the most recently asked last, so the oldest goes first
+      this._urlPatterns.delete(made);
+      this._urlPatterns.set(made, kept);
+      return kept;
+    }
+    const [input, base, ignoreCase] = JSON.parse(made) as [
+      unknown,
+      string | null,
+      boolean,
+    ];
+    const pattern =
+      base === null
+        ? new Pattern(input, { ignoreCase })
+        : new Pattern(input, base, { ignoreCase });
+    this._urlPatterns.set(made, pattern);
+    if (this._urlPatterns.size > URL_PATTERNS_KEPT) {
+      this._urlPatterns.delete(this._urlPatterns.keys().next().value!);
+    }
+    return pattern;
+  }
   private _textDecoders = new Map<number, LegacyDecoder>();
   private _textDecode(
     id: number,
