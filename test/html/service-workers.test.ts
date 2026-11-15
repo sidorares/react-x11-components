@@ -278,6 +278,65 @@ test("a worker's answer takes the network's place, and one it leaves alone goes 
   assert.ok(!site.asked.includes('/made'), 'the network never heard');
 });
 
+test('a worker routes what it added routes for to the network and to its cache, and hears the rest', async (t) => {
+  if (
+    typeof (globalThis as { URLPattern?: unknown }).URLPattern !== 'function'
+  ) {
+    t.skip('this runtime has no URLPattern');
+    return;
+  }
+  const site = await serve(
+    {
+      '/register': REGISTER,
+      '/page': `<!doctype html><p id="out"></p><script>
+Promise.all(['/direct', '/cached', '/refused', '/other'].map(function (path) {
+  return fetch(path).then(function (r) { return r.text(); }, function (e) { return path + ' ' + e; });
+})).then(function (texts) {
+  document.getElementById('out').textContent = texts.join(' | ');
+});
+</script>`,
+      '/direct': ['text/plain', 'the network'],
+      '/cached': ['text/plain', 'the network, not the cache'],
+      '/other': ['text/plain', 'the network, not the worker'],
+      '/sw.js': `self.addEventListener('install', function (e) {
+        var routed = e.addRoutes([
+          { condition: { urlPattern: '/direct' }, source: 'network' },
+          {
+            condition: { or: [{ urlPattern: new URLPattern({ pathname: '/cached' }), requestMethod: 'get' }, { urlPattern: '/refused' }] },
+            source: 'cache',
+          },
+        ]);
+        var refused = e.addRoutes({ condition: {}, source: 'network' }).then(
+          function () { return 'nothing'; },
+          function (error) { return error.name; },
+        );
+        e.waitUntil(Promise.all([caches.open('v1'), refused, routed]).then(function (made) {
+          return Promise.all([
+            made[0].put('/cached', new Response('the cache')),
+            made[0].put('/refused', new Response(made[1] + ' refused')),
+          ]);
+        }));
+      });
+      self.addEventListener('fetch', function (e) {
+        if (new URL(e.request.url).pathname === '/other') {
+          e.respondWith(new Response('the worker'));
+        }
+      });`,
+    },
+    t,
+  );
+  const keeper = new HtmlServiceWorkers();
+  const network = new HtmlNetwork({ serviceWorkers: keeper });
+  await installed(site, keeper, network);
+  const page = await show(site.url('/page'), network, keeper);
+  assert.equal(
+    await page.text('out'),
+    'the network | the cache | TypeError refused | the worker',
+  );
+  assert.ok(site.asked.includes('/direct'), 'the network heard of /direct');
+  assert.ok(!site.asked.includes('/cached'), 'nor of what the cache had');
+});
+
 test('a module worker imports a JSON and a text module statically, and nothing with import()', async (t) => {
   const site = await serve(
     {

@@ -153,6 +153,8 @@ interface Version {
   activated: (() => void)[];
   /** Its `skipWaiting()` promises, kept as `activate` goes to it. */
   skipped: (() => void)[];
+  /** The rules it added as it installed (`addRoutes`), in their order. */
+  routes: RouterRule[];
 }
 
 interface Registration {
@@ -537,6 +539,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
     );
     version.handlesFetch = record.handlesFetch;
     version.referrerPolicy = record.referrerPolicy ?? '';
+    version.routes = (record.routes as RouterRule[] | undefined) ?? [];
     for (const script of record.scripts) {
       version.scripts.set(script.url, script);
     }
@@ -566,6 +569,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
       idle: null,
       activated: [],
       skipped: [],
+      routes: [],
     };
     this._versions.set(id, version);
     return version;
@@ -589,6 +593,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
         handlesFetch: v.handlesFetch ?? true,
         scripts: [...v.scripts.values()],
         ...(v.referrerPolicy ? { referrerPolicy: v.referrerPolicy } : {}),
+        ...(v.routes.length ? { routes: v.routes } : {}),
       };
     this._keeper.store.save({
       scope,
@@ -1433,11 +1438,162 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
     resultingClientId: string,
     preload: boolean,
   ): Promise<FetchResponse | null> {
-    if (version.handlesFetch === false) return null;
+    // a worker with no handler and no routes has nothing to say of it, so
+    // nothing waits for it to be activated
+    if (version.handlesFetch === false && !version.routes.length) return null;
     if (version.state === 'activating') {
       await new Promise<void>((go) => version.activated.push(go));
     }
     if (version.state !== 'activated') return null;
+    // its routes first (Service Workers 1, "Get Router Source")
+    const source = this._routeOf(version, request);
+    if (source === 'network') return null;
+    if (source !== null && typeof source === 'object') {
+      return this._fromCache(version, request, source.cacheName ?? null);
+    }
+    if (source === 'cache') return this._fromCache(version, request, null);
+    const event = (): Promise<FetchResponse | null> =>
+      this._fetchEvent(version, request, signal, resultingClientId, preload);
+    if (source === 'race-network-and-fetch-handler') {
+      return this._race(version, request, signal, event);
+    }
+    return event();
+  }
+
+  /** The first of a worker's routes whose condition the request meets, and
+   *  where it says to go, or null where none does. */
+  private _routeOf(
+    version: Version,
+    request: HtmlServiceWorkerRequest,
+  ): RouterSource | null {
+    if (!version.routes.length) return null;
+    const running = version.thread !== null && !version.starting;
+    for (const rule of version.routes) {
+      if (this._meets(rule.condition, request, running)) return rule.source;
+    }
+    return null;
+  }
+
+  /** "Match Router Condition". */
+  private _meets(
+    condition: RouterCondition,
+    request: HtmlServiceWorkerRequest,
+    running: boolean,
+  ): boolean {
+    if (condition.or) {
+      return condition.or.some((each) => this._meets(each, request, running));
+    }
+    if (condition.not) return !this._meets(condition.not, request, running);
+    if (
+      condition.urlPattern !== undefined &&
+      !routerPattern(condition.urlPattern)?.test(request.url)
+    ) {
+      return false;
+    }
+    if (
+      condition.requestMethod !== undefined &&
+      condition.requestMethod !== request.method
+    ) {
+      return false;
+    }
+    if (
+      condition.requestMode !== undefined &&
+      condition.requestMode !== request.mode
+    ) {
+      return false;
+    }
+    if (
+      condition.requestDestination !== undefined &&
+      condition.requestDestination !== (request.destination ?? '')
+    ) {
+      return false;
+    }
+    if (
+      condition.runningStatus !== undefined &&
+      (condition.runningStatus === 'running') !== running
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  /** A route to the cache: what the worker's origin keeps for the request,
+   *  in the cache named or in any, or null for the network where nothing
+   *  is kept. */
+  private _fromCache(
+    version: Version,
+    request: HtmlServiceWorkerRequest,
+    name: string | null,
+  ): FetchResponse | null {
+    const answer = this.caches(version.registration.origin, {
+      op: 'match',
+      name,
+      request: {
+        url: request.url,
+        method: request.method,
+        headers: request.headers,
+        mode: request.mode,
+        credentials: request.credentials ?? 'same-origin',
+        destination: request.destination,
+      },
+      options: {},
+    });
+    const found = answer.responses?.[0];
+    if (!found) return null;
+    return {
+      url: found.url || request.url,
+      status: found.status,
+      statusText: found.statusText,
+      redirected: found.redirected,
+      headers: found.headers,
+      body: textOf(found.bytes),
+      bytes: found.bytes,
+      type: found.type as FetchResponse['type'],
+    };
+  }
+
+  /** `race-network-and-fetch-handler`: the network and the worker's `fetch`
+   *  event at once, and whichever answers first; the network's where the
+   *  worker falls back. */
+  private _race(
+    version: Version,
+    request: HtmlServiceWorkerRequest,
+    signal: AbortSignalLike,
+    event: () => Promise<FetchResponse | null>,
+  ): Promise<FetchResponse | null> {
+    const network = this._network(version.registration.scope, request, signal);
+    // a network error is the worker's turn to answer, and nobody's to hear
+    network.catch(() => {});
+    return new Promise<FetchResponse | null>((resolve, reject) => {
+      let settled = false;
+      const settle = (answer: FetchResponse | null): void => {
+        if (settled) return;
+        settled = true;
+        resolve(answer);
+      };
+      network.then(settle, () => {});
+      event().then(
+        (answer) => {
+          if (answer) settle(answer);
+          else network.then(settle, (error) => !settled && reject(error));
+        },
+        () => network.then(settle, (error) => !settled && reject(error)),
+      );
+    });
+  }
+
+  /**
+   * The worker's `fetch` event itself, where its routes send a request to it
+   * or say nothing of one.
+   */
+  private async _fetchEvent(
+    version: Version,
+    request: HtmlServiceWorkerRequest,
+    signal: AbortSignalLike,
+    resultingClientId: string,
+    preload: boolean,
+  ): Promise<FetchResponse | null> {
+    if (version.handlesFetch === false) return null;
     if (!(await this._start(version))) return null;
     if (!version.handlesFetch) return null;
     if (signal.aborted) throw new TypeError('The fetch was aborted.');
@@ -1627,6 +1783,9 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
         JSON.stringify({ a: (m as { n?: number }).n, ...fields }),
       );
     switch (m.op) {
+      case 'routes':
+        if (version.state === 'installing') version.routes.push(...m.rules);
+        return;
       case 'started':
         version.handlesFetch = m.fetch;
         version.started?.(m.ran);
@@ -2065,7 +2224,58 @@ type WorkerSaid =
   | ClientsAsk
   | FetchSaid
   | { op: 'started'; ran: boolean; fetch: boolean; n?: number }
+  | { op: 'routes'; rules: RouterRule[]; n?: number }
   | { op: 'done'; e: number; ok: boolean; n?: number }
   | { op: 'skipWaiting'; n: number }
   | { op: 'postClient'; client: string; text: string; n?: number }
   | { op: 'post'; to: string; text: string; n?: number };
+
+/** What a worker's route asks of a request (`RouterCondition`), as its
+ *  realm verified it: a URL pattern as what it was made of. */
+interface RouterCondition {
+  urlPattern?: string;
+  requestMethod?: string;
+  requestMode?: string;
+  requestDestination?: string;
+  runningStatus?: 'running' | 'not-running';
+  or?: RouterCondition[];
+  not?: RouterCondition;
+}
+type RouterSource = string | { cacheName?: string };
+interface RouterRule {
+  condition: RouterCondition;
+  source: RouterSource;
+}
+
+/** The runtime's `URLPattern`, as much of it as a route asks. */
+type RouterPattern = { test(input: string): boolean };
+type RouterPatternClass = new (...args: unknown[]) => RouterPattern;
+const ROUTER_PATTERNS = new Map<string, RouterPattern | null>();
+/** A route's pattern made again of what it was made of, the input, the
+ *  base and `ignoreCase` a realm's `URLPattern` sends, or null where it
+ *  cannot be. Kept, as a route's are made once and asked of every request. */
+function routerPattern(made: string): RouterPattern | null {
+  const kept = ROUTER_PATTERNS.get(made);
+  if (kept !== undefined) return kept;
+  const Pattern = (globalThis as { URLPattern?: RouterPatternClass })
+    .URLPattern;
+  let pattern: RouterPattern | null = null;
+  try {
+    const [input, base, ignoreCase] = JSON.parse(made) as [
+      unknown,
+      string | null,
+      boolean,
+    ];
+    if (Pattern) {
+      pattern =
+        base === null
+          ? new Pattern(input, { ignoreCase })
+          : new Pattern(input, base, { ignoreCase });
+    }
+  } catch {
+    pattern = null;
+  }
+  if (ROUTER_PATTERNS.size >= 1024) ROUTER_PATTERNS.clear();
+  ROUTER_PATTERNS.set(made, pattern);
+  return pattern;
+}

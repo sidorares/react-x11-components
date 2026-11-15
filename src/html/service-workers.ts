@@ -46,6 +46,9 @@ export interface HtmlServiceWorkerVersion {
   /** The policy its requests' referrers are made under, as its main
    *  script's response said it (`Referrer-Policy`). Absent, none. */
   referrerPolicy?: string;
+  /** The routes it added as it installed (`addRoutes`), as its realm sent
+   *  them. Absent, none. */
+  routes?: unknown[];
 }
 
 /** A registration, as a store keeps it. Only a worker that finished
