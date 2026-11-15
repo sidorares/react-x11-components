@@ -34482,6 +34482,14 @@ export function installDom(
   /** A database's transactions not yet finished, in the order they were
    *  made, which is the order they start in where their scopes overlap. */
   const IDB_LIVE = new WeakMap<object, Any[]>();
+  /** The transactions a task made active, which the next task the host
+   *  starts in this realm makes inactive (`entry`), or a timer, where none
+   *  comes first. */
+  const idbActivated = new Set<Any>();
+  const idbTaskEnded = (): void => {
+    for (const tx of idbActivated) tx._active = false;
+    idbActivated.clear();
+  };
   const idbLive = (data: object): Any[] => {
     let live = IDB_LIVE.get(data);
     if (!live) IDB_LIVE.set(data, (live = []));
@@ -34725,12 +34733,14 @@ export function installDom(
     _activate(): void {
       if (this._committing) return;
       this._active = true;
+      idbActivated.add(this);
       if (this._deactivating) return;
       this._deactivating = true;
       setTimer(
         () => {
           this._deactivating = false;
           this._active = false;
+          idbActivated.delete(this);
         },
         0,
         [],
@@ -35465,8 +35475,8 @@ export function installDom(
       inRange(cursor._range, e.key),
     );
     const at = cursor._position;
-    const forward = cursor.direction.startsWith('next');
-    const unique = cursor.direction.endsWith('unique');
+    const forward = cursor._direction.startsWith('next');
+    const unique = cursor._direction.endsWith('unique');
     const after = (e: Any): boolean => {
       if (at) {
         const c = cmpKey(e.key, at.key);
@@ -35503,15 +35513,18 @@ export function installDom(
     _position: Any = null;
     _value: Any = undefined;
     _got = false;
-    readonly direction: string;
+    _direction: string;
     constructor(source: Any, range: Any, direction: string, request: Any) {
       this._source = source;
       this._range = range;
-      this.direction = direction;
+      this._direction = direction;
       this._request = request;
     }
     get source(): Any {
       return this._source;
+    }
+    get direction(): string {
+      return this._direction;
     }
     get request(): Any {
       return this._request;
@@ -35522,13 +35535,45 @@ export function installDom(
     get primaryKey(): Any {
       return this._position ? copyKey(this._position.primaryKey) : undefined;
     }
-    _step(key?: Any, primaryKey?: Any, count = 1): void {
+    /** What a cursor's method asks first (IndexedDB 3, 4.8): the
+     *  transaction is active, a `TransactionInactiveError`, then its source
+     *  and its store are there, an `InvalidStateError`. */
+    _live(): void {
+      const tx = this._source._tx;
+      if (tx._finished || !tx._active) {
+        throw new DOMException(
+          'The transaction is not active.',
+          'TransactionInactiveError',
+        );
+      }
+      void this._source._data;
+    }
+    /** Its got value flag, which a step clears until it lands. */
+    _iterable(): void {
       if (!this._got) {
         throw new DOMException(
           'The cursor is being iterated or has iterated past its end.',
           'InvalidStateError',
         );
       }
+    }
+    /** What `update()` and `delete()` ask after `_live`: the transaction
+     *  writes, and the cursor has a record, with its value. */
+    _writable(): void {
+      if (this._source._tx.mode === 'readonly') {
+        throw new DOMException(
+          'The transaction is read-only.',
+          'ReadOnlyError',
+        );
+      }
+      if (!this._got || !(this instanceof IDBCursorWithValue)) {
+        throw new DOMException(
+          'The cursor has no record.',
+          'InvalidStateError',
+        );
+      }
+    }
+    _step(key?: Any, primaryKey?: Any, count = 1): void {
       this._got = false;
       this._source._tx._request(
         this._source,
@@ -35555,15 +35600,67 @@ export function installDom(
       );
     }
     continue(key?: Any): void {
-      this._step(key === undefined ? undefined : checkKey(key));
+      this._live();
+      this._iterable();
+      let to: Any = undefined;
+      if (key !== undefined) {
+        to = checkKey(key);
+        const c = cmpKey(to, this._position.key);
+        if (this._direction.startsWith('next') ? c <= 0 : c >= 0) {
+          throw dataError('The key is not past the cursor in its direction.');
+        }
+      }
+      this._step(to);
     }
     continuePrimaryKey(key: Any, primaryKey: Any): void {
-      this._step(checkKey(key), checkKey(primaryKey));
+      this._live();
+      if (!(this._source instanceof IDBIndex)) {
+        throw new DOMException(
+          "The cursor's source is not an index.",
+          'InvalidAccessError',
+        );
+      }
+      if (this._direction !== 'next' && this._direction !== 'prev') {
+        throw new DOMException(
+          "The cursor's direction is not 'next' or 'prev'.",
+          'InvalidAccessError',
+        );
+      }
+      this._iterable();
+      const to = checkKey(key);
+      const primary = checkKey(primaryKey);
+      const at = this._position;
+      const c = cmpKey(to, at.key);
+      const p = cmpKey(primary, at.primaryKey);
+      if (
+        this._direction === 'next'
+          ? c < 0 || (c === 0 && p <= 0)
+          : c > 0 || (c === 0 && p >= 0)
+      ) {
+        throw dataError(
+          'The key and the primary key are not past the cursor in its direction.',
+        );
+      }
+      this._step(to, primary);
     }
     advance(count: Any): void {
-      const n = Number(count) >>> 0;
-      if (!n) throw new TypeError('A cursor advances by one or more.');
-      this._step(undefined, undefined, n);
+      // [EnforceRange] unsigned long, and then not 0
+      const n = Number(count);
+      if (
+        !Number.isFinite(n) ||
+        Math.trunc(n) < 0 ||
+        Math.trunc(n) > 0xffffffff
+      ) {
+        throw new TypeError(
+          "Value is outside the 'unsigned long' value range.",
+        );
+      }
+      if (Math.trunc(n) === 0) {
+        throw new TypeError('A cursor advances by one or more.');
+      }
+      this._live();
+      this._iterable();
+      this._step(undefined, undefined, Math.trunc(n));
     }
     _store(): Any {
       return this._source instanceof IDBIndex
@@ -35571,31 +35668,31 @@ export function installDom(
         : this._source;
     }
     update(value: Any): Any {
-      if (!this._got || !(this instanceof IDBCursorWithValue)) {
-        throw new DOMException(
-          'The cursor has no record.',
-          'InvalidStateError',
-        );
-      }
+      this._live();
+      this._writable();
       const store = this._store();
       const primaryKey = this._position.primaryKey;
+      let request: Any;
       if (store._data.keyPath !== null) {
-        const k = atKeyPath(value, store._data.keyPath);
+        const k = atKeyPath(
+          structuredCopy(value, new Map()),
+          store._data.keyPath,
+        );
         if (k === undefined || cmpKey(k, primaryKey) !== 0) {
           throw dataError('The value names another key than the record has.');
         }
-        return store.put(value);
-      }
-      return store.put(value, primaryKey);
+        request = store.put(value);
+      } else request = store.put(value, primaryKey);
+      // its request's source is the cursor (IndexedDB 3, 4.8)
+      request._source = this;
+      return request;
     }
     delete(): Any {
-      if (!this._got || !(this instanceof IDBCursorWithValue)) {
-        throw new DOMException(
-          'The cursor has no record.',
-          'InvalidStateError',
-        );
-      }
-      return this._store().delete(this._position.primaryKey);
+      this._live();
+      this._writable();
+      const request = this._store().delete(this._position.primaryKey);
+      request._source = this;
+      return request;
     }
   }
   class IDBCursorWithValue extends IDBCursor {
@@ -46698,6 +46795,8 @@ export function installDom(
     G.__in = '';
     return typeof raw === 'string' && raw ? JSON.parse(raw) : null;
   };
+  /** How many entries are under way: only the outermost starts a task. */
+  let entered = 0;
   const entry = (name: string, fn: () => Primitive): void => {
     Object.defineProperty(G, name, {
       value: () => {
@@ -46705,6 +46804,11 @@ export function installDom(
         treeEpoch += 1;
         attrEpoch += 1;
         svgEpoch += 1;
+        // a task the host starts here is after the one before it and its
+        // microtasks, which is where an IndexedDB transaction stops being
+        // active (IndexedDB 3, 2.7)
+        if (!entered && idbActivated.size) idbTaskEnded();
+        entered += 1;
         try {
           // what the host changed on its own since the page last did
           if (takesNotes) takeReactions();
@@ -46712,6 +46816,8 @@ export function installDom(
         } catch (error) {
           report(error);
           return false;
+        } finally {
+          entered -= 1;
         }
       },
       writable: false,
