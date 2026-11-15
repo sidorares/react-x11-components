@@ -17385,13 +17385,16 @@ test('a CSS animation tells the page as it starts, goes round, ends and is cance
       'function once(words, then) { requestAnimationFrame(function wait() { var l = log.join();' +
       '  if (words.every(function (w) { return l.indexOf(w) >= 0; })) then(); else requestAnimationFrame(wait); }); }' +
       'requestAnimationFrame(function () {' +
-      // b's goes round once in a hundred seconds, so it is cancelled before
-      // it goes round however slow the runner
-      '  a.style.animation = "k 1s linear 2"; b.style.animation = "k 100s linear infinite";' +
-      '  t = a.getAnimations()[0]; t.currentTime = 500;' +
+      // each goes round once in a hundred seconds, so no host frame comes
+      // late enough to carry one past where a step left it: at a second, a
+      // slow runner's first frame after the seek came after a's end, which
+      // told the end and no iteration; and b is cancelled before it goes
+      // round
+      '  a.style.animation = "k 100s linear 2"; b.style.animation = "k 100s linear infinite";' +
+      '  t = a.getAnimations()[0]; t.currentTime = 50000;' +
       '  once(["a:animationstart", "b:animationstart"], function () {' +
       // a seek into its second iteration, and its end
-      '    t.currentTime = 1500;' +
+      '    t.currentTime = 150000;' +
       '    once(["a:animationiteration"], function () {' +
       '      t.finish(); b.style.animation = "none";' +
       '      once(["a:animationend", "b:animationcancel"], function () {' +
@@ -17408,8 +17411,8 @@ test('a CSS animation tells the page as it starts, goes round, ends and is cance
   assert.deepEqual(
     JSON.parse(doc.text('out') || 'null'),
     [
-      'a:animationend:k:2:true:true',
-      'a:animationiteration:k:1:true:true',
+      'a:animationend:k:200:true:true',
+      'a:animationiteration:k:100:true:true',
       'a:animationstart:k:0:true:true',
       'b:animationcancel:k:true:true:true',
       'b:animationstart:k:0:true:true',
