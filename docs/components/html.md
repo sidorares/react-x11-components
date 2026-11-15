@@ -1369,6 +1369,13 @@ A worker's has no `responseXML`. WPT's `xhr/idlharness` passes whole, in a
 window and in both workers. `withCredentials` throws `InvalidStateError`
 once `send()` has begun.
 
+**An `XMLHttpRequest`'s `blob` is typed by its final MIME type** (XHR
+3.6.8): what `overrideMimeType` was given, parsed and written out as MIME
+Sniffing has it, or `application/octet-stream` where it parses as none; else
+the response's `Content-Type`, the last of its values that parses; else
+`text/xml`. The type keeps the case its parameters were written in, which a
+`Blob` made by a page's script lowercases.
+
 **A synchronous `XMLHttpRequest` is the one request `scripts.fetch` cannot
 make.** A page shares its thread with its network, and a request needs that
 thread back, which a page waiting in `send()` will not give it. So
