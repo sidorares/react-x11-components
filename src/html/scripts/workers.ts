@@ -698,6 +698,9 @@ export class PageWorkers implements PageWorkersLike {
       return own
         ? {
             source,
+            // where it came from, which is the worker's URL (HTML 10.2.4,
+            // "run a worker": the response's URL)
+            url: response.url || url,
             policy: referrerPolicyOfHeaders(response.headers),
             csp: response.headers.filter(([k]) =>
               /^content-security-policy(-report-only)?$/i.test(k),

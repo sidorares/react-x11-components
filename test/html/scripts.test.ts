@@ -2630,6 +2630,34 @@ test('a worker starts a worker of its own, which posts to it and is terminated b
   );
 });
 
+test('a worker is at the URL its script came from after a redirect, with the fragment it was asked for', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var w = new Worker("alpha/w.js?q#frag");' +
+      'w.onmessage = function (e) { document.getElementById("out").textContent = e.data; };' +
+      '</script>',
+    {
+      answer: (request) => {
+        if (!request.url.includes('/alpha/w.js')) return null;
+        return {
+          // where a redirect took it
+          url: 'https://example.test/dir/gamma/w.js?q',
+          status: 200,
+          statusText: 'OK',
+          redirected: true,
+          headers: [['content-type', 'text/javascript']],
+          body: "postMessage([location.href, location.hash, new URL('x.js', location.href).pathname].join(' '));",
+        };
+      },
+    },
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    'https://example.test/dir/gamma/w.js?q#frag #frag /dir/gamma/x.js',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a data: worker runs on any page, at an origin of none, a secure context where its page is', async () => {
   // HTML 10.2.5.1: a dedicated worker's `data:` script is fetched whatever
   // its page's origin, and runs opaque; WebRTC's encoded-transform tests make
