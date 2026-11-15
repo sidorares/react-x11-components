@@ -13256,6 +13256,9 @@ export function installDom(
       return typeof v === 'string' ? v : (this.getAttribute('value') ?? '');
     }
     set value(v: Any) {
+      // a value a script sets is no edit, and the edits before it are
+      // undone by nothing after it (HTML, the value setter)
+      fieldHistories.delete(this);
       const type = this.type;
       if (type === 'checkbox' || type === 'radio' || DEFAULT_MODE.has(type)) {
         this.setAttribute('value', v === null ? '' : v);
@@ -13424,6 +13427,7 @@ export function installDom(
       return typeof v === 'string' ? v : this.textContent;
     }
     set value(v: Any) {
+      fieldHistories.delete(this);
       const was = this.value;
       call('setValue', this._id, v === null ? '' : str(v));
       valueSet(this, was);
@@ -24059,14 +24063,15 @@ export function installDom(
       }
       const name = commandName(id);
       if (CLIPBOARD_COMMANDS.has(name)) return clipboardCommand(name);
-      const field = commandField();
+      const field = fieldFor(name);
       if (field) return fieldCommand(field, name, str(value));
       return editingCommand(this, name, str(value));
     }
     queryCommandEnabled(id: Any): boolean {
       const name = commandName(id);
       if (CLIPBOARD_COMMANDS.has(name)) return commandEnabled(name);
-      if (commandField()) return fieldCommandEnabled(name);
+      const field = fieldFor(name);
+      if (field) return fieldCommandEnabled(name, field);
       return askEditing(this, 'queryCommandEnabled', name, false);
     }
     queryCommandIndeterm(id: Any): boolean {
@@ -24076,7 +24081,7 @@ export function installDom(
     }
     queryCommandState(id: Any): boolean {
       const name = commandName(id);
-      if (commandField()) return false;
+      if (!DOCUMENT_COMMANDS.has(name) && commandField()) return false;
       return askEditing(this, 'queryCommandState', name, false);
     }
     queryCommandSupported(id: Any): boolean {
@@ -24087,7 +24092,7 @@ export function installDom(
     }
     queryCommandValue(id: Any): string {
       const name = commandName(id);
-      if (commandField()) return '';
+      if (!DOCUMENT_COMMANDS.has(name) && commandField()) return '';
       return askEditing(this, 'queryCommandValue', name, '');
     }
     getElementsByName(name: Any): Any {
@@ -43533,11 +43538,86 @@ export function installDom(
       if (inputType === 'deleteContentBackward') from = Math.max(0, from - 1);
       else if (inputType === 'deleteContentForward') to += 1;
     }
+    const before = fieldPoint(field);
     field.setRangeText(data ?? '', from, to, 'end');
+    noteFieldStep(field, before);
     dispatch(
       field,
       trusted(new InputEvent('input', { ...init, cancelable: false })),
     );
+  };
+  /** What a field holds and where its selection is. */
+  interface FieldPoint {
+    value: string;
+    start: number;
+    end: number;
+  }
+  const fieldPoint = (field: Any): FieldPoint => ({
+    value: field.value,
+    start: field.selectionStart ?? 0,
+    end: field.selectionEnd ?? 0,
+  });
+  /** Each field's own history (HTML's text control editing), a step an
+   *  edit a command or a key made: what it held before and after. A step
+   *  is good while the field holds what it left, so a value a script sets
+   *  forgets them, as Chromium has it. */
+  const fieldHistories = new WeakMap<
+    object,
+    { undo: [FieldPoint, FieldPoint][]; redo: [FieldPoint, FieldPoint][] }
+  >();
+  const fieldHistoryOf = (field: Any) => {
+    let h = fieldHistories.get(field);
+    if (!h) fieldHistories.set(field, (h = { undo: [], redo: [] }));
+    return h;
+  };
+  const noteFieldStep = (field: Any, before: FieldPoint): void => {
+    const after = fieldPoint(field);
+    if (after.value === before.value) return;
+    const h = fieldHistoryOf(field);
+    h.undo.push([before, after]);
+    h.redo = [];
+  };
+  /** The step `undo` or `redo` would take in a field, where it has one. */
+  const fieldStep = (
+    field: Any,
+    name: 'undo' | 'redo',
+  ): [FieldPoint, FieldPoint] | null => {
+    const h = fieldHistoryOf(field);
+    const list = name === 'undo' ? h.undo : h.redo;
+    const step = list[list.length - 1];
+    if (!step) return null;
+    const holds = name === 'undo' ? step[1] : step[0];
+    if (holds.value !== field.value) {
+      h.undo = [];
+      h.redo = [];
+      return null;
+    }
+    return step;
+  };
+  const undoField = (field: Any, name: 'undo' | 'redo'): boolean => {
+    const step = fieldStep(field, name);
+    if (!step) return false;
+    const inputType = name === 'undo' ? 'historyUndo' : 'historyRedo';
+    const init = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: G,
+      inputType,
+      data: null,
+    };
+    // a command's edit is told no beforeinput (Input Events 2)
+    const h = fieldHistoryOf(field);
+    (name === 'undo' ? h.undo : h.redo).pop();
+    (name === 'undo' ? h.redo : h.undo).push(step);
+    const to = name === 'undo' ? step[0] : step[1];
+    field.setRangeText(to.value, 0, field.value.length, 'end');
+    field.setSelectionRange(to.start, to.end);
+    dispatch(
+      field,
+      trusted(new InputEvent('input', { ...init, cancelable: false })),
+    );
+    return true;
   };
   /** The text field a command edits, where one has the focus: its commands
    *  are the edits of its own text, and no formatting. */
@@ -43559,12 +43639,53 @@ export function installDom(
     insertparagraph: (field) =>
       editField(field, 'insertParagraph', '\n', false),
     inserttext: (field, value) => editField(field, 'insertText', value, false),
+    // the markup's text, as Chromium inserts it in a field
+    inserthtml: (field, value) => {
+      const holder = document.createElement('template');
+      holder.innerHTML = value;
+      editField(field, 'insertText', holder.content.textContent, false);
+    },
     selectall: (field) => field.select(),
+    undo: (field) => undoField(field, 'undo'),
+    redo: (field) => undoField(field, 'redo'),
   };
-  const fieldCommandEnabled = (name: string): boolean =>
-    Object.prototype.hasOwnProperty.call(FIELD_COMMANDS, name);
+  /** The commands that are the document's whatever has the focus: its
+   *  settings, which a field does not take over. */
+  /** The field a command edits, but for a setting of the document's
+   *  where the field is in an editing host, which takes the setting. */
+  const fieldFor = (name: string): Any => {
+    const field = commandField();
+    return field &&
+      DOCUMENT_COMMANDS.has(name) &&
+      field.parentElement?.isContentEditable
+      ? null
+      : field;
+  };
+  const DOCUMENT_COMMANDS = new Set([
+    'defaultparagraphseparator',
+    'stylewithcss',
+    'usecss',
+    'insertbronreturn',
+    'contentreadonly',
+  ]);
+  const fieldCommandEnabled = (name: string, field?: Any): boolean => {
+    if (!Object.prototype.hasOwnProperty.call(FIELD_COMMANDS, name)) {
+      return false;
+    }
+    // a single-line field has no line to break (HTML 4.10.5.4)
+    if (
+      (name === 'insertparagraph' || name === 'insertlinebreak') &&
+      field?.localName === 'input'
+    ) {
+      return false;
+    }
+    if ((name === 'undo' || name === 'redo') && field) {
+      return !!fieldStep(field, name);
+    }
+    return true;
+  };
   const fieldCommand = (field: Any, name: string, value: string): boolean => {
-    if (!fieldCommandEnabled(name)) return false;
+    if (!fieldCommandEnabled(name, field)) return false;
     FIELD_COMMANDS[name](field, value);
     return true;
   };
@@ -43583,8 +43704,13 @@ export function installDom(
   const commandName = (id: Any): string => str(id).toLowerCase();
   /** A clipboard command, which only a host with a clipboard does. */
   const commandSupported = (_name: string): boolean => hasClipboard();
-  const commandEnabled = (_name: string): boolean =>
-    hasClipboard() && hasTransientActivation();
+  const commandEnabled = (_name: string): boolean => {
+    // a field with nothing selected has nothing to copy or cut, as Chromium
+    // has it
+    const field = commandField();
+    if (field && field.selectionStart === field.selectionEnd) return false;
+    return hasClipboard() && hasTransientActivation();
+  };
 
   // --- the editing commands -------------------------------------------------------
   //

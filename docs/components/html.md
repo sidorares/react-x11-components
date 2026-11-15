@@ -3263,7 +3263,12 @@ laid out inline is a line break, or a line feed where its white space keeps
 them, and one inserted in a `<div>` or a `<p>` laid out inline wraps the line
 it is on in a `<div>` and splits that, the element with it. `document.designMode` makes
 the document's root element the editing host. In a focused
-text field the commands are the field's own edits. `undo` and `redo` put back
+text field the commands are the field's own edits: `undo` and `redo` its own
+history, which a value a script sets forgets, `insertHTML` the markup's
+text, no line broken in a single-line one, and `cut` and `copy` disabled
+with nothing selected, while the document's settings, `defaultParagraphSeparator`
+and `styleWithCSS`, are set from a field only in an editing host, as
+Chromium has it. `undo` and `redo` put back
 and make again the edits the commands and the keys made, a step each (typing
 one step until something else is done), keeping every node the page holds the
 node it was; Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y do the same, Cmd on a Mac, told
