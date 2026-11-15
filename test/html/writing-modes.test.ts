@@ -1110,3 +1110,37 @@ test("self-start and self-end are an item's own start and end in its grid, by it
   assert.deepStrictEqual(at('orthogonal', 20), [10, 0]);
   assert.deepStrictEqual(at('across', 40), [10, 0]);
 });
+
+test("a grid's items aligned by their baselines across a column meet at them, and size the column", async () => {
+  // CSS Box Alignment 3, 9.3, and WPT's baseline-alignment-affects-
+  // intrinsic-size: a vertical item's baseline across the column is its
+  // first line's, and a horizontal item has none there and synthesizes it
+  // from its left edge. A glyph's baseline divides its box across the line
+  // in one ratio at every size, so three sizes that meet give it
+  const { node } = await render(
+    '<style>body{margin:0}.g{display:grid;justify-items:baseline;' +
+      'justify-content:start;font-family:monospace;line-height:1;' +
+      'text-orientation:sideways;float:left}' +
+      '.v{writing-mode:vertical-lr}</style>' +
+      '<div class="g" id="g">' +
+      '<div class="v" style="font-size:10px"><span id="s">a</span></div>' +
+      '<div class="v" style="font-size:20px"><span id="m">a</span></div>' +
+      '<div class="v" style="font-size:40px"><span id="l">a</span></div>' +
+      '<div id="h" style="width:5px;height:5px"></div></div>',
+  );
+  const el = view(node);
+  const [s, m, l] = ['s', 'm', 'l'].map((id) => rectOf(el, id));
+  const r1 = (m.x - s.x) / (s.width - m.width);
+  const r2 = (l.x - s.x) / (s.width - l.width);
+  assert.ok(r1 > 0 && r1 < 1, `they meet past their starts: ${r1}`);
+  assert.ok(Math.abs(r1 - r2) < 0.02, `all three: ${r1} ${r2}`);
+  // the horizontal item's left edge on it, and the grid wide enough for
+  // the furthest moved
+  const baseline = s.x + s.width * r1;
+  assert.ok(Math.abs(rectOf(el, 'h').x - baseline) < 1, 'at its edge');
+  const g = rectOf(el, 'g');
+  assert.ok(
+    g.x + g.width >= rectOf(el, 's').x + rectOf(el, 's').width - 1,
+    'as wide as what moved',
+  );
+});

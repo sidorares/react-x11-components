@@ -62,6 +62,7 @@ import {
 } from './block.js';
 import type { LayoutContext } from './block.js';
 import {
+  alignColumnBaselines,
   autoMargins,
   extent,
   fromParent,
@@ -685,6 +686,19 @@ export function layoutGridLanes(
       : n
         ? lefts[n - 1] + sizes[n - 1]
         : 0;
+  // items aligned by their first baselines across a lane of columns meet
+  // the furthest of theirs in the lane they were placed in, as a grid's
+  // column's do (`alignColumnBaselines`)
+  if (!rows) {
+    const laneOf = new Map<Item, number>();
+    for (const p of placed) laneOf.set(p.item, p.start);
+    alignColumnBaselines(
+      placed.map((p) => p.item),
+      style,
+      rtl,
+      (item) => laneOf.get(item) ?? item.col,
+    );
+  }
   placed.forEach((p, k) => {
     const { item, pos } = p;
     const child = item.box;
@@ -768,6 +782,8 @@ export function layoutGridLanes(
       // `auto` margins take the free space in the area first (CSS Grid 1,
       // 10.2)
       across = crossStart ? (area - crossOuter) * (crossEnd ? 0.5 : 1) : 0;
+    } else if (!rows && item.shimX !== undefined) {
+      across = item.shimX;
     } else {
       const flow = flowAlign(textAcross, trackReverse);
       const kind = flow ?? selfAcross;

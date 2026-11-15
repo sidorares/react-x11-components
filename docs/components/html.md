@@ -6066,8 +6066,21 @@ moves them down (CSS Grid 1, 11.5), and a grid whose first row aligns some
 so sits on their shared baseline (10.6). An item with no baseline has its
 border box's bottom for one, and one with an `auto` margin down the rows,
 or whose height is a percentage of a row its content sizes, takes no part
-and aligns to the start. Baselines across the columns, which a vertical writing mode
-gives, are not read.
+and aligns to the start. Items a column aligns by their first baselines —
+`justify-self` or `justify-items` `baseline` — are moved along it the same
+way, and the column is sized with what that moves them. An item whose lines
+run down the column, in a writing mode orthogonal to the grid's, has its
+first line's baseline across it; one whose lines run along it has none
+there, and has its edge on the page's line-under side, its left across the
+page or its bottom down it. Those whose lines stack the way the column runs
+share a group with those that have an edge, and those whose lines stack the
+other way, `vertical-rl` items in a left-to-right grid, have a group of
+their own, as Chromium groups them. A `baseline` an item takes no part in
+lays it out at the start, not stretched. Grid lanes of columns align their
+items so across each lane, those placed in it, and do not grow a lane for
+what that moves them. A horizontal item of a
+`vertical-lr` grid has an edge for its baseline, since it has no frame of
+its own (see "Not yet" under writing modes).
 Grid lanes (CSS Grid 3), which is masonry by its standard name, are
 `display: grid-lanes` and `inline-grid-lanes`, `inline grid-lanes` among
 them: a grid in one axis, whose tracks are the lanes, and a flow down each

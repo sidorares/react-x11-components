@@ -5506,12 +5506,18 @@ export function applyDeclaration(
         style.justifyAnchorCenter = true;
         return;
       }
+      // a first baseline lays an item out as its fallback, `start`, does
+      // (CSS Box Alignment 3, 4.2), and moves it by its baseline where the
+      // grid shares one along its columns (`alignColumnBaselines`), which
+      // reads the text; a last one is `end`, as `alignKeyword` has it
       const keyword =
         text === 'legacy'
           ? 'normal'
           : text === 'auto' || text === 'normal' || text === 'stretch'
             ? text
-            : alignKeyword(text);
+            : text === 'baseline'
+              ? 'flex-start'
+              : alignKeyword(text);
       if (
         keyword === 'auto' ||
         keyword === 'normal' ||

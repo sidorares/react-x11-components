@@ -15,8 +15,9 @@
 // cards, each a subgrid down the rows, keeps the parts of one card level
 // with the same parts of the next. Items aligned by their first baselines
 // meet the lowest of their row's, and the row is sized with what that moves
-// them (`alignBaselines`). Not here: baseline alignment across the columns,
-// which takes baselines of a vertical writing mode.
+// them (`alignBaselines`), and items aligned so across a column meet the
+// furthest of theirs, the column sized again with what that moves them
+// (`alignColumnBaselines`), a vertical item's baseline its first line's.
 //
 // A subgrid is laid out by its parent, which hands it what it takes from
 // it (`SUBGRIDS`): its lines before anything is placed; its columns'
@@ -79,7 +80,16 @@ import {
 import type { LaidUnder, LayoutContext } from './block.js';
 import type { FontsLike } from './inline.js';
 import { firstBaselineIn } from './inline.js';
-import { putBackAcross } from './writing.js';
+import {
+  FRAMES,
+  framed,
+  frameTurn,
+  pageRectOf,
+  putBackAcross,
+  quarterTurnsOf,
+  reflects,
+  turnsUp,
+} from './writing.js';
 import { gridLines, placement, subgridLines, withLead } from './grid-lines.js';
 import type { GridLines } from './grid-lines.js';
 import { sizeTracks } from './tracks.js';
@@ -110,6 +120,9 @@ export interface Item {
    *  which the row is sized with (CSS Grid 1, 11.5); undefined for one
    *  that is not. */
   shim?: number;
+  /** And across its column, for one aligned by its first baseline there
+   *  (`alignColumnBaselines`), which the column is sized with. */
+  shimX?: number;
 }
 
 /** Whether a grid lanes container's lanes are rows, its stacking axis the
@@ -243,6 +256,80 @@ function otherEnd<T extends string>(keyword: T): T {
 }
 
 /**
+ * Align the items each column aligns by their first baselines (CSS Box
+ * Alignment 3, 9.3), as `alignBaselines` aligns a row's: each moved along
+ * the column by what the furthest of its group's is past its own
+ * (`shimX`), from the columns' start. An item's baseline across the
+ * columns is its first line's where its lines run down them — a box in a
+ * writing mode orthogonal to the grid's, in a frame of its own — and its
+ * start edge where they run along them, which it synthesizes it from
+ * (9.1). Those whose lines stack the way the columns run share a group
+ * with those that synthesize theirs, and those whose lines stack the other
+ * way, `vertical-rl`'s in a left-to-right grid, have one of their own, as
+ * Chromium groups them. Whether any item moved.
+ */
+export function alignColumnBaselines(
+  items: Item[],
+  style: ComputedStyle,
+  rtl: boolean,
+  /** The column an item's group is of: its first, or for grid lanes the
+   *  lane it was placed in. */
+  columnOf: (item: Item) => number = (item) => item.col,
+): boolean {
+  const groups = new Map<string, { item: Item; offset: number }[]>();
+  for (const item of items) {
+    const child = item.box;
+    const own = child.style;
+    const text =
+      own.justifySelf === 'auto' ? style.justifyItemsText : own.justifySelfText;
+    if (!/(^|\s)baseline$/.test(text ?? '') || text.startsWith('last')) {
+      continue;
+    }
+    if (SUBGRIDS.get(child)?.cols || autoMargins(child, 'x').some(Boolean)) {
+      continue;
+    }
+    const start = rtl
+      ? child.x + child.width + child.marginRight
+      : child.x - child.marginLeft;
+    // one with no baseline across the columns synthesizes it from its
+    // line-under edge on the page: the left of an axis across the page and
+    // the bottom of one down it, wherever the frames the grid is laid out
+    // in turn that (9.1, as Chromium has it)
+    const turns = framed.any ? quarterTurnsOf(child) : 0;
+    let at = turns === 0 || turns === 3 ? child.x : child.x + child.width;
+    let against = false;
+    const frame = framed.any ? FRAMES.get(child) : undefined;
+    const found = frame ? firstBaselineIn(frame) : null;
+    if (frame && found !== null) {
+      const turn = frameTurn(frame);
+      at = pageRectOf(
+        frame,
+        { x: frame.x, y: found, width: 0, height: 0 },
+        turn,
+      ).x;
+      // its lines stack along the columns' start to end, or the other way
+      const forward = turnsUp(turn) || reflects(turn);
+      against = rtl ? forward : !forward;
+    }
+    const offset = rtl ? start - at : at - start;
+    const key = `${columnOf(item)} ${against}`;
+    const list = groups.get(key);
+    if (list) list.push({ item, offset });
+    else groups.set(key, [{ item, offset }]);
+  }
+  let moved = false;
+  for (const list of groups.values()) {
+    let furthest = -Infinity;
+    for (const { offset } of list) furthest = Math.max(furthest, offset);
+    for (const { item, offset } of list) {
+      item.shimX = furthest - offset;
+      if (item.shimX > 0) moved = true;
+    }
+  }
+  return moved;
+}
+
+/**
  * Lay out a grid container's children. Returns the content height.
  */
 export function layoutGrid(
@@ -345,9 +432,10 @@ export function layoutGrid(
     const colItem = (item: Item): TrackItem => ({
       start: item.col,
       span: item.cols,
-      minContent: () => (measure(item), item.min),
-      maxContent: () => (measure(item), item.max),
-      minimum: () => leastWidth(item, colTracks, colGap, measure, ctx),
+      minContent: () => (measure(item), item.min + (item.shimX ?? 0)),
+      maxContent: () => (measure(item), item.max + (item.shimX ?? 0)),
+      minimum: () =>
+        leastWidth(item, colTracks, colGap, measure, ctx) + (item.shimX ?? 0),
     });
     const sizes = sizeTracks(colTracks, sizedBy(items, 'cols').map(colItem), {
       available: contentWidth,
@@ -409,7 +497,21 @@ export function layoutGrid(
       );
     }
   };
+  for (const item of items) item.shimX = undefined;
   layOut(0, cut);
+  // the items aligned by their baselines across each column, moved along it
+  // to meet the furthest of theirs, and the columns sized again with them
+  // (CSS Grid 1, 11.5): only where one moves, and so only where an item's
+  // lines run across the columns, since one whose lines run along them
+  // has its edge for its baseline
+  if (!givenCols && alignColumnBaselines(items, style, rtl)) {
+    const before = widths;
+    ({ widths, lefts } = sizeCols());
+    if (widths.some((width, i) => Math.abs(width - before[i]) > 1e-6)) {
+      handOnCols();
+      layOut(0, cut);
+    }
+  }
   // what a subgrid's items make of its parent's rows: their heights at
   // these widths, before a row stretches them
   const handOnRows = (): void => {
@@ -651,7 +753,8 @@ export function layoutGrid(
       // a subgrid is stretched across its area, whatever aligns it
     } else if (atStart || atEnd) {
       dx = (area - outerWidth) * (atStart && atEnd ? 0.5 : atStart ? 1 : 0);
-    } else if (justify === 'center') dx = (area - outerWidth) / 2;
+    } else if (item.shimX !== undefined) dx = item.shimX;
+    else if (justify === 'center') dx = (area - outerWidth) / 2;
     else if (justify === 'flex-end') dx = area - outerWidth;
     let dy = 0;
     if (subgrid?.rows) {
