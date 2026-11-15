@@ -9435,8 +9435,11 @@ export class Cascade {
     // sets it wherever that comes later in cascade order — `margin-block:
     // 8px` in a rule ahead of the one that makes the element `vertical-rl`
     // was its top and bottom margins. Applied again in their places below,
-    // which comes to what this does.
-    if (this._writing) {
+    // which comes to what this does. And where the element has a `dir`:
+    // its direction is a presentational hint, after the user agent's rules,
+    // and the user agent's margins and paddings are logical (HTML 15.3.7),
+    // so a `<ul dir="rtl">` was indented on the left.
+    if (this._writing || el.attribs.dir !== undefined) {
       for (const c of candidates) {
         for (const d of pick(c)) {
           if (MAPPING_PROPS.has(d.prop)) {
