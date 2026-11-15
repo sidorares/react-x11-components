@@ -1359,6 +1359,16 @@ strategies. Every algorithm is the standard's, run in the page's realm
 (`src/html/scripts/streams.ts`), and WPT's `streams/` tests pass but the
 tentative `owning` type's.
 
+**`XMLHttpRequest`, `FormData` and `ProgressEvent` are shaped as Web IDL
+has them**: their constants on the interface and its prototype, neither
+writable; `readyState`, `status`, `withCredentials`, `upload` and the rest
+accessors on the prototype that throw on what is no instance; every
+operation enumerable, throwing on what it is called on where that is no
+instance and on too few arguments; `FormData`'s `@@iterator` its `entries`.
+A worker's has no `responseXML`. WPT's `xhr/idlharness` passes whole, in a
+window and in both workers. `withCredentials` throws `InvalidStateError`
+once `send()` has begun.
+
 **A synchronous `XMLHttpRequest` is the one request `scripts.fetch` cannot
 make.** A page shares its thread with its network, and a request needs that
 thread back, which a page waiting in `send()` will not give it. So
