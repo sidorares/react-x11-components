@@ -119,6 +119,9 @@ export function installDom(
   resourceTimingApi: typeof installResourceTiming,
   namedAccess: boolean,
   inWorker: boolean,
+  /** Marks what `lockStacks` made that a page can reach as a built-in's,
+   *  then and as it makes more. */
+  stackNatives: (mark: (fn: unknown) => void) => void,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
   // this one's on its way up the stack
@@ -49674,6 +49677,15 @@ export function installDom(
     // and the interfaces no global names, reached through a getter alone:
     // `document.fonts`'s, and the faces it hands over
     markFn(FontFaceSet, 8);
+    // and what the stack lock made: the page's call sites, the methods that
+    // answer for its formatter, and the wrapper of each formatter it sets,
+    // which is made as the page reads it, so is marked with nothing a page
+    // can have replaced by then
+    {
+      const addNative = WeakSet.prototype.add;
+      const applyNative = Reflect.apply;
+      stackNatives((fn) => void applyNative(addNative, nativeFns, [fn]));
+    }
 
     const realToString = Function.prototype.toString;
     const toString = function (this: Any): string {
