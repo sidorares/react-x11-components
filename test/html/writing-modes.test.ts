@@ -199,6 +199,60 @@ test('logical properties map by the writing mode, wherever it is declared', asyn
   );
 });
 
+test("the user agent's margins and paddings are logical, and an element's own dir maps them", async () => {
+  // HTML 15.3.3, 15.3.7, 15.3.8: a paragraph's margins are along its
+  // block axis, a list's indent and a quotation's rule before its lines
+  // start — on the left and right of a vertical paragraph, and on the
+  // right of a list its `dir` makes right to left
+  const { node } = await render(
+    '<style>body{margin:0;font:10px sans-serif}</style>' +
+      '<p id="p">a</p>' +
+      '<p id="vp" style="writing-mode:vertical-lr">a</p>' +
+      '<p id="rp" style="writing-mode:vertical-rl">a</p>' +
+      '<ul id="ul"><li>a</li></ul>' +
+      '<ul id="rtl" dir="rtl"><li>a</li></ul>' +
+      '<blockquote id="q" dir="rtl">a</blockquote>' +
+      '<dl><dd id="dd" style="writing-mode:vertical-rl">a</dd></dl>' +
+      '<div dir="rtl"><ol id="in"><li>a</li></ol></div>',
+  );
+  const el = view(node);
+  const sides = (id: string, what: string) => {
+    const s = computed(el, id);
+    return ['top', 'right', 'bottom', 'left'].map(
+      (side) => s[`${what}-${side}${what === 'border' ? '-width' : ''}`],
+    );
+  };
+  assert.deepStrictEqual(sides('p', 'margin'), ['10px', '0px', '10px', '0px']);
+  assert.deepStrictEqual(
+    sides('vp', 'margin'),
+    ['0px', '10px', '0px', '10px'],
+    "a vertical paragraph's margins are on its left and right",
+  );
+  assert.deepStrictEqual(sides('rp', 'margin'), ['0px', '10px', '0px', '10px']);
+  assert.deepStrictEqual(sides('ul', 'padding'), ['0px', '0px', '0px', '40px']);
+  assert.deepStrictEqual(
+    sides('rtl', 'padding'),
+    ['0px', '40px', '0px', '0px'],
+    "a list's own dir puts its indent on the right",
+  );
+  assert.deepStrictEqual(sides('q', 'padding'), ['0px', '10px', '0px', '0px']);
+  assert.deepStrictEqual(
+    sides('q', 'border'),
+    ['0px', '3px', '0px', '0px'],
+    "and a quotation's rule",
+  );
+  assert.deepStrictEqual(
+    sides('dd', 'margin'),
+    ['40px', '0px', '0px', '0px'],
+    "a vertical definition's indent is above it",
+  );
+  assert.deepStrictEqual(
+    sides('in', 'padding'),
+    ['0px', '40px', '0px', '0px'],
+    'as it is for a direction inherited',
+  );
+});
+
 test('an inline element in another writing mode than its parent is an inline-block', async () => {
   const { node } = await render(
     '<p>a <span id="s" style="writing-mode:vertical-rl">b</span> ' +
@@ -889,7 +943,10 @@ metric(
     // is on the page. With a frame elsewhere it was made a line at a time
     // and set upright for a paint that only a frame's root does
     const sheet =
-      '<style>body{margin:0}.r{writing-mode:vertical-rl;height:40px}' +
+      // a vertical paragraph's margins are on its left and right, so
+      // neither has any, and the two are as tall as each other
+      '<style>body{margin:0}p{margin:0}' +
+      '.r{writing-mode:vertical-rl;height:40px}' +
       '.g{display:flex;width:30px;writing-mode:vertical-lr;' +
       'text-orientation:upright}</style>';
     const laid = async (before: string) => {

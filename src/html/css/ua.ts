@@ -129,15 +129,19 @@ bdo { unicode-bidi: isolate-override; }
 body { margin: 8px; }
 html { color: ${inScheme(look.color, 'text')}; }
 
-p { margin: 1em 0; }
-h1 { font-size: 2em;    font-weight: bold; margin: 0.67em 0; }
-h2 { font-size: 1.5em;  font-weight: bold; margin: 0.83em 0; }
-h3 { font-size: 1.17em; font-weight: bold; margin: 1em 0; }
-h4 { font-size: 1em;    font-weight: bold; margin: 1.33em 0; }
-h5 { font-size: 0.83em; font-weight: bold; margin: 1.67em 0; }
-h6 { font-size: 0.67em; font-weight: bold; margin: 2.33em 0; }
+/* the margins and paddings of HTML's rendering section, which are logical
+   (15.3.3, 15.3.7, 15.3.8): along the lines' blocks and before their
+   start, which a vertical writing mode and a right-to-left one put on
+   other sides */
+p { margin-block: 1em; }
+h1 { font-size: 2em;    font-weight: bold; margin-block: 0.67em; }
+h2 { font-size: 1.5em;  font-weight: bold; margin-block: 0.83em; }
+h3 { font-size: 1.17em; font-weight: bold; margin-block: 1em; }
+h4 { font-size: 1em;    font-weight: bold; margin-block: 1.33em; }
+h5 { font-size: 0.83em; font-weight: bold; margin-block: 1.67em; }
+h6 { font-size: 0.67em; font-weight: bold; margin-block: 2.33em; }
 
-ul, ol { margin: 1em 0; padding-left: 40px; }
+ul, ol { margin-block: 1em; padding-inline-start: 40px; }
 ul { list-style-type: disc; }
 ol { list-style-type: decimal; }
 ol, ul, menu, dir { counter-reset: list-item; }
@@ -145,16 +149,16 @@ ol[reversed] { counter-reset: reversed(list-item); }
 li { display: list-item; }
 ul ul, ol ul { list-style-type: circle; }
 ul ul ul, ol ol ul, ul ol ul, ol ul ul { list-style-type: square; }
-ul ul, ul ol, ol ul, ol ol { margin: 0; }
+ul ul, ul ol, ol ul, ol ol { margin-block: 0; }
 
-dl { margin: 1em 0; }
-dd { margin-left: 40px; }
+dl { margin-block: 1em; }
+dd { margin-inline-start: 40px; }
 dt { font-weight: bold; }
 
 blockquote {
-  margin: 1em 0;
-  padding-left: 1em;
-  border-left: 3px solid ${look.borderColor};
+  margin-block: 1em;
+  padding-inline-start: 1em;
+  border-inline-start: 3px solid ${look.borderColor};
   color: ${look.mutedColor};
 }
 
@@ -167,7 +171,7 @@ listing, plaintext, pre, xmp {
   display: block;
   font-family: ${mono};
   white-space: pre;
-  margin: 1em 0;
+  margin-block: 1em;
 }
 code, kbd, samp, tt { font-family: ${mono}; }
 /* as Chrome's sheet has them: text set to its columns is not spaced */
@@ -203,7 +207,8 @@ q::after { content: close-quote; }
 a[href] { color: ${inScheme(look.linkColor, 'link')}; text-decoration: underline; cursor: pointer; }
 
 hr {
-  margin: 0.5em auto;
+  margin-block: 0.5em;
+  margin-inline: auto;
   border: none;
   border-top: 1px solid ${look.borderColor};
   height: 0;
@@ -229,7 +234,7 @@ svg:not(:root) { overflow: hidden; }
 /* and one that is its document fills the window, which its attributes say
    otherwise of, as they do of any drawing */
 svg:root { width: 100%; height: 100%; }
-figure { margin: 1em 40px; }
+figure { margin-block: 1em; margin-inline: 40px; }
 
 table { display: table; border-collapse: separate; border-spacing: 2px; box-sizing: border-box; }
 caption { display: table-caption; text-align: center; }
@@ -401,8 +406,13 @@ button, input[type=button], input[type=submit], input[type=reset] {
 input[type=button], input[type=submit], input[type=reset] { white-space: pre; }
 button[disabled], input[type=button][disabled], input[type=submit][disabled],
 input[type=reset][disabled] { color: GrayText; }
-fieldset { margin: 0 2px; padding: 0.35em 0.75em 0.6em; border: 1px solid ${look.borderColor}; }
-legend { display: block; padding: 0 2px; }
+fieldset {
+  margin-inline: 2px;
+  padding-block: 0.35em 0.6em;
+  padding-inline: 0.75em;
+  border: 1px solid ${look.borderColor};
+}
+legend { display: block; padding-inline: 2px; }
 /* What a control shows under the pointer (csswg-drafts#14251, read off the
    three engines for what the resolution leaves out): an arrow over what is
    clicked or dragged as a whole, an I-beam over what takes text, and an

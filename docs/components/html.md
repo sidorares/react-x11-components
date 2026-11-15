@@ -8080,11 +8080,16 @@ declaration for the same side are one property: whichever comes later in
 the cascade wins. Where a document declares a writing mode anywhere, an
 element's writing mode and direction are read ahead of its other
 declarations, so a logical property maps by the element's own wherever it
-comes in cascade order; in a document that declares none, the direction is
-the element's as the cascade has it when the declaration is read — its
-parent's, or its own from `dir` — so a `direction` declared later in
-cascade order than a logical property on the same element does not move
-it.
+comes in cascade order, and so they are on an element with a `dir`; in a
+document that declares none, the direction is the element's as the cascade
+has it when the declaration is read — its parent's, or its own from `dir` —
+so a `direction` declared later in cascade order than a logical property on
+the same element does not move it. The user agent's margins and paddings
+are logical too, as HTML's rendering section has them (15.3.3, 15.3.7,
+15.3.8): a paragraph's and a heading's margins are along its block axis, on
+the left and right of a vertical one, and the indent of a list and of a
+`<dd>`, and a `<blockquote>`'s padding and rule, are before its lines
+start, on the right of an element whose `dir` is `rtl`.
 
 **Writing modes:** `writing-mode` — `horizontal-tb`, `vertical-rl`,
 `vertical-lr`, `sideways-rl` and `sideways-lr`, SVG 1.1's `tb-rl`, `tb`
