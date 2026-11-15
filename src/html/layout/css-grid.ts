@@ -80,7 +80,7 @@ import type { LaidUnder, LayoutContext } from './block.js';
 import type { FontsLike } from './inline.js';
 import { firstBaselineIn } from './inline.js';
 import { putBackAcross } from './writing.js';
-import { gridLines, placement, subgridLines } from './grid-lines.js';
+import { gridLines, placement, subgridLines, withLead } from './grid-lines.js';
 import type { GridLines } from './grid-lines.js';
 import { sizeTracks } from './tracks.js';
 import type { SizingTrack, TrackItem, TrackMax, TrackMin } from './tracks.js';
@@ -985,11 +985,32 @@ function planGrid(
   const explicitRows = sub?.rows
     ? sub.rows.lines.tracks
     : Math.max(rowList.tracks.length, areas?.rows ?? 0);
+  // an item placed before the explicit grid makes implicit tracks there
+  // (CSS Grid 1, 7.5), which every line is counted past: a subgrid's lines
+  // are its parent's, and it has none
+  const leadCols = sub?.cols
+    ? 0
+    : leadingTracks(
+        boxes,
+        gridLines(explicitCols, template.names, areas, 'columns'),
+        false,
+      );
+  const leadRows = sub?.rows
+    ? 0
+    : leadingTracks(
+        boxes,
+        gridLines(explicitRows, rowList.names, areas, 'rows'),
+        true,
+      );
   const colLines =
     sub?.cols?.lines ??
-    gridLines(explicitCols, template.names, areas, 'columns');
+    withLead(
+      gridLines(explicitCols, template.names, areas, 'columns'),
+      leadCols,
+    );
   const rowLines =
-    sub?.rows?.lines ?? gridLines(explicitRows, rowList.names, areas, 'rows');
+    sub?.rows?.lines ??
+    withLead(gridLines(explicitRows, rowList.names, areas, 'rows'), leadRows);
   const items = place(
     boxes,
     colLines,
@@ -1001,19 +1022,24 @@ function planGrid(
   // every row the explicit grid has, whether or not an item is in it
   const allRows = items.reduce(
     (n, item) => Math.max(n, item.row + item.rows),
-    explicitRows,
+    leadRows + explicitRows,
   );
   const explicit = rowList.tracks;
-  const cols = template.tracks.slice();
+  const cols: GridTrack[] = [];
+  for (let c = 0; c < leadCols; c += 1) cols.push(style.gridAutoColumns);
+  cols.push(...template.tracks);
   // an item placed past the explicit grid makes tracks of its own
   const widest = items.reduce(
     (n, item) => Math.max(n, item.col + item.cols),
-    Math.max(1, explicitCols),
+    Math.max(1, leadCols + explicitCols),
   );
   while (cols.length < widest) cols.push(style.gridAutoColumns);
   const allRowDefs: GridTrack[] = [];
   for (let r = 0; r < allRows; r += 1) {
-    allRowDefs.push(explicit[r] ?? style.gridAutoRows);
+    allRowDefs.push(
+      (r >= leadRows ? explicit[r - leadRows] : undefined) ??
+        style.gridAutoRows,
+    );
   }
   // the subgrids among the items, in the lines they span
   for (const item of items) {
@@ -1039,8 +1065,18 @@ function planGrid(
   // of the sizing and the distribution, and the gaps on either side of it
   // are one. The items are placed in the tracks that stay, and the ones
   // that go are put back as nothing where the lines are read.
-  const keepCols = keptTracks(cols.length, template.fit, items, true);
-  const keepRows = keptTracks(allRows, rowList.fit, items, false);
+  const keepCols = keptTracks(
+    cols.length,
+    template.fit && [template.fit[0] + leadCols, template.fit[1] + leadCols],
+    items,
+    true,
+  );
+  const keepRows = keptTracks(
+    allRows,
+    rowList.fit && [rowList.fit[0] + leadRows, rowList.fit[1] + leadRows],
+    items,
+    false,
+  );
   const rowDefs = keepRows
     ? allRowDefs.filter((_, r) => keepRows[r])
     : allRowDefs;
@@ -1069,6 +1105,25 @@ function planGrid(
     colGap,
     rowGap,
   };
+}
+
+/** How many implicit tracks the items' lines make before a grid's explicit
+ *  grid on an axis (CSS Grid 1, 7.5): as many as the line furthest before
+ *  its first is, and no more than a grid takes of `repeat()`. */
+export function leadingTracks(
+  boxes: Box[],
+  lines: GridLines,
+  rows: boolean,
+): number {
+  let lead = 0;
+  for (const child of boxes) {
+    const s = child.style;
+    const [from] = rows
+      ? placement(s.gridRowStart, s.gridRowEnd, lines, true)
+      : placement(s.gridColumnStart, s.gridColumnEnd, lines, true);
+    if (from !== null && from < 0) lead = Math.max(lead, -from);
+  }
+  return Math.min(lead, 1000);
 }
 
 /**
@@ -1685,9 +1740,11 @@ function place(
     take(p.b, a, p.bs, p.as);
     past.set(p.b, a + p.as);
   }
-  // 3. how long a line of the flow is: the explicit grid's, and as long as
-  // the items with a place along it and the longest span without one need
-  let length = byColumn ? rows.tracks : cols.tracks;
+  // 3. how long a line of the flow is: the explicit grid's and the
+  // implicit tracks before it, and as long as the items with a place along
+  // it and the longest span without one need
+  const along = byColumn ? rows : cols;
+  let length = (along.lead ?? 0) + along.tracks;
   for (const p of placed)
     length = Math.max(length, p.a >= 0 ? p.a + p.as : p.as);
   // 4. the rest, in order, from the cursor

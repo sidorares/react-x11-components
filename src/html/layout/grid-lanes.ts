@@ -75,6 +75,7 @@ import {
   lanesSubgridItems,
   layoutAcross,
   layoutItem,
+  leadingTracks,
   leastHeight,
   leastWidth,
   leastWidthInside,
@@ -87,7 +88,7 @@ import {
   tracksOf,
 } from './css-grid.js';
 import type { Item } from './css-grid.js';
-import { gridLines, placement } from './grid-lines.js';
+import { gridLines, placement, withLead } from './grid-lines.js';
 import { sizeTracks } from './tracks.js';
 import type { SizingTrack, TrackItem } from './tracks.js';
 
@@ -273,9 +274,16 @@ export function layoutGridLanes(
           template.tracks.length,
           (rows ? areas?.rows : areas?.columns) ?? 0,
         );
-    const lines =
-      sub?.lines ??
-      gridLines(explicit, template.names, areas, rows ? 'rows' : 'columns');
+    const own = gridLines(
+      explicit,
+      template.names,
+      areas,
+      rows ? 'rows' : 'columns',
+    );
+    // an item placed before the explicit grid makes implicit tracks there
+    // (CSS Grid 1, 7.5), as in a grid
+    const lead = sub ? 0 : leadingTracks(boxes, own, rows);
+    const lines = sub?.lines ?? withLead(own, lead);
     items.length = 0;
     given.length = 0;
     for (const child of boxes) {
@@ -292,9 +300,18 @@ export function layoutGridLanes(
       given.push(start);
       items.push(itemOf(child, start ?? 0, span, rows));
     }
-    return { template, explicit, lines };
+    return { template, explicit, lines, lead };
   };
-  let { template, explicit, lines } = lay();
+  let { template, explicit, lines, lead } = lay();
+  /** The tracks before the explicit grid's and its own, as the items'
+   *  lines count them. */
+  const ledTracks = (): GridTrack[] => {
+    const autoTrack = rows ? style.gridAutoRows : style.gridAutoColumns;
+    const out: GridTrack[] = [];
+    for (let t = 0; t < lead; t += 1) out.push(autoTrack);
+    out.push(...template.tracks);
+    return out;
+  };
   // The items that subgrid the lanes, given them where they were placed —
   // an item placed by the lanes takes no names from them (3.2) — with
   // their tracks' sizing functions; their items are planned in them.
@@ -324,7 +341,7 @@ export function layoutGridLanes(
       );
     });
   };
-  setUpSubgrids(explicit, template.tracks);
+  setUpSubgrids(lead + explicit, ledTracks());
   layOutAcross();
   // and down row lanes, a subgrid's items as tall as they came to across,
   // which its parent's rows are sized with
@@ -370,16 +387,16 @@ export function layoutGridLanes(
     const room = gridSize - others - gridGap * outer;
     const count =
       each > 0 ? Math.max(1, Math.floor((room + gridGap) / each)) : 1;
-    ({ template, explicit, lines } = lay(count));
-    setUpSubgrids(explicit, template.tracks);
+    ({ template, explicit, lines, lead } = lay(count));
+    setUpSubgrids(lead + explicit, ledTracks());
     layOutAcross((child) => subgridded[boxes.indexOf(child)]);
   }
-  let count = Math.max(1, explicit);
+  let count = Math.max(1, lead + explicit);
   items.forEach((item, i) => {
     const start = given[i];
     count = Math.max(count, (start ?? 0) + spanOf(item));
   });
-  const defs: GridTrack[] = template.tracks.slice();
+  const defs: GridTrack[] = ledTracks();
   const autoTrack = rows ? style.gridAutoRows : style.gridAutoColumns;
   while (defs.length < count) defs.push(autoTrack);
 
@@ -402,7 +419,8 @@ export function layoutGridLanes(
       }
     });
     for (let t = 0; t < Math.min(count, autoSpans); t += 1) used[t] = true;
-    const [from, to] = template.fit;
+    const from = template.fit[0] + lead;
+    const to = template.fit[1] + lead;
     let collapsed = false;
     keep = used.map((inUse, t) => {
       const stays = inUse || t < from || t >= to;
