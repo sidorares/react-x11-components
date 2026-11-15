@@ -127,6 +127,7 @@ import {
   frameOf,
   frameTurn,
   framed,
+  quarterTurnsOf,
   ROWS_MIRRORED,
   turnsUp,
   uprightCells,
@@ -5889,16 +5890,30 @@ function frameImages(
 ): (layer: ComputedStyle) => void {
   return (layer) => {
     const area = clipArea(frame, options, layer, true);
-    if (area) {
+    if (!area) return;
+    const at = originBox(frame, options, layer);
+    // drawn level with the page in a frame that turns the box, its corners
+    // cut where they are before the turn
+    const level = levelOf(frame);
+    if (level && ctx.transform && ctx.save && ctx.restore) {
+      ctx.save();
+      if (area.corners && ctx.beginPath && ctx.clip) {
+        ctx.beginPath();
+        roundedRect(ctx, area.x, area.y, area.w, area.h, area.corners);
+        ctx.clip();
+      }
+      ctx.transform(...level.matrix, 0, 0);
       paintBackgroundImage(
         ctx,
         layer,
-        area,
-        originBox(frame, options, layer),
-        options,
-        area.corners,
+        level.span(area),
+        levelRect(level, at),
+        levelOptions(options, level),
       );
+      ctx.restore();
+      return;
     }
+    paintBackgroundImage(ctx, layer, area, at, options, area.corners);
   };
 }
 
@@ -10223,6 +10238,89 @@ interface Area {
   corners: Corners | null;
 }
 
+/** A rectangle as the drawing calls take one. */
+interface Span {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * The turn back that sets what a box draws level with the page where the
+ * frames of writing modes around it turn it (`quarterTurnsOf`): an image's
+ * content and a background's images and gradients are physical, upright
+ * whatever way the box's lines run, as browsers draw them (CSS Writing
+ * Modes 4, 7.1). The matrix the context is turned by about the frame's
+ * origin, and what a rectangle in the frame's axes is in the axes it
+ * turns to, whose whole pixels are whole pixels. Null where nothing is
+ * turned, and for a table part's stand-in, which is in no frame.
+ */
+function levelOf(
+  box: Frame,
+): { matrix: [number, number, number, number]; span(r: Span): Span } | null {
+  if (!framed.any) return null;
+  const turns = quarterTurnsOf(box as Box);
+  if (turns === 1) {
+    return {
+      matrix: [0, -1, 1, 0],
+      span: (r) => ({ x: -(r.y + r.h), y: r.x, w: r.h, h: r.w }),
+    };
+  }
+  if (turns === 3) {
+    return {
+      matrix: [0, 1, -1, 0],
+      span: (r) => ({ x: r.y, y: -(r.x + r.w), w: r.h, h: r.w }),
+    };
+  }
+  if (turns === 2) {
+    return {
+      matrix: [-1, 0, 0, -1],
+      span: (r) => ({ x: -(r.x + r.w), y: -(r.y + r.h), w: r.w, h: r.h }),
+    };
+  }
+  return null;
+}
+
+/**
+ * What a box drawn level with the page (`levelOf`) is painted with: the
+ * matrix its draws go through now, the frame's turn and the one back, and
+ * the damage in the axes it turns to. Where that comes to quarter turns
+ * and a move by whole pixels — a frame painted on a surface of its own,
+ * which is turned onto the page after, or one on the pixel grid — it is
+ * told it has none: a raster kept at the size it is drawn at is copied
+ * through a quarter turn pixel for pixel (`drawRaster`, `drawSvg`), where
+ * the image itself drawn through it is resampled, and its edges washed
+ * with what is past them.
+ */
+function levelOptions(
+  options: PaintOptions,
+  level: { matrix: [number, number, number, number]; span(r: Span): Span },
+): PaintOptions {
+  const through: Matrix = [...level.matrix, 0, 0];
+  const now = options.matrix ? multiply(options.matrix, through) : through;
+  const unit = (v: number) => Math.abs(Math.abs(v) - 1) < 1e-9;
+  const none = (v: number) => Math.abs(v) < 1e-9;
+  const quarter =
+    (unit(now[0]) && none(now[1]) && none(now[2]) && unit(now[3])) ||
+    (none(now[0]) && unit(now[1]) && unit(now[2]) && none(now[3]));
+  const whole =
+    quarter &&
+    Math.abs(now[4] - Math.round(now[4])) < 1e-9 &&
+    Math.abs(now[5] - Math.round(now[5])) < 1e-9;
+  return {
+    ...options,
+    matrix: whole ? undefined : now,
+    damage: options.damage && levelRect(level, options.damage),
+  };
+}
+
+/** A `Rect` through `levelOf`'s turn. */
+function levelRect(level: { span(r: Span): Span }, r: Rect): Rect {
+  const s = level.span({ x: r.x, y: r.y, w: r.width, h: r.height });
+  return { x: s.x, y: s.y, width: s.w, height: s.h };
+}
+
 /**
  * `clampRect` for a rectangle that may be rounded, with the corners it is
  * left with. Where no radius is larger than `CLAMP_PAD` they are its own,
@@ -10339,6 +10437,28 @@ function paintBackground(
       (options.viewport ?? options.canvas);
     const origin = fixed || originBox(box, options, style);
     const at = snapped(origin.x, origin.y, origin.width, origin.height);
+    // level with the page in a frame that turns the box (`levelOf`), cut
+    // to its corners where they are before the turn
+    const level = levelOf(box);
+    if (level && ctx.transform && ctx.save && ctx.restore) {
+      ctx.save();
+      if (rounded && ctx.beginPath && ctx.clip) {
+        ctx.beginPath();
+        roundedRect(ctx, rect.x, rect.y, rect.w, rect.h, rounded);
+        ctx.clip();
+      }
+      ctx.transform(...level.matrix, 0, 0);
+      paintGradient(
+        ctx,
+        style,
+        gradient,
+        level.span(rect),
+        levelRect(level, at),
+        levelOptions(options, level),
+      );
+      ctx.restore();
+      return;
+    }
     if (rounded && style.backgroundSize !== 'auto' && ctx.clip) {
       // tiles of the size it was given, cut to the rounded shape
       ctx.save();
@@ -13959,6 +14079,38 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const w = Math.round(left + box.contentWidth) - x;
   const h = Math.round(top + box.contentHeight) - y;
   if (w <= 0 || h <= 0) return;
+  // upright, level with the page, where a frame of a writing mode turns
+  // the box: what it shows is drawn in the axes the turn takes it to
+  const level =
+    image instanceof SvgDrawing || (image && ctx.drawImage)
+      ? levelOf(box)
+      : null;
+  if (level && ctx.transform && ctx.save && ctx.restore) {
+    const s = level.span({ x, y, w, h });
+    const drawn = levelOptions(options, level);
+    ctx.save();
+    ctx.transform(...level.matrix, 0, 0);
+    const at = fitted(box, s.x, s.y, s.w, s.h);
+    at.x = Math.round(at.x);
+    at.y = Math.round(at.y);
+    const past =
+      at.x < s.x ||
+      at.y < s.y ||
+      at.x + at.w > s.x + s.w ||
+      at.y + at.h > s.y + s.h;
+    if (past && ctx.beginPath && ctx.rect && ctx.clip) {
+      ctx.beginPath();
+      ctx.rect(s.x, s.y, s.w, s.h);
+      ctx.clip();
+    }
+    if (image instanceof SvgDrawing) {
+      drawSvg(ctx, image, at.x, at.y, at.w, at.h, box.style.colorScheme, drawn);
+    } else {
+      drawRaster(ctx, image!, at.x, at.y, at.w, at.h, drawn, s, true);
+    }
+    ctx.restore();
+    return;
+  }
   if (image instanceof SvgDrawing || (image && ctx.drawImage)) {
     // on the pixel grid, as a background's tile is: a fraction of a pixel
     // is a blur, or a row of the image the next pixel's
@@ -14580,6 +14732,10 @@ function drawRaster(
   h: number,
   options: PaintOptions,
   within: { x: number; y: number; w: number; h: number } | null = null,
+  /** Whether it is drawn through a quarter turn (`levelOf`): an image
+   *  resampled through one has its edges washed with what is past them,
+   *  so one not kept is scaled on a surface of its own and copied. */
+  turned = false,
 ): void {
   const own = image as { width?: unknown; height?: unknown };
   if (
@@ -14607,6 +14763,25 @@ function drawRaster(
     );
     if (kept) {
       ctx.drawImage!(kept, x, y);
+      return;
+    }
+    const surface =
+      turned && Number.isInteger(w) && Number.isInteger(h)
+        ? options.surface?.(w, h)
+        : null;
+    if (surface) {
+      try {
+        (surface.getContext('2d') as PaintContext).drawImage!(
+          image,
+          0,
+          0,
+          w,
+          h,
+        );
+        ctx.drawImage!(surface, x, y);
+      } finally {
+        surface.destroy?.();
+      }
       return;
     }
   }
