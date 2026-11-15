@@ -6042,6 +6042,17 @@ grid-auto-rows: auto; grid-auto-columns: auto; grid-auto-flow: column`.
 the cascade reads `grid-template`'s strings with it: a strings' form with
 no slash is taken, and one with `none` or a `repeat()` for its columns, or
 a third group of names between rows, is not.
+Some properties are held and read back that nothing here lays out or
+paints by yet (`passive-properties.ts`): `accent-color`, `resize`,
+`scroll-behavior`, `hyphens`, the breaks, the `offset-` properties but
+`offset` itself, `transform-box`, `transform-style`, the overscroll
+behaviours and the rest of the table. `el.style` takes each only as its
+grammar does, an inherited one passes to the children, and
+`getComputedStyle` and Typed OM read each at what was set or its initial
+value; what each would draw, a resize handle or a hyphen, is not drawn. A
+computed style answers them by name as it answers its shorthands, so they
+are no items of its list, which a computed style made a dictionary would
+otherwise cost every read of.
 The alignment properties, the gaps and the flex properties are held to
 their grammars the same way (`align-specified.ts`), and so is a `style`
 attribute or a rule as CSSOM reads it, which leaves out what its
