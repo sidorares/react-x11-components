@@ -6226,6 +6226,61 @@ export function installDom(
       });
     }
   };
+  /** An interface's operations as Web IDL has them: enumerable, and those
+   *  `required` names throwing a `TypeError` where they are called with
+   *  fewer arguments than that, their `length` that many. */
+  const idlOperations = (
+    Interface: Any,
+    required: Record<string, number> = {},
+  ): void => {
+    const proto = Interface.prototype;
+    for (const key of Object.getOwnPropertyNames(proto)) {
+      if (key === 'constructor' || key.startsWith('_')) continue;
+      const d = Object.getOwnPropertyDescriptor(proto, key);
+      if (!d || typeof d.value !== 'function') continue;
+      const own = d.value;
+      const n = required[key] ?? 0;
+      const named = Interface.name;
+      // what it is called on is held to the interface first, then what it
+      // is called with to its arguments (Web IDL 3.7.6)
+      const value = {
+        [key](this: Any, ...args: Any[]): Any {
+          if (!(this instanceof Interface)) {
+            throw new TypeError(
+              `Failed to execute '${key}' on '${named}': Illegal invocation`,
+            );
+          }
+          if (args.length < n) {
+            throw new TypeError(
+              `Failed to execute '${key}' on '${named}': ${n} argument${n > 1 ? 's' : ''} required, but only ${args.length} present.`,
+            );
+          }
+          return reflectApply(own, this, args);
+        },
+      }[key];
+      Object.defineProperty(value, 'length', {
+        value: required[key] ?? own.length,
+      });
+      Object.defineProperty(proto, key, { ...d, value, enumerable: true });
+    }
+  };
+  /** An interface's constants (Web IDL 3.7.5): on the interface object and
+   *  its prototype, neither writable nor configurable. */
+  const idlConstants = (
+    Interface: Any,
+    values: Record<string, number>,
+  ): void => {
+    for (const [key, value] of Object.entries(values)) {
+      for (const on of [Interface, Interface.prototype]) {
+        Object.defineProperty(on, key, {
+          value,
+          writable: false,
+          enumerable: true,
+          configurable: false,
+        });
+      }
+    }
+  };
   idlAttributes(ScrollTimeline);
   idlAttributes(ViewTimeline);
   idlAttributes(Event);
@@ -29679,16 +29734,26 @@ export function installDom(
 
   /** What an `XMLHttpRequest` tells of its progress (XHR 6). */
   class ProgressEvent extends Event {
-    readonly lengthComputable: boolean;
-    readonly loaded: number;
-    readonly total: number;
+    _lengthComputable: boolean;
+    _loaded: number;
+    _total: number;
     constructor(type: string, init: Any = {}) {
       super(type, init);
-      this.lengthComputable = !!init.lengthComputable;
-      this.loaded = Number(init.loaded ?? 0);
-      this.total = Number(init.total ?? 0);
+      this._lengthComputable = !!init.lengthComputable;
+      this._loaded = Number(init.loaded ?? 0);
+      this._total = Number(init.total ?? 0);
+    }
+    get lengthComputable(): boolean {
+      return this._lengthComputable;
+    }
+    get loaded(): number {
+      return this._loaded;
+    }
+    get total(): number {
+      return this._total;
     }
   }
+  idlAttributes(ProgressEvent);
 
   /**
    * `XMLHttpRequest`, over `fetch`: under the same CORS, through the same
@@ -29732,20 +29797,34 @@ export function installDom(
     }
   };
   class XMLHttpRequest extends XMLHttpRequestEventTarget {
-    static readonly UNSENT = 0;
-    static readonly OPENED = 1;
-    static readonly HEADERS_RECEIVED = 2;
-    static readonly LOADING = 3;
-    static readonly DONE = 4;
-    readonly UNSENT = 0;
-    readonly OPENED = 1;
-    readonly HEADERS_RECEIVED = 2;
-    readonly LOADING = 3;
-    readonly DONE = 4;
-    readyState = 0;
-    status = 0;
-    statusText = '';
-    responseURL = '';
+    declare static readonly UNSENT: 0;
+    declare static readonly OPENED: 1;
+    declare static readonly HEADERS_RECEIVED: 2;
+    declare static readonly LOADING: 3;
+    declare static readonly DONE: 4;
+    declare readonly UNSENT: 0;
+    declare readonly OPENED: 1;
+    declare readonly HEADERS_RECEIVED: 2;
+    declare readonly LOADING: 3;
+    declare readonly DONE: 4;
+    // the state Web IDL's readonly attributes read (`readyState` and the
+    // rest), which only this writes
+    _readyState = 0;
+    _status = 0;
+    _statusText = '';
+    _responseURL = '';
+    get readyState(): number {
+      return this._readyState;
+    }
+    get status(): number {
+      return this._status;
+    }
+    get statusText(): string {
+      return this._statusText;
+    }
+    get responseURL(): string {
+      return this._responseURL;
+    }
     /** How `open` was told to go, and with what way of doing it, the page's
      *  or a worker's. */
     _sync = false;
@@ -29793,8 +29872,24 @@ export function installDom(
         );
       }
     }
-    withCredentials = false;
-    readonly upload = madeUpload();
+    _withCredentials = false;
+    get withCredentials(): boolean {
+      return this._withCredentials;
+    }
+    set withCredentials(value: Any) {
+      // set only before `send()` (XHR 3.5.5)
+      if ((this._readyState !== 0 && this._readyState !== 1) || this._sent) {
+        throw new DOMException(
+          "Failed to set the 'withCredentials' property on 'XMLHttpRequest': The value may only be set if the object's state is UNSENT or OPENED.",
+          'InvalidStateError',
+        );
+      }
+      this._withCredentials = !!value;
+    }
+    _upload = madeUpload();
+    get upload(): Any {
+      return this._upload;
+    }
     _method = 'GET';
     _url = '';
     _headers = new Headers();
@@ -29852,9 +29947,9 @@ export function installDom(
       this._text = '';
       this._raw = new Uint8Array(0);
       this._sent = false;
-      this.status = 0;
-      this.statusText = '';
-      this.responseURL = '';
+      this._status = 0;
+      this._statusText = '';
+      this._responseURL = '';
       this._state(1);
     }
     setRequestHeader(name: Any, value: Any): void {
@@ -29921,9 +30016,9 @@ export function installDom(
         (response: Any) => {
           if (attempt !== this._attempt) return undefined;
           this._response = response;
-          this.status = response.status;
-          this.statusText = response.statusText;
-          this.responseURL = response.url;
+          this._status = response.status;
+          this._statusText = response.statusText;
+          this._responseURL = response.url;
           this._state(2);
           // a body an `abort()` cut off, or the network lost, rejects: the
           // abort has said so already, and a lost one is an `error` (XHR
@@ -30015,10 +30110,10 @@ export function installDom(
         }
         if (!response) throw new TypeError('Failed to load.');
       } catch (error: Any) {
-        this.readyState = 4;
+        this._readyState = 4;
         this._sent = false;
-        this.status = 0;
-        this.statusText = '';
+        this._status = 0;
+        this._statusText = '';
         this._response = null;
         if (error?.name === 'TimeoutError') throw error;
         throw new DOMException(
@@ -30027,9 +30122,9 @@ export function installDom(
         );
       }
       this._response = response;
-      this.status = response.status;
-      this.statusText = response.statusText;
-      this.responseURL = response.url;
+      this._status = response.status;
+      this._statusText = response.statusText;
+      this._responseURL = response.url;
       this._raw = response._raw ?? new Uint8Array(0);
       this._text = this._decode(this._raw);
       this._sent = false;
@@ -30050,7 +30145,7 @@ export function installDom(
       if (under) this._fail('abort');
       // where it ends, after the events (XHR 3.6.7)
       if (this.readyState === 4) {
-        this.readyState = 0;
+        this._readyState = 0;
         this._sent = false;
       }
     }
@@ -30131,8 +30226,8 @@ export function installDom(
     }
     /** The request failed, timed out or was aborted: done, and said so. */
     _fail(type: 'error' | 'timeout' | 'abort'): void {
-      this.status = 0;
-      this.statusText = '';
+      this._status = 0;
+      this._statusText = '';
       this._response = null;
       this._text = '';
       this._raw = new Uint8Array(0);
@@ -30141,7 +30236,7 @@ export function installDom(
       this._progress('loadend');
     }
     _state(state: number): void {
-      this.readyState = state;
+      this._readyState = state;
       const ev = new Event('readystatechange');
       ev.isTrusted = true;
       dispatch(this, ev);
@@ -30153,6 +30248,27 @@ export function installDom(
     }
   }
   handlerProperty(XMLHttpRequest.prototype, 'readystatechange');
+  // Web IDL's shape (XHR 3): its constants on the interface and its
+  // prototype, its attributes accessors there, and its operations
+  // enumerable and held to their arguments
+  idlConstants(XMLHttpRequest, {
+    UNSENT: 0,
+    OPENED: 1,
+    HEADERS_RECEIVED: 2,
+    LOADING: 3,
+    DONE: 4,
+  });
+  idlOperations(XMLHttpRequest, {
+    open: 2,
+    setRequestHeader: 2,
+    getResponseHeader: 1,
+    overrideMimeType: 1,
+  });
+  idlAttributes(XMLHttpRequest);
+  idlAttributes(XMLHttpRequestEventTarget);
+  // a document is a window's to make: a worker's request has no
+  // `responseXML` (XHR 3: `[Exposed=Window]`)
+  if (inWorker) delete (XMLHttpRequest.prototype as Any).responseXML;
 
   // --- traversal (DOM 6) ---------------------------------------------------
 
@@ -33528,6 +33644,25 @@ export function installDom(
       return this.entries();
     }
   }
+  // Web IDL's shape (XHR 5): operations enumerable and held to their
+  // arguments, and a constructor whose arguments are all optional
+  idlOperations(FormData, {
+    append: 2,
+    set: 2,
+    delete: 1,
+    get: 1,
+    getAll: 1,
+    has: 1,
+    forEach: 1,
+  });
+  Object.defineProperty(FormData, 'length', { value: 0 });
+  // an iterable's @@iterator is its `entries` (Web IDL 3.7.9)
+  Object.defineProperty(FormData.prototype, Symbol.iterator, {
+    value: FormData.prototype.entries,
+    writable: true,
+    enumerable: false,
+    configurable: true,
+  });
 
   // --- streams -------------------------------------------------------------------
   //
