@@ -171,8 +171,17 @@ export interface EngineOptions {
   global?: 'auto' | 'own' | 'object';
   /** A module's source, by its URL and what it is imported as, through the
    *  browser's network, or null where there is none or it is not what it was
-   *  imported as (`judgeScript`). Without it a module imports nothing. */
-  load?(url: string, type: ModuleType): Promise<string | null>;
+   *  imported as (`judgeScript`). Without it a module imports nothing.
+   *  `dynamic` is whether the module is of a graph an `import()` started,
+   *  which is fetched as a `script` by the realm's own settings (HTML's
+   *  HostLoadImportedModule with no load state), rather than of the graph
+   *  of the realm's own module script, which a worker's is fetched under
+   *  the document that started it, as the worker's script is. */
+  load?(
+    url: string,
+    type: ModuleType,
+    dynamic: boolean,
+  ): Promise<string | null>;
   /** What a classic script's `import()` resolves against: the document's
    *  address, which `history.pushState` moves. */
   base?(): string;
@@ -1030,24 +1039,27 @@ export class ScriptEngine {
   private _fetch(
     url: string,
     type: ModuleType = 'javascript',
+    /** Of a graph an `import()` started (`EngineOptions.load`). A module in
+     *  the map is the module at its URL whichever graph asked first. */
+    dynamic = false,
   ): Promise<PageModule> {
     const key = type === 'javascript' ? url : `${type} ${url}`;
     let module = this._modules.get(key);
     if (!module) {
       const load = this._options.load;
-      const fetched = (load ? load(url, type) : Promise.resolve(null)).then(
-        (code) => {
-          if (code === null) {
-            if (this._modules.get(key) === fetched) this._modules.delete(key);
-            const failed = new TypeError(`Failed to fetch module ${url}`);
-            UNFETCHED.add(failed);
-            throw failed;
-          }
-          return type === 'javascript'
-            ? this._compile(code, url)
-            : this._synthetic(code, url, type);
-        },
-      );
+      const fetched = (
+        load ? load(url, type, dynamic) : Promise.resolve(null)
+      ).then((code) => {
+        if (code === null) {
+          if (this._modules.get(key) === fetched) this._modules.delete(key);
+          const failed = new TypeError(`Failed to fetch module ${url}`);
+          UNFETCHED.add(failed);
+          throw failed;
+        }
+        return type === 'javascript'
+          ? this._compile(code, url)
+          : this._synthetic(code, url, type);
+      });
       module = fetched;
       this._modules.set(key, module);
     }
@@ -1164,24 +1176,30 @@ export class ScriptEngine {
   }
 
   /** What a static `import` names, linked: the same module wherever it is
-   *  imported from. */
-  private readonly _linker = async (
-    specifier: string,
-    referencing: PageModule,
-    extra?: LinkExtra,
-  ): Promise<PageModule> => {
-    const type = this._typeAsked(
-      extra?.attributes ?? extra?.assert,
-      'SyntaxError',
-    );
-    const url = resolveSpecifier(
-      specifier,
-      referencing.identifier,
-      this._importMap,
-      this._resolved,
-    );
-    return this._fetch(url, this._moduleType(type));
-  };
+   *  imported from, fetched as its graph's are — the realm's own module
+   *  script's, or one an `import()` started (HTML's load state, whose
+   *  destination each static import of the graph is fetched with). */
+  private _linkerFor(dynamic: boolean) {
+    return async (
+      specifier: string,
+      referencing: PageModule,
+      extra?: LinkExtra,
+    ): Promise<PageModule> => {
+      const type = this._typeAsked(
+        extra?.attributes ?? extra?.assert,
+        'SyntaxError',
+      );
+      const url = resolveSpecifier(
+        specifier,
+        referencing.identifier,
+        this._importMap,
+        this._resolved,
+      );
+      return this._fetch(url, this._moduleType(type), dynamic);
+    };
+  }
+  private readonly _linker = this._linkerFor(false);
+  private readonly _dynamicLinker = this._linkerFor(true);
 
   /**
    * `import()`: the module, fetched, linked and evaluated, and its namespace
@@ -1211,8 +1229,8 @@ export class ScriptEngine {
         this._importMap,
         this._resolved,
       );
-      module = await this._fetch(url, this._moduleType(type));
-      await this._link(module);
+      module = await this._fetch(url, this._moduleType(type), true);
+      await this._link(module, true);
     } catch (error) {
       // the runtime's parse or link error is the context's already
       throw isHostError(error) ? this._pageError(messageOf(error)) : error;
@@ -1264,12 +1282,13 @@ export class ScriptEngine {
    * time, the later graph finds what they share linked already, and a
    * cycle inside one graph is the runtime's own to link.
    */
-  private _link(module: PageModule): Promise<void> {
+  private _link(module: PageModule, dynamic = false): Promise<void> {
     let linked = this._linked.get(module);
     if (!linked) {
+      const linker = dynamic ? this._dynamicLinker : this._linker;
       linked = this._linking.then(() =>
         // linked already, as a module an earlier graph imports
-        module.status === 'unlinked' ? module.link(this._linker) : undefined,
+        module.status === 'unlinked' ? module.link(linker) : undefined,
       );
       this._linked.set(module, linked);
       this._linking = linked.catch(() => {});

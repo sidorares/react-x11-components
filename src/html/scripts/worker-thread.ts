@@ -443,12 +443,26 @@ const engine = new ScriptEngine(host.bridge, {
     log('error', 'A script in a worker ran too long, and was stopped.'),
   log,
   settled: () => host.flush(),
-  load: async (url, type) => {
+  load: async (url, type, dynamic) => {
     // a service worker's modules are those it was installed with, as its
     // `importScripts` are
     if (init.service) {
       return importScript(url, type === 'javascript' ? undefined : type);
     }
+    // a graph an `import()` started is the worker's own to fetch, a `script`
+    // held to its own policies' `script-src` (HTML's HostLoadImportedModule,
+    // with no load state), where the worker's own graph is fetched under the
+    // document that started it and held to its `worker-src`: vscode.dev's
+    // extension host, a module worker made of a blob in a frame whose
+    // `child-src` is its own origin's, imports its code from a CDN its
+    // `script-src` names, and was refused
+    const destination =
+      type !== 'javascript'
+        ? type
+        : dynamic
+          ? 'script'
+          : OWN_SCRIPT.destination;
+    if (dynamic && !host.csp.request({ url, destination })) return null;
     try {
       const response = await fetchThrough(
         {
@@ -461,7 +475,7 @@ const engine = new ScriptEngine(host.bridge, {
           // "fetch a module worker script graph"), a JSON or text one as such
           mode: 'cors',
           credentials: init.credentials ?? 'same-origin',
-          destination: type === 'javascript' ? OWN_SCRIPT.destination : type,
+          destination,
         },
         new AbortController().signal,
       );
