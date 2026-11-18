@@ -1495,7 +1495,7 @@ const SCALE_FUNCTIONS = new Set([
 
 /**
  * A transform list the cascade takes, written as Chromium writes it back
- * (CSS Transforms 1, 9): each function's name in lower case, a scale's
+ * (CSS Transforms 1, 9): a scale's and a skew's name in lower case, a scale's
  * percentages as numbers and a bare nought angle in degrees. Where a
  * function is none of these, it is as written.
  */
@@ -1506,17 +1506,21 @@ function transformText(word: string): string {
   let m: RegExpExecArray | null;
   let rest = word;
   while ((m = fns.exec(word))) {
-    const name = m[1].toLowerCase();
+    // Chromium writes a scale's and a skew's names in lower case, and
+    // every other as written
+    const lower = m[1].toLowerCase();
+    const name =
+      SCALE_FUNCTIONS.has(lower) || lower.startsWith('skew') ? lower : m[1];
     let args = m[2]
       .split(',')
       .map((a) => a.trim())
       .filter((a) => a !== '');
-    if (SCALE_FUNCTIONS.has(name)) {
+    if (SCALE_FUNCTIONS.has(lower)) {
       args = args.map((a) => {
         const p = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)%$/i.exec(a);
         return p ? String(Math.round((Number(p[1]) / 100) * 1e6) / 1e6 + 0) : a;
       });
-    } else if (ANGLE_FUNCTIONS.has(name)) {
+    } else if (ANGLE_FUNCTIONS.has(lower)) {
       args = args.map((a) => (/^[+-]?0*\.?0*$/.test(a) ? '0deg' : a));
     }
     out.push(`${name}(${args.join(', ')})`);
