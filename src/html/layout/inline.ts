@@ -37,6 +37,7 @@ import { fadeColor } from '../css/color.js';
 import type { BoxShadow, ComputedStyle } from '../css/style.js';
 import {
   CONTAIN_LAYOUT,
+  copyStyle,
   INLINE_BEFORE_ABSOLUTE,
   scrolls,
 } from '../css/style.js';
@@ -660,7 +661,14 @@ function linesOf(
     framed.any && block.style.writingMode !== 'horizontal-tb' && inFrame(block);
   if (vertical) uprightItems(items, fonts);
   const apart = vertical && block.style.writingMode === 'vertical-lr';
-  if (wraps(block.style)) holdNoWrap(items, block);
+  // A block that does not wrap holding text that does (CSS Text 3, 5.1:
+  // whether a line breaks between two characters is the call of the
+  // nearest element holding both) is laid out as a paragraph that wraps,
+  // with what does not wrap held together, the block's own text with it
+  const blockStyle = wrapsWithin(block.style, items)
+    ? wrappingStyle(block.style)
+    : block.style;
+  if (wraps(blockStyle)) holdNoWrap(items, block);
   // one walk for what few paragraphs have: text that casts a shadow, and a
   // tab, which only a `white-space` that keeps it leaves — so no text is
   // searched for one where it cannot be
@@ -714,7 +722,7 @@ function linesOf(
   if (options.firstLine) firstLineColour(items, options.firstLine);
   if (options.prettyAt) separateAt(items, options.prettyAt);
 
-  const style = block.style;
+  const style = blockStyle;
   // and what its `text-overflow` is read from, which an anonymous block's
   // container says
   const over = overflowStyleOf(block);
@@ -4688,11 +4696,33 @@ function holdNoWrap(items: Item[], block: Box): void {
  *  one inside the block that does not wrap either. */
 function noWrapGroup(box: Box, block: Box): Box {
   let group = box;
-  for (let up = box.parent; up && up !== block; up = up.parent) {
+  // up to the block, and the block too where it does not wrap
+  // (`wrapsWithin`)
+  for (let up = box === block ? null : box.parent; up; up = up.parent) {
     if (wraps(up.style)) break;
     group = up;
+    if (up === block) break;
   }
   return group;
+}
+
+/** Whether a block that does not wrap holds text that does: a span of
+ *  `white-space: normal` in a `<pre>`. */
+function wrapsWithin(style: ComputedStyle, items: readonly Item[]): boolean {
+  if (wraps(style)) return false;
+  for (const item of items) {
+    if (item.kind === 'text' && !item.control && wraps(item.box.style)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** A block's style as one whose lines wrap, keeping its white space. */
+function wrappingStyle(style: ComputedStyle): ComputedStyle {
+  const out = copyStyle(style);
+  out.whiteSpace = style.whiteSpace === 'pre' ? 'pre-wrap' : 'normal';
+  return out;
 }
 
 /** The bidi controls `unicode-bidi` stands for, opening and closing (CSS

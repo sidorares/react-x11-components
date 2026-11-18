@@ -967,6 +967,30 @@ metric('a nowrap element does not break at its hyphens', async () => {
   assert.deepStrictEqual(a.slice(0, 2), ['a', 'state-of-the-art'], `${a}`);
 });
 
+metric('text that wraps in a block that does not breaks there', async () => {
+  // CSS Text 3, 5.1: whether a line breaks between two characters is the
+  // call of the nearest element holding both, so a `white-space: normal`
+  // span in a `pre` wraps at its spaces and nowhere else. The block's own
+  // style said no line wraps, and the span ran past the box (WPT's
+  // white-space-pre-031 to 035).
+  const { node } = await render(
+    '<style>div{margin:0;font:10px monospace;width:100px}</style>' +
+      '<div id="a" style="white-space:pre">aaa bbb<span style="white-space:normal"> ccc ddd</span> eee fff\nggg</div>' +
+      '<div id="b" style="white-space:nowrap">aaa bbb<span style="white-space:normal"> ccc ddd</span> eee fff</div>',
+  );
+  const el = view(node);
+  for (const id of ['a', 'b']) {
+    const lines = lineTextsOf(el, id).map((line) => line.trim());
+    // the block's own spaces hold: "ddd eee fff" stays one piece
+    assert.deepStrictEqual(
+      lines.slice(0, 2),
+      ['aaa bbb ccc', 'ddd eee fff'],
+      id,
+    );
+  }
+  assert.strictEqual(lineTextsOf(el, 'a')[2].trim(), 'ggg');
+});
+
 metric('a kept tab goes to its stop', async () => {
   // a tab was a space wide in ntk and at CoreText's own stops, 28 points
   // apart: code indented with tabs, and columns a tab apart, did not line
