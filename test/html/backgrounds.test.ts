@@ -1,6 +1,9 @@
 // <Html> — backgrounds: images, gradients, layers, their size, position and
 // clip.
 import { afterEach, test } from 'node:test';
+import { PNG } from 'pngjs';
+import { mulberry32 } from '../mulberry32.js';
+import { decodePartialPng } from '../../src/html/png-partial.js';
 import assert from 'node:assert';
 import {
   act,
@@ -2665,3 +2668,146 @@ metric(
     }
   },
 );
+
+/** A PNG of RGBA pixels, `width` across. */
+function rgbaPng(width: number, pixels: number[][]): Uint8Array {
+  const png = new PNG({ width, height: pixels.length / width });
+  png.data = Buffer.from(pixels.flat());
+  return new Uint8Array(PNG.sync.write(png));
+}
+
+metric(
+  'image-rendering: pixelated scales an image, and its background, to the nearest pixel',
+  async () => {
+    // CSS Images 3, 6.1: an image drawn larger than it is has each of its
+    // pixels a block of one colour, where it was smoothed into the next.
+    // WPT's progressive PNGs draw a 5x3 image at 95x57 so
+    const image = rgbaPng(2, [
+      [255, 0, 0, 255],
+      [0, 0, 255, 255],
+    ]);
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}img,div{display:block;width:40px;height:20px}' +
+        '.p{image-rendering:pixelated}' +
+        'div{background:url(a.png) 0 0/100% 100% no-repeat}</style>' +
+        '<img class="p" src="a.png"><img src="a.png">' +
+        '<div class="p"></div>',
+      { 'a.png': image },
+    );
+    await act();
+    const ctx = result.ctx;
+    // a pixel short of the middle, which smoothing mixes and pixelated
+    // leaves the left pixel's
+    await expectPixel(ctx, 19, 10, '#ff0000', { message: 'pixelated' });
+    await expectPixel(ctx, 20, 10, '#0000ff', { message: 'pixelated' });
+    await expectPixel(ctx, 19, 50, '#ff0000', {
+      message: "a background's tile",
+    });
+    const smooth = await new Promise<Uint8ClampedArray>((ok, fail) =>
+      (
+        ctx as unknown as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+            cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
+          ): void;
+        }
+      ).getImageData(19, 30, 1, 1, (e, d) => (e ? fail(e) : ok(d.data))),
+    );
+    assert.ok(
+      smooth[0] < 250 && smooth[2] > 5,
+      `smoothed where it is not asked: ${[...smooth]}`,
+    );
+  },
+);
+
+metric('a PNG cut short draws the rows its data reached', async () => {
+  // PNG 3, 13.10: a browser shows an image as far as it has arrived.
+  // Core's decoder refuses a file whose stream ends early, which drew
+  // nothing at all. A row of red, then rows of noise, which no compression
+  // shortens
+  const width = 32;
+  const random = mulberry32(7);
+  const noise = () => Math.floor(random() * 256);
+  const whole = rgbaPng(width, [
+    ...new Array(width).fill([255, 0, 0, 255]),
+    ...Array.from({ length: width * 7 }, () => [
+      noise(),
+      noise(),
+      noise(),
+      255,
+    ]),
+  ]);
+  // cut a few rows into the noise, past the block's Huffman tables, which
+  // hold back every byte before them: the IDAT's end and the IEND go
+  const idat = Buffer.from(whole).indexOf('IDAT');
+  const cut = whole.slice(0, idat + 4 + 300);
+  const { result } = await renderWithBytes(
+    '<style>body{margin:0;background:#ffffff}' +
+      'img{display:block;width:32px;height:64px;' +
+      'image-rendering:pixelated}</style><img src="a.png">',
+    { 'a.png': cut },
+  );
+  await act();
+  await expectPixel(result.ctx, 20, 4, '#ff0000', {
+    message: 'the first row',
+  });
+  await expectPixel(result.ctx, 20, 60, '#ffffff', {
+    message: 'and nothing where the data did not reach',
+  });
+});
+
+test('an interlaced PNG cut short has the passes it reached, each pixel at its final value', () => {
+  // a 2x2 image's Adam7 passes: the first is (0,0), the sixth (1,0) and
+  // the seventh the second row; the rest hold none of it. Cut after the
+  // sixth, the second row is not there
+  const R = [255, 0, 0, 255];
+  const G = [0, 255, 0, 255];
+  const B = [0, 0, 255, 255];
+  const raw = new Uint8Array([0, ...R, 0, ...G, 0, ...B, ...B]);
+  const header = new Uint8Array(13);
+  new DataView(header.buffer).setUint32(0, 2);
+  new DataView(header.buffer).setUint32(4, 2);
+  header.set([8, 6, 0, 0, 1], 8);
+  const chunk = (name: string, data: Uint8Array) => {
+    const out = new Uint8Array(12 + data.length);
+    new DataView(out.buffer).setUint32(0, data.length);
+    out.set(
+      [...name].map((c) => c.charCodeAt(0)),
+      4,
+    );
+    out.set(data, 8);
+    return out;
+  };
+  const bytes = Buffer.concat([
+    new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', header),
+    chunk('IDAT', new Uint8Array([1, 2, 3])),
+  ]);
+  const full = decodePartialPng(bytes, () => raw);
+  assert.deepStrictEqual(
+    [...full!.data],
+    [...R, ...G, ...B, ...B],
+    'every pass',
+  );
+  const cut = decodePartialPng(bytes, () => raw.subarray(0, 10));
+  assert.deepStrictEqual(
+    [...cut!.data],
+    [...R, ...G, 0, 0, 0, 0, 0, 0, 0, 0],
+    'the first and the sixth',
+  );
+  assert.strictEqual(
+    decodePartialPng(new Uint8Array(4), () => raw),
+    null,
+  );
+  // a file that reaches its IEND is whole, and not this one's to draw
+  assert.strictEqual(
+    decodePartialPng(
+      Buffer.concat([bytes, chunk('IEND', new Uint8Array(0))]),
+      () => raw,
+    ),
+    null,
+  );
+});

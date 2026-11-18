@@ -12050,6 +12050,8 @@ function paintBackgroundImage(
           height,
           options,
           area,
+          false,
+          NEAREST.has(style.imageRendering),
         );
       }
     }
@@ -14119,7 +14121,18 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
     if (image instanceof SvgDrawing) {
       drawSvg(ctx, image, at.x, at.y, at.w, at.h, box.style.colorScheme, drawn);
     } else {
-      drawRaster(ctx, image!, at.x, at.y, at.w, at.h, drawn, s, true);
+      drawRaster(
+        ctx,
+        image!,
+        at.x,
+        at.y,
+        at.w,
+        at.h,
+        drawn,
+        s,
+        true,
+        NEAREST.has(box.style.imageRendering),
+      );
     }
     ctx.restore();
     return;
@@ -14162,7 +14175,18 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
               Math.min(y + h, damage.y + damage.height) - Math.max(y, damage.y),
           }
         : { x, y, w, h };
-      drawRaster(ctx, image, at.x, at.y, at.w, at.h, options, within);
+      drawRaster(
+        ctx,
+        image,
+        at.x,
+        at.y,
+        at.w,
+        at.h,
+        options,
+        within,
+        false,
+        NEAREST.has(box.style.imageRendering),
+      );
     }
     if (clipped) ctx.restore();
     return;
@@ -14736,6 +14760,89 @@ function drawSvg(
  * draws a preview of 1022 by 1132 pixels at a third of that, 2.5 ms a
  * draw, nine of them in each frame of a card's hover.
  */
+/** The `image-rendering` keywords that scale an image to the nearest pixel
+ *  (CSS Images 3, 6.1), SVG's `optimizeSpeed` with them. */
+const NEAREST = new Set(['pixelated', 'crisp-edges', 'optimizespeed']);
+
+/** An image scaled to the nearest pixel, by its size: made once a size. */
+const NEAREST_KEPT = new WeakMap<object, Map<string, unknown>>();
+/** The most pixels an image scaled to the nearest pixel is made at here. */
+const NEAREST_PIXELS = 1 << 22;
+
+/**
+ * An image drawn at `w` by `h` scaled to the nearest pixel: through the
+ * context's own smoothing where it has a switch for it, and otherwise from
+ * an image made at that size here, where the image says its pixels (ntk's
+ * keeps its straight RGBA). False where neither can, and it is drawn as any
+ * image is.
+ */
+function drawNearest(
+  ctx: PaintContext,
+  image: unknown,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): boolean {
+  if (!ctx.drawImage) return false;
+  const smoothing = ctx as { imageSmoothingEnabled?: boolean };
+  if (typeof smoothing.imageSmoothingEnabled === 'boolean' && ctx.save) {
+    ctx.save();
+    smoothing.imageSmoothingEnabled = false;
+    // a bridge with no switch keeps it on, and says so
+    if (smoothing.imageSmoothingEnabled === false) {
+      ctx.drawImage(image, x, y, w, h);
+      ctx.restore();
+      return true;
+    }
+    ctx.restore();
+  }
+  const own = image as { width?: unknown; height?: unknown; data?: unknown };
+  const sw = own.width;
+  const sh = own.height;
+  const data = own.data;
+  const dw = Math.round(w);
+  const dh = Math.round(h);
+  if (
+    typeof sw !== 'number' ||
+    typeof sh !== 'number' ||
+    !(data instanceof Uint8Array || data instanceof Uint8ClampedArray) ||
+    data.length !== sw * sh * 4 ||
+    dw <= 0 ||
+    dh <= 0 ||
+    dw * dh > NEAREST_PIXELS
+  ) {
+    return false;
+  }
+  let sizes = NEAREST_KEPT.get(image as object);
+  if (!sizes) NEAREST_KEPT.set(image as object, (sizes = new Map()));
+  const key = `${dw}x${dh}`;
+  let scaled = sizes.get(key);
+  if (!scaled) {
+    const out = new Uint8Array(dw * dh * 4);
+    for (let row = 0; row < dh; row += 1) {
+      const sy = Math.min(sh - 1, Math.floor(((row + 0.5) * sh) / dh));
+      for (let col = 0; col < dw; col += 1) {
+        const sx = Math.min(sw - 1, Math.floor(((col + 0.5) * sw) / dw));
+        const from = (sy * sw + sx) * 4;
+        const to = (row * dw + col) * 4;
+        out[to] = data[from];
+        out[to + 1] = data[from + 1];
+        out[to + 2] = data[from + 2];
+        out[to + 3] = data[from + 3];
+      }
+    }
+    scaled = new (ntk.Image as unknown as new (rgba: unknown) => unknown)({
+      width: dw,
+      height: dh,
+      data: out,
+    });
+    sizes.set(key, scaled);
+  }
+  ctx.drawImage(scaled, x, y);
+  return true;
+}
+
 function drawRaster(
   ctx: PaintContext,
   image: unknown,
@@ -14749,8 +14856,14 @@ function drawRaster(
    *  resampled through one has its edges washed with what is past them,
    *  so one not kept is scaled on a surface of its own and copied. */
   turned = false,
+  /** Whether it is scaled to the nearest pixel, as `image-rendering:
+   *  pixelated` has it, rather than smoothed. */
+  nearest = false,
 ): void {
   const own = image as { width?: unknown; height?: unknown };
+  if (nearest && (own.width !== w || own.height !== h)) {
+    if (drawNearest(ctx, image, x, y, w, h)) return;
+  }
   if (
     (own.width !== w || own.height !== h) &&
     typeof own.width === 'number' &&

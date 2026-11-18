@@ -8554,6 +8554,95 @@ test('a custom element that takes part in forms answers :valid and :invalid, and
   );
 });
 
+test("a form-associated custom element's internals validate as a control does, and throw for any other element", async () => {
+  const doc = await hosted(
+    '<form id="f"><x-v id="x"><b id="in"></b></x-v></form><x-n id="n"></x-n><p id="out"></p><script>' +
+      'customElements.define("x-v", class extends HTMLElement {' +
+      '  static formAssociated = true;' +
+      '  constructor() { super(); this.i = this.attachInternals() } });' +
+      'customElements.define("x-n", class extends HTMLElement {' +
+      '  constructor() { super(); this.i = this.attachInternals() } });' +
+      'var r = [], x = document.getElementById("x"), f = document.getElementById("f");' +
+      'var invalid = 0; x.addEventListener("invalid", function () { invalid++; });' +
+      'var v = x.i.validity; r.push(v.valid, v.valueMissing);' +
+      'x.i.setValidity({ valueMissing: true }, "a\\r\\nb", document.getElementById("in"));' +
+      // the object held reads the flags as they are now
+      'r.push(v.valid, v.valueMissing, JSON.stringify(x.i.validationMessage));' +
+      'r.push(x.i.checkValidity(), f.checkValidity(), invalid);' +
+      'try { x.i.setValidity({ tooLong: true }); } catch (e) { r.push(e.name); }' +
+      'try { x.i.setValidity({ tooLong: true }, "m", document.body); } catch (e) { r.push(e.name); }' +
+      'x.setAttribute("readonly", ""); r.push(x.i.willValidate, x.i.checkValidity());' +
+      'var n = document.getElementById("n");' +
+      'try { n.i.setFormValue("v"); } catch (e) { r.push(e.name); }' +
+      'try { n.i.validity; } catch (e) { r.push(e.name); }' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      'true',
+      'false',
+      'false',
+      'true',
+      JSON.stringify('a\nb'),
+      'false',
+      'false',
+      '2',
+      'TypeError',
+      'NotFoundError',
+      // a read-only one is no candidate, and valid whatever it says
+      'false',
+      'true',
+      'NotSupportedError',
+      'NotSupportedError',
+    ].join('|'),
+  );
+});
+
+test('a form tells formdata as its entry list is made, and submits nothing while it does or while its submit is told', async () => {
+  const doc = await hosted(
+    '<form id="f"><input name="a" value="1"><input type="submit" id="s"></form><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f"), told = 0, submits = 0;' +
+      'f.addEventListener("formdata", function (e) {' +
+      '  told++; e.formData.append("b", "2");' +
+      '  try { new FormData(f); } catch (x) { r.push(x.name); } });' +
+      'var d = new FormData(f);' +
+      'r.push(told, d.get("b"), typeof FormDataEvent);' +
+      'f.addEventListener("submit", function (e) { submits++; e.preventDefault();' +
+      '  document.getElementById("s").click(); });' +
+      'f.requestSubmit(); r.push(submits);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'InvalidStateError|1|2|function|1',
+  );
+});
+
+test('an iframe with nothing to load hears its load as it is put in, so a submission into it is heard', async () => {
+  // HTML 4.8.5: an iframe whose first document is about:blank runs its
+  // load event steps as it is inserted. Told a task later, an onload set
+  // after the insertion heard the blank document's, and not what a form
+  // then sent the frame to
+  const doc = await hosted(
+    '<div id="c"></div><p id="out"></p><script>' +
+      'var r = [];' +
+      'var c = document.getElementById("c");' +
+      'c.innerHTML = "<iframe id=a onload=\\"r.push(\'attribute\')\\"></iframe>";' +
+      'r.push("after");' +
+      'var b = document.createElement("iframe"); b.onload = function () { r.push("b"); };' +
+      'c.appendChild(b); r.push("appended");' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'attribute|after|b|appended',
+  );
+});
+
 test('a box’s default stays through what the user does and what a script sets', async () => {
   const doc = await hosted(
     '<input id="c" type="checkbox" checked>' +
@@ -12030,6 +12119,31 @@ metric('layout is asked of the document as the script left it', async () => {
   );
   assert.equal(doc.text('out'), '150 rgb(255, 0, 0) true');
 });
+
+metric(
+  "a point in a shadow tree is the host's to the document and its own to the tree",
+  async () => {
+    // CSSOM View 6 and DOM's retargeting: the document is answered with the
+    // host, a shadow root with what is in it, and slotted text with the
+    // element it is a child of, where it was the slot it is drawn in
+    const doc = await hosted(
+      '<style>body{margin:0}</style><div id="a"></div><div id="b"></div><p id="out"></p><script>' +
+        'var a = document.getElementById("a"), b = document.getElementById("b");' +
+        'var sa = a.attachShadow({ mode: "closed" });' +
+        'sa.innerHTML = "<span style=\\"display:block;height:20px\\">in</span>";' +
+        'var sb = b.attachShadow({ mode: "open" });' +
+        'sb.innerHTML = "<div id=wrap style=\\"height:20px\\"><slot></slot></div>";' +
+        'b.textContent = "slotted";' +
+        'var r = [];' +
+        'r.push(document.elementFromPoint(5, 5) === a, sa.elementFromPoint(5, 5).localName);' +
+        'r.push(document.elementFromPoint(5, 25) === b, sb.elementFromPoint(5, 25) === b);' +
+        'r.push(document.elementsFromPoint(5, 25).map(function (e) { return e.id || e.localName; }).join(","));' +
+        'document.getElementById("out").textContent = r.join("|");' +
+        '</script>',
+    );
+    assert.equal(doc.text('out'), 'true|span|true|true|b,body,html');
+  },
+);
 
 metric(
   'a box fixed to the viewport, and what is in it, is measured where it is drawn however far the pane has scrolled the page',
