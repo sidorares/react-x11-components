@@ -21,7 +21,14 @@ import { svgFromBytes } from './svg.js';
 import type { IntrinsicSize } from './svg.js';
 import { decodeBmp } from './bmp.js';
 import { GifCanvas, readGif } from './gif.js';
-import { AnimatedImage, gifAnimation, webpAnimation } from './animated.js';
+import {
+  AnimatedImage,
+  apngAnimation,
+  gifAnimation,
+  webpAnimation,
+} from './animated.js';
+import { readApng } from './apng.js';
+import type { DecodePng } from './apng.js';
 import { readAnimatedWebP } from './webp.js';
 import type { DecodeStill } from './webp.js';
 import { headerSize } from './image-header.js';
@@ -803,9 +810,9 @@ const makeImage = (rgba: {
   new (ntk.Image as unknown as new (rgba: unknown) => ImageLike)(rgba);
 
 /**
- * A GIF of more than one frame, or an animated WebP, played as
- * `animated.ts` plays one; null for anything else, which `decodeImage`
- * reads. A WebP is a promise, since its frames are decoded by
+ * A GIF of more than one frame, an animated WebP or an animated PNG, played
+ * as `animated.ts` plays one; null for anything else, which `decodeImage`
+ * reads. A WebP or a PNG is a promise, since its frames are decoded by
  * image-in-browser, which is loaded the first time one arrives — as core
  * loads it for a still WebP, and for the same reason: evaluating it takes
  * some 140 ms that a document with none should not pay.
@@ -819,6 +826,12 @@ function animatedImage(
       return gif.frames.length > 1
         ? new AnimatedImage(gifAnimation(gif), makeImage)
         : null;
+    }
+    const apng = readApng(bytes);
+    if (apng) {
+      return pngStills().then(
+        (decode) => new AnimatedImage(apngAnimation(apng, decode), makeImage),
+      );
     }
     const webp = readAnimatedWebP(bytes);
     if (!webp) return null;
@@ -853,6 +866,39 @@ function webpStills(): Promise<DecodeStill> {
       },
   );
   return stills;
+}
+
+let pngs: Promise<DecodePng> | null = null;
+
+/** image-in-browser's PNG decoder, for one frame of an animated PNG at a
+ *  time (`apng.ts`): straight RGBA, or null for a frame that does not
+ *  decode. A frame of a palette, of grey or of 16 bits is converted to
+ *  8-bit RGBA, its palette's transparency kept. */
+function pngStills(): Promise<DecodePng> {
+  pngs ??= import('image-in-browser/lib/src/formats/png-decoder.js').then(
+    ({ PngDecoder }) =>
+      (bytes: Uint8Array) => {
+        try {
+          const decoded = new PngDecoder().decode({ bytes });
+          if (!decoded) return null;
+          // format 3 is Format.uint8; order 0 is ChannelOrder.rgba
+          const rgba =
+            decoded.format === 3 &&
+            decoded.numChannels === 4 &&
+            !decoded.hasPalette
+              ? decoded
+              : decoded.convert({ format: 3, numChannels: 4, alpha: 255 });
+          const { width, height } = rgba;
+          const data = rgba.getBytes({ order: 0 });
+          return data.length === width * height * 4
+            ? { width, height, data }
+            : null;
+        } catch {
+          return null;
+        }
+      },
+  );
+  return pngs;
 }
 
 /**
