@@ -9565,13 +9565,13 @@ would take no focus, say nothing to a screen reader, and have to reimplement
 every keyboard convention the platform already has. A widget is keyed by
 its element rather than by where it is, so a field that layout moves — a
 stylesheet or an image arriving above it while someone types — is the same
-widget, and keeps its focus, its caret and its undo. And it is moved with
-its box in the frame that laid the box out: where the rectangles a render
-places it at are a layout behind, core moves its widget by as far as the
-box has moved since, or the box that cuts it where it is cut, so a field in
-a centred dialog keeps to the dialog at every step of a window's edge. Its
-size is the render's, a frame late where a layout makes it narrower or
-wider.
+widget, and keeps its focus, its caret and its undo. And it is placed and
+sized with its box in the frame that laid the box out: where the rectangles
+a render places it at are a layout behind, core moves its widget by as far
+as the box has moved since, or the box that cuts it where it is cut, and
+lays it out at the size the box came to, so a field in a centred dialog
+keeps to the dialog, and to its width, at every step of a window's edge. A
+widget the document cuts takes its size from the render, a frame late.
 
 **A control's text is the theme's font, whatever the page's is.** Chrome
 sets `<input>`, `<select>`, `<textarea>` and `<button>` in a system font,

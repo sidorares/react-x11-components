@@ -8084,26 +8084,40 @@ right place, a frame late, so a test of where it ends sees nothing: hold it
 to every paint and to a scroll telling nothing, as `test/html/forms.test.ts`
 does.
 
-**Every other widget follows the box it was reported from**
-(`FOLLOWS_CONTROL`, `ControlRect.follow`). A report of the controls reaches
-React a render after the layout that moved them, so at every step of a
-window's edge a centred dialog was drawn where the step had it and its
-fields' text where the step before did, a step behind the box around it.
-The rect carries where layout had the box it follows as it was taken, and
-core moves the widget's box by how far that one has moved since
-(`followShiftOf`), in the pass that laid it out; the next report puts the
-widget there and the offset comes to nothing. Four things are load-bearing.
-**What a cut widget follows is the box that cuts it** (`clipperOf`), so the
-clip goes with it: a field scrolled inside its box is told by the report, as
+**A widget is placed and sized by core's pass, from the document's layout,
+not by the render that reports it** (`FOLLOWS_CONTROL`, `SIZES_CONTROL`,
+`ControlRect.follow`). A report of the controls reaches React a render after
+the layout that moved them, so at every step of a window's edge a centred
+dialog was drawn where the step had it and its fields where the step before
+did, and as wide, a step behind the box around them. So a widget is mounted
+in three boxes, always the same three. The outer is a layout host the
+element's width and of no height, which lays the next out at the rect's
+place and at the size the control's box has in the document's last layout
+(`controlSizeOf`): core places a host's children after the pass whenever
+the host's width changes, which a window's edge does, and the document was
+laid out at its width in that pass. The middle one's position moves it by
+how far the box it follows has moved since the rect was taken
+(`followShiftOf`), to the viewport for one fixed to it, or by a sticky box's
+hold (`heldShiftOf`), which is the one placement that was three nested
+wrappers. Six things are load-bearing. **What a cut widget follows is the
+box that cuts it** (`clipperOf`), so the clip goes with it, and a cut one is
+the rect's size: a field scrolled inside its box is told by the report, as
 before, and not moved out of what shows it. **The place is the rect's**, and
 `sameRects` compares it, so the offset is always from what React drew: kept
 on the element instead, a report React had not drawn yet took the offset
-back. **One position object for an element and a place**
-(`followPosition`), or every render of the document is a new style for every
-widget's box. And **a size is no position**: a field a narrower dialog
-narrows is a render late still. A control a vertical flow turns, and one a
-sticky box holds, follow nothing of this: their boxes are in other
-coordinates (`held`).
+back. **One position object for an element and what it says**
+(`controlPosition`), or every render of the document is a new style for
+every widget's box. **The host reads the document only when it places**,
+both modes `'exactly'`: a question of another size is asked inside the pass,
+where the document may not have its width yet, and answers nothing of it. And **a change
+of the document that leaves the element's width alone is a render late in
+its size**, since nothing asks the host to place again; its place is not.
+**Nothing a rect notes of where a box is may be what a scroll moves**: a
+sticky box is placed again at every scroll, so a held control has no
+`follow`, and is sized by `held` — given one, every frame of a scroll was a
+report of the controls and a render of every widget. A control a vertical
+flow turns follows nothing of this: its box is across what it is drawn as. The validation message is still `keptWithBox`'s, which places
+it and does not size it.
 
 **A sticky box the viewport holds cuts a mount as a fixed box does, and
 refuses none** (`heldSet`, `heldOver`, `cutByFixed`'s `held`). The pane's

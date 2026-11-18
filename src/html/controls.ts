@@ -72,13 +72,26 @@ export const AT_VIEWPORT = 'react-x11-components-html-viewport';
 export const HELD_AT_VIEWPORT = 'react-x11-components-html-held';
 
 /**
- * The position every other control's widget goes in, registered with core
- * by `registerHtmlView`: a box of no size, at the element's corner, that
- * core moves after every layout pass by as far as the box the widget
- * follows was laid out from where it was when the rect was taken
- * (`ControlRect.follow`, `HtmlViewNode.followShiftOf`).
+ * The position a control's widget goes in, registered with core by
+ * `registerHtmlView`: a box core moves after every layout pass by as far as
+ * the box the widget follows was laid out from where it was when the rect
+ * was taken (`ControlRect.follow`, `HtmlViewNode.followShiftOf`) — and,
+ * for one in a box fixed to the viewport, to where the viewport is, as
+ * `AT_VIEWPORT` moves a box, or for one a sticky box holds, by as far as it
+ * holds it, as `HELD_AT_VIEWPORT` does.
  */
 export const FOLLOWS_CONTROL = 'react-x11-components-html-follows';
+
+/**
+ * The layout the box around a control's widget lays it out with, registered
+ * with core by `registerHtmlView`: at the rect's place, and at the size the
+ * control's box has in the document's last layout, where that is all the
+ * widget shows through (`HtmlViewNode.controlSizeOf`). Core places what
+ * such a box holds after every pass that changes its width, which a
+ * window's edge does, so a field a narrower dialog narrows is that wide in
+ * the frame that laid the dialog out, where the rect is a render behind.
+ */
+export const SIZES_CONTROL = 'react-x11-components-html-sized';
 
 /** The palette numbers a control's box has to reserve room for. */
 export interface ControlChrome {
@@ -193,9 +206,12 @@ export interface ControlRect {
    * at a window's edge every frame of a drag drew a dialog's fields where
    * the last frame had them, the text a step behind the box around it.
    * Core moves the widget's box by how far the one it follows has moved
-   * since (`FOLLOWS_CONTROL`), in the pass that laid it out. Not on a
-   * control turned by a vertical flow, nor on one a sticky box holds,
-   * which goes by `held`.
+   * since (`FOLLOWS_CONTROL`), in the pass that laid it out — and lays it
+   * out at the size its box has there (`SIZES_CONTROL`). Not on a control
+   * turned by a vertical flow, whose box is across what it is drawn as, nor
+   * on one a sticky box holds, which goes by `held` and is sized as this
+   * one is: what is noted here of where its box is, a scroll moves, and a
+   * scroll tells the widgets nothing.
    */
   follow?: { element: Element; x: number; y: number };
 }

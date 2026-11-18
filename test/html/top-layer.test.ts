@@ -471,18 +471,19 @@ metric(
 );
 
 metric(
-  'a field’s widget lands with its box in the paint that moves it, at a window’s edge, in a dialog and out of one',
+  'a field’s widget lands with its box, and is as wide, in the paint that moves it, at a window’s edge, in a dialog and out of one',
   async (t) => {
     // A widget is placed where the last report of the controls had it, and
     // a report reaches React a render after the layout that moved the
     // field, so every step of a drag drew a centred dialog's fields where
-    // the step before had them, their text a step behind the box around
-    // it. Core moves it by as far as its box, or the box that cuts it,
-    // moved since (`FOLLOWS_CONTROL`), in the pass that laid it out.
+    // the step before had them, and as wide, their text a step behind the
+    // box around it. Core moves it by as far as its box, or the box that
+    // cuts it, moved since (`FOLLOWS_CONTROL`), and lays it out at the size
+    // its box came to (`SIZES_CONTROL`), in the pass that laid it out.
     const source =
-      '<style>body{margin:0;font-size:16px}#d{padding:0;width:200px}' +
-      'input{width:120px}</style>' +
-      '<div style="width:200px;margin:0 auto"><input id="f"></div>' +
+      '<style>body{margin:0;font-size:16px}#d{padding:0;width:50%}' +
+      'input{width:100%;box-sizing:border-box}</style>' +
+      '<div style="width:50%;margin:0 auto"><input id="f"></div>' +
       '<button id="open" type="button" commandfor="d" command="show-modal" style="width:80px;height:30px">open</button>' +
       '<dialog id="d"><input id="g"></dialog>';
     const doc = (width: number) =>
@@ -505,15 +506,21 @@ metric(
     const settle = () => act(() => new Promise((r) => setTimeout(r, 30)));
     await settle();
     let field = findById(el.document, 'f')!;
-    // where the widget is drawn from the field, at each paint
-    const seen: number[] = [];
+    // where the widget is drawn from the field, and how much wider, at each
+    // paint
+    const seen: string[] = [];
+    const widths = new Set<number>();
     const paint = el.paint.bind(el);
     t.mock.method(el, 'paint', (...args: Parameters<typeof el.paint>) => {
       const out = paint(...args);
       const widgets = screen.all((n) => n.kind === 'textinput');
       const rect = el.elementRect(field);
       if (widgets.length === 1 && rect) {
-        seen.push(Math.round(widgets[0].abs.x - el.abs.x - rect.x));
+        const { abs } = widgets[0];
+        seen.push(
+          `${Math.round(abs.x - el.abs.x - rect.x)}/${Math.round(abs.width - rect.width)}`,
+        );
+        widths.add(Math.round(rect.width));
       }
       return out;
     });
@@ -522,6 +529,7 @@ metric(
       await settle();
     }
     assert.ok(seen.length >= 3, `painted: ${seen.length}`);
+    assert.ok(widths.size >= 3, `the field narrows: ${[...widths].join(' ')}`);
     assert.ok(
       seen.every((x) => x === seen[0]),
       `the widget with the field at every paint: ${seen.join(' ')}`,
@@ -536,11 +544,13 @@ metric(
     assert.ok(isModal(findById(el.document, 'd')!));
     field = findById(el.document, 'g')!;
     seen.length = 0;
+    widths.clear();
     for (const width of [380, 400, 420]) {
       await act(() => result.rerender(doc(width)));
       await settle();
     }
     assert.ok(seen.length >= 3, `painted: ${seen.length}`);
+    assert.ok(widths.size >= 3, `the field widens: ${[...widths].join(' ')}`);
     assert.ok(
       seen.every((x) => x === seen[0]),
       `the widget with the dialog's field at every paint: ${seen.join(' ')}`,

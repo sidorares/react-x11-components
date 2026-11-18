@@ -39,10 +39,17 @@
 import {
   registerElement,
   registeredElements,
+  registeredLayouts,
   registeredPositions,
+  registerLayout,
   registerPosition,
 } from 'react-x11/host';
-import type { PositionContext } from 'react-x11/host';
+import type {
+  LayoutChild,
+  LayoutConstraints,
+  LayoutResult,
+  PositionContext,
+} from 'react-x11/host';
 import { CARET_BLINK_MS, Node } from 'react-x11/node';
 import type {
   Context2D,
@@ -517,6 +524,7 @@ import {
   AT_VIEWPORT,
   FOLLOWS_CONTROL,
   HELD_AT_VIEWPORT,
+  SIZES_CONTROL,
   controlRectsOf,
   heldAtRest,
   measureControl,
@@ -895,10 +903,28 @@ export function registerHtmlView(): void {
     registerPosition(FOLLOWS_CONTROL, {
       options: {
         element: { type: 'any' },
+        follows: { type: 'boolean' },
         x: { type: 'number' },
         y: { type: 'number' },
+        atViewport: { type: 'boolean' },
+        held: { type: 'boolean' },
       },
       place: placeFollowing,
+    });
+  }
+  if (!registeredLayouts().includes(SIZES_CONTROL)) {
+    registerLayout(SIZES_CONTROL, {
+      options: {
+        view: { type: 'any' },
+        element: { type: 'any' },
+        bare: { type: 'boolean' },
+        sized: { type: 'boolean' },
+        x: { type: 'length' },
+        y: { type: 'length' },
+        width: { type: 'length' },
+        height: { type: 'length' },
+      },
+      layout: layOutControl,
     });
   }
   if (registeredElements().includes(ELEMENT)) return;
@@ -976,8 +1002,69 @@ function placeFollowing(
   node: Node,
   context: PositionContext,
 ): { x: number; y: number } | null {
-  const { element, x, y } = context.options;
-  return viewAround(node)?.followShiftOf(element, x, y) ?? null;
+  const { element, follows, x, y, atViewport, held } = context.options;
+  const view = viewAround(node);
+  if (!view) return null;
+  if (held) return view.heldShiftOf(element, node, false);
+  let dx = 0;
+  let dy = 0;
+  const moved = follows ? view.followShiftOf(element, x, y) : null;
+  if (moved) {
+    dx += moved.x;
+    dy += moved.y;
+  }
+  // from the corner of the box around it, where the element's is, to where
+  // the document draws what is fixed to the viewport (`placeAtViewport`)
+  const corner = atViewport ? node.parent : null;
+  if (corner) {
+    const origin = view.viewportOrigin();
+    dx += origin.x - corner.abs.x;
+    dy += origin.y - corner.abs.y;
+  }
+  return dx || dy ? { x: dx, y: dy } : null;
+}
+
+/**
+ * How the box around a control's widget lays it out (`SIZES_CONTROL`): as
+ * wide as the element and no taller than nothing, the widget's box at the
+ * rect's place — and at the size the control's box has in the document's
+ * last layout, where the widget shows through all of it (`sized`), or the
+ * rect's. Core asks for the placement after the pass, so the document has
+ * been laid out at the width the pass gave it, and asks again at every pass
+ * that changes the box's width. A question of a size it is not drawn at
+ * reads nothing of the document.
+ */
+function layOutControl(
+  children: readonly LayoutChild[],
+  constraints: LayoutConstraints,
+  options: Readonly<Record<string, any>>,
+): LayoutResult {
+  const finite = (n: number) => (Number.isFinite(n) ? n : 0);
+  const width =
+    constraints.widthMode === 'exactly' ? finite(constraints.width) : 0;
+  const height =
+    constraints.heightMode === 'exactly' ? finite(constraints.height) : 0;
+  if (
+    constraints.widthMode !== 'exactly' ||
+    constraints.heightMode !== 'exactly'
+  ) {
+    return { width, height };
+  }
+  const now = options.sized
+    ? ((
+        options.view as { current: HtmlViewNode | null } | null
+      )?.current?.controlSizeOf(options.element, options.bare) ?? null)
+    : null;
+  return {
+    width,
+    height,
+    children: children.map(() => ({
+      x: options.x,
+      y: options.y,
+      width: now?.width ?? options.width,
+      height: now?.height ?? options.height,
+    })),
+  };
 }
 
 /** The element a node mounted beside it belongs to: the one in the nearest
@@ -9825,6 +9912,30 @@ export class HtmlViewNode extends Node {
     const dx = box.x - x;
     const dy = box.y - y;
     return dx || dy ? { x: dx, y: dy } : null;
+  }
+
+  /**
+   * The size a control's box has in the document's last layout, in device
+   * pixels, rounded to logical ones as a report's rect is: its border box,
+   * or, for a field whose box the document draws, its content box
+   * (`bare`). What the box a widget is mounted in lays it out at
+   * (`SIZES_CONTROL`), until the next report says it. Null where it has no
+   * box.
+   */
+  controlSizeOf(
+    element: Element,
+    bare: boolean,
+  ): { width: number; height: number } | null {
+    const tree = this._tree;
+    const box = tree && this._boxOf(tree, element);
+    if (!box) return null;
+    const s = this._scale;
+    const width = bare ? box.contentWidth : box.width;
+    const height = bare ? box.contentHeight : box.height;
+    return {
+      width: Math.round(width / s) * s,
+      height: Math.round(height / s) * s,
+    };
   }
 
   /** Where `heldShiftOf` last had core put each box it was asked about. */

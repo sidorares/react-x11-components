@@ -58,6 +58,7 @@ import {
   AT_VIEWPORT,
   FOLLOWS_CONTROL,
   HELD_AT_VIEWPORT,
+  SIZES_CONTROL,
   between,
   buttonLabel,
   optionsOf,
@@ -880,6 +881,7 @@ export function useForms(options: FormsOptions): Forms {
   };
 
   const ctx: ControlContext = {
+    view,
     forms,
     widgets,
     ranges,
@@ -1246,6 +1248,8 @@ function takesFocus(node: DrawnNode): boolean {
 /** What every mounted control shares: the live state, and what to do when
  *  one changes or is pressed. */
 interface ControlContext {
+  /** The element, which a widget's box asks the size of its control. */
+  view: React.RefObject<HtmlViewNode | null>;
   forms: FormState;
   widgets: WidgetBoxes;
   /** What asks each range's widget to show what it holds. */
@@ -1322,12 +1326,16 @@ function renderControl(
         height: height + 2 * RING_REACH,
       })
     : { x: left, y: top, width, height };
+  // Whether the widget shows through all of its box, which is then laid
+  // out at the size the control's box has in the document's layout, in the
+  // pass that laid it out (`SIZES_CONTROL`). A cut one is the rect's size.
+  const sized = !rect.clip && (!!rect.follow || !!rect.held);
   const frame: Style = {
     position: 'absolute',
     left: left - port.x,
     top: top - port.y,
-    width,
-    height,
+    width: sized ? '100%' : width,
+    height: sized ? '100%' : height,
     // The face and the size the box was measured in, the element's: the
     // palette's from the UA sheet, or the page's where it set its own. A
     // field inherits them, and so does a `<Button>`'s or a `<Select>`'s
@@ -1640,6 +1648,14 @@ function renderControl(
   // element's. A widget the document comes to cut, or stops cutting, is
   // the same widget in the same place in the tree, and keeps its focus
   // and its caret.
+  //
+  // Three, laid out by core as the document is: a box the element's width
+  // and of no height, which lays the next out at the rect's place and its
+  // control's size; that one, which core moves after the pass with the box
+  // it follows, to the viewport or with a sticky box (`controlPosition`);
+  // and the widget's own. Reported, the rect is a render behind the layout
+  // that moved the control, and a centred dialog's fields were drawn where
+  // the last step of a window's edge had them, and as wide.
   const mounted = hx(
     'box',
     {
@@ -1647,41 +1663,105 @@ function renderControl(
       selectable: false,
       style: {
         position: 'absolute',
-        left: port.x,
-        top: port.y,
-        width: port.width,
-        height: port.height,
-        // cut to it, and nothing itself: a press beside the widget is the
-        // document's
-        ...(rect.clip && { overflow: 'hidden', pointerEvents: 'box-none' }),
+        left: 0,
+        right: 0,
+        top: 0,
+        pointerEvents: 'box-none',
+        layout: {
+          name: SIZES_CONTROL,
+          view: ctx.view,
+          element: el,
+          bare: !!rect.bare,
+          sized,
+          x: port.x,
+          y: port.y,
+          width: port.width,
+          height: port.height,
+          // a name core's declarations do not list, registered by
+          // `registerHtmlView`
+        } as unknown as Style['layout'],
       },
     },
     hx(
       'box',
       {
-        ref: ctx.widgets.refOf(el),
-        style: frame,
         selectable: false,
-        // a control the page keeps from assistive technology is kept from
-        // it here: core leaves the node, and the widget in it, out of the
-        // accessibility tree
-        ...(ariaHidden(el) && { 'aria-hidden': true }),
+        style: {
+          position: controlPosition(rect),
+          // cut to it, and nothing itself: a press beside the widget is the
+          // document's
+          ...(rect.clip && { overflow: 'hidden', pointerEvents: 'box-none' }),
+        },
       },
-      browser
-        ? h(
-            ThemeProvider,
-            {
-              value: BROWSER_CONTROLS[browser],
-              colorScheme: browser,
-              style: FILL,
-            },
-            widget,
-          )
-        : widget,
+      hx(
+        'box',
+        {
+          ref: ctx.widgets.refOf(el),
+          style: frame,
+          selectable: false,
+          // a control the page keeps from assistive technology is kept from
+          // it here: core leaves the node, and the widget in it, out of the
+          // accessibility tree
+          ...(ariaHidden(el) && { 'aria-hidden': true }),
+        },
+        browser
+          ? h(
+              ThemeProvider,
+              {
+                value: BROWSER_CONTROLS[browser],
+                colorScheme: browser,
+                style: FILL,
+              },
+              widget,
+            )
+          : widget,
+      ),
     ),
   );
-  return keptWithBox(rect, key, mounted);
+  return mounted;
 }
+
+/**
+ * Where core moves the box a control's widget shows through
+ * (`FOLLOWS_CONTROL`): with the box it follows (`ControlRect.follow`), to
+ * where the viewport is for one fixed to it, by a sticky box's hold for one
+ * held — or nowhere. One object for an element and what it says, as
+ * `heldPosition` keeps one, since a new one at each render would be a new
+ * style for the box. Always the same three boxes, with only this changing:
+ * a field a page makes fixed or sticky is the same widget, and keeps its
+ * focus and its caret.
+ */
+function controlPosition(rect: ControlRect): Style['position'] {
+  const follow = rect.follow;
+  if (!follow && !rect.atViewport && !rect.held) return 'relative';
+  const key = `${follow ? `${follow.x},${follow.y}` : '-'}|${
+    rect.atViewport ? 1 : 0
+  }${rect.held ? 1 : 0}`;
+  const kept = CONTROL_POSITIONS.get(rect.element);
+  if (kept && kept.key === key && kept.anchor === follow?.element) {
+    return kept.position;
+  }
+  const position = {
+    name: FOLLOWS_CONTROL,
+    element: rect.held ? rect.element : (follow?.element ?? rect.element),
+    follows: !!follow && !rect.held,
+    x: follow?.x ?? 0,
+    y: follow?.y ?? 0,
+    atViewport: rect.atViewport === true,
+    held: rect.held === true,
+  } as unknown as Style['position'];
+  CONTROL_POSITIONS.set(rect.element, {
+    key,
+    anchor: follow?.element,
+    position,
+  });
+  return position;
+}
+
+const CONTROL_POSITIONS = new WeakMap<
+  Element,
+  { key: string; anchor: Element | undefined; position: Style['position'] }
+>();
 
 /**
  * What is mounted for a control, kept where the document draws it: a
@@ -1743,6 +1823,7 @@ function followPosition(
   const position = {
     name: FOLLOWS_CONTROL,
     element: follow.element,
+    follows: true,
     x: follow.x,
     y: follow.y,
   } as unknown as Style['position'];
