@@ -2355,9 +2355,19 @@ test('a percentage of letter- and word-spacing is of each element’s own font s
       '<small id="b" style="font-size:10px">x</small></div>',
   );
   const el = view(node);
+  // what each is spaced by, at its own size
+  const used = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: { letterSpacing: number; wordSpacing: number };
+      }
+    ).style;
+  assert.strictEqual(used('a').letterSpacing, 2);
+  assert.strictEqual(used('b').letterSpacing, 1);
+  assert.strictEqual(used('a').wordSpacing, 12);
+  assert.strictEqual(used('b').wordSpacing, 7);
+  // and what a page reads is the percentage both keep
   const style = (id: string) => el.computedStyle(findById(el.document, id)!)!;
-  assert.strictEqual(style('a')['letter-spacing'], '2px');
-  assert.strictEqual(style('b')['letter-spacing'], '1px');
-  assert.strictEqual(style('a')['word-spacing'], '12px');
-  assert.strictEqual(style('b')['word-spacing'], '7px');
+  assert.strictEqual(style('b')['letter-spacing'], '10%');
+  assert.strictEqual(style('b')['word-spacing'], 'calc(50% + 2px)');
 });
