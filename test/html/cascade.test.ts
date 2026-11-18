@@ -1080,6 +1080,34 @@ test('a nested rule is relative to its parent, and a nested @media holds for it'
   );
 });
 
+test('declarations after a nested rule come after it, and & is the scope at the top and nothing under a pseudo-element', () => {
+  // CSS Nesting 1: declarations after a nested rule are a rule of their own
+  // in its place (`CSSNestedDeclarations`); a `&` nested in nothing is
+  // `:scope`; `&` stands for no pseudo-element; and a `&` that puts a
+  // `:has()` in another makes no selector (WPT's nesting-basic,
+  // has-nesting)
+  const sheet = parseStylesheet(
+    '.a { & { color: red } color: green; @media all { x: 1 } y: 2 }\n' +
+      '& .b { color: green }\n' +
+      '.c::before { color: blue; & { color: red } }\n' +
+      'li:has(b) { :has(> &) { color: red } }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => [
+      r.selector,
+      r.declarations.map((d) => `${d.prop}:${d.value}`).join(';'),
+    ]),
+    [
+      ['.a', 'color:red'],
+      ['.a', 'color:green'],
+      ['.a', 'x:1'],
+      ['.a', 'y:2'],
+      [':scope .b', 'color:green'],
+      ['.c::before', 'color:blue'],
+    ],
+  );
+});
+
 test('a nested rule and a media range reach the document', async () => {
   const { node } = await render(
     '<style>body{margin:0}.p { padding-left: 1px; & { padding-top: 2px }' +
@@ -1822,13 +1850,16 @@ test('a @supports test of the mask is answered, and every other is entered', () 
   for (const unknown of [
     '(display: grid)',
     'not (display: grid)',
-    'selector(:focus-visible)',
     '(mask-image: none) and (display: grid)',
     '((-webkit-hyphens: none) and (not (margin-trim: inline))) or ' +
       '((-moz-orient: inline) and (not (color:rgb(from red r g b))))',
   ]) {
     assert.strictEqual(supportsCondition(unknown), null, unknown);
   }
+  // a selector by whether it is one, `&` the scope and a relative one none
+  assert.strictEqual(supportsCondition('selector(:focus-visible)'), true);
+  assert.strictEqual(supportsCondition('selector(&)'), true);
+  assert.strictEqual(supportsCondition('not selector(> .a)'), true);
   // `font-synthesis` by its grammar: a test page keeps a red rule under
   // `not (font-synthesis: none)`
   assert.strictEqual(supportsCondition('not (font-synthesis: none)'), false);

@@ -24,6 +24,11 @@ import type { AnyNode, Element } from 'domhandler';
 
 import { CONTROL_PSEUDOS } from '../control-state.js';
 import { directionOf } from '../direction.js';
+import {
+  addRegistered,
+  mixRegistered,
+  mixesRegistered,
+} from './registered-mix.js';
 import { isFirstLegend, isFormAssociated } from '../form.js';
 import {
   NON_RENDERED,
@@ -148,6 +153,7 @@ import {
   settleContainer,
   settleContentVisibility,
   settleDecorationInset,
+  settleAlternates,
   settleOverflow,
   settleSpacing,
   settleOutline,
@@ -161,6 +167,7 @@ import {
   sameStyle,
 } from './style.js';
 import type {
+  FeatureValues,
   AnchorSizeField,
   BoxShadow,
   ComputedStyle,
@@ -4521,6 +4528,9 @@ export class Cascade {
   readonly breakpoints: number[];
   /** The counter styles the sheets define, over the predefined ones. */
   readonly counterStyles: CounterStyles;
+  /** What the sheets' `@font-feature-values` rules give each family's
+   *  names, null where they have none (`settleAlternates`). */
+  featureValues: FeatureValues | null = null;
   /** The document's rules: its elements', and the ones of its tree's
    *  edges (`TreeRules`) — its `::part()` rules — and its `@keyframes`,
    *  by name, in document order: which one a name finds turns on the
@@ -4972,6 +4982,19 @@ export class Cascade {
     const breakpoints = new Set<number>();
     const counterStyles = new Map<string, CounterStyleRule>();
     for (const sheet of sheets) {
+      // a family's feature values, a name's last over any before it
+      for (const { families, values } of sheet.featureValues ?? []) {
+        const all = (this.featureValues ??= new Map());
+        for (const family of families) {
+          let types = all.get(family);
+          if (!types) all.set(family, (types = new Map()));
+          for (const [type, name, numbers] of values) {
+            let names = types.get(type);
+            if (!names) types.set(type, (names = new Map()));
+            names.set(name, numbers);
+          }
+        }
+      }
       // a counter style's rule whole over any before it of its name
       for (const { prelude, declarations } of sheet.counterStyles ?? []) {
         const style = counterStyleRule(prelude, declarations);
@@ -9182,6 +9205,49 @@ export class Cascade {
   }
 
   /**
+   * A registered custom property's value at a sample's progress: each end
+   * the frame's value or what is under it, added onto or accumulated where
+   * the frame says, mixed, and each iteration past the first adding the
+   * last frame's value again. Null where an end is not of the syntax, which
+   * then goes over half-way as an unregistered one does.
+   */
+  private _mixRegistered(
+    prop: string,
+    syntax: string,
+    sample: Sample,
+    span: ReturnType<typeof spanAt>,
+    styleAt: (frame: Keyframe | null) => ComputedStyle,
+    customUnder: ReadonlyMap<string, string>,
+    lastFrame: Keyframe | null,
+  ): string | null {
+    const underValue =
+      customUnder.get(prop) ?? styleAt(null).custom?.read(prop) ?? null;
+    const end = (
+      at: { frame: Keyframe | null } | null | undefined,
+    ): string | null => {
+      if (!at?.frame) return underValue;
+      const own = styleAt(at.frame).custom?.read(prop) ?? null;
+      const mode = at.frame.composite ?? sample.composite ?? 'replace';
+      if (mode === 'replace' || own === null || underValue === null) {
+        return own;
+      }
+      return addRegistered(syntax, underValue, own);
+    };
+    const a = end(span.from);
+    const b = end(span.to);
+    if (a === null || b === null) return null;
+    let value = mixRegistered(syntax, a, b, span.q);
+    const times = Math.min(sample.accumulateIterations ?? 0, 1000);
+    if (value !== null && times > 0 && lastFrame) {
+      const last = styleAt(lastFrame).custom?.read(prop);
+      for (let i = 0; i < times && value !== null && last; i += 1) {
+        value = addRegistered(syntax, value, last);
+      }
+    }
+    return value;
+  }
+
+  /**
    * What an element's animations come to at the timeline's time: for each
    * animation, a declaration of each property its frames set, holding the
    * computed value between the two frames around its progress (`spanAt`),
@@ -9237,6 +9303,8 @@ export class Cascade {
       under.has(key)
         ? under.get(key)
         : (base as unknown as Record<string, unknown>)[key];
+    // and each registered custom property's, as its text
+    const customUnder = new Map<string, string>();
     for (const sample of samples) {
       const { rule, progress, easing } = sample;
       const declarations: Declaration[] = [];
@@ -9244,6 +9312,33 @@ export class Cascade {
       for (const [prop, frames] of tracksOf(rule)) {
         const span = spanAt(frames, progress, easing);
         const { from, to, q } = span;
+        // a registered custom property of a type that interpolates runs
+        // as that type (`registered-mix.ts`)
+        const syntax = prop.startsWith('--')
+          ? this._registered?.get(prop)?.syntax
+          : undefined;
+        if (syntax && mixesRegistered(syntax)) {
+          const mixed = this._mixRegistered(
+            prop,
+            syntax,
+            sample,
+            span,
+            styleAt,
+            customUnder,
+            lastFrame,
+          );
+          if (mixed !== null) {
+            declarations.push({
+              prop,
+              value: mixed,
+              important: false,
+              custom: true,
+            });
+            customUnder.set(prop, mixed);
+            unchanged = 0;
+            continue;
+          }
+        }
         const fields = animatedFields(prop);
         if (!fields) {
           // a property whose values this cannot read goes over half-way,
@@ -9651,6 +9746,9 @@ export class Cascade {
     style.fontSize = settled;
     style.fontSizeBasis = basis;
     settleSpacing(style);
+    if (style.fontVariantAlternates || style.fontAlternateFeatures) {
+      settleAlternates(style, this.featureValues);
+    }
 
     // A table never keeps HTML's alignment, `-webkit-center` and its kin:
     // the `<td align="center">` every mail centres its body table in

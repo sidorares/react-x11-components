@@ -1043,6 +1043,9 @@ function placeItems(
     row || box.style.flexWrap !== 'nowrap'
       ? NaN
       : baselineEdge(box.style, items);
+  const justified = row
+    ? justifyYogaLines(box.style, items, contentWidth)
+    : null;
   for (const { box: child, node, laid } of items) {
     const placed = crossed?.get(child);
     const across =
@@ -1056,7 +1059,8 @@ function placeItems(
         ? placed.x
         : !Number.isNaN(edge) && byBaseline(box.style, child.style, false)
           ? edge
-          : node.getComputedLeft() + (row ? 0 : across));
+          : node.getComputedLeft() +
+            (row ? (justified?.get(child) ?? 0) : across));
     // which Yoga turns an item round in by the height it laid it out at, and
     // not the one it is (`unspace`)
     const top =
@@ -3899,6 +3903,74 @@ function noteAutoMargins(
       );
     }
   });
+}
+
+/**
+ * How far along its line each item of a row that wraps goes for the
+ * `justify-content` Yoga did not apply: Yoga 3.2.1 justifies no line of a
+ * box where any line has an item with an `auto` margin along it, where
+ * CSS Flexbox 9.5 justifies each line that has none. Null where nothing
+ * moves; a row that runs right to left or in reverse is left as it was.
+ */
+function justifyYogaLines(
+  style: ComputedStyle,
+  items: readonly { box: Box; node: FlexNode }[],
+  width: number,
+): Map<Box, number> | null {
+  if (
+    style.flexWrap !== 'wrap' ||
+    style.flexDirection !== 'row' ||
+    style.direction === 'rtl' ||
+    items.length < 2
+  ) {
+    return null;
+  }
+  const justify = mainJustify(style);
+  if (
+    justify !== 'flex-end' &&
+    justify !== 'center' &&
+    justify !== 'space-between' &&
+    justify !== 'space-around' &&
+    justify !== 'space-evenly'
+  ) {
+    return null;
+  }
+  const autoAlong = (box: Box) =>
+    box.style.marginLeft === AUTO || box.style.marginRight === AUTO;
+  if (!items.some(({ box }) => autoAlong(box))) return null;
+  let out: Map<Box, number> | null = null;
+  for (const line of itemLines(style, items, true)) {
+    if (line.some(({ box }) => autoAlong(box))) continue;
+    const first = line[0].node;
+    const start =
+      first.getComputedLeft() - first.getComputedMargin(Y.EDGE_LEFT);
+    // justified already, where Yoga did
+    if (Math.abs(start) > 0.01) continue;
+    const last = line[line.length - 1].node;
+    const end =
+      last.getComputedLeft() +
+      last.getComputedWidth() +
+      last.getComputedMargin(Y.EDGE_RIGHT);
+    const free = width - end;
+    if (!(free > 0.01)) continue;
+    const n = line.length;
+    line.forEach(({ box }, i) => {
+      const shift =
+        justify === 'flex-end'
+          ? free
+          : justify === 'center'
+            ? free / 2
+            : justify === 'space-between'
+              ? n > 1
+                ? (free / (n - 1)) * i
+                : 0
+              : justify === 'space-around'
+                ? (free / n) * (i + 0.5)
+                : (free / (n + 1)) * (i + 1);
+      (out ??= new Map()).set(box, shift);
+    });
+  }
+  return out;
 }
 
 /** Whether any of an item's margins is `auto`. */
