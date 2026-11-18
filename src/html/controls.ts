@@ -377,7 +377,13 @@ export function controlRectsOf(
         fieldAlign(box.style.textAlign) && {
           textAlign: fieldAlign(box.style.textAlign)!,
         }),
-      ...((box.replaced === 'input' || box.replaced === 'textarea') && {
+      // but a text area whose lines are each their own paragraph's
+      // (`unicode-bidi: plaintext`, `dir=auto`'s), which the widget sets
+      // a paragraph at a time: told one direction, a line of nothing but
+      // punctuation was turned round with it
+      ...((box.replaced === 'input' ||
+        (box.replaced === 'textarea' &&
+          box.style.unicodeBidi !== 'plaintext')) && {
         direction: box.style.direction,
       }),
       ...(box.replaced === 'file' && {

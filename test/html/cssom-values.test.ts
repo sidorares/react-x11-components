@@ -235,6 +235,41 @@ test('CSS.supports() is false for a property a style has not got, a value that i
   ]);
 });
 
+test('a grouping rule takes rules in and gives them up, and the page is styled by them', async () => {
+  // CSSOM 6.4.2: `insertRule` and `deleteRule` on `@media` and on a style
+  // rule that nests, where both threw (WPT's CSSGroupingRule-insertRule)
+  const out = await inPage(
+    '<style id="s">@media all { .x { color: red } } .n { color: blue; .m { color: red } }</style>' +
+      '<div id="e" class="y"></div>',
+    `var sheet = document.getElementById('s').sheet;
+     var media = sheet.cssRules[0];
+     var r = [media.insertRule('.y { color: rgb(0, 128, 0) }', 1)];
+     r.push(media.cssRules.length, getComputedStyle(document.getElementById('e')).color);
+     media.deleteRule(0);
+     r.push(media.cssRules.length, media.cssRules[0].selectorText);
+     try { media.insertRule('@import url(a.css);'); } catch (e) { r.push(e.name); }
+     try { media.insertRule('nonsense'); } catch (e) { r.push(e.name); }
+     try { media.deleteRule(5); } catch (e) { r.push(e.name); }
+     var nest = sheet.cssRules[1];
+     nest.insertRule('.k { color: green }', 0);
+     r.push(nest.cssRules.length, nest.cssRules[0].style.color, nest.style.color);
+     return r;`,
+  );
+  assert.deepEqual(out, [
+    1,
+    2,
+    'rgb(0, 128, 0)',
+    1,
+    '.y',
+    'HierarchyRequestError',
+    'SyntaxError',
+    'IndexSizeError',
+    2,
+    'green',
+    'blue',
+  ]);
+});
+
 test("a nested rule's selectorText says the & it is relative to", async () => {
   // CSS Nesting 1, 3.2: a nested selector with no `&` is relative to one at
   // its start, which it serializes with (WPT's css-nesting/parsing)
