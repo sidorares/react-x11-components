@@ -28202,6 +28202,8 @@ export function installDom(
     'input',
     'change',
     'select',
+    'selectstart',
+    'selectionchange',
     'submit',
     'reset',
     'focus',
@@ -28288,6 +28290,9 @@ export function installDom(
     };
     // `onwebkitanimationend` runs for `webkitAnimationEnd` (HTML 8.1.8.2)
     const name = `on${type.toLowerCase()}`;
+    // named as WebIDL names an attribute's accessors
+    Object.defineProperty(property.get, 'name', { value: `get ${name}` });
+    Object.defineProperty(property.set, 'name', { value: `set ${name}` });
     Object.defineProperty(HTMLElement.prototype, name, property);
     Object.defineProperty(SVGElement.prototype, name, property);
     Object.defineProperty(MathMLElement.prototype, name, property);
@@ -38914,21 +38919,56 @@ export function installDom(
   };
   /** An element's border box and its content box, in CSS pixels, or null
    *  where it has no box. */
+  /** HTML's replaced elements, whose box an inline display does not
+   *  leave unsized. */
+  const REPLACED_TAGS = new Set([
+    'img',
+    'video',
+    'canvas',
+    'iframe',
+    'embed',
+    'object',
+    'input',
+    'select',
+    'textarea',
+    'button',
+    'audio',
+  ]);
+  /**
+   * What ResizeObserver measures of a target (Resize Observer 1, 3.3): its
+   * border box and its content box as layout sized them, in CSS pixels,
+   * before any transform — a transform resizes nothing — and nothing for a
+   * box that is not there or an inline box that is not replaced; then where
+   * its content box starts, and whether its writing mode is vertical, which
+   * makes its inline size its height.
+   */
   const boxSizesOf = (el: Any): number[] | null => {
-    const r = docRect(el);
-    if (!r) return null;
+    const o = offsetOf(el);
+    if (!o) return null;
+    const style = getComputedStyle(el);
+    if (
+      style.display === 'inline' &&
+      el.namespaceURI === HTML_NS &&
+      !REPLACED_TAGS.has(el.localName)
+    ) {
+      return [0, 0, 0, 0, 0, 0, 0];
+    }
     const e = call('edges', el._id);
     const [pt, pr, pb, pl, bt, br, bb, bl] =
       typeof e === 'string' && e
         ? e.split(',').map(Number)
         : [0, 0, 0, 0, 0, 0, 0, 0];
+    const w = o[3];
+    const h = o[4];
+    const vertical = /^(vertical|sideways)/.test(str(style.writingMode));
     return [
-      r[2],
-      r[3],
-      Math.max(0, r[2] - pl - pr - bl - br),
-      Math.max(0, r[3] - pt - pb - bt - bb),
+      w,
+      h,
+      Math.max(0, w - pl - pr - bl - br),
+      Math.max(0, h - pt - pb - bt - bb),
       pl,
       pt,
+      vertical ? 1 : 0,
     ];
   };
   class ResizeObserverSize {
@@ -38946,15 +38986,18 @@ export function installDom(
     readonly borderBoxSize: Any;
     readonly devicePixelContentBoxSize: Any;
     constructor(target: Any, sizes: number[]) {
-      const [bw, bh, cw, ch, x, y] = sizes;
+      const [bw, bh, cw, ch, x, y, vertical] = sizes;
       const dpr = viewport().dpr || 1;
+      // its sizes along its own axes: inline across a horizontal one
+      const size = (w: number, h: number): Any =>
+        vertical ? new ResizeObserverSize(h, w) : new ResizeObserverSize(w, h);
       this.target = target;
       this.contentRect = new DOMRect(x, y, cw, ch);
-      this.contentBoxSize = [new ResizeObserverSize(cw, ch)];
-      this.borderBoxSize = [new ResizeObserverSize(bw, bh)];
-      this.devicePixelContentBoxSize = [
-        new ResizeObserverSize(Math.round(cw * dpr), Math.round(ch * dpr)),
-      ];
+      this.contentBoxSize = Object.freeze([size(cw, ch)]);
+      this.borderBoxSize = Object.freeze([size(bw, bh)]);
+      this.devicePixelContentBoxSize = Object.freeze([
+        size(Math.round(cw * dpr), Math.round(ch * dpr)),
+      ]);
     }
   }
   /** The observers observing something, and whether their sizes are to
@@ -38998,11 +39041,18 @@ export function installDom(
    * Rive's do, wait for a size their container has only once the
    * stylesheet is in, and were told 0 by 0 for good.
    */
+  /** The box a ResizeObserver can watch of a target. */
+  const RESIZE_BOXES = new Set([
+    'content-box',
+    'border-box',
+    'device-pixel-content-box',
+  ]);
   class ResizeObserver {
     _fn: Any;
-    /** The size last told for each target, content box width and height,
-     *  0 by 0 to start with, which is told only where it changes. */
-    _told = new Map<Any, number[]>();
+    /** For each target, the box observed and the size last told of it:
+     *  -1 by -1 to start with, so that the first look tells even a target
+     *  that has no size (Resize Observer 1, 3.3, `lastReportedSizes`). */
+    _told = new Map<Any, { box: string; size: number[] }>();
     /** The targets observed since the last look, the only ones a look
      *  that finds nothing moved measures. */
     _fresh = new Set<Any>();
@@ -39014,9 +39064,22 @@ export function installDom(
       }
       this._fn = fn;
     }
-    observe(el: Any): void {
-      if (!this._told.has(el)) {
-        this._told.set(el, [0, 0]);
+    observe(el: Any, options?: Any): void {
+      if (!(el instanceof Element)) {
+        throw new TypeError(
+          "Failed to execute 'observe' on 'ResizeObserver': parameter 1 is not of type 'Element'.",
+        );
+      }
+      const box = options?.box === undefined ? 'content-box' : str(options.box);
+      if (!RESIZE_BOXES.has(box)) {
+        throw new TypeError(
+          `Failed to execute 'observe' on 'ResizeObserver': The provided value '${box}' is not a valid enum value of type ResizeObserverBoxOptions.`,
+        );
+      }
+      // observed again with another box is observed afresh with it
+      const was = this._told.get(el);
+      if (!was || was.box !== box) {
+        this._told.set(el, { box, size: [-1, -1] });
         this._fresh.add(el);
       }
       resizing.add(this);
@@ -39033,11 +39096,20 @@ export function installDom(
     }
     _look(moved: boolean): void {
       const entries: Any[] = [];
+      const dpr = viewport().dpr || 1;
       for (const [el, told] of this._told) {
         if (!moved && !this._fresh.has(el)) continue;
-        const sizes = boxSizesOf(el) ?? [0, 0, 0, 0, 0, 0];
-        if (sizes[2] === told[0] && sizes[3] === told[1]) continue;
-        this._told.set(el, [sizes[2], sizes[3]]);
+        const sizes = boxSizesOf(el) ?? [0, 0, 0, 0, 0, 0, 0];
+        // the size of the box observed, in its own axes
+        const [w, h] =
+          told.box === 'border-box'
+            ? [sizes[0], sizes[1]]
+            : told.box === 'device-pixel-content-box'
+              ? [Math.round(sizes[2] * dpr), Math.round(sizes[3] * dpr)]
+              : [sizes[2], sizes[3]];
+        const now = sizes[6] ? [h, w] : [w, h];
+        if (now[0] === told.size[0] && now[1] === told.size[1]) continue;
+        told.size = now;
         entries.push(new ResizeObserverEntry(el, sizes));
       }
       this._fresh.clear();
@@ -44519,9 +44591,21 @@ export function installDom(
       );
     }
     _set(range: Any, backward: boolean): void {
+      // a selection set to what it is already is no change, and tells no
+      // `selectionchange` (Selection API 4.1)
+      const was = this._kept;
+      const same =
+        backward === this._backward &&
+        (was === range ||
+          (!!was &&
+            !!range &&
+            was.startContainer === range.startContainer &&
+            was.startOffset === range.startOffset &&
+            was.endContainer === range.endContainer &&
+            was.endOffset === range.endOffset));
       this._kept = range;
       this._backward = backward;
-      this._changed();
+      if (!same) this._changed();
       // and drawn as the reader's is, where it is the document's; a caret
       // is no selection of the reader's, and leaves theirs none
       const drawn =
@@ -44729,7 +44813,100 @@ export function installDom(
       return this._range ? this._range.toString() : '';
     }
   }
+  // Selection API 4, as WebIDL has an interface: not made by a page, its
+  // tag `Selection`, and each member checking what it is called on, its
+  // operations enumerable and counting their arguments
+  const SELECTION_ARGUMENTS: Record<string, number> = {
+    getRangeAt: 1,
+    addRange: 1,
+    removeRange: 1,
+    collapse: 1,
+    setPosition: 1,
+    extend: 1,
+    setBaseAndExtent: 4,
+    selectAllChildren: 1,
+    containsNode: 1,
+  };
+  const selections = new WeakSet<object>();
+  {
+    const proto = Selection.prototype as Any;
+    for (const name of Object.getOwnPropertyNames(proto)) {
+      if (name === 'constructor' || name.startsWith('_')) continue;
+      const d = Object.getOwnPropertyDescriptor(proto, name)!;
+      const check = (self: Any, what: string): void => {
+        if (!selections.has(self)) {
+          throw new TypeError(
+            `Failed to ${what} 'Selection': Illegal invocation`,
+          );
+        }
+      };
+      // a function's `name` and `length` as WebIDL gives an operation's and
+      // an attribute's getter
+      const named = (f: Any, as: string, length: number): Any =>
+        Object.defineProperties(f, {
+          name: { value: as, configurable: true },
+          length: { value: length, configurable: true },
+        });
+      if (typeof d.value === 'function') {
+        const fn = d.value;
+        const needed = SELECTION_ARGUMENTS[name] ?? 0;
+        const op = named(
+          function (this: Any, ...args: Any[]): Any {
+            check(this, `execute '${name}' on`);
+            if (args.length < needed) {
+              throw new TypeError(
+                `Failed to execute '${name}' on 'Selection': ${needed} argument${needed > 1 ? 's' : ''} required, but only ${args.length} present.`,
+              );
+            }
+            return fn.apply(this, args);
+          },
+          name,
+          needed,
+        );
+        Object.defineProperty(proto, name, {
+          value: op,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      } else if (d.get) {
+        const get = d.get;
+        const set = d.set;
+        Object.defineProperty(proto, name, {
+          get: named(
+            function (this: Any): Any {
+              check(this, `read the '${name}' property from`);
+              return get.call(this);
+            },
+            `get ${name}`,
+            0,
+          ),
+          set,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+    }
+    Object.defineProperty(proto, Symbol.toStringTag, {
+      value: 'Selection',
+      configurable: true,
+    });
+  }
   const selection = new Selection();
+  selections.add(selection);
+  /** Not a page's to make (WebIDL: an interface with no constructor). */
+  const SelectionInterface = function Selection(): never {
+    throw new TypeError('Illegal constructor');
+  } as Any;
+  Object.defineProperty(SelectionInterface, 'prototype', {
+    value: Selection.prototype,
+    writable: false,
+  });
+  Object.defineProperty(Selection.prototype, 'constructor', {
+    value: SelectionInterface,
+    writable: true,
+    configurable: true,
+  });
 
   // --- editing --------------------------------------------------------------------
   //
@@ -48084,8 +48261,10 @@ export function installDom(
     value: 'Window',
     configurable: true,
   });
-  define('getSelection', () => selection);
-  define('Selection', Selection);
+  define('getSelection', function getSelection() {
+    return selection;
+  });
+  define('Selection', SelectionInterface);
   define('CaretPosition', CaretPosition);
   // the window's listeners, on its target; inherited from `EventTarget`
   // where the scope reaches what the global inherits (`inheritsGlobals`)
@@ -48110,6 +48289,8 @@ export function installDom(
     'resize',
     'scroll',
     'scrollend',
+    'selectstart',
+    'selectionchange',
     'hashchange',
     'popstate',
     'unload',
