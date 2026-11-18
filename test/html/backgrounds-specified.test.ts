@@ -76,6 +76,15 @@ test('a position is across then down, a side before its offset', () => {
   );
 });
 
+test('the mask shorthand refuses what the cascade refuses', () => {
+  // CSS Masking 1, 7.10: each part at most once, and a size only after a
+  // position
+  for (const bad of ['none alpha luminance', 'none / auto', 'none scroll']) {
+    assert.strictEqual(specifiedValue('mask', bad), null, bad);
+  }
+  assert.notStrictEqual(specifiedValue('mask', 'none left top / cover'), null);
+});
+
 test("a mask layer's longhands take what CSS Masking 1 says, and a prefixed operator Porter-Duff's", () => {
   // CSS Masking 1, 7: a position with no three-value forms, boxes, an
   // operator and a mode; `-webkit-mask-composite` has names of its own
