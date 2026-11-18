@@ -2443,6 +2443,7 @@ export function inherit(
   out.colorSchemeKeywords = parent.colorSchemeKeywords;
   out.textFillColor = parent.textFillColor;
   out.passiveInherited = parent.passiveInherited;
+  out.imageRendering = parent.imageRendering;
   out.fontFamily = parent.fontFamily;
   out.familyWritten = parent.familyWritten;
   out.fontFamilyText = parent.fontFamilyText;
