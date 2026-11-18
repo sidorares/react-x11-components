@@ -149,6 +149,17 @@ export interface ControlRect {
    * Missing, a widget shows its own.
    */
   cursor?: string;
+  /**
+   * A text field's or a text area's `text-align`, where it is not `start`:
+   * which way its text is set in its box, which core's `<textinput>` and
+   * `<textarea>` read as their own `textAlign`. A field the page aligned
+   * right or centred had its text at the start.
+   */
+  textAlign?: 'left' | 'right' | 'center' | 'end';
+  /** A text field's or a text area's `direction`, which its widget sets its
+   *  text in and resolves `start` and `end` against, as the page's: inherited
+   *  from the window it would be the application's. */
+  direction?: 'ltr' | 'rtl';
   /** A file input's: its `::file-selector-button`'s, over the button. */
   buttonCursor?: string;
   /** A range's: what its widget is handed (`rangeLook`). */
@@ -362,6 +373,13 @@ export function controlRectsOf(
       fontSize: box.style.fontSize,
       colorScheme: box.style.colorScheme,
       cursor: shownCursor(box.style.cursor, box.replaced),
+      ...((box.replaced === 'input' || box.replaced === 'textarea') &&
+        fieldAlign(box.style.textAlign) && {
+          textAlign: fieldAlign(box.style.textAlign)!,
+        }),
+      ...((box.replaced === 'input' || box.replaced === 'textarea') && {
+        direction: box.style.direction,
+      }),
       ...(box.replaced === 'file' && {
         buttonCursor: shownCursor(
           (partOf?.(box.el, box.style, 'file-selector-button') ?? box.style)
@@ -1242,4 +1260,12 @@ function charWidth(style: ComputedStyle, fonts: FontsLike | null): number {
   } catch {
     return style.fontSize * 0.55;
   }
+}
+
+/** A field's `text-align` as its widget takes it: `start`, and `justify`,
+ *  which no field's one line or its last fills, are the widget's own. */
+function fieldAlign(
+  align: ComputedStyle['textAlign'],
+): ControlRect['textAlign'] {
+  return align === 'start' || align === 'justify' ? undefined : align;
 }

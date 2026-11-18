@@ -971,6 +971,34 @@ metric(
   },
 );
 
+test("a text field's widget is set in its element's text-align and direction", async () => {
+  // A field or a text area the page aligned had its text at the start, and
+  // one in a right-to-left page read left to right: neither was handed to
+  // core's widget, which reads both (WPT's trailing-space-and-text-alignment).
+  await render(
+    '<style>textarea,input{margin:0}</style>' +
+      '<input id="r" style="text-align:right">' +
+      '<textarea id="c" style="text-align:center"></textarea>' +
+      '<input id="s" dir="rtl" style="text-align:justify">',
+  );
+  await waitFor(() =>
+    assert.strictEqual(screen.all((n) => n.kind === 'textarea').length, 1),
+  );
+  type Styled = { style: { textAlign?: string; direction?: string } };
+  const [right, start] = screen.all(
+    (n) => n.kind === 'textinput',
+  ) as unknown as Styled[];
+  const [centre] = screen.all(
+    (n) => n.kind === 'textarea',
+  ) as unknown as Styled[];
+  assert.strictEqual(right.style.textAlign, 'right');
+  assert.strictEqual(right.style.direction, 'ltr');
+  assert.strictEqual(centre.style.textAlign, 'center');
+  // `justify` fills no last line, so it is the widget's own start
+  assert.strictEqual(start.style.textAlign, undefined);
+  assert.strictEqual(start.style.direction, 'rtl');
+});
+
 metric(
   "a field the page only rounded or recoloured takes Chrome's edges",
   async () => {
