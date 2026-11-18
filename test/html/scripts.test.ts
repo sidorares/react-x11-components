@@ -8508,6 +8508,29 @@ test('a query straight after a page’s own change reads the controls as they ar
   );
 });
 
+test('a host that delegates its focus hands it to the first focusable thing in its tree, and activeElement is retargeted', async () => {
+  const doc = await hosted(
+    '<div id="h"><input id="slotted"></div><p id="out"></p><script>' +
+      'var r = [], h = document.getElementById("h");' +
+      'var root = h.attachShadow({ mode: "closed", delegatesFocus: true });' +
+      'root.innerHTML = "<span>x</span><input id=a><input id=b><slot></slot>";' +
+      'var a = root.getElementById("a"), b = root.getElementById("b");' +
+      'h.focus();' +
+      'r.push(document.activeElement === h, root.activeElement === a);' +
+      // one in the tree keeps it
+      'b.focus(); h.focus(); r.push(root.activeElement === b);' +
+      // what is slotted is the document's, and none of the tree's
+      'document.getElementById("slotted").focus();' +
+      'r.push(document.activeElement.id, root.activeElement);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|true|true|slotted|',
+  );
+});
+
 test('a custom element that takes part in forms answers :valid and :invalid, and its form with it', async () => {
   const doc = await hosted(
     '<form id="f"><x-f id="x"></x-f></form><p id="out"></p><script>' +
