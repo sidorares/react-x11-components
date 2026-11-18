@@ -28050,6 +28050,8 @@ export function installDom(
     'input',
     'change',
     'select',
+    'selectstart',
+    'selectionchange',
     'submit',
     'reset',
     'focus',
@@ -28136,6 +28138,9 @@ export function installDom(
     };
     // `onwebkitanimationend` runs for `webkitAnimationEnd` (HTML 8.1.8.2)
     const name = `on${type.toLowerCase()}`;
+    // named as WebIDL names an attribute's accessors
+    Object.defineProperty(property.get, 'name', { value: `get ${name}` });
+    Object.defineProperty(property.set, 'name', { value: `set ${name}` });
     Object.defineProperty(HTMLElement.prototype, name, property);
     Object.defineProperty(SVGElement.prototype, name, property);
     Object.defineProperty(MathMLElement.prototype, name, property);
@@ -44367,9 +44372,21 @@ export function installDom(
       );
     }
     _set(range: Any, backward: boolean): void {
+      // a selection set to what it is already is no change, and tells no
+      // `selectionchange` (Selection API 4.1)
+      const was = this._kept;
+      const same =
+        backward === this._backward &&
+        (was === range ||
+          (!!was &&
+            !!range &&
+            was.startContainer === range.startContainer &&
+            was.startOffset === range.startOffset &&
+            was.endContainer === range.endContainer &&
+            was.endOffset === range.endOffset));
       this._kept = range;
       this._backward = backward;
-      this._changed();
+      if (!same) this._changed();
       // and drawn as the reader's is, where it is the document's; a caret
       // is no selection of the reader's, and leaves theirs none
       const drawn =
@@ -44577,7 +44594,100 @@ export function installDom(
       return this._range ? this._range.toString() : '';
     }
   }
+  // Selection API 4, as WebIDL has an interface: not made by a page, its
+  // tag `Selection`, and each member checking what it is called on, its
+  // operations enumerable and counting their arguments
+  const SELECTION_ARGUMENTS: Record<string, number> = {
+    getRangeAt: 1,
+    addRange: 1,
+    removeRange: 1,
+    collapse: 1,
+    setPosition: 1,
+    extend: 1,
+    setBaseAndExtent: 4,
+    selectAllChildren: 1,
+    containsNode: 1,
+  };
+  const selections = new WeakSet<object>();
+  {
+    const proto = Selection.prototype as Any;
+    for (const name of Object.getOwnPropertyNames(proto)) {
+      if (name === 'constructor' || name.startsWith('_')) continue;
+      const d = Object.getOwnPropertyDescriptor(proto, name)!;
+      const check = (self: Any, what: string): void => {
+        if (!selections.has(self)) {
+          throw new TypeError(
+            `Failed to ${what} 'Selection': Illegal invocation`,
+          );
+        }
+      };
+      // a function's `name` and `length` as WebIDL gives an operation's and
+      // an attribute's getter
+      const named = (f: Any, as: string, length: number): Any =>
+        Object.defineProperties(f, {
+          name: { value: as, configurable: true },
+          length: { value: length, configurable: true },
+        });
+      if (typeof d.value === 'function') {
+        const fn = d.value;
+        const needed = SELECTION_ARGUMENTS[name] ?? 0;
+        const op = named(
+          function (this: Any, ...args: Any[]): Any {
+            check(this, `execute '${name}' on`);
+            if (args.length < needed) {
+              throw new TypeError(
+                `Failed to execute '${name}' on 'Selection': ${needed} argument${needed > 1 ? 's' : ''} required, but only ${args.length} present.`,
+              );
+            }
+            return fn.apply(this, args);
+          },
+          name,
+          needed,
+        );
+        Object.defineProperty(proto, name, {
+          value: op,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      } else if (d.get) {
+        const get = d.get;
+        const set = d.set;
+        Object.defineProperty(proto, name, {
+          get: named(
+            function (this: Any): Any {
+              check(this, `read the '${name}' property from`);
+              return get.call(this);
+            },
+            `get ${name}`,
+            0,
+          ),
+          set,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+    }
+    Object.defineProperty(proto, Symbol.toStringTag, {
+      value: 'Selection',
+      configurable: true,
+    });
+  }
   const selection = new Selection();
+  selections.add(selection);
+  /** Not a page's to make (WebIDL: an interface with no constructor). */
+  const SelectionInterface = function Selection(): never {
+    throw new TypeError('Illegal constructor');
+  } as Any;
+  Object.defineProperty(SelectionInterface, 'prototype', {
+    value: Selection.prototype,
+    writable: false,
+  });
+  Object.defineProperty(Selection.prototype, 'constructor', {
+    value: SelectionInterface,
+    writable: true,
+    configurable: true,
+  });
 
   // --- editing --------------------------------------------------------------------
   //
@@ -47932,8 +48042,10 @@ export function installDom(
     value: 'Window',
     configurable: true,
   });
-  define('getSelection', () => selection);
-  define('Selection', Selection);
+  define('getSelection', function getSelection() {
+    return selection;
+  });
+  define('Selection', SelectionInterface);
   define('CaretPosition', CaretPosition);
   // the window's listeners, on its target; inherited from `EventTarget`
   // where the scope reaches what the global inherits (`inheritsGlobals`)
@@ -47958,6 +48070,8 @@ export function installDom(
     'resize',
     'scroll',
     'scrollend',
+    'selectstart',
+    'selectionchange',
     'hashchange',
     'popstate',
     'unload',

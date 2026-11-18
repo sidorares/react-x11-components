@@ -8508,6 +8508,30 @@ test('a query straight after a page’s own change reads the controls as they ar
   );
 });
 
+test('getSelection() is a Selection, which no page makes, and setting it to what it is tells nothing', async () => {
+  const doc = await hosted(
+    '<p id="t">text</p><p id="out"></p><script>' +
+      'var r = [], s = getSelection(), t = document.getElementById("t");' +
+      'r.push(Object.prototype.toString.call(s), s instanceof Selection, getSelection.name);' +
+      'try { new Selection(); } catch (e) { r.push(e.name); }' +
+      'try { Selection.prototype.rangeCount; } catch (e) { r.push(e.name); }' +
+      'try { s.getRangeAt(); } catch (e) { r.push(e.name); }' +
+      'r.push(Object.keys(Selection.prototype).indexOf("addRange") >= 0, "onselectionchange" in document);' +
+      'var told = 0; document.addEventListener("selectionchange", function () { told++; });' +
+      's.setBaseAndExtent(t.firstChild, 0, t.firstChild, 2);' +
+      'setTimeout(function () {' +
+      '  s.setBaseAndExtent(t.firstChild, 0, t.firstChild, 2);' +
+      '  setTimeout(function () { r.push(told);' +
+      '    document.getElementById("out").textContent = r.join("|"); }, 20);' +
+      '}, 20);' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '[object Selection]|true|getSelection|TypeError|TypeError|TypeError|true|true|1',
+  );
+});
+
 test('a custom element that takes part in forms answers :valid and :invalid, and its form with it', async () => {
   const doc = await hosted(
     '<form id="f"><x-f id="x"></x-f></form><p id="out"></p><script>' +
