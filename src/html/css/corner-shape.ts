@@ -81,32 +81,85 @@ export function cornerShapeOf(value: string): number | null {
   return parseNumber(m[1]);
 }
 
-/** How many shapes each `corner-*-shape` property takes at most: four for
- *  the shorthand, two for a side's, one for a corner's. */
-const CORNER_SHAPE_COUNTS: Record<string, number> = {
-  'corner-shape': 4,
-  'corner-top-shape': 2,
-  'corner-right-shape': 2,
-  'corner-bottom-shape': 2,
-  'corner-left-shape': 2,
-  'corner-top-left-shape': 1,
-  'corner-top-right-shape': 1,
-  'corner-bottom-right-shape': 1,
-  'corner-bottom-left-shape': 1,
+/** One corner's shape as CSSOM writes it: a keyword in lower case, or
+ *  `superellipse()` of its number at its shortest; null for none. */
+export function cornerShapeText(value: string): string | null {
+  const v = value.trim().toLowerCase();
+  if (CORNER_KEYWORDS[v] !== undefined) return v;
+  const m = /^superellipse\(\s*([\s\S]+?)\s*\)$/.exec(v);
+  if (!m || cornerShapeOf(v) === null) return null;
+  if (m[1] === 'infinity' || m[1] === '-infinity')
+    return `superellipse(${m[1]})`;
+  const n = parseNumber(m[1]);
+  // a math function is kept as written, the cascade's to simplify
+  return n === null ? `superellipse(${m[1]})` : `superellipse(${n})`;
+}
+
+/** The longhands each corner-shape shorthand sets, in the order its values
+ *  go to them: the four physical corners for `corner-shape`, and a side's
+ *  two for each of the others (CSS Borders 4, 3.9.1). */
+export const CORNER_SHAPE_SHORTHANDS: Record<string, readonly string[]> = {
+  'corner-shape': [
+    'corner-top-left-shape',
+    'corner-top-right-shape',
+    'corner-bottom-right-shape',
+    'corner-bottom-left-shape',
+  ],
+  'corner-top-shape': ['corner-top-left-shape', 'corner-top-right-shape'],
+  'corner-right-shape': ['corner-top-right-shape', 'corner-bottom-right-shape'],
+  'corner-bottom-shape': [
+    'corner-bottom-left-shape',
+    'corner-bottom-right-shape',
+  ],
+  'corner-left-shape': ['corner-top-left-shape', 'corner-bottom-left-shape'],
+  'corner-block-start-shape': [
+    'corner-start-start-shape',
+    'corner-start-end-shape',
+  ],
+  'corner-block-end-shape': ['corner-end-start-shape', 'corner-end-end-shape'],
+  'corner-inline-start-shape': [
+    'corner-start-start-shape',
+    'corner-end-start-shape',
+  ],
+  'corner-inline-end-shape': ['corner-start-end-shape', 'corner-end-end-shape'],
 };
 
-/** Whether a `corner-*-shape` declaration's value is one the property
- *  takes; undefined for a name that is none of them. */
-export function cornerShapeValid(
+/** A corner-shape shorthand's longhands for a value, each canonical: four
+ *  values filled in as `border-radius` fills its radii, a side's two as
+ *  one or two; null where the name is no shorthand or the value is none. */
+export function cornerShapeLonghands(
   name: string,
   value: string,
-): boolean | undefined {
-  const most = CORNER_SHAPE_COUNTS[name];
-  if (most === undefined) return undefined;
-  const parts = splitValue(value);
-  return (
-    parts.length > 0 &&
-    parts.length <= most &&
-    parts.every((p) => cornerShapeOf(p) !== null)
-  );
+): [string, string][] | null {
+  const longhands = CORNER_SHAPE_SHORTHANDS[name];
+  if (!longhands) return null;
+  const parts = splitValue(value).map(cornerShapeText);
+  if (!parts.length || parts.length > longhands.length) return null;
+  if (parts.some((p) => p === null)) return null;
+  const k = parts as string[];
+  const values =
+    longhands.length === 4
+      ? [k[0], k[1] ?? k[0], k[2] ?? k[0], k[3] ?? k[1] ?? k[0]]
+      : [k[0], k[1] ?? k[0]];
+  return longhands.map((n, i) => [n, values[i]]);
+}
+
+/** A corner-shape shorthand from its longhands, at its shortest, as
+ *  `margin` is; '' where one is missing. */
+export function cornerShapeComposed(
+  name: string,
+  longhand: (name: string) => string | null,
+): string | null {
+  const longhands = CORNER_SHAPE_SHORTHANDS[name];
+  if (!longhands) return null;
+  const v = longhands.map(longhand);
+  if (v.some((x) => x === null || x === '')) return '';
+  const s = v as string[];
+  if (s.length === 2) return s[0] === s[1] ? s[0] : `${s[0]} ${s[1]}`;
+  const [t, r, b, l] = s;
+  if (r === l) {
+    if (t === b) return t === r ? t : `${t} ${r}`;
+    return `${t} ${r} ${b}`;
+  }
+  return `${t} ${r} ${b} ${l}`;
 }

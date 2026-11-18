@@ -8,7 +8,12 @@
 import { PASSIVE } from './passive-properties.js';
 import { parseTransform } from './transform.js';
 import { parseFilter } from './filter.js';
-import { cornerShapeValid } from './corner-shape.js';
+import {
+  CORNER_SHAPE_SHORTHANDS,
+  cornerShapeComposed,
+  cornerShapeLonghands,
+  cornerShapeText,
+} from './corner-shape.js';
 import {
   NO_TRANSITIONS,
   TRANSITION_LONGHANDS,
@@ -109,6 +114,18 @@ const KEYWORD_ONLY: Record<string, ReadonlySet<string>> = {
   'backface-visibility': new Set(['visible', 'hidden']),
   isolation: new Set(['auto', 'isolate']),
 };
+
+/** Each corner's own shape, physical and logical (CSS Borders 4, 3.9.1). */
+const CORNER_LONGHANDS = new Set([
+  'corner-top-left-shape',
+  'corner-top-right-shape',
+  'corner-bottom-right-shape',
+  'corner-bottom-left-shape',
+  'corner-start-start-shape',
+  'corner-start-end-shape',
+  'corner-end-start-shape',
+  'corner-end-end-shape',
+]);
 
 const ANGLE = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:deg|grad|rad|turn)$/i;
 const NUMBER_TOKEN = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/;
@@ -304,10 +321,16 @@ export function specifiedValue(
     }
     return parseFilter(word, CHECK) === undefined ? null : undefined;
   }
-  const corner = cornerShapeValid(name, value);
-  if (corner !== undefined) {
-    if (CSS_WIDE.test(value.trim().toLowerCase())) return undefined;
-    return corner ? undefined : null;
+  // a corner's shape at its shortest, and a shorthand's as its longhands
+  // compose back
+  if (CORNER_LONGHANDS.has(name) || CORNER_SHAPE_SHORTHANDS[name]) {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    if (CORNER_LONGHANDS.has(name)) return cornerShapeText(word);
+    const longhands = cornerShapeLonghands(name, word);
+    if (!longhands) return null;
+    const of = new Map(longhands);
+    return cornerShapeComposed(name, (n) => of.get(n) ?? null);
   }
   // where a transform turns about (CSS Transforms 1, 6) and how far one
   // moves a box (CSS Transforms 2, 4.3)
@@ -1213,6 +1236,8 @@ export function expandShorthand(
   if (box) return box;
   const border = borderLonghands(name, value);
   if (border) return border;
+  const corners = cornerShapeLonghands(name, value);
+  if (corners) return corners;
   if (name === 'animation') return animationLonghandsOf(value);
   if (name === 'animation-range') {
     // `none` is no range, and is asked here only for the longhands' names,
@@ -1332,6 +1357,8 @@ export function composeShorthand(
   if (box !== null) return box;
   const border = borderComposed(name, longhand);
   if (border !== null) return border;
+  const corners = cornerShapeComposed(name, longhand);
+  if (corners !== null) return corners;
   if (name === 'marker') {
     const sides = MARKER_LONGHANDS.map(longhand);
     if (sides.some((v) => v === null)) return '';
