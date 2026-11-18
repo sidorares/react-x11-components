@@ -6,6 +6,7 @@
 // reads back is never lost to a grammar this has not got.
 
 import { PASSIVE } from './passive-properties.js';
+import { NO_TRANSITIONS, transitionLonghand } from './animation.js';
 import { backgroundSpecified } from './backgrounds-specified.js';
 import {
   borderComposed,
@@ -139,6 +140,17 @@ export function specifiedValue(
     const word = value.trim().toLowerCase();
     if (CSS_WIDE.test(word)) return undefined;
     return words.has(word) ? word : null;
+  }
+  // a list of property names, or `none` alone (CSS Transitions 1, 2.1)
+  if (
+    name === 'transition-property' ||
+    name === '-webkit-transition-property'
+  ) {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return transitionLonghand(NO_TRANSITIONS, 'properties', word) === null
+      ? null
+      : undefined;
   }
   if (name === 'user-select' || name === '-webkit-user-select') {
     const word = value.trim().toLowerCase();
