@@ -4437,6 +4437,26 @@ the select. Chromium and WebKit have that last one, and Firefox does not. A
 legend put first in a disabled fieldset, or taken out, turns the answer for
 what each legend holds.
 
+**A page reads a field's value as a number, and steps it.** `valueAsNumber`,
+`valueAsDate`, `stepUp()` and `stepDown()` are HTML's for a date, a month, a
+week, a time, a `datetime-local`, a number and a range: a date, a week's Monday
+and a `datetime-local` are milliseconds since the epoch, a time milliseconds
+since midnight and a month months since 1970-01. `valueAsDate` is `null` for a
+`datetime-local`, whose value is no instant, and refuses to be set there. A
+step keeps to `min` and `max` and counts from `min`, else from the `value`
+attribute, else from the epoch, which for a week is 1970-W01's Monday. Where
+HTML leaves the arithmetic open the answers are Chromium's: a date's, a month's
+and a week's `step` is a whole number of them, and a time's a whole number of
+milliseconds; a time is written as finely as its step reaches, and steps no
+further than 23:59; a `datetime-local` is written as short as it can be. Three
+are Chromium's where HTML says otherwise: a value off its steps goes to the
+next one the way it is stepped and then on by the rest of `n`, where HTML stops
+there; a negative `n` steps the other way, where HTML steps nowhere; and an
+empty field steps from 0 and is kept to its limits, whichever way that moves
+it. All four read and set the value through the `value` attribute's own
+accessor, so an accessor a library put on the element, as React's value
+tracking does, hears none of them.
+
 **What a control shows under the pointer is what it computes to.** The
 user-agent sheet gives a control its cursor as csswg-drafts#14251 settled it
 for `appearance: auto`, with what Chromium adds:
