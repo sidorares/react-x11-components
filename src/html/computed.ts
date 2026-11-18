@@ -1439,7 +1439,9 @@ function cssomAt(
   // 5): what is left at its initial value at the end left out
   // an origin resolves against the box where there is one, as Chrome
   // answers it in pixels, and is its lengths as computed where not
-  out['transform-origin'] = originText(style.transformOrigin, box, scale);
+  out['transform-origin'] =
+    originText(style.transformOrigin, box, scale) +
+    (style.transformOriginZ ? ` ${px(style.transformOriginZ, scale)}` : '');
   out['perspective-origin'] = originText(style.perspectiveOrigin, box, scale);
   out.translate = translateText(style.translate, scale);
   out.rotate = rotateText(style.rotate);
