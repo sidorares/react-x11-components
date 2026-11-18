@@ -2980,6 +2980,10 @@ class Handler extends TreeHandler {
     if (root.registryNull) nullRegistriesParsed = true;
     root.clonable = attribs.shadowrootclonable !== undefined;
     root.serializable = attribs.shadowrootserializable !== undefined;
+    // `shadowrootslotassignment` (DOM 4.2.2.3), ASCII case-insensitive
+    if (attribs.shadowrootslotassignment?.toLowerCase() === 'manual') {
+      root.slotAssignment = 'manual';
+    }
     root.declarative = true;
     SHADOW_ROOTS.set(host, root);
     treesChanged();

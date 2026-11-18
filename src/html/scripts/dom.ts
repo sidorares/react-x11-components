@@ -9824,6 +9824,13 @@ export function installDom(
     override get nodeName(): string {
       return '#document-fragment';
     }
+    // a shadow root is never copied on its own (DOM 4.4, "clone a node")
+    override cloneNode(): Any {
+      throw new DOMException(
+        "Failed to execute 'cloneNode' on 'Node': ShadowRoot nodes are not clonable.",
+        'NotSupportedError',
+      );
+    }
     elementFromPoint(x: number, y: number): Any {
       return elementFromPointIn(this, x, y);
     }
@@ -9856,7 +9863,11 @@ export function installDom(
         listMade(
           StyleSheetList,
           [],
-          () => wrapAll(call('sheets', this._id)).map((el) => sheetOf(el)),
+          // none while the tree is in no document (CSSOM 6.2)
+          () =>
+            this.host?.isConnected
+              ? wrapAll(call('sheets', this._id)).map((el) => sheetOf(el))
+              : [],
           true,
           null,
         ),
@@ -11491,6 +11502,15 @@ export function installDom(
       if (this.namespaceURI !== HTML_NS) {
         throw new DOMException(
           "Failed to execute 'attachShadow' on 'Element': This element does not support attachShadow",
+          'NotSupportedError',
+        );
+      }
+      // nor one whose definition disables shadow, whether or not it is
+      // upgraded yet (DOM 4.9, "attach a shadow root", step 3)
+      const def = customOf.get(this)?.def ?? definitionFor(this);
+      if (def?.disableShadow) {
+        throw new DOMException(
+          "Failed to execute 'attachShadow' on 'Element': attachShadow() is disabled by disabledFeatures static field.",
           'NotSupportedError',
         );
       }
@@ -21547,6 +21567,9 @@ export function installDom(
      *  fallback where it is assigned nothing and the slots in what it has,
      *  theirs. */
     assignedNodes(options?: Any): Any[] {
+      // a slot in no shadow tree has nothing assigned, and no fallback
+      // either (DOM 4.2.2.4, "find flattened slottables")
+      if (!(this.getRootNode() instanceof ShadowRoot)) return [];
       const ids = str(call('assignedNodes', this._id, !!options?.flatten));
       return ids ? ids.split(',').map((id) => wrap(Number(id))) : [];
     }
@@ -26158,6 +26181,7 @@ export function installDom(
         shadowRootDelegatesFocus: FLAG,
         shadowRootClonable: FLAG,
         shadowRootSerializable: FLAG,
+        shadowRootSlotAssignment: keyword(['named', 'manual'], 'named'),
         shadowRootCustomElementRegistry: TEXT,
       },
     ],

@@ -8535,6 +8535,31 @@ test('details of one name close each other, and each tells toggle once a task wi
   );
 });
 
+test('a shadow root is copied with its host alone, its sheets are none out of the document, and a template says how it assigns slots', async () => {
+  const doc = await hosted(
+    '<div id="h"><template shadowrootmode="open" shadowrootslotassignment="MANUAL"><style>p{}</style><slot></slot></template></div>' +
+      '<p id="out"></p><script>' +
+      'var r = [], h = document.getElementById("h"), root = h.shadowRoot;' +
+      'r.push(root.slotAssignment, root.styleSheets.length);' +
+      'try { root.cloneNode(); } catch (e) { r.push(e.name); }' +
+      'var loose = document.createElement("div").attachShadow({ mode: "open" });' +
+      'loose.innerHTML = "<style>p{}</style>"; r.push(loose.styleSheets.length);' +
+      'var t = document.createElement("template"); r.push(t.shadowRootSlotAssignment);' +
+      't.shadowRootSlotAssignment = "manual"; r.push(t.getAttribute("shadowrootslotassignment"));' +
+      't.shadowRootSlotAssignment = "x"; r.push(t.shadowRootSlotAssignment);' +
+      'var s = document.createElement("slot"); s.textContent = "fallback";' +
+      'r.push(s.assignedNodes({ flatten: true }).length);' +
+      'customElements.define("x-no-shadow", class extends HTMLElement { static disabledFeatures = ["shadow"]; });' +
+      'try { document.createElement("x-no-shadow").attachShadow({ mode: "open" }); } catch (e) { r.push(e.name); }' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'manual|1|NotSupportedError|0|named|manual|named|0|NotSupportedError',
+  );
+});
+
 test('a custom element that takes part in forms answers :valid and :invalid, and its form with it', async () => {
   const doc = await hosted(
     '<form id="f"><x-f id="x"></x-f></form><p id="out"></p><script>' +
