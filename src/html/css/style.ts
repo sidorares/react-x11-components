@@ -882,6 +882,14 @@ export interface ComputedStyle {
   textCombineUpright: boolean;
   letterSpacing: number;
   wordSpacing: number;
+  /** The part of `letter-spacing` and `word-spacing` that is a percentage of
+   *  the font size, as a fraction, and the length beside it (CSS Text 4,
+   *  7.2, 7.3): what is inherited, so that an element of another size is
+   *  spaced by its own (`settleSpacing`). 0 where the value has none. */
+  letterSpacingPct: number;
+  letterSpacingFixed: number;
+  wordSpacingPct: number;
+  wordSpacingFixed: number;
   /** The shadows its text casts, front to back, as `boxShadow`'s are but
    *  with no spread and never inset; null for none. Inherited. */
   textShadow: BoxShadow[] | null;
@@ -1824,6 +1832,10 @@ export const INHERITED = [
   'textUnderlineOffset',
   'letterSpacing',
   'wordSpacing',
+  'letterSpacingPct',
+  'letterSpacingFixed',
+  'wordSpacingPct',
+  'wordSpacingFixed',
   'textShadow',
   'fontVariantNumeric',
   'fontVariantCaps',
@@ -2004,6 +2016,10 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     textCombineUpright: false,
     letterSpacing: 0,
     wordSpacing: 0,
+    letterSpacingPct: 0,
+    letterSpacingFixed: 0,
+    wordSpacingPct: 0,
+    wordSpacingFixed: 0,
     textShadow: null,
     fontVariantNumeric: '',
     fontVariantCaps: '',
@@ -2437,6 +2453,10 @@ export function inherit(
   out.wordSpaceTransform = parent.wordSpaceTransform;
   out.letterSpacing = parent.letterSpacing;
   out.wordSpacing = parent.wordSpacing;
+  out.letterSpacingPct = parent.letterSpacingPct;
+  out.letterSpacingFixed = parent.letterSpacingFixed;
+  out.wordSpacingPct = parent.wordSpacingPct;
+  out.wordSpacingFixed = parent.wordSpacingFixed;
   out.textShadow = parent.textShadow;
   out.fontVariantNumeric = parent.fontVariantNumeric;
   out.fontVariantCaps = parent.fontVariantCaps;
@@ -2559,6 +2579,8 @@ export function zoomedBy(style: ComputedStyle, r: number): ComputedStyle {
   out.textIndent = zoomLen(style.textIndent, r);
   out.letterSpacing *= r;
   out.wordSpacing *= r;
+  out.letterSpacingFixed *= r;
+  out.wordSpacingFixed *= r;
   if (style.textShadow) {
     out.textShadow = style.textShadow.map((s) => ({
       ...s,
@@ -2612,6 +2634,10 @@ export const FIRST_LINE_INHERITED = [
   'textUnderlineOffset',
   'letterSpacing',
   'wordSpacing',
+  'letterSpacingPct',
+  'letterSpacingFixed',
+  'wordSpacingPct',
+  'wordSpacingFixed',
   'textShadow',
   'fontVariantNumeric',
   'fontVariantCaps',
@@ -4712,19 +4738,31 @@ export function applyDeclaration(
     }
     case 'letter-spacing':
     case 'word-spacing': {
-      if (value.toLowerCase() === 'normal') {
-        if (name === 'letter-spacing') style.letterSpacing = 0;
-        else style.wordSpacing = 0;
-        return;
+      const letter = name === 'letter-spacing';
+      let fixed: number;
+      let pct = 0;
+      if (value.toLowerCase() === 'normal') fixed = 0;
+      else {
+        const len = parseLength(value, ctx);
+        if (typeof len === 'number') fixed = len;
+        else if (len && isPct(len)) {
+          // a percentage of the font size, as `em` is (CSS Text 4): `200%`
+          // was dropped, where it is twice the letter's size apart. What is
+          // inherited is the percentage, which a child of another size
+          // comes to its own length of (`settleSpacing`)
+          fixed = resolve(len, 0);
+          pct = resolve(len, 1) - fixed;
+        } else return;
       }
-      const len = parseLength(value, ctx);
-      if (typeof len === 'number') {
-        if (name === 'letter-spacing') style.letterSpacing = len;
-        else style.wordSpacing = len;
-      } else if (name === 'letter-spacing' && len && isPct(len)) {
-        // a percentage of the font size, as `em` is (CSS Text 4): `200%`
-        // was dropped, where it is twice the letter's size apart
-        style.letterSpacing = resolve(len, ctx.em);
+      const used = fixed + pct * ctx.em;
+      if (letter) {
+        style.letterSpacing = used;
+        style.letterSpacingPct = pct;
+        style.letterSpacingFixed = fixed;
+      } else {
+        style.wordSpacing = used;
+        style.wordSpacingPct = pct;
+        style.wordSpacingFixed = fixed;
       }
       return;
     }
@@ -6183,6 +6221,21 @@ export function settleAlign(
     parent?.justifyItemsText.startsWith('legacy ')
   ) {
     style.justifyItemsText = parent.justifyItemsText;
+  }
+}
+
+/** `letter-spacing` and `word-spacing` with a percentage in them come to
+ *  that much of the element's own font size, the inherited ones as well
+ *  (CSS Text 4, 7.2, 7.3): a `small` under `letter-spacing: 10%` is spaced
+ *  by a tenth of its own size, not of its parent's. */
+export function settleSpacing(style: ComputedStyle): void {
+  if (style.letterSpacingPct) {
+    style.letterSpacing =
+      style.letterSpacingFixed + style.letterSpacingPct * style.fontSize;
+  }
+  if (style.wordSpacingPct) {
+    style.wordSpacing =
+      style.wordSpacingFixed + style.wordSpacingPct * style.fontSize;
   }
 }
 
@@ -10455,8 +10508,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'text-autospace': ['textAutospace'],
   'text-autospace-size': ['textAutospaceSize'],
   'text-combine-upright': ['textCombineUpright'],
-  'letter-spacing': ['letterSpacing'],
-  'word-spacing': ['wordSpacing'],
+  'letter-spacing': ['letterSpacing', 'letterSpacingPct', 'letterSpacingFixed'],
+  'word-spacing': ['wordSpacing', 'wordSpacingPct', 'wordSpacingFixed'],
   'font-variant': [
     'fontVariantNumeric',
     'fontVariantCaps',
