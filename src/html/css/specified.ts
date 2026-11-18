@@ -6,6 +6,7 @@
 // reads back is never lost to a grammar this has not got.
 
 import { PASSIVE } from './passive-properties.js';
+import { parseTransform } from './transform.js';
 import { parseFilter } from './filter.js';
 import { cornerShapeValid } from './corner-shape.js';
 import { NO_TRANSITIONS, transitionLonghand } from './animation.js';
@@ -97,6 +98,69 @@ const KEYWORD_ONLY: Record<string, ReadonlySet<string>> = {
   isolation: new Set(['auto', 'isolate']),
 };
 
+const ANGLE = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:deg|grad|rad|turn)$/i;
+const NUMBER_TOKEN = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/;
+
+/**
+ * `rotate` (CSS Transforms 2, 4.1): `none`, an angle, or an angle and an
+ * axis — `x`, `y`, `z` or three numbers — either side of it; written as
+ * Chromium writes it back, the axis first, `x` or `y` for one along it
+ * (the angle turned back for one the other way), and none for `z`. Null
+ * for none; a math function is the cascade's.
+ */
+function rotateSpecified(value: string): string | null | undefined {
+  if (value.toLowerCase() === 'none') return 'none';
+  if (value.includes('(')) return undefined;
+  const words = splitValue(value);
+  const at = words.findIndex((w) => ANGLE.test(w));
+  if (at < 0 || (at !== 0 && at !== words.length - 1)) return null;
+  const angle = words[at].toLowerCase();
+  const axis = words.filter((_, i) => i !== at);
+  if (!axis.length) return angle;
+  let v: number[];
+  if (axis.length === 1) {
+    const k = axis[0].toLowerCase();
+    if (k === 'x') v = [1, 0, 0];
+    else if (k === 'y') v = [0, 1, 0];
+    else if (k === 'z') v = [0, 0, 1];
+    else return null;
+  } else if (axis.length === 3 && axis.every((w) => NUMBER_TOKEN.test(w))) {
+    v = axis.map(Number);
+  } else {
+    return null;
+  }
+  const turned = (sign: number): string =>
+    sign < 0 ? (angle.startsWith('-') ? angle.slice(1) : `-${angle}`) : angle;
+  const [x, y, z] = v;
+  if (x && !y && !z) return `x ${turned(x)}`;
+  if (!x && y && !z) return `y ${turned(y)}`;
+  if (!x && !y && z) return turned(z);
+  return `${v.map((n) => String(n + 0)).join(' ')} ${angle}`;
+}
+
+/**
+ * `scale` (CSS Transforms 2, 4.2): `none`, or one to three numbers or
+ * percentages, written as Chromium writes them back: each a number, a
+ * depth of 1 left out, and a height the same as the width with it. Null
+ * for none; a math function is the cascade's.
+ */
+function scaleSpecified(value: string): string | null | undefined {
+  if (value.toLowerCase() === 'none') return 'none';
+  if (value.includes('(')) return undefined;
+  const words = splitValue(value);
+  if (!words.length || words.length > 3) return null;
+  const n: number[] = [];
+  for (const w of words) {
+    const m = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(%?)$/i.exec(w);
+    if (!m) return null;
+    n.push(m[2] ? Number(m[1]) / 100 : Number(m[1]));
+  }
+  const text = (x: number): string => String(Math.round(x * 1e6) / 1e6 + 0);
+  const [x, y = x, z = 1] = n;
+  if (z !== 1) return `${text(x)} ${text(y)} ${text(z)}`;
+  return y === x ? text(x) : `${text(x)} ${text(y)}`;
+}
+
 export function specifiedValue(
   prop: string,
   value: string,
@@ -176,6 +240,27 @@ export function specifiedValue(
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
     if (/\(/.test(word)) return undefined;
     return positionSpecified(splitValue(word));
+  }
+  // a transform list (CSS Transforms 1, 7), refused where the cascade
+  // would refuse it; a math function is the cascade's to judge, since it
+  // may read what no check here resolves
+  if (name === 'transform' || name === '-webkit-transform') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    if (/(?:calc|min|max|clamp|sign|abs|round|mod|rem)\(/i.test(word)) {
+      return undefined;
+    }
+    return parseTransform(word, CHECK) === undefined ? null : undefined;
+  }
+  if (name === 'scale') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return scaleSpecified(word);
+  }
+  if (name === 'rotate') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return rotateSpecified(word);
   }
   // a filter list, or `none` (Filter Effects 1, 5), and a corner's shapes
   // (CSS Borders 4, 3.9): refused where the cascade would refuse them,
