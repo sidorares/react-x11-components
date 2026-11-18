@@ -21961,3 +21961,22 @@ test('an AnimationEvent and a TransitionEvent are made as Web IDL makes them', a
     'TypeError',
   ]);
 });
+
+test('animate() reads every easing it is handed, and a calculation of numbers is an offset', async () => {
+  // Web Animations 1, 6.6.3: an easing no frame takes is parsed all the same
+  const doc = await hosted(
+    '<p id="out"></p><div id="d"></div><script>' +
+      'var d = document.getElementById("d");' +
+      'function t(f) { try { return String(f()) } catch (e) { return e.name } }' +
+      'var r = [' +
+      '  t(function () { return d.animate({ easing: "test" }, 10) }),' +
+      '  t(function () { return d.animate({ left: ["1px", "2px"], easing: ["linear", "7"] }, 10) }),' +
+      '  t(function () { return d.animate([{ offset: "calc(0.5)", left: "1px" }], 10).effect.getKeyframes()[0].offset }),' +
+      '];' +
+      'document.getElementById("out").textContent = JSON.stringify(r);' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.ok(text, doc.logs.join('\n'));
+  assert.deepEqual(JSON.parse(text), ['TypeError', 'TypeError', '0.5']);
+});

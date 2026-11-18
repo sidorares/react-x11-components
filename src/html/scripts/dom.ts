@@ -5070,6 +5070,7 @@ export function installDom(
       );
     }
     let frames: Any[];
+    let unusedEasings: Any[] = [];
     if (typeof given[Symbol.iterator] === 'function') {
       frames = Array.from(given as Iterable<Any>, (frame) => {
         if (
@@ -5112,6 +5113,7 @@ export function installDom(
           if (frames[i]) frames[i].offset = o;
         });
       const easings = listOf(given.easing);
+      unusedEasings = easings.slice(frames.length);
       const composites = listOf(given.composite);
       frames.forEach((frame, i) => {
         if (easings.length) frame.easing = easings[i % easings.length];
@@ -5135,6 +5137,9 @@ export function installDom(
     for (const frame of frames) {
       if (frame.easing !== undefined) frame.easing = easingOf(frame.easing).css;
     }
+    // and so is one no frame takes, as an easing list longer than the
+    // frames, or one of none (Web Animations 1, 6.6.3, step 12)
+    for (const easing of unusedEasings) easingOf(easing);
     let last = -Infinity;
     for (const { offset } of frames) {
       if (offset === null || typeof offset === 'object') continue;
@@ -5249,7 +5254,12 @@ export function installDom(
     try {
       return value.to('percent').value / 100;
     } catch {
-      return bad();
+      // a calculation of numbers is the number it comes to, `calc(0.5)`
+      try {
+        return value.to('number').value;
+      } catch {
+        return bad();
+      }
     }
   };
 
