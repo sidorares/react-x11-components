@@ -305,6 +305,18 @@ export function specifiedValue(
     const of = new Map(longhands);
     return cornerShapeComposed(name, (n) => of.get(n) ?? null);
   }
+  // where a transform turns about (CSS Transforms 1, 6) and how far one
+  // moves a box (CSS Transforms 2, 4.3)
+  if (name === 'transform-origin' || name === '-webkit-transform-origin') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return transformOriginSpecified(word);
+  }
+  if (name === 'translate') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return translateSpecified(word);
+  }
   if (name === 'user-select' || name === '-webkit-user-select') {
     const word = value.trim().toLowerCase();
     if (CSS_WIDE.test(word)) return undefined;
@@ -1499,6 +1511,85 @@ const ANCHOR_GRAMMARS: Record<string, (value: string) => string | null> = {
     return order === 'normal' ? fallbacks : `${order} ${fallbacks}`;
   },
 };
+
+/** A length or a percentage, `'%'` where it can only be a percentage's,
+ *  `'len'` a length's, or null where it is neither. A math function is
+ *  taken for either, or for a length where it names no percentage. */
+function lengthKind(word: string): 'len' | '%' | 'either' | null {
+  if (/^[a-z-]+\(/i.test(word)) {
+    return /%/.test(word) ? 'either' : 'len';
+  }
+  const m = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)([a-z%]*)$/i.exec(word);
+  if (!m) return null;
+  if (m[2] === '%') return '%';
+  if (!m[2]) return Number(m[1]) === 0 ? 'len' : null;
+  return parseLength(`1${m[2]}`, CHECK) === null ? null : 'len';
+}
+
+/** Whether a length is nought, whatever its unit, and no percentage. */
+function zeroLength(word: string): boolean {
+  const m = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?([a-z]*)$/i.exec(word);
+  return !!m && parseFloat(word) === 0 && lengthKind(word) === 'len';
+}
+
+/**
+ * `transform-origin`: a point across and down — one keyword or length,
+ * or two as a position's first two are, keywords either way round — and a
+ * depth, a length. Written across first, a lone value with `center` after
+ * it, as Chromium writes it.
+ */
+function transformOriginSpecified(word: string): string | null {
+  const parts = splitValue(word).filter(Boolean);
+  if (!parts.length || parts.length > 3) return null;
+  const kind = (part: string): 'x' | 'y' | 'c' | 'l' | null => {
+    const lower = part.toLowerCase();
+    if (lower === 'left' || lower === 'right') return 'x';
+    if (lower === 'top' || lower === 'bottom') return 'y';
+    if (lower === 'center') return 'c';
+    return lengthKind(part) ? 'l' : null;
+  };
+  const text = (part: string): string =>
+    kind(part) === 'l' ? (part === '0' ? '0px' : part) : part.toLowerCase();
+  const [a, b, z] = parts;
+  const ka = kind(a);
+  if (!ka) return null;
+  if (parts.length === 1) {
+    return ka === 'y' ? `center ${text(a)}` : `${text(a)} center`;
+  }
+  const kb = kind(b);
+  if (!kb) return null;
+  let pair: string;
+  if (ka !== 'y' && kb !== 'x') pair = `${text(a)} ${text(b)}`;
+  else if ((ka === 'y' || ka === 'c') && (kb === 'x' || kb === 'c')) {
+    pair = `${text(b)} ${text(a)}`;
+  } else return null;
+  if (z === undefined) return pair;
+  if (lengthKind(z) !== 'len') return null;
+  return `${pair} ${z === '0' ? '0px' : z}`;
+}
+
+/**
+ * `translate`: `none`, or a length or a percentage across, one down and a
+ * length toward the viewer. Written without what moves it nowhere at its
+ * end, as Chromium writes it: no depth of nought, and then no height of a
+ * nought length.
+ */
+function translateSpecified(word: string): string | null {
+  if (word.toLowerCase() === 'none') return 'none';
+  const parts = splitValue(word).filter(Boolean);
+  if (!parts.length || parts.length > 3) return null;
+  for (let i = 0; i < parts.length; i += 1) {
+    const kind = lengthKind(parts[i]);
+    if (!kind || (i === 2 && kind !== 'len')) return null;
+  }
+  // a math function is written by the cascade's rules, which this does not
+  // have: kept as written once it is known to be taken
+  if (parts.some((part) => /\(/.test(part))) return word;
+  const out = parts.map((part) => (part === '0' ? '0px' : part));
+  if (out.length === 3 && zeroLength(out[2])) out.pop();
+  if (out.length === 2 && zeroLength(out[1])) out.pop();
+  return out.join(' ');
+}
 
 /** Functions whose arguments are angles, which a bare nought is one of. */
 const ANGLE_FUNCTIONS = new Set([
