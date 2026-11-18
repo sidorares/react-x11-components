@@ -842,3 +842,20 @@ test('a border-box limit under the padding and borders leaves the box as big as 
   assert.strictEqual(boxOf(el, 'c').width, 23, 'a float');
   assert.strictEqual(boxOf(el, 'd').width, 23, 'an absolute box');
 });
+
+test('a margin collapses through a line whose inline boxes have edges only above and below', async () => {
+  // A padding, a border or a margin above or below an inline box takes no
+  // room on its line, so the line is a phantom and a margin goes through
+  // it, as in all three engines (WPT's css-inline phantom-line-boxes); one
+  // at its start or end makes a line that stops the margin.
+  const { node } = await render(
+    '<style>body{margin:0}.w{float:left;width:50px}.w>div{line-height:0}' +
+      '.w>div::after{content:"";display:flow-root;margin-top:200px}</style>' +
+      '<div class="w"><div id="a"><span style="padding-top:1px;border-bottom:1px solid"></span></div></div>' +
+      '<div class="w"><div id="b"><span style="padding-left:1px"></span></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').y, 200);
+  assert.strictEqual(boxOf(el, 'a').height, 0);
+  assert.strictEqual(boxOf(el, 'b').y, 0);
+});

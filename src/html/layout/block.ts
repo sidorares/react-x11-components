@@ -2549,7 +2549,7 @@ function absorbChildren(
         child.kind === 'break' ||
         isInlineLevel(child));
     if (inLine) {
-      const made = phantom(child);
+      const made = phantom(child, true);
       if (made === 0) {
         whole = false;
         break;
@@ -2660,11 +2660,14 @@ const COLLAPSIBLE = /^[ \t\n\r\f]*$/;
 
 /** Whether an inline box makes no line either — nothing in it that does,
  *  and no margin, border or padding on any side: the phantom line of CSS
- *  2.1 9.4.2, which a margin collapses through. `0` where it makes one,
- *  `1` where it does not, and `2` where it does not and holds a float, which
- *  the walk has to pass. The children go first: most inline boxes hold text,
- *  and that answers without a look at their edges. */
-function phantom(box: Box): 0 | 1 | 2 {
+ *  2.1 9.4.2. `0` where it makes one, `1` where it does not, and `2` where
+ *  it does not and holds a float, which the walk has to pass. The children
+ *  go first: most inline boxes hold text, and that answers without a look
+ *  at their edges. `across` asks of the edges at its start and end alone,
+ *  which is what a margin collapses through: one above or below an inline
+ *  box takes no room on its line, and a margin goes through it in all three
+ *  engines (WPT's css-inline phantom-line-boxes). */
+function phantom(box: Box, across = false): 0 | 1 | 2 {
   if (box.kind !== 'inline' || box.style.display !== 'inline') return 0;
   let made: 1 | 2 = 1;
   for (const child of box.children) {
@@ -2677,23 +2680,28 @@ function phantom(box: Box): 0 | 1 | 2 {
       if (makesNoLine(child)) continue;
       return 0;
     }
-    const inner = phantom(child);
+    const inner = phantom(child, across);
     if (inner === 0) return 0;
     if (inner === 2) made = 2;
   }
   const style = box.style;
-  return noLength(style.marginLeft) &&
-    noLength(style.marginRight) &&
-    noLength(style.marginTop) &&
-    noLength(style.marginBottom) &&
-    noLength(style.paddingLeft) &&
-    noLength(style.paddingRight) &&
-    noLength(style.paddingTop) &&
-    noLength(style.paddingBottom) &&
-    !hasBorder(style.borderLeftStyle, style.borderLeftWidth) &&
-    !hasBorder(style.borderRightStyle, style.borderRightWidth) &&
-    !hasBorder(style.borderTopStyle, style.borderTopWidth) &&
-    !hasBorder(style.borderBottomStyle, style.borderBottomWidth)
+  if (
+    !noLength(style.marginLeft) ||
+    !noLength(style.marginRight) ||
+    !noLength(style.paddingLeft) ||
+    !noLength(style.paddingRight) ||
+    hasBorder(style.borderLeftStyle, style.borderLeftWidth) ||
+    hasBorder(style.borderRightStyle, style.borderRightWidth)
+  ) {
+    return 0;
+  }
+  return across ||
+    (noLength(style.marginTop) &&
+      noLength(style.marginBottom) &&
+      noLength(style.paddingTop) &&
+      noLength(style.paddingBottom) &&
+      !hasBorder(style.borderTopStyle, style.borderTopWidth) &&
+      !hasBorder(style.borderBottomStyle, style.borderBottomWidth))
     ? made
     : 0;
 }
