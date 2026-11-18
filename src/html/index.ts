@@ -32,6 +32,7 @@ import type {
 } from 'react-x11';
 import {
   XK_DOWN,
+  XK_ESCAPE,
   XK_END,
   XK_HOME,
   XK_LEFT,
@@ -58,6 +59,7 @@ import {
   tagOf,
 } from './dom.js';
 import { focusableElement } from './focus.js';
+import { TopLayer } from './top-layer.js';
 import { documentReferrerPolicy, referrerPolicyOf } from './referrer.js';
 import type { Document, Element, HtmlChange } from './dom.js';
 import type { AnyNode } from 'domhandler';
@@ -1399,6 +1401,37 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   // how far across the viewport's scrollable overflow reaches past the
   // element's width, which a box of no size marks for the pane around it
   const [scrollReach, setScrollReach] = React.useState(0);
+  // What a document's markup opens and closes in its top layer — its
+  // popovers and dialogs, by `popovertarget`, `commandfor`, a dialog's form,
+  // a press outside, Escape — where no script engine runs it, whose DOM
+  // does all of it (`top-layer.ts`). Its events reach the host as they
+  // happen, by the props as they are now.
+  const told = React.useRef(onDomEvent);
+  told.current = onDomEvent;
+  const scripted = !!props.scripting;
+  const topLayer = React.useMemo(
+    () =>
+      scripted
+        ? null
+        : new TopLayer({
+            document: () => viewNode.current?.document ?? null,
+            touch: (changes) => viewNode.current?.touchDocument(changes),
+            fire: (type, target, init, cancelable) =>
+              fireDomEvent(told.current, type, target, init, cancelable),
+            // owed until its widget or its stop is mounted, which what is
+            // in a dialog just opened has none of yet
+            focus: (el) => {
+              if (!interactive.focus(el) && focusableElement(el)) {
+                interactive.told(el);
+              }
+            },
+            activeElement: () => interactive.activeElement(),
+            rectOf: (el) => viewNode.current?.elementRect(el) ?? null,
+          }),
+    // one for every document it draws: what it holds of one taken out of
+    // the tree, or of the document before, is let go as it is next asked
+    [scripted, interactive],
+  );
   const forms = useForms({
     view: viewNode,
     baseUrl,
@@ -1408,6 +1441,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onPickFiles: props.onPickFiles,
     onDomEvent,
     sandbox,
+    topLayer,
     touch: (changes) => {
       if (changes) viewNode.current?.touchDocument(changes);
       else setDomRevision((n) => n + 1);
@@ -1441,6 +1475,21 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     props._readClipboard,
     props._movesHeard,
   );
+
+  /** A press, or its release, as the top layer's light dismiss hears it:
+   *  at the control whose widget it is on, or what the document draws
+   *  under it — not on a scroll bar, nor in a frame's document. */
+  const lightDismiss = (type: 'down' | 'up', ev: X11MouseEvent<DrawnNode>) => {
+    const node = viewNode.current;
+    if (!topLayer || !node || events.onBar()) return;
+    const target = ev.target as DrawnNode;
+    if (embedded.contains(target)) return;
+    topLayer.pointer(
+      type,
+      forms.controlOf(target) ?? node.elementAtPoint(ev.x, ev.y),
+      documentPoint(ev, node.getClientRects()[0]),
+    );
+  };
   const drag = useDocumentDrag({
     view: viewNode,
     baseUrl,
@@ -1629,8 +1678,15 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
       ...links,
       // what the page hears first, before anything in the document — a
       // widget included — does what it does (`useDocumentEvents`)
-      onMouseDownCapture: events.onMouseDownCapture,
-      onMouseUpCapture: events.onMouseUpCapture,
+      onMouseDownCapture: (ev: X11MouseEvent<DrawnNode>) => {
+        events.onMouseDownCapture(ev);
+        lightDismiss('down', ev);
+      },
+      onMouseUpCapture: (ev: X11MouseEvent<DrawnNode>) => {
+        events.onMouseUpCapture(ev);
+        if (topLayer) forms.noteRelease(ev);
+        lightDismiss('up', ev);
+      },
       onContextMenuCapture: events.onContextMenuCapture,
       onKeyDownCapture: events.onKeyDownCapture,
       onKeyUpCapture: events.onKeyUpCapture,
@@ -1656,6 +1712,16 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
       onKeyDown: (ev: X11KeyboardEvent<DrawnNode>) => {
         stops.onKeyDown(ev);
         if (ev.defaultPrevented) return;
+        // Escape is a close request at the last popover or dialog shown
+        // (HTML 7.7.2), where the document's markup is what shows them
+        if (
+          ev.keysym === XK_ESCAPE &&
+          !embedded.contains(ev.target as DrawnNode) &&
+          topLayer?.closeRequest()
+        ) {
+          ev.preventDefault();
+          return;
+        }
         // the scroll keys, where the focus is on the document or a link of
         // it — a field's widget keeps its arrows
         const view = viewNode.current;
@@ -2091,7 +2157,9 @@ function documentInteraction(
       if (!now) return false;
       now.forms.scriptFocus(el);
       const took = now.forms.focusControl(el) || now.stops.focus(el);
-      if (!took) now.forms.scriptFocus(null);
+      // one with nothing mounted yet to take it is told it has it next
+      // (`told`), and shows as this ask says
+      if (!took && !focusableElement(el)) now.forms.scriptFocus(null);
       // A modal dialog with nothing in it that takes the focus takes it
       // itself (HTML 4.11.4.2, the dialog focusing steps), where nothing of
       // the page around it may keep it: the document does, so the keys —

@@ -3918,6 +3918,28 @@ goes in `defaultMouseDown`, as `startsSelectionAt` does, since a press on
 `user-select: none` starts no selection and moves the focus in all three
 engines.
 
+**The top layer has one owner: the markup where nothing runs the
+document, and the engine's DOM where something does** (`top-layer.ts`,
+gated on `scripting`). A browser with JavaScript off opens a popover by
+`popovertarget`, a dialog by `commandfor` and `command`, closes one by a
+`<form method="dialog">`, a press outside and Escape, and Alloy CSS's
+example is a page of nothing else; before this a document with no script
+opened nothing, and neither side knew `commandfor`. Both halves place an
+element in the top layer through `dom.ts`'s `setModal` and
+`setPopoverOpen`, so **anything new HTML lets markup do to the top layer
+goes in `top-layer.ts` and in `scripts/dom.ts` both**, and the two are held
+to the same page (`test/html/top-layer.test.ts`, and its scripted twin in
+`scripts.test.ts`). Two things are load-bearing. **A release's target is
+taken before its light dismiss** (`noteRelease`): the dismiss hides a
+popover as the button goes up, before the click, and a menu leaving under
+an `overlay` exit transition, its anchor let go, is drawn over the button
+beside it, which a hit test after the dismiss found instead. Anything new
+that a release does after a default may change the document hit-tests
+from there. And **an owed focus shows as it was asked for**: the dialog
+focusing steps focus a control that has no widget or stop until the next
+render, and the second `focused` as it mounts recomputed `:focus-visible`
+without the script's ask, so a dialog a press opened lit a ring.
+
 **The mouse is a pointer to a page, and one object says what it is over**
 (`scripts/pointers.ts`, over the interfaces in `scripts/ui-events.ts`). A
 press, a release and a move go through the steps Chromium's

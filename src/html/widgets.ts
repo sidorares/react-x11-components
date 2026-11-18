@@ -99,6 +99,7 @@ import type { FieldSelection, FormSubmission } from './form.js';
 import { isSummaryOf, tabIndexOf } from './focus.js';
 import { RangeWidget } from './range.js';
 import { SB_AUTOMATIC, SB_FORMS } from './scripts/sandbox.js';
+import type { TopLayer } from './top-layer.js';
 
 const h = React.createElement;
 
@@ -125,6 +126,10 @@ export interface FormsOptions {
    *  `allow-forms` a form is sent nowhere and asked nothing, and with no
    *  `allow-scripts` nothing is focused by `autofocus`. */
   sandbox?: number;
+  /** What a button's `popovertarget` and `commandfor` reach, and what a
+   *  `<form method="dialog">` closes, where no script engine runs the
+   *  document (`top-layer.ts`); null where one does, whose DOM does it. */
+  topLayer?: TopLayer | null;
 }
 
 export interface Forms {
@@ -132,6 +137,10 @@ export interface Forms {
    *  buttons and summaries. */
   onMouseDown: (ev: X11MouseEvent<DrawnNode>) => void;
   onMouseUp: (ev: X11MouseEvent<DrawnNode>) => void;
+  /** A release, heard in the capture phase: what it is on, taken before
+   *  anything its own defaults change — a popover a light dismiss hides
+   *  — which `onMouseUp` presses. */
+  noteRelease: (ev: X11MouseEvent<DrawnNode>) => void;
   /** The widgets for the rectangles layout reported, each at its rect's
    *  index — null where a rect has none — and the message of a form that
    *  would not submit. */
@@ -237,6 +246,7 @@ export function useForms(options: FormsOptions): Forms {
     onDomEvent,
     touch,
     sandbox: sandboxed = 0,
+    topLayer = null,
   } = options;
   /** Tell the host what happened; whether the default goes on. */
   const fire = (
@@ -392,6 +402,12 @@ export function useForms(options: FormsOptions): Forms {
       // button would, which a press lights no ring on
       const ask = asked.current;
       if (ask?.el === el) asked.current = null;
+      // an owed focus its widget or its stop took at last shows as it did
+      // when it was told: a control in a dialog a press opened lights no
+      // ring as it is mounted
+      if (was === el && ask?.el !== el && view.current?.focusedElement === el) {
+        return;
+      }
       const visible =
         isTextField(el) ||
         (ask?.el === el
@@ -518,9 +534,13 @@ export function useForms(options: FormsOptions): Forms {
     // 4.10.21.3, step 3)
     if (sandboxed & SB_FORMS) return;
     attempted(form);
-    if (!onSubmit && !onDomEvent) return;
+    // a dialog's form closes its dialog, whoever hears of it
+    if (!onSubmit && !onDomEvent && !topLayer?.sendsToDialog(form, submitter)) {
+      return;
+    }
     if (!validate(form, submitter)) return;
     if (!fire('submit', form, { submitter })) return;
+    if (topLayer?.submitted(form, submitter, point)) return;
     send(form, submitter, point);
   };
 
@@ -542,13 +562,18 @@ export function useForms(options: FormsOptions): Forms {
   };
 
   /** A button's activation behaviour (HTML 4.10.6): a submit button
-   *  submits its form, a reset button resets it, and any other does
-   *  nothing. Reported first, as a pressed widget is. */
+   *  submits its form, a reset button resets it, and any other runs its
+   *  `commandfor`'s command or shows its `popovertarget`'s popover, where
+   *  that is the document's to do. Reported first, as a pressed widget
+   *  is. */
   const press = (button: Element, point?: Point) => {
     onControlChange?.(button, attr(button, 'value') ?? '');
     const kind = buttonType(button);
     const form = kind && kind !== 'button' ? formOwner(button) : null;
-    if (!form) return;
+    if (!form) {
+      topLayer?.activate(button);
+      return;
+    }
     if (kind === 'submit') submit(form, button, point);
     else if (fire('reset', form)) resetNow(form);
   };
@@ -781,9 +806,23 @@ export function useForms(options: FormsOptions): Forms {
       if (!ev.defaultPrevented) pickOption(at.control, at.element, ev);
     } else if (at) pressed.current = { at, x: ev.x, y: ev.y };
   };
+  // What a release lands on, taken before anything it does changes what
+  // is there: a light dismiss hides a popover as the button goes up, before
+  // the click, and the popover's exit transition can leave it over the
+  // button the click is for (`noteRelease`).
+  const released = React.useRef<{
+    ev: X11MouseEvent<DrawnNode>;
+    at: Pressable | null;
+  } | null>(null);
+  const noteRelease = (ev: X11MouseEvent<DrawnNode>) => {
+    released.current =
+      pressed.current && ev.button === 1 ? { ev, at: pressableAt(ev) } : null;
+  };
   const onMouseUp = (ev: X11MouseEvent<DrawnNode>) => {
     const start = pressed.current;
+    const noted = released.current?.ev === ev ? released.current : null;
     pressed.current = null;
+    released.current = null;
     if (!start || ev.button !== 1) return;
     if (
       Math.abs(ev.x - start.x) > CLICK_SLOP ||
@@ -791,7 +830,7 @@ export function useForms(options: FormsOptions): Forms {
     ) {
       return;
     }
-    const at = pressableAt(ev);
+    const at = noted ? noted.at : pressableAt(ev);
     if (!at || at.element !== start.at.element) return;
     if (at.kind === 'label') {
       // a label is text, and a drag that selected some of it was reading
@@ -880,6 +919,7 @@ export function useForms(options: FormsOptions): Forms {
   return {
     onMouseDown,
     onMouseUp,
+    noteRelease,
     render: (rects, look) => {
       rendered.current = rects;
       return {
@@ -969,7 +1009,9 @@ export function useForms(options: FormsOptions): Forms {
       if (attempt) attempted(form);
       return validate(form, submitter);
     },
-    submitNow: (form, submitter) => send(form, submitter),
+    submitNow: (form, submitter) => {
+      if (!topLayer?.submitted(form, submitter)) send(form, submitter);
+    },
     resetNow,
     activate: (el) => {
       const tag = tagOf(el);

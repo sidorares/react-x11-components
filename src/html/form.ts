@@ -165,13 +165,20 @@ export function inputType(el: Element): string {
 /**
  * What pressing a control does: submits its form, resets it, nothing
  * (`'button'`) — or null for something that is not a button at all. A
- * `<button>` with no `type`, or one HTML does not know, submits.
+ * `<button>` with no `type`, or one HTML does not know, submits, but for
+ * one with a `command` or a `commandfor`.
  */
 export function buttonType(el: Element): 'submit' | 'reset' | 'button' | null {
   const tag = tagOf(el);
   if (tag === 'button') {
     const type = (attr(el, 'type') ?? '').trim().toLowerCase();
-    return type === 'reset' || type === 'button' ? type : 'submit';
+    if (type === 'reset' || type === 'button' || type === 'submit') return type;
+    // the Auto state: a submit button, but for one that runs a command
+    // (HTML 4.10.6), which submits nothing
+    return attr(el, 'commandfor') !== undefined ||
+      attr(el, 'command') !== undefined
+      ? 'button'
+      : 'submit';
   }
   if (tag !== 'input') return null;
   const type = inputType(el);
