@@ -344,3 +344,20 @@ test('a transition sets its five longhands, and is written back from them', () =
     },
   );
 });
+
+test('clip is auto or a rect of four lengths, commas between all or none', () => {
+  // CSS Masking 1, 6.1
+  for (const bad of [
+    'none',
+    'rect(10px, 20px, 30px)',
+    'rect(10%, -20%, auto, auto)',
+    'rect(10px 20px, 30px 40px)',
+  ]) {
+    assert.strictEqual(specifiedValue('clip', bad), null, bad);
+  }
+  assert.notStrictEqual(
+    specifiedValue('clip', 'rect(10px, -20px, auto, auto)'),
+    null,
+  );
+  assert.notStrictEqual(specifiedValue('clip', 'rect(1px 2px 3px 4px)'), null);
+});

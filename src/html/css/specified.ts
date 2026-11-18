@@ -355,6 +355,37 @@ export function specifiedValue(
     }
     return maskShorthandTakes(word, CHECK) ? undefined : null;
   }
+  // `clip` (CSS Masking 1, 6.1): `auto`, or `rect()` of four lengths or
+  // `auto`, with commas between all of them or none
+  if (name === 'clip') {
+    const word = value.trim();
+    const lower = word.toLowerCase();
+    if (CSS_WIDE.test(lower)) return undefined;
+    if (lower === 'auto') return 'auto';
+    const m = /^rect\((.*)\)$/i.exec(word);
+    if (!m) return null;
+    const inner = m[1].trim();
+    const commas = splitCommas(inner);
+    const sides =
+      commas.length > 1
+        ? commas.map((side) => side.trim())
+        : splitValue(inner).filter(Boolean);
+    if (sides.length !== 4) return null;
+    for (const side of sides) {
+      if (side.toLowerCase() === 'auto' || /^[a-z-]+\(/i.test(side)) continue;
+      if (/\s/.test(side) || /%$/.test(side)) return null;
+      const n = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)([a-z]*)$/i.exec(
+        side,
+      );
+      if (!n) return null;
+      if (
+        !n[2] ? Number(n[1]) !== 0 : parseLength(`1${n[2]}`, CHECK) === null
+      ) {
+        return null;
+      }
+    }
+    return undefined;
+  }
   if (name === 'user-select' || name === '-webkit-user-select') {
     const word = value.trim().toLowerCase();
     if (CSS_WIDE.test(word)) return undefined;
