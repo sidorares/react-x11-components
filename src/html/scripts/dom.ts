@@ -38910,21 +38910,56 @@ export function installDom(
   };
   /** An element's border box and its content box, in CSS pixels, or null
    *  where it has no box. */
+  /** HTML's replaced elements, whose box an inline display does not
+   *  leave unsized. */
+  const REPLACED_TAGS = new Set([
+    'img',
+    'video',
+    'canvas',
+    'iframe',
+    'embed',
+    'object',
+    'input',
+    'select',
+    'textarea',
+    'button',
+    'audio',
+  ]);
+  /**
+   * What ResizeObserver measures of a target (Resize Observer 1, 3.3): its
+   * border box and its content box as layout sized them, in CSS pixels,
+   * before any transform — a transform resizes nothing — and nothing for a
+   * box that is not there or an inline box that is not replaced; then where
+   * its content box starts, and whether its writing mode is vertical, which
+   * makes its inline size its height.
+   */
   const boxSizesOf = (el: Any): number[] | null => {
-    const r = docRect(el);
-    if (!r) return null;
+    const o = offsetOf(el);
+    if (!o) return null;
+    const style = getComputedStyle(el);
+    if (
+      style.display === 'inline' &&
+      el.namespaceURI === HTML_NS &&
+      !REPLACED_TAGS.has(el.localName)
+    ) {
+      return [0, 0, 0, 0, 0, 0, 0];
+    }
     const e = call('edges', el._id);
     const [pt, pr, pb, pl, bt, br, bb, bl] =
       typeof e === 'string' && e
         ? e.split(',').map(Number)
         : [0, 0, 0, 0, 0, 0, 0, 0];
+    const w = o[3];
+    const h = o[4];
+    const vertical = /^(vertical|sideways)/.test(str(style.writingMode));
     return [
-      r[2],
-      r[3],
-      Math.max(0, r[2] - pl - pr - bl - br),
-      Math.max(0, r[3] - pt - pb - bt - bb),
+      w,
+      h,
+      Math.max(0, w - pl - pr - bl - br),
+      Math.max(0, h - pt - pb - bt - bb),
       pl,
       pt,
+      vertical ? 1 : 0,
     ];
   };
   class ResizeObserverSize {
@@ -38942,15 +38977,18 @@ export function installDom(
     readonly borderBoxSize: Any;
     readonly devicePixelContentBoxSize: Any;
     constructor(target: Any, sizes: number[]) {
-      const [bw, bh, cw, ch, x, y] = sizes;
+      const [bw, bh, cw, ch, x, y, vertical] = sizes;
       const dpr = viewport().dpr || 1;
+      // its sizes along its own axes: inline across a horizontal one
+      const size = (w: number, h: number): Any =>
+        vertical ? new ResizeObserverSize(h, w) : new ResizeObserverSize(w, h);
       this.target = target;
       this.contentRect = new DOMRect(x, y, cw, ch);
-      this.contentBoxSize = [new ResizeObserverSize(cw, ch)];
-      this.borderBoxSize = [new ResizeObserverSize(bw, bh)];
-      this.devicePixelContentBoxSize = [
-        new ResizeObserverSize(Math.round(cw * dpr), Math.round(ch * dpr)),
-      ];
+      this.contentBoxSize = Object.freeze([size(cw, ch)]);
+      this.borderBoxSize = Object.freeze([size(bw, bh)]);
+      this.devicePixelContentBoxSize = Object.freeze([
+        size(Math.round(cw * dpr), Math.round(ch * dpr)),
+      ]);
     }
   }
   /** The observers observing something, and whether their sizes are to
@@ -38994,11 +39032,18 @@ export function installDom(
    * Rive's do, wait for a size their container has only once the
    * stylesheet is in, and were told 0 by 0 for good.
    */
+  /** The box a ResizeObserver can watch of a target. */
+  const RESIZE_BOXES = new Set([
+    'content-box',
+    'border-box',
+    'device-pixel-content-box',
+  ]);
   class ResizeObserver {
     _fn: Any;
-    /** The size last told for each target, content box width and height,
-     *  0 by 0 to start with, which is told only where it changes. */
-    _told = new Map<Any, number[]>();
+    /** For each target, the box observed and the size last told of it:
+     *  -1 by -1 to start with, so that the first look tells even a target
+     *  that has no size (Resize Observer 1, 3.3, `lastReportedSizes`). */
+    _told = new Map<Any, { box: string; size: number[] }>();
     /** The targets observed since the last look, the only ones a look
      *  that finds nothing moved measures. */
     _fresh = new Set<Any>();
@@ -39010,9 +39055,22 @@ export function installDom(
       }
       this._fn = fn;
     }
-    observe(el: Any): void {
-      if (!this._told.has(el)) {
-        this._told.set(el, [0, 0]);
+    observe(el: Any, options?: Any): void {
+      if (!(el instanceof Element)) {
+        throw new TypeError(
+          "Failed to execute 'observe' on 'ResizeObserver': parameter 1 is not of type 'Element'.",
+        );
+      }
+      const box = options?.box === undefined ? 'content-box' : str(options.box);
+      if (!RESIZE_BOXES.has(box)) {
+        throw new TypeError(
+          `Failed to execute 'observe' on 'ResizeObserver': The provided value '${box}' is not a valid enum value of type ResizeObserverBoxOptions.`,
+        );
+      }
+      // observed again with another box is observed afresh with it
+      const was = this._told.get(el);
+      if (!was || was.box !== box) {
+        this._told.set(el, { box, size: [-1, -1] });
         this._fresh.add(el);
       }
       resizing.add(this);
@@ -39029,11 +39087,20 @@ export function installDom(
     }
     _look(moved: boolean): void {
       const entries: Any[] = [];
+      const dpr = viewport().dpr || 1;
       for (const [el, told] of this._told) {
         if (!moved && !this._fresh.has(el)) continue;
-        const sizes = boxSizesOf(el) ?? [0, 0, 0, 0, 0, 0];
-        if (sizes[2] === told[0] && sizes[3] === told[1]) continue;
-        this._told.set(el, [sizes[2], sizes[3]]);
+        const sizes = boxSizesOf(el) ?? [0, 0, 0, 0, 0, 0, 0];
+        // the size of the box observed, in its own axes
+        const [w, h] =
+          told.box === 'border-box'
+            ? [sizes[0], sizes[1]]
+            : told.box === 'device-pixel-content-box'
+              ? [Math.round(sizes[2] * dpr), Math.round(sizes[3] * dpr)]
+              : [sizes[2], sizes[3]];
+        const now = sizes[6] ? [h, w] : [w, h];
+        if (now[0] === told.size[0] && now[1] === told.size[1]) continue;
+        told.size = now;
         entries.push(new ResizeObserverEntry(el, sizes));
       }
       this._fresh.clear();
