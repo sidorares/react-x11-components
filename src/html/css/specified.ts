@@ -131,6 +131,29 @@ function rotateSpecified(value: string): string | null | undefined {
   return `${v.map((n) => String(n + 0)).join(' ')} ${angle}`;
 }
 
+/**
+ * `scale` (CSS Transforms 2, 4.2): `none`, or one to three numbers or
+ * percentages, written as Chromium writes them back: each a number, a
+ * depth of 1 left out, and a height the same as the width with it. Null
+ * for none; a math function is the cascade's.
+ */
+function scaleSpecified(value: string): string | null | undefined {
+  if (value.toLowerCase() === 'none') return 'none';
+  if (value.includes('(')) return undefined;
+  const words = splitValue(value);
+  if (!words.length || words.length > 3) return null;
+  const n: number[] = [];
+  for (const w of words) {
+    const m = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(%?)$/i.exec(w);
+    if (!m) return null;
+    n.push(m[2] ? Number(m[1]) / 100 : Number(m[1]));
+  }
+  const text = (x: number): string => String(Math.round(x * 1e6) / 1e6 + 0);
+  const [x, y = x, z = 1] = n;
+  if (z !== 1) return `${text(x)} ${text(y)} ${text(z)}`;
+  return y === x ? text(x) : `${text(x)} ${text(y)}`;
+}
+
 export function specifiedValue(
   prop: string,
   value: string,
@@ -191,6 +214,11 @@ export function specifiedValue(
     return transitionLonghand(NO_TRANSITIONS, 'properties', word) === null
       ? null
       : undefined;
+  }
+  if (name === 'scale') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return scaleSpecified(word);
   }
   if (name === 'rotate') {
     const word = value.trim();

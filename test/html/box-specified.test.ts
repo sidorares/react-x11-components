@@ -18,6 +18,17 @@ const longhandsOf = (name: string, value: string) => {
   return Object.fromEntries(expandShorthand(name, specified) ?? []);
 };
 
+test('scale is one to three numbers or percentages, written as numbers and as few as say them', () => {
+  // CSS Transforms 2, 4.2, as Chromium serializes it
+  for (const bad of ['100px', '100 200 300 400', '1 junk']) {
+    assert.strictEqual(specifiedValue('scale', bad), null, bad);
+  }
+  assert.strictEqual(specifiedValue('scale', '100%'), '1');
+  assert.strictEqual(specifiedValue('scale', '-100 -100 1'), '-100');
+  assert.strictEqual(specifiedValue('scale', '100% 200% 1'), '1 2');
+  assert.strictEqual(specifiedValue('scale', '1 2 3'), '1 2 3');
+});
+
 test('rotate is an angle and an axis either side of it, written axis first and by name where it can be', () => {
   // CSS Transforms 2, 4.1, as Chromium serializes it: an axis along x or y
   // named, one the other way the angle turned back, z left out
