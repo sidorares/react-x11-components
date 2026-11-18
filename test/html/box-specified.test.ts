@@ -257,6 +257,37 @@ test('a transform list is written as Chromium writes it', () => {
   assert.strictEqual(specifiedValue('transform', 'scale(1px)'), null);
 });
 
+test('animation-range sets its two ends, and each is written as Chromium writes it', () => {
+  // Scroll-driven Animations 1, 5.3: a lone name runs to its own end
+  assert.deepStrictEqual(expandShorthand('animation-range', 'cover'), [
+    ['animation-range-start', 'cover'],
+    ['animation-range-end', 'cover'],
+  ]);
+  assert.deepStrictEqual(
+    expandShorthand('animation-range', 'normal entry 100%'),
+    [
+      ['animation-range-start', 'normal'],
+      ['animation-range-end', 'entry'],
+    ],
+  );
+  assert.strictEqual(
+    specifiedValue('animation-range', 'entry 0% exit 0%'),
+    'entry exit 0%',
+  );
+  assert.strictEqual(specifiedValue('animation-range', '10% normal'), '10%');
+  assert.strictEqual(specifiedValue('animation-range', '1s'), null);
+  assert.strictEqual(
+    specifiedValue('animation-range-end', 'cover 100%'),
+    'cover',
+  );
+  assert.strictEqual(
+    composeShorthand('animation-range', (p) =>
+      p === 'animation-range-start' ? 'entry' : 'entry',
+    ),
+    'entry',
+  );
+});
+
 test('a transition sets its five longhands, and is written back from them', () => {
   // CSS Transitions 1, 2 and 2, 2.1: what the cascade refuses is refused
   for (const bad of ['1s 2s 3s', 'none, top', '-1s']) {

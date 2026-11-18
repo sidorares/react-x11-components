@@ -37,7 +37,7 @@ import {
   animationLonghand,
   animationLonghandsOf,
 } from './animation.js';
-import { parseEdges } from './triggers.js';
+import { parseAnimationRanges, parseEdges } from './triggers.js';
 import { parseShapeFunction } from './shape-function.js';
 import { specifiedColorText } from './color.js';
 import { parseObjectViewBox } from './object-view-box.js';
@@ -60,7 +60,7 @@ import {
   parseTextBoxTrim,
   textBoxText,
 } from './text-box.js';
-import { parseLength, parseZoom, splitValue } from './values.js';
+import { parseLength, parseZoom, splitCommas, splitValue } from './values.js';
 import {
   GRID_SPECIFIED,
   gridLonghands,
@@ -416,9 +416,23 @@ export function specifiedValue(
   if (name === 'animation-range-start' || name === 'animation-range-end') {
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
-    return parseEdges(word, name === 'animation-range-end', CHECK)
-      ? word
-      : null;
+    if (!parseEdges(word, name === 'animation-range-end', CHECK)) return null;
+    if (word.includes('(')) return word;
+    const edges = rangeListOf(word, false);
+    return edges
+      ? edges
+          .map(([edge]) => rangeEdgeText(edge, name === 'animation-range-end'))
+          .join(', ')
+      : word;
+  }
+  // both ends of an animation's range (Scroll-driven Animations 1, 5.3)
+  if (name === 'animation-range') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    if (!parseAnimationRanges(word, CHECK)) return null;
+    if (word.includes('(')) return word;
+    const ranges = rangeListOf(word, true);
+    return ranges ? ranges.map(([a, b]) => rangeText(a, b)).join(', ') : word;
   }
   // the `animation` shorthand, which takes no timeline and no range (CSS
   // Animations 2, 4)
@@ -1200,6 +1214,38 @@ export function expandShorthand(
   const border = borderLonghands(name, value);
   if (border) return border;
   if (name === 'animation') return animationLonghandsOf(value);
+  if (name === 'animation-range') {
+    // `none` is no range, and is asked here only for the longhands' names,
+    // which a style takes out where the shorthand is set (`specifiedValue`
+    // refuses it first)
+    if (value === 'none') {
+      return [
+        ['animation-range-start', 'normal'],
+        ['animation-range-end', 'normal'],
+      ];
+    }
+    if (!parseAnimationRanges(value, CHECK)) return null;
+    const ranges = rangeListOf(value, true);
+    if (!ranges) return null;
+    return [
+      [
+        'animation-range-start',
+        ranges.map(([a]) => rangeEdgeText(a, false)).join(', '),
+      ],
+      [
+        'animation-range-end',
+        ranges
+          .map(([a, b]) =>
+            b
+              ? rangeEdgeText(b, true)
+              : RANGE_NAME.test(a[0])
+                ? a[0]
+                : 'normal',
+          )
+          .join(', '),
+      ],
+    ];
+  }
   if (name === 'transition') return transitionLonghandsOf(value);
   if (name === 'marker') return MARKER_LONGHANDS.map((side) => [side, value]);
   if (name === 'position-try') {
@@ -1296,6 +1342,17 @@ export function composeShorthand(
     const fallbacks = longhand('position-try-fallbacks');
     if (order === null || fallbacks === null) return '';
     return order === 'normal' ? fallbacks : `${order} ${fallbacks}`;
+  }
+  if (name === 'animation-range') {
+    const start = longhand('animation-range-start');
+    const end = longhand('animation-range-end');
+    if (start === null || end === null) return '';
+    const a = splitTopLevel(start).map((x) => x.trim());
+    const b = splitTopLevel(end).map((x) => x.trim());
+    if (a.length !== b.length) return '';
+    return a
+      .map((x, i) => rangeText(splitValue(x), splitValue(b[i])))
+      .join(', ');
   }
   if (name === 'transition') {
     const values: string[] = [];
@@ -1692,4 +1749,65 @@ function transformText(word: string): string {
   // anything but functions and white space is no list this writes
   if (rest.trim()) return word;
   return out.join(' ');
+}
+
+const RANGE_NAME =
+  /^(?:cover|contain|entry|exit|entry-crossing|exit-crossing)$/i;
+
+/** One end of a range as its words: `normal`, an offset, or a range's
+ *  name with its offset. */
+type RangeWords = string[];
+
+/** A list of ranges' ends, each item its start and, where `pairs`, the
+ *  end written after it; null where the words do not split so. */
+function rangeListOf(
+  value: string,
+  pairs: boolean,
+): [RangeWords, RangeWords | null][] | null {
+  const out: [RangeWords, RangeWords | null][] = [];
+  for (const item of splitCommas(value)) {
+    const words = splitValue(item.trim()).filter(Boolean);
+    const take = (at: number): RangeWords | null => {
+      const w = words[at];
+      if (w === undefined) return null;
+      if (RANGE_NAME.test(w)) {
+        const next = words[at + 1];
+        return next !== undefined &&
+          next.toLowerCase() !== 'normal' &&
+          !RANGE_NAME.test(next)
+          ? [w.toLowerCase(), next]
+          : [w.toLowerCase()];
+      }
+      return [w.toLowerCase() === 'normal' ? 'normal' : w];
+    };
+    const a = take(0);
+    if (!a) return null;
+    const b = pairs ? take(a.length) : null;
+    if (a.length + (b?.length ?? 0) !== words.length) return null;
+    out.push([a, b]);
+  }
+  return out;
+}
+
+/** One end of a range as Chromium writes it: a nought `0px`, and a name's
+ *  offset left out where it is the one the name alone means. */
+function rangeEdgeText(edge: RangeWords, end: boolean): string {
+  const offset = (w: string) => (w === '0' ? '0px' : w);
+  if (edge.length === 1) {
+    return RANGE_NAME.test(edge[0]) ? edge[0] : offset(edge[0]);
+  }
+  const [name, at] = edge;
+  return at === (end ? '100%' : '0%') ? name : `${name} ${offset(at)}`;
+}
+
+/** A range from its ends, the end left out where leaving it out means it:
+ *  `normal` or all of the timeline after an offset, and the end of the
+ *  start's range after a name. */
+function rangeText(start: RangeWords, end: RangeWords | null): string {
+  const a = rangeEdgeText(start, false);
+  if (!end) return a;
+  const b = rangeEdgeText(end, true);
+  const named = RANGE_NAME.test(start[0]) ? start[0] : null;
+  if (named ? b === named : b === 'normal' || b === '100%') return a;
+  return `${a} ${b}`;
 }
