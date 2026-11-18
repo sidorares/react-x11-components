@@ -21762,16 +21762,88 @@ export function installDom(
         this,
       );
     }
-    insertRule(): number {
-      throw new DOMException(
-        'A rule inside another is not edited here.',
-        'NotSupportedError',
-      );
+    /** The texts of the rules it holds, as `cssRules` lists them. */
+    _children(): string[] {
+      return (
+        JSON.parse(String(call('cssRules', blockOf(this._text)))) as string[]
+      ).filter((text) => !droppedRule(text));
     }
-    deleteRule(): void {
-      this.insertRule();
+    /** CSSOM 6.4.2, "insert a CSS rule": a rule parsed from the text, at
+     *  the index, into the block, which is written again (`setRules`). */
+    insertRule(rule?: Any, index: Any = 0): number {
+      if (arguments.length === 0) {
+        throw new TypeError(
+          "Failed to execute 'insertRule' on 'CSSGroupingRule': 1 argument required, but only 0 present.",
+        );
+      }
+      const texts = this._children();
+      const at = Number(index) >>> 0;
+      if (at > texts.length) {
+        throw new DOMException(
+          `The index provided (${at}) is larger than the maximum index (${texts.length}).`,
+          'IndexSizeError',
+        );
+      }
+      const text = oneRule(str(rule));
+      // what may only open a sheet has no place in a group
+      if (/^@(?:import|namespace)\b/i.test(text)) {
+        throw new DOMException(
+          `Failed to insert the rule '${text}': it may not be nested.`,
+          'HierarchyRequestError',
+        );
+      }
+      texts.splice(at, 0, text);
+      setRules(this, texts);
+      return at;
+    }
+    deleteRule(index?: Any): void {
+      if (arguments.length === 0) {
+        throw new TypeError(
+          "Failed to execute 'deleteRule' on 'CSSGroupingRule': 1 argument required, but only 0 present.",
+        );
+      }
+      const texts = this._children();
+      const at = Number(index) >>> 0;
+      if (at >= texts.length) {
+        throw new DOMException(
+          `The index provided (${at}) is outside the range [0, ${texts.length}).`,
+          'IndexSizeError',
+        );
+      }
+      texts.splice(at, 1);
+      setRules(this, texts);
     }
   }
+  /**
+   * A grouping rule's block written again with `texts` for the rules it
+   * holds — a style rule's own declarations ahead of them — and the rule
+   * put back where it stands: in its sheet, or in its parent, written
+   * again so in turn.
+   */
+  const setRules = (rule: Any, texts: string[]): void => {
+    const open = blockStart(rule._text);
+    if (open < 0) return;
+    const own =
+      rule._type === 1
+        ? String(call('blockText', blockOf(rule._text)) ?? '').trim()
+        : '';
+    const inner = [own, ...texts].filter(Boolean).join(' ');
+    putRule(rule, `${rule._text.slice(0, open).trimEnd()} { ${inner} }`);
+  };
+  /** A rule's text replaced, in the sheet or the rule that holds it. */
+  const putRule = (rule: Any, text: string): void => {
+    const parent = rule._parent;
+    if (!parent) {
+      replaceRule(rule, text);
+      return;
+    }
+    const siblings: string[] = parent._children();
+    const at = siblings.indexOf(rule._text.trim());
+    rule._text = text;
+    if (at < 0) return;
+    siblings[at] = text;
+    setRules(parent, siblings);
+  };
   /** The pseudo-elements a selector may end in, which a page's query does
    *  not take and a rule does. */
   const RULE_PSEUDO_ELEMENTS =
