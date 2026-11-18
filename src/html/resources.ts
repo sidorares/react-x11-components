@@ -23,6 +23,8 @@ import { decodeBmp } from './bmp.js';
 import { GifCanvas, readGif } from './gif.js';
 import { AnimatedImage, gifAnimation, webpAnimation } from './animated.js';
 import { readAnimatedWebP } from './webp.js';
+import { decodePartialPng, isPng } from './png-partial.js';
+import type { PartialInflate } from './png-partial.js';
 import type { DecodeStill } from './webp.js';
 import { headerSize } from './image-header.js';
 import type { HeaderSize } from './image-header.js';
@@ -890,10 +892,59 @@ function decodeImage(bytes: Uint8Array): ImageLike | Promise<ImageLike> | null {
     // a BMP, which the ladder reads only under Bun (`bmp.ts`)
     const bmp = decodeBmp(bytes);
     if (bmp) return makeImage(bmp);
-    return imageDecoder.decode(bytes);
+    if (!isPng(bytes)) return imageDecoder.decode(bytes);
+    // a PNG the ladder refuses is drawn as far as its data goes, as a
+    // browser draws one still arriving (`png-partial.ts`)
+    let decoded: ImageLike | Promise<ImageLike>;
+    try {
+      decoded = imageDecoder.decode(bytes);
+    } catch {
+      return partialPng(bytes);
+    }
+    return isPromise<ImageLike>(decoded)
+      ? decoded.catch(() => partialPng(bytes))
+      : decoded;
   } catch {
     return null;
   }
+}
+
+let syncFlush: Promise<PartialInflate | null> | null = null;
+
+/** node's inflate with a sync flush, which hands over what a stream that
+ *  ends early holds, or null where there is none. The specifier is a
+ *  variable for the reason `woff2.ts` gives. */
+function partialInflate(): Promise<PartialInflate | null> {
+  syncFlush ??= (async () => {
+    try {
+      const specifier = 'node:zlib';
+      const zlib = (await import(/* @vite-ignore */ specifier)) as {
+        inflateSync?(
+          data: Uint8Array,
+          options: { finishFlush: number; maxOutputLength: number },
+        ): Uint8Array;
+        constants?: { Z_SYNC_FLUSH?: number };
+      };
+      const inflate = zlib.inflateSync;
+      const flush = zlib.constants?.Z_SYNC_FLUSH ?? 2;
+      return typeof inflate === 'function'
+        ? (data) =>
+            inflate(data, { finishFlush: flush, maxOutputLength: 1 << 28 })
+        : null;
+    } catch {
+      return null;
+    }
+  })();
+  return syncFlush;
+}
+
+/** A PNG cut short, as far as its data goes; rejects where there is no
+ *  header to draw it by, or no inflater. */
+async function partialPng(bytes: Uint8Array): Promise<ImageLike> {
+  const inflate = await partialInflate();
+  const rgba = inflate ? decodePartialPng(bytes, inflate) : null;
+  if (!rgba) throw new Error('not a PNG this can read');
+  return makeImage(rgba);
 }
 
 /**

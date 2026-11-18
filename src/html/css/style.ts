@@ -1191,6 +1191,9 @@ export interface ComputedStyle {
   aspectRatio: { ratio: number; auto: boolean } | null;
   /** How an image fills its content box, and where in it. */
   objectFit: 'fill' | 'contain' | 'cover' | 'none' | 'scale-down';
+  /** `image-rendering` (CSS Images 3, 6.1), in lower case: how an image
+   *  drawn at another size than its own is scaled. */
+  imageRendering: string;
   /** `object-view-box` (CSS Images 5, 6.6): the part of a replaced
    *  element's content that stands for all of it, which `object-fit` and
    *  `object-position` place, and whose size is its natural size; null for
@@ -1794,8 +1797,20 @@ export interface ComputedStyle {
 /** The fields a style takes from its parent's (CSS 2.1's "Inherited:
  *  yes"), which `inherit` copies one by one; the test holds the two to the
  *  same list. */
+/** `image-rendering`'s keywords, SVG's old two among them. */
+const IMAGE_RENDERINGS = new Set([
+  'auto',
+  'smooth',
+  'high-quality',
+  'pixelated',
+  'crisp-edges',
+  'optimizespeed',
+  'optimizequality',
+]);
+
 export const INHERITED = [
   'color',
+  'imageRendering',
   'passiveInherited',
   'colorSource',
   'interpolateSize',
@@ -2130,6 +2145,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     textOverflow: 'clip',
     aspectRatio: null,
     objectFit: 'fill',
+    imageRendering: 'auto',
     objectViewBox: null,
     shapeOutside: null,
     shapeMargin: 0,
@@ -3212,6 +3228,11 @@ export function applyDeclaration(
     case 'object-fit': {
       const v = value.trim().toLowerCase();
       if (OBJECT_FITS.has(v)) style.objectFit = v as ComputedStyle['objectFit'];
+      return;
+    }
+    case 'image-rendering': {
+      const v = value.trim().toLowerCase();
+      if (IMAGE_RENDERINGS.has(v)) style.imageRendering = v;
       return;
     }
     case 'object-view-box': {
@@ -9846,6 +9867,7 @@ function camel(name: string): string {
 const INHERITED_NAMES = new Set<string>([
   ...Object.keys(PASSIVE).filter((name) => PASSIVE[name].inherited),
   'color',
+  'image-rendering',
   'interpolate-size',
   'scrollbar-color',
   'caret-color',
@@ -10798,6 +10820,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   ],
   'aspect-ratio': ['aspectRatio'],
   'object-fit': ['objectFit'],
+  'image-rendering': ['imageRendering'],
   'object-view-box': ['objectViewBox'],
   'shape-outside': ['shapeOutside'],
   'shape-margin': ['shapeMargin'],

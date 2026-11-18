@@ -183,6 +183,17 @@ frame. A WebP's frames are decoded by image-in-browser, the decoder core
 reads a still WebP with under Node, loaded the first time an animated one
 arrives, so an animation lands a moment after its bytes do.
 
+An image drawn at another size than its own is smoothed, unless
+`image-rendering` says `pixelated` or `crisp-edges`: then each of its pixels
+is a block of one colour, on an `<img>`, a `<canvas>` and a background
+alike. A context with a smoothing switch (react-x11's native one) is told so,
+and on ntk's the image is scaled to the nearest pixel here, once a size. A
+PNG whose data ends early is drawn as far as it goes, as a browser draws one
+still arriving: the rows, or for an interlaced image the passes, it reached,
+and the rest transparent. That is a fallback for a PNG core's decoder
+refuses that has no `IEND`, and nothing else: one that is whole and
+refused is a failed image, as in a browser.
+
 A resource may arrive whenever it arrives, with two things to know about
 when:
 
