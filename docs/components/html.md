@@ -3262,8 +3262,17 @@ What is in the top layer computes to `overlay: auto`, and all else to
 `none`, a page's own `overlay` read back where it is `auto` or `none` and
 doing nothing (CSS Position 4, 3.2). A transition of `overlay` with
 `allow-discrete` holds it at `auto` to its end, so a popover hidden under
-one is still drawn in the top layer, in the place it had there; a closed
-dialog does not yet keep its modal styles and backdrop so.
+one is still drawn in the top layer, in the place it had there, and as
+Chrome keeps it: against what showed it, its implicit anchor until it
+shows again, where a menu placed by `position-area` had faded out in the
+corner, as wide as its own content. A modal dialog closed under one is
+drawn so with its `::backdrop`, and is placed as a modal one to the end,
+fixed and centred: `:modal` matches it no more as it closes, and Chrome
+keeps HTML's `dialog:modal` placement on what is in the top layer. One
+nothing holds there reads as what it is straight after its `close()`,
+`position: absolute`. Its frames, and its backdrop's, are restyled in
+place; the backdrop is beside its dialog in the top layer and in no box
+around it, and a frame repaints its ink as well as the dialog's.
 
 A link or a form whose `target` names one of the page's frames is loaded
 there; every other one still reaches `onLink` and `onSubmit`, which with
@@ -9556,7 +9565,13 @@ would take no focus, say nothing to a screen reader, and have to reimplement
 every keyboard convention the platform already has. A widget is keyed by
 its element rather than by where it is, so a field that layout moves — a
 stylesheet or an image arriving above it while someone types — is the same
-widget, and keeps its focus, its caret and its undo.
+widget, and keeps its focus, its caret and its undo. And it is moved with
+its box in the frame that laid the box out: where the rectangles a render
+places it at are a layout behind, core moves its widget by as far as the
+box has moved since, or the box that cuts it where it is cut, so a field in
+a centred dialog keeps to the dialog at every step of a window's edge. Its
+size is the render's, a frame late where a layout makes it narrower or
+wider.
 
 **A control's text is the theme's font, whatever the page's is.** Chrome
 sets `<input>`, `<select>`, `<textarea>` and `<button>` in a system font,

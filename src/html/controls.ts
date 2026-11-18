@@ -46,6 +46,7 @@ import { frameOf } from './layout/writing.js';
 import type { FontsLike } from './layout/inline.js';
 import {
   clipAround,
+  clipperOf,
   drawnAtViewport,
   fixedToViewport,
   layersOver,
@@ -69,6 +70,15 @@ export const AT_VIEWPORT = 'react-x11-components-html-viewport';
  * (`HtmlViewNode.heldShiftOf`). Named with the control's element.
  */
 export const HELD_AT_VIEWPORT = 'react-x11-components-html-held';
+
+/**
+ * The position every other control's widget goes in, registered with core
+ * by `registerHtmlView`: a box of no size, at the element's corner, that
+ * core moves after every layout pass by as far as the box the widget
+ * follows was laid out from where it was when the rect was taken
+ * (`ControlRect.follow`, `HtmlViewNode.followShiftOf`).
+ */
+export const FOLLOWS_CONTROL = 'react-x11-components-html-follows';
 
 /** The palette numbers a control's box has to reserve room for. */
 export interface ControlChrome {
@@ -175,6 +185,19 @@ export interface ControlRect {
    * told again as it is painted.
    */
   held?: true;
+  /**
+   * What the widget follows from one report to the next: the control's
+   * box, or where the control is cut, the box that cuts it — an element's,
+   * and where layout had it as the rect was taken, in device pixels. A
+   * report reaches React a render after the layout that moved the box, so
+   * at a window's edge every frame of a drag drew a dialog's fields where
+   * the last frame had them, the text a step behind the box around it.
+   * Core moves the widget's box by how far the one it follows has moved
+   * since (`FOLLOWS_CONTROL`), in the pass that laid it out. Not on a
+   * control turned by a vertical flow, nor on one a sticky box holds,
+   * which goes by `held`.
+   */
+  follow?: { element: Element; x: number; y: number };
 }
 
 /** Where a styled field's widget goes, and how its text looks. */
@@ -420,6 +443,11 @@ export function controlRectsOf(
     // a sticky box's offset is across and down the page, which a flow's
     // turn is not: one in a vertical flow is told again as it is painted
     const held = frame ? null : heldShift(tree, box);
+    if (!turn && !held) {
+      const anchor = (rect.clip && !clipsItself(box) && clipperOf(box)) || box;
+      const at = anchor.el && !anchor.pseudo ? anchor : box;
+      rect.follow = { element: at.el!, x: at.x, y: at.y };
+    }
     if (held) {
       const atRest = heldAtRest(rect, held);
       if (atRest.bare) atRest.bare = shiftedBack(atRest.bare, held);

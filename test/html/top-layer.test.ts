@@ -5,23 +5,36 @@
 // of it with JavaScript off. Alloy CSS's example — one page of an invoicing
 // app, no script anywhere — is the page this was found on.
 import assert from 'node:assert';
-import { act, fireEvent, renderX11, screen } from 'react-x11/test';
+import { afterEach } from 'node:test';
+import { act, cleanup, fireEvent, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
+import type { RenderX11Result } from 'react-x11/test';
 import { XK_ESCAPE } from 'react-x11/keysyms';
 import { Html } from '../../src/index.js';
 import type { HtmlDomEvent } from '../../src/index.js';
 import { isModal, isPopoverOpen } from '../../src/html/dom.js';
-import { FONTS, findById, h, metric, view } from './harness.js';
+import { animationClock } from '../../src/html/node.js';
+import { holdClock } from '../held-clock.js';
+import { FONTS, findById, h, metric, pixelsIn, view } from './harness.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
+
+// each test's page goes with it: one left mounted runs its transitions on
+// the clock the next test holds
+afterEach(cleanup);
 
 interface Page {
   el: HtmlViewNode;
+  result: RenderX11Result;
   events: string[];
   submitted: unknown[];
   byId(id: string): NonNullable<ReturnType<typeof findById>>;
   press(id: string): Promise<void>;
   pressAt(x: number, y: number): Promise<void>;
   escape(): Promise<void>;
+  /** The window's pixels, straight RGBA. */
+  pixels(): Promise<Uint8ClampedArray>;
+  /** The whole window painted again, from nothing kept. */
+  repaint(): Promise<void>;
 }
 
 /** A page with no script engine, whose events the host is told of. */
@@ -31,7 +44,7 @@ async function page(
 ): Promise<Page> {
   const events: string[] = [];
   const submitted: unknown[] = [];
-  await renderX11(
+  const result = await renderX11(
     h(
       'box',
       { style: { width: 400, height: 400, flexDirection: 'column' } },
@@ -78,10 +91,21 @@ async function page(
   };
   return {
     el,
+    result,
     events,
     submitted,
     byId,
     pressAt,
+    pixels: async () => {
+      await act();
+      return pixelsIn(result.ctx, { x: 0, y: 0, width: 400, height: 400 });
+    },
+    repaint: async () => {
+      let top: HtmlViewNode['parent'] = el;
+      while (top?.parent) top = top.parent;
+      top?.invalidate();
+      await settle();
+    },
     press: async (id) => {
       const rect = el.elementRect(byId(id));
       assert.ok(rect, `#${id} is drawn`);
@@ -287,10 +311,11 @@ metric(
 metric(
   'a press on a button the light dismiss uncovers is that button’s: a closing popover drawn over it on the way out takes no click from it',
   async () => {
-    // Alloy's menus: a popover leaving the top layer is still drawn through
-    // its exit transition (`overlay` and `display` allow-discrete), where its
-    // anchor has let it go — at its place in the flow, over the button next
-    // to the one that showed it. Chrome's click goes where the press was.
+    // A popover leaving the top layer is still drawn through its exit
+    // transition (`overlay` and `display` allow-discrete), and here, where
+    // its style placed it by `:popover-open`, at its place in the flow —
+    // over the button next to the one that showed it. Chrome's click goes
+    // where the press was.
     const p = await page(
       '<style>#menu{margin:0;inset:auto;padding:0;width:200px;height:60px;' +
         'position:absolute;left:0;top:0;' +
@@ -341,5 +366,184 @@ metric(
   async () => {
     const p = await page(DIALOG);
     assert.ok(!isModal(p.byId('d')));
+  },
+);
+
+/** How many of two windows' pixels differ by more than a level. */
+function differing(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
+  let n = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    if (
+      Math.abs(a[i] - b[i]) > 1 ||
+      Math.abs(a[i + 1] - b[i + 1]) > 1 ||
+      Math.abs(a[i + 2] - b[i + 2]) > 1
+    ) {
+      n += 1;
+    }
+  }
+  return n;
+}
+
+// Alloy's dialog and menus fade in from a starting style and out to
+// `display: none`, each with its `::backdrop`, `overlay` and `display`
+// running allow-discrete, as a page that animates its top layer writes them.
+const FADES =
+  '<style>' +
+  '#d{width:200px;height:200px;padding:0;border:0;background:#fff}' +
+  '#d,#d::backdrop,#pa{transition:opacity 160ms linear,' +
+  'display 160ms allow-discrete,overlay 160ms allow-discrete}' +
+  '#d::backdrop{background:rgb(0 0 255)}' +
+  '#d:not([open]),#d:not([open])::backdrop,#pa:not(:popover-open){opacity:0}' +
+  '@starting-style{#d[open],#d[open]::backdrop,#pa:popover-open{opacity:0}}' +
+  '#pa{margin:0;inset:auto;padding:0;border:0;width:100px;height:40px;' +
+  'background:#0f0;position-area:bottom span-right}' +
+  '</style>' +
+  '<button id="open" type="button" commandfor="d" command="show-modal" style="width:80px;height:30px">open</button>' +
+  '<button id="a" popovertarget="pa" style="position:absolute;left:150px;top:100px;width:60px;height:30px">a</button>' +
+  '<div id="pa" popover></div>' +
+  '<dialog id="d"><button id="x" commandfor="d" command="close" style="width:80px;height:30px">x</button></dialog>';
+
+metric(
+  'a frame of a dialog’s fade in repaints its ::backdrop as well as the dialog',
+  async (t) => {
+    // The backdrop is beside its dialog in the top layer, and a frame that
+    // restyled the two claimed the dialog's ink alone: the window showed the
+    // backdrop's first frame, a page under nothing, until something painted
+    // all of it again.
+    const clock = holdClock(t, animationClock);
+    const p = await page(FADES);
+    await p.press('open');
+    assert.ok(isModal(p.byId('d')));
+    await clock.finish();
+    const framed = await p.pixels();
+    await p.repaint();
+    const whole = await p.pixels();
+    assert.equal(
+      differing(framed, whole),
+      0,
+      'drawn as a whole paint draws it',
+    );
+  },
+);
+
+metric(
+  'a closing dialog stays centred through its exit transition, a hiding popover stays against what showed it, and neither asks for a frame once it is gone',
+  async (t) => {
+    const clock = holdClock(t, animationClock);
+    const p = await page(FADES);
+    const d = p.byId('d');
+    const pa = p.byId('pa');
+    const at = (el: typeof d) => {
+      const r = p.el.elementRect(el);
+      return r && [r.x, r.y, r.width, r.height];
+    };
+    await p.press('a');
+    await clock.finish();
+    assert.deepStrictEqual(at(pa), [150, 130, 100, 40], 'under its button');
+    // a press outside light dismisses it, and its fade out is drawn where
+    // it was: its implicit anchor stays what showed it to the end, as
+    // Chrome's does, where it had been let go of and the menu faded out in
+    // the corner, as wide as its own content
+    await p.pressAt(300, 300);
+    assert.ok(!isPopoverOpen(pa));
+    await clock.frame();
+    assert.deepStrictEqual(at(pa), [150, 130, 100, 40], 'held where it was');
+    await clock.finish();
+    assert.equal(at(pa), null, 'and gone at its end');
+
+    await p.press('open');
+    await clock.finish();
+    assert.deepStrictEqual(at(d), [100, 100, 200, 200]);
+    await p.press('x');
+    assert.ok(!isModal(d), 'no longer modal');
+    await clock.frame();
+    await clock.frame();
+    // `:modal` matches it no more, and Chrome keeps placing it as a modal
+    // dialog until its `overlay` lets it go: fixed, in the middle
+    assert.deepStrictEqual(at(d), [100, 100, 200, 200], 'centred as it fades');
+    assert.equal(p.el.computedStyle(d)?.position, 'fixed');
+    // and once it is gone, neither its ::backdrop's transitions nor its own
+    // ask for another frame: one run out kept the clock armed for good
+    await clock.finish();
+    assert.equal(at(d), null);
+    assert.equal(clock.pending, false, 'no frame is asked for');
+  },
+);
+
+metric(
+  'a field’s widget lands with its box in the paint that moves it, at a window’s edge, in a dialog and out of one',
+  async (t) => {
+    // A widget is placed where the last report of the controls had it, and
+    // a report reaches React a render after the layout that moved the
+    // field, so every step of a drag drew a centred dialog's fields where
+    // the step before had them, their text a step behind the box around
+    // it. Core moves it by as far as its box, or the box that cuts it,
+    // moved since (`FOLLOWS_CONTROL`), in the pass that laid it out.
+    const source =
+      '<style>body{margin:0;font-size:16px}#d{padding:0;width:200px}' +
+      'input{width:120px}</style>' +
+      '<div style="width:200px;margin:0 auto"><input id="f"></div>' +
+      '<button id="open" type="button" commandfor="d" command="show-modal" style="width:80px;height:30px">open</button>' +
+      '<dialog id="d"><input id="g"></dialog>';
+    const doc = (width: number) =>
+      h(
+        'box',
+        { style: { width, height: 400, flexDirection: 'column' } },
+        h(Html, {
+          source,
+          partial: false,
+          'data-testname': 'doc',
+          style: { flexGrow: 1 },
+        }),
+      );
+    const result = await renderX11(doc(400), {
+      width: 600,
+      height: 400,
+      fonts: FONTS!,
+    });
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const settle = () => act(() => new Promise((r) => setTimeout(r, 30)));
+    await settle();
+    let field = findById(el.document, 'f')!;
+    // where the widget is drawn from the field, at each paint
+    const seen: number[] = [];
+    const paint = el.paint.bind(el);
+    t.mock.method(el, 'paint', (...args: Parameters<typeof el.paint>) => {
+      const out = paint(...args);
+      const widgets = screen.all((n) => n.kind === 'textinput');
+      const rect = el.elementRect(field);
+      if (widgets.length === 1 && rect) {
+        seen.push(Math.round(widgets[0].abs.x - el.abs.x - rect.x));
+      }
+      return out;
+    });
+    for (const width of [380, 360, 340]) {
+      await act(() => result.rerender(doc(width)));
+      await settle();
+    }
+    assert.ok(seen.length >= 3, `painted: ${seen.length}`);
+    assert.ok(
+      seen.every((x) => x === seen[0]),
+      `the widget with the field at every paint: ${seen.join(' ')}`,
+    );
+    // in a modal dialog, whose `overflow: auto` cuts what is in it, which
+    // the widget follows
+    const open = findById(el.document, 'open')!;
+    await act(async () => {
+      el.interactive!.activate(open);
+    });
+    await settle();
+    assert.ok(isModal(findById(el.document, 'd')!));
+    field = findById(el.document, 'g')!;
+    seen.length = 0;
+    for (const width of [380, 400, 420]) {
+      await act(() => result.rerender(doc(width)));
+      await settle();
+    }
+    assert.ok(seen.length >= 3, `painted: ${seen.length}`);
+    assert.ok(
+      seen.every((x) => x === seen[0]),
+      `the widget with the dialog's field at every paint: ${seen.join(' ')}`,
+    );
   },
 );

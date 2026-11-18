@@ -1145,7 +1145,51 @@ function topOf(node: AnyNode): AnyNode {
 export function setModal(el: Element, modal: boolean): boolean {
   const was = IN_TOP_LAYER.get(el);
   if (modal) return !was && enterTopLayer(el, 'modal');
-  return was?.kind === 'modal' && leaveTopLayer(el);
+  if (was?.kind !== 'modal') return false;
+  LEAVING_MODAL.set(el, null);
+  return leaveTopLayer(el);
+}
+
+/** The dialogs that left the top layer as modal ones, until their `overlay`
+ *  lets them go: whether a transition holds each there, or null where the
+ *  cascade has yet to say (`leavingModal`, `holdModalPlacement`). */
+const LEAVING_MODAL = new WeakMap<Element, boolean | null>();
+
+/**
+ * Where a dialog that left the top layer as a modal one stands (the UA
+ * sheet's `dialog:modal` rule, which the cascade matches by
+ * `:-rx-modal-placed`): placed as a modal one while a transition of its
+ * `overlay` holds it in the top layer, as Chrome keeps it, centred, through
+ * its exit (CSS Position 4, 3.2, "request an element to be removed from the
+ * top layer") — true; not, as a script reads it straight after a `close()`
+ * where nothing holds it — false; or null, as it closes, for the cascade to
+ * say from the style the document drew it in. Undefined for one that did
+ * not leave as a modal one, or was opened since. `:modal` stops matching
+ * as it closes, as HTML has it, and a dialog that took its fade out to the
+ * top of the page, which a placement of no modal one's left it at.
+ */
+export function leavingModal(el: Element): boolean | null | undefined {
+  if (attr(el, 'open') !== undefined) return undefined;
+  return LEAVING_MODAL.get(el);
+}
+
+/** What the cascade found holds a dialog leaving as a modal one where it
+ *  was (`leavingModal`). */
+export function holdModalPlacement(el: Element, held: boolean): void {
+  if (LEAVING_MODAL.has(el)) LEAVING_MODAL.set(el, held);
+}
+
+/** A dialog's style came to an `overlay` of `none`: whatever held it in the
+ *  top layer as it left has let it go, and it is placed as what it is. */
+export function letGoOfModalPlacement(el: Element): void {
+  LEAVING_MODAL.delete(el);
+}
+
+/** Whether an element was in its document's top layer and is not now: one
+ *  whose style may still hold it there, as a transition of its `overlay`
+ *  does, until its style lets it go. */
+export function leftTopLayer(el: Element): boolean {
+  return LEFT_TOP_LAYER.has(el) && !IN_TOP_LAYER.has(el);
 }
 
 /** Each showing popover's implicit anchor element (HTML 6.12, "show
@@ -1167,15 +1211,20 @@ export function setPopoverOpen(
   if (open) {
     if (was) return false;
     if (source) IMPLICIT_ANCHORS.set(el, source);
+    else IMPLICIT_ANCHORS.delete(el);
     return enterTopLayer(el, 'popover');
   }
   if (was?.kind !== 'popover') return false;
-  IMPLICIT_ANCHORS.delete(el);
+  // kept as it hides: a transition of its `overlay` holds it in the top
+  // layer, drawn as it was, and Chrome keeps it against what showed it to
+  // the end — let go of, an Alloy menu's fade out was drawn in the corner,
+  // and narrower, where `position-area` and `anchor-size()` had nothing
   return leaveTopLayer(el);
 }
 
 /** A popover's implicit anchor element (`setPopoverOpen`), or null: one
- *  shown with no source, or not showing. */
+ *  shown with no source. One hidden keeps what showed it, for as long as
+ *  its exit transition draws it. */
 export function implicitAnchorOf(el: Element): Element | null {
   return IMPLICIT_ANCHORS.get(el) ?? null;
 }
@@ -1196,6 +1245,7 @@ export function isFullscreen(el: Element): boolean {
 }
 
 function enterTopLayer(el: Element, kind: TopLayerKind): boolean {
+  LEAVING_MODAL.delete(el);
   const top = topOf(el);
   let layer = TOP_LAYERS.get(top);
   if (!layer) TOP_LAYERS.set(top, (layer = []));

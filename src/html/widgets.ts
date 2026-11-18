@@ -56,6 +56,7 @@ import { browserSystemColor } from './css/color.js';
 import type { RootLook } from './css/style.js';
 import {
   AT_VIEWPORT,
+  FOLLOWS_CONTROL,
   HELD_AT_VIEWPORT,
   between,
   buttonLabel,
@@ -1721,9 +1722,38 @@ function keptWithBox(
   key: string,
   node: ReactElement,
 ): ReactElement {
-  if (!rect?.held) return atViewport(rect?.atViewport === true, key, node);
+  if (!rect?.held) {
+    const followed = rect?.follow
+      ? placed(followPosition(rect.follow), key, node)
+      : node;
+    return atViewport(rect?.atViewport === true, key, followed);
+  }
   return placed(heldPosition(rect.element, false), key, node);
 }
+
+/** The position that moves a widget with the box it follows
+ *  (`ControlRect.follow`): one object for an element and a place, as
+ *  `heldPosition` keeps one, since a new one at each render would be a new
+ *  style for the box it is in. */
+function followPosition(
+  follow: NonNullable<ControlRect['follow']>,
+): Style['position'] {
+  const kept = FOLLOW_POSITIONS.get(follow.element);
+  if (kept && kept.x === follow.x && kept.y === follow.y) return kept.position;
+  const position = {
+    name: FOLLOWS_CONTROL,
+    element: follow.element,
+    x: follow.x,
+    y: follow.y,
+  } as unknown as Style['position'];
+  FOLLOW_POSITIONS.set(follow.element, { x: follow.x, y: follow.y, position });
+  return position;
+}
+
+const FOLLOW_POSITIONS = new WeakMap<
+  Element,
+  { x: number; y: number; position: Style['position'] }
+>();
 
 /**
  * What is mounted for an embedded element or a video, kept with the box it

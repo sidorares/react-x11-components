@@ -515,6 +515,7 @@ import type {
 } from './paint.js';
 import {
   AT_VIEWPORT,
+  FOLLOWS_CONTROL,
   HELD_AT_VIEWPORT,
   controlRectsOf,
   heldAtRest,
@@ -890,6 +891,16 @@ export function registerHtmlView(): void {
       place: placeHeld,
     });
   }
+  if (!registeredPositions().includes(FOLLOWS_CONTROL)) {
+    registerPosition(FOLLOWS_CONTROL, {
+      options: {
+        element: { type: 'any' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+      },
+      place: placeFollowing,
+    });
+  }
   if (registeredElements().includes(ELEMENT)) return;
   registerElement(ELEMENT, {
     create: (props, app) => new HtmlViewNode(props, app),
@@ -952,6 +963,21 @@ function placeHeld(
 ): { x: number; y: number } | null {
   const { element, drawn } = context.options;
   return viewAround(node)?.heldShiftOf(element, node, drawn) ?? null;
+}
+
+/**
+ * How far to move a box in the `FOLLOWS_CONTROL` position from where layout
+ * put it: as far as the box its widget follows has moved since its rect was
+ * taken (`ControlRect.follow`). Asked after every layout pass, so a field
+ * in a dialog a window's edge re-centres lands with the dialog in the
+ * frame that laid it out, where the rect is a render behind.
+ */
+function placeFollowing(
+  node: Node,
+  context: PositionContext,
+): { x: number; y: number } | null {
+  const { element, x, y } = context.options;
+  return viewAround(node)?.followShiftOf(element, x, y) ?? null;
 }
 
 /** The element a node mounted beside it belongs to: the one in the nearest
@@ -9782,6 +9808,25 @@ export class HtmlViewNode extends Node {
     return shift;
   }
 
+  /**
+   * How far the box of `element` is laid out from `x`, `y`, in device
+   * pixels: where it was as a control's rect was taken, and what core moves
+   * the widget mounted for it by (`FOLLOWS_CONTROL`), until the next report
+   * puts the widget there. Null where it has not moved, or has no box.
+   */
+  followShiftOf(
+    element: Element,
+    x: number,
+    y: number,
+  ): { x: number; y: number } | null {
+    const tree = this._tree;
+    const box = tree && this._boxOf(tree, element);
+    if (!box) return null;
+    const dx = box.x - x;
+    const dy = box.y - y;
+    return dx || dy ? { x: dx, y: dy } : null;
+  }
+
   /** Where `heldShiftOf` last had core put each box it was asked about. */
   private readonly _heldPlaced = new Map<
     Node,
@@ -10731,12 +10776,14 @@ export class HtmlViewNode extends Node {
         ink = diff.ink;
       } else if (box.pseudo === 'backdrop') {
         // a `::backdrop`, which inherits from its element and not from the
-        // box around it: built again where its element was restyled, and
-        // otherwise restyled where its element was reached, as its
-        // transitions and animations run
+        // box around it: restyled where its element was reached, from the
+        // style its element comes to, as their transitions and animations
+        // run. A dialog fades out over its backdrop as the two fade, and a
+        // build at every frame of it was the whole document's. A change
+        // that takes the element out of the top layer is a change of its
+        // `display` or its `overlay`, which its own box refuses.
         const from = GENERATED_FROM.get(box);
         if (!from) continue;
-        if (changed.has(from)) return false;
         if (!reach.has(from)) continue;
         const inherits = fresh.get(from);
         if (!inherits) return false;
@@ -13041,12 +13088,7 @@ export class HtmlViewNode extends Node {
   /** An element's `::backdrop`'s box, beside its own in the top layer
    *  (`_backdrop` in the builder), or null where it has none. */
   private _backdropOf(tree: BoxTree, el: Element): Box | null {
-    const box = this._ownBoxOf(tree, el);
-    if (!box?.topLayer || !box.parent) return null;
-    for (const at of box.parent.children) {
-      if (at.pseudo === 'backdrop' && GENERATED_FROM.get(at) === el) return at;
-    }
-    return null;
+    return backdropBeside(this._ownBoxOf(tree, el), el);
   }
 
   private _pseudoBoxOf(
@@ -13491,6 +13533,27 @@ export class HtmlViewNode extends Node {
           continue;
         }
         if (!outOfFlow(was.style) || !outOfFlow(now.style)) return null;
+        changes.push({ el, was, now });
+      }
+    }
+    // A `::backdrop` is beside its element in the top layer and never in
+    // its box, so no root's change takes it in, a root's own included: a
+    // dialog fading in over a backdrop whose colour is in transition
+    // repainted the dialog at each frame and the backdrop nowhere else,
+    // which stayed as the first frame drew it until something else
+    // repainted it. Each is compared where its element is, in the boxes the
+    // index had before the build and has after it.
+    if (topLayerBoxes(before.root).length || topLayerBoxes(after.root).length) {
+      for (const el of changed.length
+        ? new Set([...reach, ...changed])
+        : reach) {
+        const was = backdropBeside(beforeBoxes.get(el), el);
+        const now = backdropBeside(afterBoxes.get(el), el);
+        if (!was && !now) continue;
+        if (!was || !now) return null;
+        if (was.style === now.style || sameValue(was.style, now.style)) {
+          continue;
+        }
         changes.push({ el, was, now });
       }
     }
@@ -19965,6 +20028,9 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.placeholderColor !== q.placeholderColor ||
       p.atViewport !== q.atViewport ||
       p.held !== q.held ||
+      p.follow?.element !== q.follow?.element ||
+      p.follow?.x !== q.follow?.x ||
+      p.follow?.y !== q.follow?.y ||
       p.range?.key !== q.range?.key ||
       !sameClip(p.clip, q.clip) ||
       !sameBare(p.bare, q.bare)
@@ -23383,6 +23449,16 @@ function generatedIn(
     const at = stack.pop()!;
     if (at.pseudo === which && GENERATED_FROM.get(at) === el) return at;
     if (!at.el && !at.pseudo) stack.push(...at.children);
+  }
+  return null;
+}
+
+/** The `::backdrop` box of `el`, whose own box is `box`: beside it in the
+ *  top layer (`_backdrop` in the builder), or null where it has none. */
+function backdropBeside(box: Box | null | undefined, el: Element): Box | null {
+  if (!box?.topLayer || !box.parent) return null;
+  for (const at of box.parent.children) {
+    if (at.pseudo === 'backdrop' && GENERATED_FROM.get(at) === el) return at;
   }
   return null;
 }
