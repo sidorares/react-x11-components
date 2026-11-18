@@ -37,6 +37,7 @@ import {
 } from '../../src/html/date-fields.js';
 import type { DateFieldType } from '../../src/html/date-fields.js';
 import { parseColor } from '../../src/html/css/values.js';
+import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
 import {
   FONTS,
   boxOf,
@@ -48,6 +49,10 @@ import {
 } from './harness.js';
 
 afterEach(cleanup);
+
+// a page's scripts run only where the engine can contain them: not on Node
+// 20, nor without `--experimental-vm-modules`
+const scriptTest = SCRIPTS_CONTAINED ? test : test.skip;
 
 /** A node's props, as core keeps them. */
 type Props = { props: Record<string, unknown> };
@@ -444,29 +449,32 @@ test("a script's showPicker() drops a date input's calendar, and a read-only one
   assert.ok(await screen.findByRole('grid'));
 });
 
-test("a page's script drops the calendar with showPicker(), and hears the day picked as an input and a change", async () => {
-  const page = await scriptedPage(
-    '<input id="d" type="date" value="2026-11-18">' +
-      '<input id="b" type="button" value="open">' +
-      '<script>var d = document.getElementById("d");' +
-      'd.addEventListener("input", function () {' +
-      '  console.log("input " + d.value); });' +
-      'd.addEventListener("change", function () { console.log("change " + d.value); });' +
-      'document.getElementById("b").onclick = function () {' +
-      '  d.showPicker(); console.log("open " + d.matches(":open")); };' +
-      '</script>',
-  );
-  const open = screen.getByText('open', { exact: true });
-  await userEvent.click(open);
-  assert.strictEqual(await page.until('open'), 'true', ':open at once');
-  await screen.findByRole('grid');
-  const day = screen
-    .getAllByRole('gridcell')
-    .find((c) => propsOf(c)['aria-label'] === '2026-11-25')!;
-  await userEvent.click(day.children[day.children.length - 1] as DrawnNode);
-  assert.strictEqual(await page.until('input'), '2026-11-25');
-  assert.strictEqual(await page.until('change'), '2026-11-25');
-});
+scriptTest(
+  "a page's script drops the calendar with showPicker(), and hears the day picked as an input and a change",
+  async () => {
+    const page = await scriptedPage(
+      '<input id="d" type="date" value="2026-11-18">' +
+        '<input id="b" type="button" value="open">' +
+        '<script>var d = document.getElementById("d");' +
+        'd.addEventListener("input", function () {' +
+        '  console.log("input " + d.value); });' +
+        'd.addEventListener("change", function () { console.log("change " + d.value); });' +
+        'document.getElementById("b").onclick = function () {' +
+        '  d.showPicker(); console.log("open " + d.matches(":open")); };' +
+        '</script>',
+    );
+    const open = screen.getByText('open', { exact: true });
+    await userEvent.click(open);
+    assert.strictEqual(await page.until('open'), 'true', ':open at once');
+    await screen.findByRole('grid');
+    const day = screen
+      .getAllByRole('gridcell')
+      .find((c) => propsOf(c)['aria-label'] === '2026-11-25')!;
+    await userEvent.click(day.children[day.children.length - 1] as DrawnNode);
+    assert.strictEqual(await page.until('input'), '2026-11-25');
+    assert.strictEqual(await page.until('change'), '2026-11-25');
+  },
+);
 
 test('a picker dropped before its field is mounted drops as the field comes', async () => {
   const { node } = await render(
