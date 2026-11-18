@@ -10362,11 +10362,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'text-autospace': ['textAutospace'],
   'text-autospace-size': ['textAutospaceSize'],
   'text-combine-upright': ['textCombineUpright'],
-  'letter-spacing': [
-    'letterSpacing',
-    'letterSpacingPct',
-    'letterSpacingFixed',
-  ],
+  'letter-spacing': ['letterSpacing', 'letterSpacingPct', 'letterSpacingFixed'],
   'word-spacing': ['wordSpacing', 'wordSpacingPct', 'wordSpacingFixed'],
   'font-variant': [
     'fontVariantNumeric',
