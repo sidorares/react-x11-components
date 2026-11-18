@@ -148,6 +148,7 @@ import {
   settleContainer,
   settleContentVisibility,
   settleDecorationInset,
+  settleAlternates,
   settleOverflow,
   settleSpacing,
   settleOutline,
@@ -161,6 +162,7 @@ import {
   sameStyle,
 } from './style.js';
 import type {
+  FeatureValues,
   AnchorSizeField,
   BoxShadow,
   ComputedStyle,
@@ -4521,6 +4523,9 @@ export class Cascade {
   readonly breakpoints: number[];
   /** The counter styles the sheets define, over the predefined ones. */
   readonly counterStyles: CounterStyles;
+  /** What the sheets' `@font-feature-values` rules give each family's
+   *  names, null where they have none (`settleAlternates`). */
+  featureValues: FeatureValues | null = null;
   /** The document's rules: its elements', and the ones of its tree's
    *  edges (`TreeRules`) — its `::part()` rules — and its `@keyframes`,
    *  by name, in document order: which one a name finds turns on the
@@ -4972,6 +4977,19 @@ export class Cascade {
     const breakpoints = new Set<number>();
     const counterStyles = new Map<string, CounterStyleRule>();
     for (const sheet of sheets) {
+      // a family's feature values, a name's last over any before it
+      for (const { families, values } of sheet.featureValues ?? []) {
+        const all = (this.featureValues ??= new Map());
+        for (const family of families) {
+          let types = all.get(family);
+          if (!types) all.set(family, (types = new Map()));
+          for (const [type, name, numbers] of values) {
+            let names = types.get(type);
+            if (!names) types.set(type, (names = new Map()));
+            names.set(name, numbers);
+          }
+        }
+      }
       // a counter style's rule whole over any before it of its name
       for (const { prelude, declarations } of sheet.counterStyles ?? []) {
         const style = counterStyleRule(prelude, declarations);
@@ -9651,6 +9669,9 @@ export class Cascade {
     style.fontSize = settled;
     style.fontSizeBasis = basis;
     settleSpacing(style);
+    if (style.fontVariantAlternates || style.fontAlternateFeatures) {
+      settleAlternates(style, this.featureValues);
+    }
 
     // A table never keeps HTML's alignment, `-webkit-center` and its kin:
     // the `<td align="center">` every mail centres its body table in
