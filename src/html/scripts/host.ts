@@ -1503,6 +1503,7 @@ const XML_QUERY = {
  *  around it says whose it is. A `<script>` is HTML's here, which is where
  *  a page's scripts are run from. */
 const SVG_NS = 'http://www.w3.org/2000/svg';
+const XHTML_NS = 'http://www.w3.org/1999/xhtml';
 /** The namespace an element the parser made has where it stands, where
  *  that is SVG's or MathML's (HTML 13.2.6.5), by one walk up: a `<math>`
  *  and what is in one that is no HTML integration point's are MathML's,
@@ -2926,6 +2927,24 @@ export class DomHost {
   /** An event `<Html>` told of, dispatched in the page; whether its default
    *  goes on. */
   dispatch(event: HtmlDomEvent): boolean {
+    // a summary's activation opened or closed its details (`toggleDetails`
+    // in `widgets.ts`): told as the attribute's change is, one `toggle` a
+    // task with its states, and its name group closed around it
+    if (
+      event.type === 'toggle' &&
+      !event.oldState &&
+      event.target instanceof Element &&
+      event.target.name === 'details' &&
+      namespaceOf(event.target) === XHTML_NS
+    ) {
+      const el = event.target;
+      this._detailsChanged(
+        el,
+        'open',
+        el.attribs.open === undefined ? '' : null,
+      );
+      return true;
+    }
     if (event.type.startsWith('mouse')) this._under = event.target;
     // a user's press or key has used the page (HTML 6.4.1, "activation
     // triggering input event"): what the realm notes of it is the page's to
@@ -2961,6 +2980,8 @@ export class DomHost {
       metaKey: event.metaKey,
       submitter: event.submitter ? this.idOf(event.submitter) : 0,
       relatedTarget: event.relatedTarget ? this.idOf(event.relatedTarget) : 0,
+      oldState: event.oldState,
+      newState: event.newState,
       clipboard: event.clipboard && clipboardWire(event.clipboard, base64Of),
       drag: event.drag && {
         entries: event.drag.entries,
@@ -8431,6 +8452,14 @@ export class DomHost {
       if (target instanceof Element)
         this._renderBlocking.changed(target, name!);
       if (
+        target instanceof Element &&
+        target.name === 'details' &&
+        (name === 'open' || name === 'name') &&
+        namespaceOf(target) === XHTML_NS
+      ) {
+        this._detailsChanged(target, name, oldValue);
+      }
+      if (
         isImage(target) &&
         IMAGE_ATTRIBUTES.has(name!) &&
         imageStateMoved(name!, oldValue, target.attribs[name!] ?? null)
@@ -8477,6 +8506,95 @@ export class DomHost {
         oldValue,
       });
     }
+  }
+
+  /** The `toggle` each details owes, by the state it started from: one a
+   *  task, however many changes came before it ran. */
+  private _detailsToggles = new Map<Element, 'open' | 'closed'>();
+
+  /**
+   * HTML 4.11.1, the details element's attribute changed steps: a details
+   * opened or closed tells `toggle` in a task, the state it went from and
+   * the state it has, and one opened closes the others of its name group
+   * ("ensure details exclusivity by closing other elements"); one given a
+   * name closes itself where another of the group is open.
+   */
+  private _detailsChanged(
+    el: Element,
+    name: string,
+    oldValue: string | null,
+  ): void {
+    const open = el.attribs.open !== undefined;
+    if (name === 'name') {
+      if (open && this._openInGroup(el).length) this._closeDetails(el);
+      return;
+    }
+    if ((oldValue !== null) === open) return;
+    const from: 'open' | 'closed' = open ? 'closed' : 'open';
+    if (!this._detailsToggles.has(el)) {
+      this._detailsToggles.set(el, from);
+      setTimeout(() => {
+        const started = this._detailsToggles.get(el);
+        this._detailsToggles.delete(el);
+        if (this._disposed || !started) return;
+        this.dispatch({
+          type: 'toggle',
+          target: el,
+          oldState: started,
+          newState: el.attribs.open !== undefined ? 'open' : 'closed',
+        } as HtmlDomEvent);
+      }, 0);
+    }
+    if (open) {
+      for (const other of this._openInGroup(el)) this._closeDetails(other);
+    }
+  }
+
+  /** The details that have been put in a document, whose opening from
+   *  their markup has been told. */
+  private _detailsSeen = new WeakSet<Element>();
+
+  /**
+   * HTML 4.11.1, the details element's insertion steps: one that comes in
+   * open where its group has another open is closed. And one the markup
+   * made open tells `toggle` as it first comes in, as its attribute's
+   * being set does.
+   */
+  private _detailsInserted(el: Element): void {
+    if (!this._detailsSeen.has(el)) {
+      this._detailsSeen.add(el);
+      if (el.attribs.open !== undefined) {
+        this._detailsChanged(el, 'open', null);
+      }
+    }
+    if (el.attribs.open !== undefined && this._openInGroup(el).length) {
+      this._closeDetails(el);
+    }
+  }
+
+  /** The other open details of an element's name group: of its name,
+   *  which is not empty, in the same tree. */
+  private _openInGroup(el: Element): Element[] {
+    const group = el.attribs.name;
+    if (!group) return [];
+    let root: AnyNode = el;
+    while (root.parent) root = root.parent;
+    return DomUtils.findAll(
+      (other) =>
+        other !== el &&
+        other.name === 'details' &&
+        other.attribs.name === group &&
+        other.attribs.open !== undefined &&
+        namespaceOf(other) === XHTML_NS,
+      (root as ParentNode).children,
+    );
+  }
+
+  private _closeDetails(el: Element): void {
+    const old = el.attribs.open ?? null;
+    if (old === null) return;
+    delete el.attribs.open;
+    this._changed(el, 'attributes', 'open', old);
   }
 
   /** Nodes put into `parent` before `before`, or at its end, each taken
@@ -10646,6 +10764,7 @@ export class DomHost {
         el.name === 'script' ||
         el.name === 'link' ||
         el.name === 'style' ||
+        el.name === 'details' ||
         FRAME_TAGS.has(el.name),
       nodes as AnyNode[],
     );
@@ -10654,6 +10773,10 @@ export class DomHost {
     if (found.length) this._renderBlocking.connected(found);
     for (const el of found) {
       if (el.name === 'style') continue;
+      if (el.name === 'details') {
+        if (namespaceOf(el) === XHTML_NS) this._detailsInserted(el);
+        continue;
+      }
       if (this._disposed) return;
       if (el.name === 'script') this._prepareScript(el);
       else if (el.name === 'link') this._preloadLink(el);

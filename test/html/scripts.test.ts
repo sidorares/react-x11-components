@@ -8534,6 +8534,33 @@ test('a query straight after a page’s own change reads the controls as they ar
   );
 });
 
+test('details of one name close each other, and each tells toggle once a task with the state it went from', async () => {
+  const doc = await hosted(
+    '<details id="a" name="g" open><summary>a</summary></details>' +
+      '<details id="b" name="g"><summary>b</summary></details>' +
+      '<p id="out"></p><script>' +
+      'var r = [], a = document.getElementById("a"), b = document.getElementById("b");' +
+      'var heard = [];' +
+      '[a, b].forEach(function (d) { d.addEventListener("toggle", function (e) {' +
+      '  heard.push(d.id + ":" + e.oldState + ">" + e.newState + ":" + (e.source === null)); }); });' +
+      'setTimeout(function () {' +
+      '  heard.length = 0;' +
+      '  b.open = true; r.push(a.open, b.open);' +
+      // opened again it closes b, and closed again: each one toggle for
+      // the task, from where it was to where it is, b's from closed to
+      // closed as HTML's "queue a details toggle event task" has it
+      '  a.open = true; a.open = false;' +
+      '  setTimeout(function () { r.push(heard.sort().join(","));' +
+      '    document.getElementById("out").textContent = r.join("|"); }, 20);' +
+      '}, 20);' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'false|true|a:open>closed:true,b:closed>closed:true',
+  );
+});
+
 test('getSelection() is a Selection, which no page makes, and setting it to what it is tells nothing', async () => {
   const doc = await hosted(
     '<p id="t">text</p><p id="out"></p><script>' +
@@ -19325,6 +19352,8 @@ test("an IntersectionObserver's options are read as Chrome reads them, and what 
       'function fails(f) { try { f(); return "none"; } catch (e) { return e.name; } }' +
       'r.push(fails(function () { new IntersectionObserver(function () {}, { rootMargin: "10" }); }));' +
       'r.push(fails(function () { new IntersectionObserver(function () {}, { rootMargin: "1em" }); }));' +
+      // an absolute length is so many whole pixels
+      'r.push(new IntersectionObserver(function () {}, { rootMargin: "10cm 10pt" }).rootMargin);' +
       'r.push(fails(function () { new IntersectionObserver(function () {}, { threshold: 2 }); }));' +
       'r.push(fails(function () { new IntersectionObserver(function () {}, { root: {} }); }));' +
       'r.push(fails(function () { io.observe(document); }));' +
@@ -19335,7 +19364,7 @@ test("an IntersectionObserver's options are read as Chrome reads them, and what 
   assert.equal(
     await settled(doc, 'out', (t) => t !== ''),
     '10px 5% 10px 5%|0px 0px 0px 0px|0,0.5,1|true|true|true|true|' +
-      'SyntaxError|SyntaxError|RangeError|TypeError|TypeError|0',
+      'SyntaxError|SyntaxError|377px 13px 377px 13px|RangeError|TypeError|TypeError|0',
   );
 });
 

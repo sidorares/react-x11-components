@@ -6,6 +6,8 @@
 // reads back is never lost to a grammar this has not got.
 
 import { PASSIVE } from './passive-properties.js';
+import { parseFilter } from './filter.js';
+import { cornerShapeValid } from './corner-shape.js';
 import { NO_TRANSITIONS, transitionLonghand } from './animation.js';
 import {
   backgroundSpecified,
@@ -174,6 +176,25 @@ export function specifiedValue(
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
     if (/\(/.test(word)) return undefined;
     return positionSpecified(splitValue(word));
+  }
+  // a filter list, or `none` (Filter Effects 1, 5), and a corner's shapes
+  // (CSS Borders 4, 3.9): refused where the cascade would refuse them,
+  // kept as written where it would take them
+  if (name === 'filter' || name === 'backdrop-filter') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    // a math function is valid where its type is, and clamped at computed
+    // value time (`calc(-10%)`), or reads a unit no check here resolves
+    // (`cqw`): the cascade's to judge
+    if (/(?:calc|min|max|clamp|sign|abs|round|mod|rem)\(/i.test(word)) {
+      return undefined;
+    }
+    return parseFilter(word, CHECK) === undefined ? null : undefined;
+  }
+  const corner = cornerShapeValid(name, value);
+  if (corner !== undefined) {
+    if (CSS_WIDE.test(value.trim().toLowerCase())) return undefined;
+    return corner ? undefined : null;
   }
   if (name === 'user-select' || name === '-webkit-user-select') {
     const word = value.trim().toLowerCase();

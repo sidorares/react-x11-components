@@ -1215,10 +1215,14 @@ export function installDom(
   class ToggleEvent extends Event {
     readonly oldState: string;
     readonly newState: string;
+    /** What made it toggle, where an invoker did (HTML 4.13.3), and null
+     *  for anything else. */
+    readonly source: Any;
     constructor(type: string, init: Any = {}) {
       super(type, init);
       this.oldState = String(init.oldState ?? '');
       this.newState = String(init.newState ?? '');
+      this.source = init.source ?? null;
     }
   }
   /** A button's `command` at the element its `commandfor` names (HTML
@@ -38624,24 +38628,42 @@ export function installDom(
   let intersectionsAsked = false;
 
   /** A root or a scroll margin (Intersection Observer, 3.2.1, "parse a
-   *  margin"): one to four lengths, as `margin` takes them, each pixels or
-   *  a percentage, as Chrome takes them — top, right, bottom and left, as
-   *  they serialize. */
+   *  margin"): one to four lengths, as `margin` takes them, each an
+   *  absolute length or a percentage, as Chrome takes them — top, right,
+   *  bottom and left, as they serialize. */
   const parseMargin = (given: Any, what: string): string[] => {
     const tokens = str(given).trim().split(/\s+/).filter(Boolean);
     if (!tokens.length) tokens.push('0px');
     const lengths = tokens.map((t) => {
-      const m = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(px|%)$/i.exec(t);
+      const m =
+        /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(px|%|cm|mm|q|in|pt|pc)$/i.exec(
+          t,
+        );
       if (!m || tokens.length > 4) {
         throw new DOMException(
           `Failed to construct 'IntersectionObserver': ${what} must be specified in pixels or percent.`,
           'SyntaxError',
         );
       }
-      return `${Number(m[1]) + 0}${m[2] === '%' ? '%' : 'px'}`;
+      const unit = m[2].toLowerCase();
+      if (unit === '%') return `${Number(m[1]) + 0}%`;
+      // an absolute length is so many pixels, whole ones as Chrome and
+      // WebKit keep it
+      const px = Number(m[1]) * ABSOLUTE_PX[unit];
+      return `${(unit === 'px' ? px : Math.trunc(px)) + 0}px`;
     });
     const [t, r = t, b = t, l = r] = lengths;
     return [t, r, b, l];
+  };
+  /** Pixels in each absolute length unit (CSS Values 4, 6.2). */
+  const ABSOLUTE_PX: Record<string, number> = {
+    px: 1,
+    cm: 96 / 2.54,
+    mm: 96 / 25.4,
+    q: 96 / 101.6,
+    in: 96,
+    pt: 96 / 72,
+    pc: 16,
   };
   /** A margin's length on a side of a rectangle that long. */
   const marginOn = (length: string, of: number): number =>
@@ -38840,6 +38862,11 @@ export function installDom(
           const thresholds = this._thresholds;
           index = thresholds.findIndex((t) => t > ratio);
           if (index < 0) index = thresholds.length;
+          // a target outside the root is past no threshold, and one inside
+          // it short of the first is not yet intersecting, as Chromium and
+          // WebKit tell it (WPT's initial-observation-with-threshold)
+          if (!isIntersecting) index = 0;
+          else if (index === 0) isIntersecting = false;
         }
         if (index === was.index && isIntersecting === was.intersecting) {
           continue;
@@ -49373,7 +49400,17 @@ export function installDom(
           ),
         );
       case 'toggle':
-        return dispatch(target, trusted(new Event('toggle')));
+        return dispatch(
+          target,
+          trusted(
+            e.oldState
+              ? new ToggleEvent('toggle', {
+                  oldState: e.oldState,
+                  newState: e.newState,
+                })
+              : new Event('toggle'),
+          ),
+        );
       case 'cancel':
         return dispatch(
           target,
