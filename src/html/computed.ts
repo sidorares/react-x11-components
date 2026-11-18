@@ -827,8 +827,14 @@ function clipPathText(path: ClipPath | null, scale: number): string {
     }
     const rule = path.fillRule === 'evenodd' ? 'evenodd, ' : '';
     shape = `polygon(${rule}${points.join(', ')})`;
-  } else if (path.shape === 'inset') {
-    shape = `inset(${shortest(path.lengths.map(L))})`;
+  } else if (
+    path.shape === 'inset' ||
+    path.shape === 'rect' ||
+    path.shape === 'xywh'
+  ) {
+    // `rect()` and `xywh()` are the `inset()` they come to, with their
+    // corners, as Chromium computes them (CSS Shapes 1, 3.1)
+    shape = shapeOutsideText({ ...path, box: 'margin-box' }, scale);
   } else if (path.shape) {
     shape = `${path.shape}(${path.lengths.map(L).join(' ')})`;
   }
@@ -858,10 +864,23 @@ function shapeOutsideText(
       : v === 'auto'
         ? { pct: 0 }
         : { pct: 100 - v.pct, ...(v.px ? { px: -v.px } : {}) };
+  // a radius is no less than nought, which an interpolation past its end
+  // can come to, and corners all square are left out
+  const nonNegative = (v: Len): Len =>
+    typeof v === 'number'
+      ? Math.max(0, v)
+      : typeof v === 'object' && !v.px && v.pct < 0
+        ? { pct: 0 }
+        : v;
+  const square = (v: Len): boolean =>
+    v === 0 || (typeof v === 'object' && !v.px && v.pct === 0);
   const corners = (): string => {
     if (!shape.radii) return '';
-    const a = shortest(shape.radii.map(L));
-    const d = shape.radiiY ? shortest(shape.radiiY.map(L)) : a;
+    const across = shape.radii.map(nonNegative);
+    const down = (shape.radiiY ?? shape.radii).map(nonNegative);
+    if ([...across, ...down].every(square)) return '';
+    const a = shortest(across.map(L));
+    const d = shape.radiiY ? shortest(down.map(L)) : a;
     return ` round ${a === d ? a : `${a} / ${d}`}`;
   };
   let text: string | null = null;
@@ -944,7 +963,10 @@ function basicShapeText(basic: BasicShape, scale: number): string | null {
     case 'circle':
       return `circle(${radius(basic.r)} at ${at(basic.at)})`;
     case 'ellipse':
-      return `ellipse(${radius(basic.rx)} ${radius(basic.ry)} at ${at(basic.at)})`;
+      // radii that are the sides it reaches by default are left out
+      return basic.rx === 'closest-side' && basic.ry === 'closest-side'
+        ? `ellipse(at ${at(basic.at)})`
+        : `ellipse(${radius(basic.rx)} ${radius(basic.ry)} at ${at(basic.at)})`;
     default:
       return null;
   }
