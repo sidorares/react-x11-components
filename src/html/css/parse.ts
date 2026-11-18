@@ -698,6 +698,18 @@ export function parseStylesheet(
           [bodyAt + item.at],
           bodyAt + item.blockAt,
         );
+      if (item.kind === 'declarations') {
+        // after the rules before them, for what the rule itself matches
+        emit(
+          selectors,
+          parseDeclarations(item.text),
+          media,
+          layer,
+          containers,
+          [bodyAt + item.at],
+        );
+        continue;
+      }
       if (item.kind === 'rule') {
         const inner = nestedSelectors(item.prelude, selectors);
         if (inner) deeper(inner, item.body, media, layer, path, containers);
@@ -1556,7 +1568,8 @@ function rawSelectors(prelude: string, starts?: number[]): string[] | null {
   let i = 0;
   const push = (end: number): boolean => {
     const piece = prelude.slice(start, end);
-    const selector = trimSelector(piece);
+    // a `&` in a rule nested in nothing is `:scope` (CSS Nesting 1, 2)
+    const selector = replaceNesting(trimSelector(piece), ':scope');
     if (!selector || !isSelector(selector)) return false;
     out.push(selector);
     starts?.push(start + piece.length - piece.trimStart().length);
@@ -2583,6 +2596,9 @@ const MAX_NESTING = 16;
  *  saying where it and its block start in the block. */
 type Nested = { at: number; blockAt: number } & (
   | { kind: 'rule'; prelude: string; body: string }
+  /** Declarations after a nested rule, which are a rule of their own in
+   *  its place (CSS Nesting 1, 3.2, `CSSNestedDeclarations`). */
+  | { kind: 'declarations'; text: string }
   | { kind: 'at'; name: string; prelude: string; block: string | null }
 );
 
@@ -2633,7 +2649,18 @@ function splitNested(body: string): {
       i = block.end;
       continue;
     }
-    declarations += `${body.slice(i, semi)};`;
+    const declaration = `${body.slice(i, semi)};`;
+    const last = nested[nested.length - 1];
+    if (!last) declarations += declaration;
+    else if (last.kind === 'declarations') last.text += declaration;
+    else {
+      nested.push({
+        kind: 'declarations',
+        text: declaration,
+        at: i,
+        blockAt: i,
+      });
+    }
     i = semi + 1;
   }
   return { declarations, nested };
@@ -2655,18 +2682,53 @@ function nestedSelectors(prelude: string, parents: string[]): string[] | null {
     if (!written) return null;
     const own = hasNesting(written) ? written : `& ${written}`;
     for (const parent of parents) {
+      // `&` stands for no pseudo-element: a rule nested in one matches
+      // nothing (CSS Nesting 1, 4)
+      if (PSEUDO_ELEMENT.test(parent)) continue;
       const resolved =
         own[0] === '&' &&
         !hasNesting(own.slice(1)) &&
         !/^[\w-]/.test(own.slice(1))
           ? parent + own.slice(1)
           : replaceNesting(own, `:is(${parent})`);
-      if (!isSelector(resolved)) return null;
+      if (!isSelector(resolved) || hasInHas(resolved)) return null;
       out.push(resolved);
     }
   }
   return out;
 }
+
+/** Whether a `:has()` holds another, which no selector may (Selectors 4,
+ *  4.5): a `&` for a parent with one, in a nested `:has()`, makes the rule
+ *  none. */
+function hasInHas(selector: string): boolean {
+  const lower = selector.toLowerCase();
+  let at = lower.indexOf(':has(');
+  if (at < 0) return false;
+  // where each open `:has(` closes, by depth
+  const stack: boolean[] = [];
+  let inside = 0;
+  for (let i = 0; i < lower.length; i += 1) {
+    const c = lower[i];
+    if (c === '\\') {
+      i += 1;
+    } else if (c === '(') {
+      const opensHas = lower.endsWith(':has', i) && i === at + 4;
+      if (opensHas) {
+        if (inside > 0) return true;
+        inside += 1;
+        at = lower.indexOf(':has(', i + 1);
+      }
+      stack.push(opensHas);
+    } else if (c === ')') {
+      if (stack.pop()) inside -= 1;
+    }
+  }
+  return false;
+}
+
+/** A pseudo-element in a selector, legacy single-colon ones as well. */
+const PSEUDO_ELEMENT = /::|:(?:before|after|first-line|first-letter)\b/i;
 
 /** Whether a selector has a `&` outside its strings and escapes. */
 function hasNesting(selector: string): boolean {
@@ -3919,10 +3981,17 @@ export function supportsCondition(prelude: string): boolean | null {
     if (values.includes(true)) return true;
     return values.includes(null) ? null : false;
   }
+  // `selector()`: whether its argument is a selector, a `&` in it the scope
+  // (CSS Conditional 4, 3.1, CSS Nesting 1, 2); a relative one is none
+  const selector = /^selector\(([\s\S]*)\)$/i.exec(text);
+  if (selector) {
+    const written = trimSelector(selector[1]);
+    return !!written && isSelector(replaceNesting(written, ':scope'));
+  }
   // one term: a condition in parentheses, or a declaration in them
   if (!(text.startsWith('(') && text.endsWith(')'))) return null;
   const inner = text.slice(1, -1).trim();
-  if (inner.startsWith('(') || /^not\b/i.test(inner)) {
+  if (inner.startsWith('(') || /^(?:not\b|selector\()/i.test(inner)) {
     return supportsCondition(inner);
   }
   const declaration = /^([a-z-]+)\s*:\s*(\S[\s\S]*)$/i.exec(inner);
