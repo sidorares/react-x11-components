@@ -450,15 +450,41 @@ function animationName(value: string): string | null | undefined {
   const v = value.trim();
   if (v[0] === '"' || v[0] === "'") {
     const q = v[0];
-    return v.length >= 2 && v[v.length - 1] === q ? v.slice(1, -1) : undefined;
+    return v.length >= 2 && v[v.length - 1] === q
+      ? unescapeString(v.slice(1, -1))
+      : undefined;
   }
   const lower = v.toLowerCase();
   if (lower === 'none') return null;
   if (!IDENT.test(v) || RESERVED.has(lower)) return undefined;
-  return v;
+  // an identifier's escapes are its characters (`multi\ word`)
+  return v.includes('\\') ? unescapeString(v) : v;
 }
 
-const IDENT = /^-?(?:[_a-zA-Z\u0080-￿]|--)[\w\u0080-￿-]*$/;
+/** A string's content with its escapes read (CSS Syntax 3, 4.3.7): a code
+ *  point by its hex, or the character itself; an escaped line break is
+ *  none. */
+function unescapeString(text: string): string {
+  return text.replace(
+    /\\(?:([0-9a-fA-F]{1,6})[ \t\n\r\f]?|(\r\n|[\n\r\f])|([^]))/g,
+    (
+      _m,
+      hex: string | undefined,
+      nl: string | undefined,
+      ch: string | undefined,
+    ) => {
+      if (nl !== undefined) return '';
+      if (hex === undefined) return ch ?? '';
+      const code = parseInt(hex, 16);
+      return code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)
+        ? '\ufffd'
+        : String.fromCodePoint(code);
+    },
+  );
+}
+
+const IDENT =
+  /^-?(?:[_a-zA-Z\u0080-￿]|--|\\[^\n\r\f])(?:[\w\u0080-￿-]|\\[^\n\r\f])*$/;
 
 const RESERVED = new Set([
   'inherit',

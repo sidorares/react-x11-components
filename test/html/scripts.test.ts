@@ -8532,6 +8532,29 @@ test('getSelection() is a Selection, which no page makes, and setting it to what
   );
 });
 
+test('a host that delegates its focus hands it to the first focusable thing in its tree, and activeElement is retargeted', async () => {
+  const doc = await hosted(
+    '<div id="h"><input id="slotted"></div><p id="out"></p><script>' +
+      'var r = [], h = document.getElementById("h");' +
+      'var root = h.attachShadow({ mode: "closed", delegatesFocus: true });' +
+      'root.innerHTML = "<span>x</span><input id=a><input id=b><slot></slot>";' +
+      'var a = root.getElementById("a"), b = root.getElementById("b");' +
+      'h.focus();' +
+      'r.push(document.activeElement === h, root.activeElement === a);' +
+      // one in the tree keeps it
+      'b.focus(); h.focus(); r.push(root.activeElement === b);' +
+      // what is slotted is the document's, and none of the tree's
+      'document.getElementById("slotted").focus();' +
+      'r.push(document.activeElement.id, root.activeElement);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|true|true|slotted|',
+  );
+});
+
 test('a shadow root is copied with its host alone, its sheets are none out of the document, and a template says how it assigns slots', async () => {
   const doc = await hosted(
     '<div id="h"><template shadowrootmode="open" shadowrootslotassignment="MANUAL"><style>p{}</style><slot></slot></template></div>' +

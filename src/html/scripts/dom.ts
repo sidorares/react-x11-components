@@ -9908,8 +9908,15 @@ export function installDom(
       );
       upgradeParsed(this);
     }
+    // the focused element retargeted to the tree: its own, or the host of
+    // a tree inside it that has the focus, and null where the focus is
+    // outside it (HTML 6.6.5, DocumentOrShadowRoot)
     get activeElement(): Any {
-      return null;
+      const host = this.host;
+      const focused = host ? focusedIn(host.ownerDocument ?? document) : null;
+      if (!focused) return null;
+      const seen = retargetTo(focused, this);
+      return seen && seen.getRootNode() === this ? seen : null;
     }
     /** The sheets a page constructed and adopted, which style this tree
      *  after its own, as CSSOM orders them: the document's array, read by
@@ -9922,6 +9929,52 @@ export function installDom(
       setAdopted(held.sheets, sheets, 'ShadowRoot', held.changed);
     }
   }
+  /** What has the focus in a document, wherever it is in its trees, and
+   *  its body where nothing has: the host's own answer, which
+   *  `activeElement` retargets for a page. */
+  const focusedIn = (doc: Any): Any =>
+    wrap(Number(call('active', doc === document ? undefined : doc._id))) ??
+    doc.body;
+  /** The shadow root of a host whose focus it delegates, or null. */
+  const delegatesFocusOf = (el: Any): Any => {
+    const id = Number(call('shadowRoot', el._id, true));
+    if (!id) return null;
+    const root = wrap(id);
+    return root && call('shadowDelegates', root._id) === true ? root : null;
+  };
+  /** HTML 6.6.3, "focus delegate": what is in a host's shadow tree that
+   *  takes its focus — an autofocus one first, then the first focusable
+   *  area in tree order, a host in it that delegates its own standing for
+   *  what it delegates to. Its slotted children are the host's, not its
+   *  tree's. */
+  const focusDelegate = (host: Any): Any => {
+    const root = delegatesFocusOf(host);
+    if (!root) return null;
+    const descendants: Any[] = [];
+    const walk = (node: Any): void => {
+      for (let c = node.firstChild; c; c = c.nextSibling) {
+        if (c.nodeType !== 1) continue;
+        descendants.push(c);
+        walk(c);
+      }
+    };
+    walk(root);
+    const areaOf = (el: Any): Any => {
+      if (call('focusable', el._id) === true) return el;
+      return delegatesFocusOf(el) ? focusDelegate(el) : null;
+    };
+    for (const el of descendants) {
+      if (el.hasAttribute('autofocus')) {
+        const area = areaOf(el);
+        if (area) return area;
+      }
+    }
+    for (const el of descendants) {
+      const area = areaOf(el);
+      if (area) return area;
+    }
+    return null;
+  };
   /** Where an event goes from a node: its parent, and out of a shadow tree
    *  to its host where the event is composed, as most a user makes are. */
   // --- elements ------------------------------------------------------------------
@@ -12001,15 +12054,29 @@ export function installDom(
       return r ? wrap(r[0]) : null;
     }
     focus(options?: Any): void {
+      // a host that delegates its focus hands it to what is in its tree,
+      // and keeps it where it is in it already (HTML 6.6.3, the focusing
+      // steps)
+      if (delegatesFocusOf(this)) {
+        const active = focusedIn(this.ownerDocument ?? document);
+        for (let at = active; at;) {
+          if (at === this) return;
+          const parent = at.parentNode;
+          at = parent instanceof ShadowRoot ? parent.host : parent;
+        }
+        const delegate = focusDelegate(this);
+        if (delegate) delegate.focus(options);
+        return;
+      }
       // the focus of the document it is in: a frame's of this realm's has
       // its own
       const doc = this.ownerDocument ?? document;
-      const had = doc.activeElement === this;
+      const had = focusedIn(doc) === this;
       call('focus', this._id);
       // a focus that moved during an intercepted navigation keeps the
       // page's choice at the end (HTML, "focus changed during ongoing
       // navigation")
-      if (!had && doc.activeElement === this && pageSession.session.ongoing) {
+      if (!had && focusedIn(doc) === this && pageSession.session.ongoing) {
         pageSession.session.focusChanged = true;
       }
       // an editing host focused takes the caret, at its start, where the
@@ -12017,7 +12084,7 @@ export function installDom(
       // and Firefox have it. One focused already keeps what it has, none
       // among it, as a driver's keys focus what they are sent to (WPT's
       // no-beforeinput-when-no-selection)
-      if (!had && doc.activeElement === this && editingHostOf(this) === this) {
+      if (!had && focusedIn(doc) === this && editingHostOf(this) === this) {
         const r = selection._range;
         if (!r || !this.contains(r.startContainer)) selection.collapse(this, 0);
       }
@@ -12026,13 +12093,13 @@ export function installDom(
       // 6.6.3, unless `preventScroll`): not at all where it shows, to its
       // nearest edge where it shows in part, centred where it is out of
       // sight, and where a container snaps, at a snap position
-      if (!options?.preventScroll && doc.activeElement === this) {
+      if (!options?.preventScroll && focusedIn(doc) === this) {
         this._intoView('center-if-needed', 'center-if-needed', true);
       }
     }
     blur(): void {
       const doc = this.ownerDocument ?? document;
-      if (doc.activeElement === this) {
+      if (focusedIn(doc) === this) {
         call('blur', doc === document ? undefined : this._id);
         if (pageSession.session.ongoing) {
           pageSession.session.focusChanged = true;
@@ -13090,7 +13157,7 @@ export function installDom(
     const previous = state.previous;
     state.previous = null;
     if (previous?.isConnected && previous !== el) {
-      const active = document.activeElement;
+      const active = focusedIn(document);
       if (wasModal || (active && el.contains(active))) previous.focus();
     }
     setTimer(
@@ -13175,7 +13242,7 @@ export function installDom(
       queueToggle(this, 'closed');
       this.setAttribute('open', '');
       dialogOpened(this);
-      dialogState(this).previous = document.activeElement;
+      dialogState(this).previous = focusedIn(document);
       focusDialog(this);
     }
     showModal(): void {
@@ -13210,7 +13277,7 @@ export function installDom(
       if (was >= 0) modalDialogs.splice(was, 1);
       modalDialogs.push(this);
       dialogOpened(this);
-      dialogState(this).previous = document.activeElement;
+      dialogState(this).previous = focusedIn(document);
       // the popovers it is not in close, as it goes over them (HTML
       // 4.11.4.2, "hide all popovers until" its topmost popover ancestor)
       hidePopoversUntil(topmostPopoverAncestor(this, null), false, true);
@@ -14775,7 +14842,7 @@ export function installDom(
       }
       if (!popoverValid(el, false, raise)) return;
       const restore = topPopover() === null;
-      const focused = document.activeElement;
+      const focused = focusedIn(document);
       // what showed it is its implicit anchor element, from now until it
       // is hidden
       call(
@@ -14855,7 +14922,7 @@ export function installDom(
       const previous = state.previous;
       if (previous) {
         state.previous = null;
-        const active = document.activeElement;
+        const active = focusedIn(document);
         if (focusPrevious && active && el.contains(active)) previous.focus();
       }
     } finally {
@@ -25100,9 +25167,13 @@ export function installDom(
       return activeOf(this);
     }
     // a frame's document of this realm's has the focus its own view gives
+    // the focused element retargeted to the document, a host for what has
+    // the focus in its shadow tree (HTML 6.6.5, DocumentOrShadowRoot)
     get activeElement(): Any {
-      const id = this === document ? undefined : this._id;
-      return wrap(Number(call('active', id))) ?? this.body;
+      const focused = focusedIn(this);
+      if (!focused) return this.body;
+      const seen = retargetTo(focused, this);
+      return seen && seen.getRootNode() === this ? seen : this.body;
     }
     get scrollingElement(): Any {
       return this.documentElement;
@@ -40862,7 +40933,7 @@ export function installDom(
     // stand now; without one, the body, then the document element
     const delegate = wrap(Number(call('autofocusDelegate', doc._id)));
     const target = delegate ?? doc.body ?? doc.documentElement;
-    const active = doc.activeElement;
+    const active = focusedIn(doc);
     // already there (a focused control removed, focus fixup to the body)
     // needs no focusing steps: body's `focus` would fire and fail WPT's
     // `change-focus-then-remove-during-intercept`
@@ -45332,7 +45403,7 @@ export function installDom(
   /** The text field a command edits, where one has the focus: its commands
    *  are the edits of its own text, and no formatting. */
   const commandField = (): Any => {
-    const active = document.activeElement;
+    const active = focusedIn(document);
     return (active?.localName === 'textarea' ||
       (active?.localName === 'input' && selects(active))) &&
       !active.readOnly &&
@@ -46137,7 +46208,7 @@ export function installDom(
   /** A clipboard command: `execCommand('copy')` under a user's gesture. */
   const clipboardCommand = (name: string): boolean => {
     if (!commandEnabled(name)) return false;
-    clipboardEvent(name, document.activeElement, undefined, true);
+    clipboardEvent(name, focusedIn(document), undefined, true);
     return true;
   };
 

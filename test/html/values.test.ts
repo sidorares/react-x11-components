@@ -5302,3 +5302,23 @@ test('an ident() joins its strings, integers and names into one name, escaped wh
     el.computedStyle(findById(el.document, id)!)!['anchor-name'];
   assert.deepStrictEqual([read('p'), read('q')], ['--n42', '--n-42']);
 });
+
+test('an animation-name written as a string reads as an identifier, and as a string where it would read as a keyword', async () => {
+  // CSS Animations 1, 3.2: a string is a name, `"none"` among them, and
+  // CSSOM writes a name as the identifier it is where it can
+  const { node } = await render(
+    '<p id="a" style="animation-name: \'multi word\'">a</p>' +
+      '<p id="b" style="animation-name: \'none\', \'INHERIT\', both">b</p>' +
+      '<p id="c" style="animation-name: \'a\\22 b\'">c</p>' +
+      '<p id="d" style="animation-name: multi\\ word">d</p>',
+  );
+  const el = view(node);
+  const read = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)!['animation-name'];
+  assert.deepStrictEqual(['a', 'b', 'c', 'd'].map(read), [
+    'multi\\ word',
+    '"none", "INHERIT", both',
+    'a\\"b',
+    'multi\\ word',
+  ]);
+});
