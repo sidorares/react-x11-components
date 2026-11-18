@@ -241,6 +241,8 @@ test('a grouping rule takes rules in and gives them up, and the page is styled b
     'green',
     'blue',
   ]);
+});
+
 test("a nested rule's selectorText says the & it is relative to", async () => {
   // CSS Nesting 1, 3.2: a nested selector with no `&` is relative to one at
   // its start, which it serializes with (WPT's css-nesting/parsing)
