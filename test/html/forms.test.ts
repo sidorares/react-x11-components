@@ -4763,3 +4763,29 @@ test(':dir() is the nearest dir’s, or the first strong letter’s, and a text 
   await act();
   assert.strictEqual(inkOf(el, 't'), BLACK, 'a `dir` in it is passed over');
 });
+
+test('an element whose direction is its text’s is set in it, and turns with it', async () => {
+  // HTML 15.3.5: `[dir=auto]` and a <bdi> are `direction: ltr` or `rtl` by
+  // `:dir()`, so their `start` is their text's side. A `dir=auto` box of
+  // right-to-left text was set in its parent's direction, and `text-align:
+  // start` put it at the left (WPT's text-align-start-009).
+  const { node } = await renderInk(
+    '<p dir="auto" id="a">&rlm;abc</p><p dir="auto" id="b">abc</p>' +
+      '<div dir="rtl"><bdi id="c">abc</bdi></div>',
+  );
+  await act();
+  const el = view(node);
+  const direction = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)?.direction;
+  assert.strictEqual(direction('a'), 'rtl');
+  assert.strictEqual(direction('b'), 'ltr');
+  assert.strictEqual(direction('c'), 'ltr', 'its own, not its parent’s');
+  const holder = findById(el.document, 'b')!;
+  const text = holder.children[0] as unknown as { data: string };
+  text.data = 'مرحبا';
+  await act(async () => {
+    el.touchDocument([{ type: 'characterData', target: text as never }]);
+  });
+  await act();
+  assert.strictEqual(direction('b'), 'rtl');
+});

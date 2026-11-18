@@ -122,6 +122,10 @@ slot { display: contents; }
    attribute's isolation is a presentational hint (\`hints\`), where the
    attribute is read already, rather than a selector every element tries */
 bdi { unicode-bidi: plaintext; }
+/* …and an element whose direction is its text's, \`dir=auto\` or a <bdi>,
+   is set in it, so its \`start\` and \`end\` are that side (HTML 15.3.5) */
+[dir=auto i]:dir(ltr), bdi:dir(ltr) { direction: ltr; }
+[dir=auto i]:dir(rtl), bdi:dir(rtl) { direction: rtl; }
 bdo { unicode-bidi: isolate-override; }
 
 /* the theme's colour and font are the root's (\`initialStyle\`), and the
