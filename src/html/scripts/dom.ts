@@ -962,31 +962,60 @@ export function installDom(
   };
   /** A CSS animation's event (CSS Animations 1, 4.2): its name, the time
    *  it had run, in seconds, and its pseudo-element. */
+  /** `self` where it is an instance of `cls`, as an attribute's getter
+   *  asks of what it is called on (Web IDL 3.7.6), and a TypeError for
+   *  anything else, its interface's prototype among them. */
+  const brandOf = <T>(
+    self: Any,
+    cls: abstract new (...args: Any[]) => T,
+  ): T => {
+    if (!(self instanceof cls)) throw new TypeError('Illegal invocation');
+    return self as T;
+  };
   class AnimationEvent extends Event {
     _animationName: string;
     _elapsedTime: number;
     _pseudoElement: string;
     _animation: Any = null;
     constructor(type: string, init: Any = {}) {
-      super(type, init);
-      this._animationName = str(init?.animationName ?? '');
-      this._elapsedTime = Number(init?.elapsedTime ?? 0);
-      this._pseudoElement = str(init?.pseudoElement ?? '');
+      if (arguments.length < 1) {
+        throw new TypeError(
+          "Failed to construct 'AnimationEvent': 1 argument required, but only 0 present.",
+        );
+      }
+      // a dictionary that is null or undefined is an empty one (Web IDL
+      // 3.2.17), and `elapsedTime` a double, which no NaN or infinity is
+      const dict = init ?? {};
+      super(type, dict);
+      this._animationName =
+        dict.animationName === undefined ? '' : str(dict.animationName);
+      const elapsed =
+        dict.elapsedTime === undefined ? 0 : Number(dict.elapsedTime);
+      if (!Number.isFinite(elapsed)) {
+        throw new TypeError(
+          "Failed to construct 'AnimationEvent': The provided double value is non-finite.",
+        );
+      }
+      this._elapsedTime = elapsed;
+      this._pseudoElement =
+        dict.pseudoElement === undefined ? '' : str(dict.pseudoElement);
+      this._animation = dict.animation ?? null;
     }
     /** The `CSSAnimation` it is of, where the document has one. */
     get animation(): Any {
-      return this._animation;
+      return brandOf(this, AnimationEvent)._animation;
     }
     get animationName(): string {
-      return this._animationName;
+      return brandOf(this, AnimationEvent)._animationName;
     }
     get elapsedTime(): number {
-      return this._elapsedTime;
+      return brandOf(this, AnimationEvent)._elapsedTime;
     }
     get pseudoElement(): string {
-      return this._pseudoElement;
+      return brandOf(this, AnimationEvent)._pseudoElement;
     }
   }
+
   /** A CSS transition's event (CSS Transitions 1, 6.1): the longhand it
    *  is of, the time it had run, in seconds, and its pseudo-element. */
   class TransitionEvent extends Event {
@@ -995,25 +1024,44 @@ export function installDom(
     _pseudoElement: string;
     _animation: Any = null;
     constructor(type: string, init: Any = {}) {
-      super(type, init);
-      this._propertyName = str(init?.propertyName ?? '');
-      this._elapsedTime = Number(init?.elapsedTime ?? 0);
-      this._pseudoElement = str(init?.pseudoElement ?? '');
+      if (arguments.length < 1) {
+        throw new TypeError(
+          "Failed to construct 'TransitionEvent': 1 argument required, but only 0 present.",
+        );
+      }
+      // a dictionary that is null or undefined is an empty one (Web IDL
+      // 3.2.17), and `elapsedTime` a double, which no NaN or infinity is
+      const dict = init ?? {};
+      super(type, dict);
+      this._propertyName =
+        dict.propertyName === undefined ? '' : str(dict.propertyName);
+      const elapsed =
+        dict.elapsedTime === undefined ? 0 : Number(dict.elapsedTime);
+      if (!Number.isFinite(elapsed)) {
+        throw new TypeError(
+          "Failed to construct 'TransitionEvent': The provided double value is non-finite.",
+        );
+      }
+      this._elapsedTime = elapsed;
+      this._pseudoElement =
+        dict.pseudoElement === undefined ? '' : str(dict.pseudoElement);
+      this._animation = dict.animation ?? null;
     }
     /** The `CSSTransition` it is of, where the document has one. */
     get animation(): Any {
-      return this._animation;
+      return brandOf(this, TransitionEvent)._animation;
     }
     get propertyName(): string {
-      return this._propertyName;
+      return brandOf(this, TransitionEvent)._propertyName;
     }
     get elapsedTime(): number {
-      return this._elapsedTime;
+      return brandOf(this, TransitionEvent)._elapsedTime;
     }
     get pseudoElement(): string {
-      return this._pseudoElement;
+      return brandOf(this, TransitionEvent)._pseudoElement;
     }
   }
+
   class SubmitEvent extends Event {
     readonly submitter: Any;
     constructor(type: string, init: Any = {}) {

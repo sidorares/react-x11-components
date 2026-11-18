@@ -21932,3 +21932,32 @@ test('a worklet’s module is the document’s to fetch, held to its policies, a
     doc.logs.join('\n'),
   );
 });
+
+test('an AnimationEvent and a TransitionEvent are made as Web IDL makes them', async () => {
+  // CSS Animations 1, 4.2 and CSS Transitions 1, 6.1: a type is required,
+  // a null dictionary is an empty one, and an elapsed time is a double
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'function t(f) { try { return String(f()) } catch (e) { return e.name } }' +
+      'var r = [' +
+      '  t(function () { return new AnimationEvent() }),' +
+      '  t(function () { return new AnimationEvent("x", null).animationName }),' +
+      '  t(function () { return new AnimationEvent("x", { animationName: null }).animationName }),' +
+      '  t(function () { return new TransitionEvent("x", { elapsedTime: NaN }) }),' +
+      '  t(function () { return new TransitionEvent("x", { elapsedTime: 0.5 }).elapsedTime }),' +
+      '  t(function () { return AnimationEvent.prototype.elapsedTime }),' +
+      '];' +
+      'document.getElementById("out").textContent = JSON.stringify(r);' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.ok(text, doc.logs.join('\n'));
+  assert.deepEqual(JSON.parse(text), [
+    'TypeError',
+    '',
+    'null',
+    'TypeError',
+    '0.5',
+    'TypeError',
+  ]);
+});
