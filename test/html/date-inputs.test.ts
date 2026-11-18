@@ -461,8 +461,12 @@ scriptTest(
         'd.addEventListener("change", function () { console.log("change " + d.value); });' +
         'document.getElementById("b").onclick = function () {' +
         '  d.showPicker(); console.log("open " + d.matches(":open")); };' +
-        '</script>',
+        'console.log("ready");</script>',
     );
+    // the engine loads as the page first runs, and a press before the
+    // script is in finds no handler: a slower runtime, Node 20's, pressed
+    // first
+    await page.until('ready');
     const open = screen.getByText('open', { exact: true });
     await userEvent.click(open);
     assert.strictEqual(await page.until('open'), 'true', ':open at once');
