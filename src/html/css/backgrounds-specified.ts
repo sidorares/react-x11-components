@@ -122,6 +122,19 @@ const Y_SIDES = new Set(['top', 'bottom']);
  *  values, as Chromium writes them back — across first, then down, a
  *  side's offset after it, and a value down the middle said `center`. */
 function positionOf(words: string[]): string | null {
+  return positionSpecified(words, true);
+}
+
+/**
+ * A `<position>` as Chromium writes it back: across first, then down, a
+ * side's offset after it, and a value down the middle said `center`. Its
+ * three-value forms are `background-position`'s alone (`threes`): CSS
+ * Values 4's `<position>`, which `perspective-origin` takes, has none.
+ */
+export function positionSpecified(
+  words: string[],
+  threes = false,
+): string | null {
   const kw = (w: string): string | null => {
     const l = w.toLowerCase();
     return l === 'center' || X_SIDES.has(l) || Y_SIDES.has(l) ? l : null;
@@ -161,7 +174,7 @@ function positionOf(words: string[]): string | null {
     const la = len(a);
     return la && `${la} ${kb}`;
   }
-  if (n > 4) return null;
+  if (n > 4 || (n === 3 && !threes)) return null;
   // three or four: keywords, each but `center` with an offset or none
   const parts: { side: string; offset: string | null }[] = [];
   for (let i = 0; i < n; i += 1) {
