@@ -15,7 +15,10 @@ import {
   cornerShapeText,
 } from './corner-shape.js';
 import { NO_TRANSITIONS, transitionLonghand } from './animation.js';
-import { backgroundSpecified } from './backgrounds-specified.js';
+import {
+  backgroundSpecified,
+  positionSpecified,
+} from './backgrounds-specified.js';
 import {
   borderComposed,
   borderLonghands,
@@ -55,7 +58,7 @@ import {
   parseTextBoxTrim,
   textBoxText,
 } from './text-box.js';
-import { parseZoom, splitValue } from './values.js';
+import { parseLength, parseZoom, splitValue } from './values.js';
 import {
   GRID_SPECIFIED,
   gridLonghands,
@@ -96,6 +99,7 @@ const GEOMETRY_BOXES =
 /** Properties whose every value is one of a few keywords. */
 const KEYWORD_ONLY: Record<string, ReadonlySet<string>> = {
   overlay: new Set(['none', 'auto']),
+  'backface-visibility': new Set(['visible', 'hidden']),
   isolation: new Set(['auto', 'isolate']),
 };
 
@@ -235,6 +239,25 @@ export function specifiedValue(
       ? null
       : undefined;
   }
+  // a 3D transform's viewer (CSS Transforms 2, 7.1, 7.2): `none` or a
+  // length no less than nought, and where it stands, a `<position>`
+  if (name === 'perspective') {
+    const word = value.trim();
+    const lower = word.toLowerCase();
+    if (CSS_WIDE.test(lower)) return undefined;
+    if (lower === 'none') return 'none';
+    if (/\(/.test(word)) return undefined;
+    const m = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)([a-z]*)$/i.exec(word);
+    if (!m || Number(m[1]) < 0) return null;
+    if (!m[2]) return Number(m[1]) === 0 ? '0px' : null;
+    return parseLength(`1${m[2]}`, CHECK) === null ? null : undefined;
+  }
+  if (name === 'perspective-origin') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    if (/\(/.test(word)) return undefined;
+    return positionSpecified(splitValue(word));
+  }
   // a transform list (CSS Transforms 1, 7), refused where the cascade
   // would refuse it; a math function is the cascade's to judge, since it
   // may read what no check here resolves
@@ -244,7 +267,8 @@ export function specifiedValue(
     if (/(?:calc|min|max|clamp|sign|abs|round|mod|rem)\(/i.test(word)) {
       return undefined;
     }
-    return parseTransform(word, CHECK) === undefined ? null : undefined;
+    if (parseTransform(word, CHECK) === undefined) return null;
+    return transformText(word);
   }
   if (name === 'scale') {
     const word = value.trim();
@@ -1475,3 +1499,57 @@ const ANCHOR_GRAMMARS: Record<string, (value: string) => string | null> = {
     return order === 'normal' ? fallbacks : `${order} ${fallbacks}`;
   },
 };
+
+/** Functions whose arguments are angles, which a bare nought is one of. */
+const ANGLE_FUNCTIONS = new Set([
+  'rotate',
+  'rotatex',
+  'rotatey',
+  'rotatez',
+  'skew',
+  'skewx',
+  'skewy',
+]);
+
+/** Functions whose arguments are factors, which a percentage is one of. */
+const SCALE_FUNCTIONS = new Set([
+  'scale',
+  'scalex',
+  'scaley',
+  'scalez',
+  'scale3d',
+]);
+
+/**
+ * A transform list the cascade takes, written as Chromium writes it back
+ * (CSS Transforms 1, 9): each function's name in lower case, a scale's
+ * percentages as numbers and a bare nought angle in degrees. Where a
+ * function is none of these, it is as written.
+ */
+function transformText(word: string): string {
+  if (word.toLowerCase() === 'none') return 'none';
+  const fns = /([a-z0-9-]+)\(([^()]*)\)/gi;
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  let rest = word;
+  while ((m = fns.exec(word))) {
+    const name = m[1].toLowerCase();
+    let args = m[2]
+      .split(',')
+      .map((a) => a.trim())
+      .filter((a) => a !== '');
+    if (SCALE_FUNCTIONS.has(name)) {
+      args = args.map((a) => {
+        const p = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)%$/i.exec(a);
+        return p ? String(Math.round((Number(p[1]) / 100) * 1e6) / 1e6 + 0) : a;
+      });
+    } else if (ANGLE_FUNCTIONS.has(name)) {
+      args = args.map((a) => (/^[+-]?0*\.?0*$/.test(a) ? '0deg' : a));
+    }
+    out.push(`${name}(${args.join(', ')})`);
+    rest = rest.replace(m[0], '');
+  }
+  // anything but functions and white space is no list this writes
+  if (rest.trim()) return word;
+  return out.join(' ');
+}
