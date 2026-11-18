@@ -23,6 +23,7 @@ import { parseMathNumberWith } from './calc.js';
 import type { AnyNode, Element } from 'domhandler';
 
 import { CONTROL_PSEUDOS } from '../control-state.js';
+import { directionOf } from '../direction.js';
 import { isFirstLegend, isFormAssociated } from '../form.js';
 import {
   NON_RENDERED,
@@ -148,6 +149,7 @@ import {
   settleContentVisibility,
   settleDecorationInset,
   settleOverflow,
+  settleSpacing,
   settleOutline,
   settleClamp,
   copyStyle,
@@ -5675,10 +5677,16 @@ export class Cascade {
     return this._reads('a:-rx-form');
   }
 
-  /** Whether a rule reads a direction a text can turn (`directionHolder`). */
+  /** Whether a rule reads a direction a text can turn (`directionHolder`),
+   *  or a hint does (`autoDirected`). */
   get readsDirection(): boolean {
-    return this._reads('a:-rx-dir');
+    return this.directionHinted || this._reads('a:-rx-dir');
   }
+
+  /** Whether an element whose direction is its text's has been styled, its
+   *  `direction` a hint from its text (`presentationHints`): a text that
+   *  turns has it styled again. */
+  directionHinted = false;
 
   private _reads(key: string): boolean {
     const rules = this._changeRules;
@@ -7867,6 +7875,11 @@ export class Cascade {
     if (this._focus.element === el && this._index.focusSensitive) {
       key += this._focus.visible ? '\u0001:focus-visible' : '\u0001:focus';
     }
+    // a direction its text gives it is in no attribute (`autoDirected`)
+    if (autoDirected(el, tag, attr(el, 'dir')?.toLowerCase())) {
+      this.directionHinted = true;
+      key += `\u0001d${directionOf(el)}`;
+    }
     const attribs = el.attribs;
     for (const name in attribs) {
       const value = attribs[name];
@@ -9637,6 +9650,7 @@ export class Cascade {
     // parent's.
     style.fontSize = settled;
     style.fontSizeBasis = basis;
+    settleSpacing(style);
 
     // A table never keeps HTML's alignment, `-webkit-center` and its kin:
     // the `<td align="center">` every mail centres its body table in
@@ -10670,6 +10684,12 @@ export class Cascade {
       this.dimensionSource,
       this.frameElement,
     );
+    if (
+      !this.directionHinted &&
+      autoDirected(el, tagOf(el), attr(el, 'dir')?.toLowerCase())
+    ) {
+      this.directionHinted = true;
+    }
     // the page's colour schemes are its root's where no rule sets them —
     // the scheme it is drawn in, and not its computed `color-scheme`, which
     // stays `normal` (CSS Color Adjust 1, 3), as `getComputedStyle` reads it
@@ -12064,6 +12084,16 @@ const SVG_CSS_HINTS = new Set([
 ]);
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
 
+/** Whether an element's direction is its text's: `dir=auto`, or a <bdi>
+ *  with no `dir` of its own. */
+export function autoDirected(
+  el: Element,
+  tag: string,
+  dir: string | undefined,
+): boolean {
+  return dir === 'auto' || (tag === 'bdi' && dir !== 'ltr' && dir !== 'rtl');
+}
+
 function presentationHints(
   el: Element,
   dimensionSource: ((img: Element) => Element) | null = null,
@@ -12120,6 +12150,13 @@ function presentationHints(
   // at the right, and a Hebrew or an Arabic message is written this way
   const dir = attr(el, 'dir')?.toLowerCase();
   if (dir === 'rtl' || dir === 'ltr') push('direction', dir);
+  // and one whose direction is its text's, `dir=auto` or a <bdi>, is set in
+  // that direction, so its `start` and `end` are that side (HTML 15.3.5's
+  // `[dir]:dir(rtl)` and `bdi:dir(rtl)`). A hint, where the attribute is
+  // read already, rather than rules that would have every document track
+  // what each element's direction turns on; a text that turns tells the
+  // element (`directionHinted`, `derivedChanges`)
+  else if (autoDirected(el, tag, dir)) push('direction', directionOf(el));
   // and it isolates the element from the text around it, or with `auto`
   // takes its first strong letter's direction (HTML's UA sheet: `[dir]`,
   // `[dir=auto i]`, `bdo[dir]`)

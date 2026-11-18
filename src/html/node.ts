@@ -14035,7 +14035,10 @@ export class HtmlViewNode extends Node {
       // once a tree: Apple's galleries move theirs from card to card
       const stops = name === 'tabindex' && tabindexStays(el, change.oldValue);
       if (stops) scope.stops = true;
-      const quiet = stops || STYLE_ONLY_ATTRIBUTE.test(name);
+      // a direction a text turned, which a hint gives the element and all
+      // in it inherit (`autoDirected`)
+      const turned = name === '-rx-dir' && cascade.directionHinted;
+      const quiet = !turned && (stops || STYLE_ONLY_ATTRIBUTE.test(name));
       if (!quiet) scope.always.add(el);
       if (!quiet) bits |= CHANGES_SELF | CHANGES_BELOW;
       else if (name === 'style') bits |= CHANGES_SELF;
@@ -20134,6 +20137,8 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.fontSize !== q.fontSize ||
       p.colorScheme !== q.colorScheme ||
       p.cursor !== q.cursor ||
+      p.textAlign !== q.textAlign ||
+      p.direction !== q.direction ||
       p.buttonCursor !== q.buttonCursor ||
       p.opacity !== q.opacity ||
       p.placeholderColor !== q.placeholderColor ||

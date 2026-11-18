@@ -1623,7 +1623,15 @@ function renderControl(
         ...order,
         // its caret is the field's text colour, as a text input's is
         ...(rect.bare && { caretColor: rect.bare.color }),
-        style: [field, FIELD_BOX, { cursor }],
+        style: [
+          field,
+          FIELD_BOX,
+          {
+            cursor,
+            ...(rect.textAlign && { textAlign: rect.textAlign }),
+            ...(rect.direction && { direction: rect.direction }),
+          },
+        ],
         onChange: readOnly ? undefined : (ev) => typed(ev.value),
         ...selectionWatch,
         onFocus: () => ctx.focused(el, true),
@@ -1680,7 +1688,15 @@ function renderControl(
         // palette's own field keeps the palette's caret — and not what its
         // glyphs are filled with, which `-webkit-text-fill-color` may hide
         ...(rect.bare && { caretColor: rect.bare.color }),
-        style: [field, FIELD_BOX, { cursor }],
+        style: [
+          field,
+          FIELD_BOX,
+          {
+            cursor,
+            ...(rect.textAlign && { textAlign: rect.textAlign }),
+            ...(rect.direction && { direction: rect.direction }),
+          },
+        ],
         // What is typed is the field's value and not its `value`
         // attribute, which is its default (HTML 4.10.5.4): a script tells
         // `value` from `defaultValue`, and `[value=…]` matches the markup.
