@@ -1215,10 +1215,14 @@ export function installDom(
   class ToggleEvent extends Event {
     readonly oldState: string;
     readonly newState: string;
+    /** What made it toggle, where an invoker did (HTML 4.13.3), and null
+     *  for anything else. */
+    readonly source: Any;
     constructor(type: string, init: Any = {}) {
       super(type, init);
       this.oldState = String(init.oldState ?? '');
       this.newState = String(init.newState ?? '');
+      this.source = init.source ?? null;
     }
   }
   /** A button's `command` at the element its `commandfor` names (HTML
@@ -49097,7 +49101,17 @@ export function installDom(
           ),
         );
       case 'toggle':
-        return dispatch(target, trusted(new Event('toggle')));
+        return dispatch(
+          target,
+          trusted(
+            e.oldState
+              ? new ToggleEvent('toggle', {
+                  oldState: e.oldState,
+                  newState: e.newState,
+                })
+              : new Event('toggle'),
+          ),
+        );
       case 'cancel':
         return dispatch(
           target,
