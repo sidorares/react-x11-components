@@ -20134,6 +20134,8 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.fontSize !== q.fontSize ||
       p.colorScheme !== q.colorScheme ||
       p.cursor !== q.cursor ||
+      p.textAlign !== q.textAlign ||
+      p.direction !== q.direction ||
       p.buttonCursor !== q.buttonCursor ||
       p.opacity !== q.opacity ||
       p.placeholderColor !== q.placeholderColor ||
