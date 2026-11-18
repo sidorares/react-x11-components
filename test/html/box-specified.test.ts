@@ -196,6 +196,45 @@ test('a filter list and a corner shape that the cascade would refuse are refused
   );
 });
 
+test('transform-origin is a point and a depth, written across first', () => {
+  // CSS Transforms 1, 6, as Chromium writes it back
+  for (const bad of [
+    '1px 2px 3%',
+    '1px 2px left',
+    '1px 2px 3px 4px',
+    '1px left',
+    'top 1px',
+    'right left',
+    'bottom 10% right 20%',
+  ]) {
+    assert.strictEqual(specifiedValue('transform-origin', bad), null, bad);
+  }
+  assert.strictEqual(specifiedValue('transform-origin', 'top'), 'center top');
+  assert.strictEqual(specifiedValue('transform-origin', '-4%'), '-4% center');
+  assert.strictEqual(
+    specifiedValue('transform-origin', 'bottom right 7px'),
+    'right bottom 7px',
+  );
+  assert.strictEqual(
+    specifiedValue('transform-origin', '-1px -2px -3px'),
+    '-1px -2px -3px',
+  );
+});
+
+test('translate takes lengths and percentages, its depth a length, and drops what moves nowhere at its end', () => {
+  // CSS Transforms 2, 4.3
+  for (const bad of ['100deg', '100px 200px 300%', '100px junk']) {
+    assert.strictEqual(specifiedValue('translate', bad), null, bad);
+  }
+  assert.strictEqual(specifiedValue('translate', '0'), '0px');
+  assert.strictEqual(specifiedValue('translate', '100px 0px 0px'), '100px');
+  assert.strictEqual(specifiedValue('translate', '100px 0%'), '100px 0%');
+  assert.strictEqual(
+    specifiedValue('translate', '100px 0px 300px'),
+    '100px 0px 300px',
+  );
+});
+
 test('a transform list is written as Chromium writes it', () => {
   // CSS Transforms 1, 9: names in lower case, a scale's percentages as
   // numbers, a bare nought angle in degrees
