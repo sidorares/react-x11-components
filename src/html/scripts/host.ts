@@ -2257,6 +2257,9 @@ function withShadowTemplates(
     if (root.delegatesFocus) attribs.shadowrootdelegatesfocus = '';
     if (root.serializable) attribs.shadowrootserializable = '';
     if (root.clonable) attribs.shadowrootclonable = '';
+    if (root.slotAssignment === 'manual') {
+      attribs.shadowrootslotassignment = 'manual';
+    }
     if (ownRegistry.has(root)) attribs.shadowrootcustomelementregistry = '';
     return new Element('template', attribs, root.children.map(copy));
   };
