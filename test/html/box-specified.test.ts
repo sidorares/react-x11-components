@@ -252,7 +252,7 @@ test('a transform list is written as Chromium writes it', () => {
   );
   assert.strictEqual(
     specifiedValue('transform', 'translateX(1px) rotate(0)'),
-    'translatex(1px) rotate(0deg)',
+    'translateX(1px) rotate(0deg)',
   );
   assert.strictEqual(specifiedValue('transform', 'scale(1px)'), null);
 });
