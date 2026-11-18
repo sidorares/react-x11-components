@@ -137,3 +137,31 @@ test('a filter list and a corner shape that the cascade would refuse are refused
     null,
   );
 });
+
+test('a corner shape is written at its shortest, and its shorthands set and compose their corners', () => {
+  // CSS Borders 4, 3.9.1, as Chrome serializes them
+  assert.strictEqual(
+    specifiedValue('corner-top-left-shape', 'superellipse(  .5)'),
+    'superellipse(0.5)',
+  );
+  assert.strictEqual(
+    specifiedValue('corner-start-end-shape', 'BEVEL'),
+    'bevel',
+  );
+  assert.strictEqual(
+    specifiedValue('corner-shape', 'round round round round'),
+    'round',
+  );
+  assert.strictEqual(
+    specifiedValue('corner-shape', 'round scoop round scoop'),
+    'round scoop',
+  );
+  assert.deepStrictEqual(expandShorthand('corner-right-shape', 'bevel notch'), [
+    ['corner-top-right-shape', 'bevel'],
+    ['corner-bottom-right-shape', 'notch'],
+  ]);
+  assert.deepStrictEqual(expandShorthand('corner-block-start-shape', 'scoop'), [
+    ['corner-start-start-shape', 'scoop'],
+    ['corner-start-end-shape', 'scoop'],
+  ]);
+});
