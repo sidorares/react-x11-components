@@ -9771,13 +9771,13 @@ export class DomHost {
 
   /** A frame's document, made where it has none: null where it is another
    *  origin's, which the page may not read. */
-  private _frameDocument(frame: Element): Document | null {
+  private _frameDocument(frame: Element, inserted = false): Document | null {
     let doc = this._frames.get(frame);
     if (!doc) {
       // `about:blank`'s, until what it loads is in
       doc = this._blankFrame(frame);
       this._initialBlank.add(doc);
-      this._loadFrame(frame);
+      this._loadFrame(frame, false, null, inserted);
     }
     return this._reaches(frame) ? doc : null;
   }
@@ -9899,6 +9899,9 @@ export class DomHost {
     frame: Element,
     navigated = false,
     post: FramePost | null = null,
+    /** Whether the frame is being put in the document: an `<iframe>` with
+     *  nothing to load hears its `load` there and then. */
+    inserted = false,
   ): void {
     const serial = (this._frameLoads.get(frame) ?? 0) + 1;
     this._frameLoads.set(frame, serial);
@@ -10015,7 +10018,13 @@ export class DomHost {
     if (!src || (foreign && !(this._seams.drawsFrames && this._framed(src)))) {
       if (!navigated) {
         if (src) this._frameAt.set(frame, src);
-        setTimeout(loaded, 0);
+        // an `<iframe>` whose first document is `about:blank` runs its load
+        // event steps as it is put in (HTML 4.8.5, "process the iframe
+        // attributes" with initialInsertion), before the script that put it
+        // in goes on: a page that sets `onload` after it hears the next
+        // document's, a form's submission into the frame among them
+        if (inserted && !src && frame.name === 'iframe') loaded();
+        else setTimeout(loaded, 0);
         return;
       }
       // a navigation from the document the frame shows, which goes in a
@@ -10573,7 +10582,7 @@ export class DomHost {
     }
     if (frame.name === 'embed' && !this._embedLoads(frame)) return;
     if (!this._frames.has(frame) && this._loadsFrame(frame)) {
-      this._frameDocument(frame);
+      this._frameDocument(frame, true);
     }
   }
 

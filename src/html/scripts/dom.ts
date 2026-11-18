@@ -1021,6 +1021,19 @@ export function installDom(
       this.submitter = init.submitter ?? null;
     }
   }
+  /** HTML 4.10.21.4: what a form's entry list is told as it is made. */
+  class FormDataEvent extends Event {
+    readonly formData: Any;
+    constructor(type: string, init: Any = {}) {
+      if (arguments.length < 2 || !init || init.formData === undefined) {
+        throw new TypeError(
+          "Failed to construct 'FormDataEvent': required member formData is undefined.",
+        );
+      }
+      super(type, init);
+      this.formData = init.formData;
+    }
+  }
   class CustomEvent extends Event {
     readonly detail: Any;
     constructor(type: string, init: Any = {}) {
@@ -15213,15 +15226,23 @@ export function installDom(
       submitForm(this, null, false);
     }
     requestSubmit(submitter?: Any): void {
+      if (firingSubmission.has(this)) return;
       const id = submitter ? idOf(submitter) : 0;
-      if (!call('validate', this._id, id, true)) return;
-      const ev = new SubmitEvent('submit', {
-        bubbles: true,
-        cancelable: true,
-        submitter: submitter ?? null,
-      });
-      ev.isTrusted = true;
-      if (dispatch(this, ev)) submitForm(this, submitter ?? null, false);
+      firingSubmission.add(this);
+      let go: boolean;
+      try {
+        if (!call('validate', this._id, id, true)) return;
+        const ev = new SubmitEvent('submit', {
+          bubbles: true,
+          cancelable: true,
+          submitter: submitter ?? null,
+        });
+        ev.isTrusted = true;
+        go = dispatch(this, ev);
+      } finally {
+        firingSubmission.delete(this);
+      }
+      if (go) submitForm(this, submitter ?? null, false);
     }
     reset(): void {
       const ev = new Event('reset', { bubbles: true, cancelable: true });
@@ -15229,12 +15250,29 @@ export function installDom(
       if (dispatch(this, ev)) call('reset', this._id);
     }
     checkValidity(): boolean {
-      return Array.from(this.elements as Any[]).every(
-        (el) => el.checkValidity?.() ?? true,
-      );
+      // every control told, the invalid ones each an `invalid`
+      let valid = true;
+      for (const el of Array.from(this.elements as Any[])) {
+        const internals = customOf.get(el)?.internals;
+        const ok =
+          internals && customOf.get(el)?.def?.formAssociated
+            ? internalsCheck(internals)
+            : (el.checkValidity?.() ?? true);
+        if (!ok) valid = false;
+      }
+      return valid;
     }
     reportValidity(): boolean {
-      return !!call('validate', this._id, 0);
+      // a form-associated custom element's validity is its internals',
+      // which the host's validation does not read
+      let custom = true;
+      for (const el of Array.from(this.elements as Any[])) {
+        const internals = customOf.get(el)?.internals;
+        if (internals && customOf.get(el)?.def?.formAssociated) {
+          if (!internalsCheck(internals)) custom = false;
+        }
+      }
+      return !!call('validate', this._id, 0) && custom;
     }
   }
 
@@ -24129,13 +24167,22 @@ export function installDom(
       if (form && role === 'reset') form.reset();
       else if (form && role !== 'button') {
         if (form.noValidate || target.hasAttribute('formnovalidate')) {
-          const ev = new SubmitEvent('submit', {
-            bubbles: true,
-            cancelable: true,
-            submitter: target,
-          });
-          ev.isTrusted = true;
-          if (dispatch(form, ev)) submitForm(form, target, false);
+          if (!firingSubmission.has(form)) {
+            const ev = new SubmitEvent('submit', {
+              bubbles: true,
+              cancelable: true,
+              submitter: target,
+            });
+            ev.isTrusted = true;
+            firingSubmission.add(form);
+            let go: boolean;
+            try {
+              go = dispatch(form, ev);
+            } finally {
+              firingSubmission.delete(form);
+            }
+            if (go) submitForm(form, target, false);
+          }
         } else form.requestSubmit(target);
       }
       return true;
@@ -34887,6 +34934,11 @@ export function installDom(
   /** `FormData` (XHR 4): name and value pairs, in order; made from a form,
    *  what the form would submit of its text, its ticked boxes and its
    *  chosen options — its files, of which there are none here, aside. */
+  /** The forms whose entry list is being made, whose `formdata` runs. */
+  const constructingEntryList = new WeakSet<object>();
+  /** The forms firing `invalid` and `submit` for a submission (HTML
+   *  4.10.21.3, "firing submission events"), which submit nothing more. */
+  const firingSubmission = new WeakSet<object>();
   class FormData {
     _entries: [string, Any][] = [];
     constructor(form?: Any) {
@@ -34894,6 +34946,14 @@ export function installDom(
       if (!(form instanceof HTMLFormElement)) {
         throw new TypeError(
           "Failed to construct 'FormData': parameter 1 is not of type 'HTMLFormElement'.",
+        );
+      }
+      // HTML 4.10.21.4, "constructing the entry list": not again while a
+      // `formdata` listener of the same form's runs
+      if (constructingEntryList.has(form)) {
+        throw new DOMException(
+          "Failed to construct 'FormData': The form is constructing entry list.",
+          'InvalidStateError',
         );
       }
       for (const el of Array.from((form as Any).elements) as Any[]) {
@@ -34938,6 +34998,17 @@ export function installDom(
         ) {
           this.append(name, (el as Any).value);
         }
+      }
+      constructingEntryList.add(form);
+      try {
+        const ev = new FormDataEvent('formdata', {
+          bubbles: true,
+          formData: this,
+        });
+        ev.isTrusted = true;
+        dispatch(form, ev);
+      } finally {
+        constructingEntryList.delete(form);
       }
     }
     _value(value: Any, filename?: Any): Any {
@@ -41635,6 +41706,8 @@ export function installDom(
     submitter: Any,
     userInitiated: boolean,
   ): void => {
+    // nothing while its entry list is being made (HTML 4.10.21.3, step 4)
+    if (constructingEntryList.has(form)) return;
     const submit = () =>
       call('submit', form._id, submitter ? idOf(submitter) : 0);
     const attr = (own: string, form_: string): string | null =>
@@ -41688,10 +41761,13 @@ export function installDom(
       // what is a file in the entry list is its name in a query
       const query = new URLSearchParams();
       const entries: [string, string][] = [];
+      // each line break a CRLF, as HTML's "convert to a list of name-value
+      // pairs" makes it
+      const crlf = (t: string): string => t.replace(/\r\n|\r|\n/g, '\r\n');
       for (const [name, value] of (formData as Any)._entries) {
-        const text = value instanceof File ? value.name : value;
-        query.append(name, text);
-        entries.push([name, text]);
+        const text = crlf(value instanceof File ? value.name : value);
+        query.append(crlf(name), text);
+        entries.push([crlf(name), text]);
       }
       // in the encoding `accept-charset` or the document says, the host's
       const encoding = String(call('formEncoding', form._id));
@@ -43948,6 +44024,8 @@ export function installDom(
     _value: Any = null;
     _valid = true;
     _message = '';
+    _flags: Any = null;
+    _validity: Any = null;
     constructor() {
       throw new TypeError('Illegal constructor');
     }
@@ -43958,24 +44036,56 @@ export function installDom(
     get states(): Any {
       return this._states;
     }
+    /** HTML 4.13.7.3: what only a form-associated custom element's
+     *  internals answer, for `what` of them. */
+    _associated(what: string): void {
+      if (!customOf.get(this._el)?.def?.formAssociated) {
+        throw new DOMException(
+          `Failed to ${what} 'ElementInternals': The target element is not a form-associated custom element.`,
+          'NotSupportedError',
+        );
+      }
+    }
     get form(): Any {
-      return customOf.get(this._el)?.def?.formAssociated
-        ? formOf(this._el)
-        : null;
+      this._associated("read the 'form' property from");
+      return formOf(this._el);
     }
     get labels(): Any {
+      this._associated("read the 'labels' property from");
       return list([]);
     }
+    // a candidate for constraint validation (HTML 4.10.21.2): not where it
+    // is disabled, read-only or in a datalist
     get willValidate(): boolean {
-      return !!customOf.get(this._el)?.def?.formAssociated;
+      this._associated("read the 'willValidate' property from");
+      return internalsWillValidate(this);
     }
     get validationMessage(): string {
+      this._associated("read the 'validationMessage' property from");
       return this._message;
     }
+    // one object a page may hold, which reads the flags as they are now
     get validity(): Any {
-      return { valid: this._valid };
+      this._associated("read the 'validity' property from");
+      if (!this._validity) {
+        const self = this;
+        const live: Any = {};
+        for (const name of VALIDITY_FLAGS) {
+          Object.defineProperty(live, name, {
+            get: () => !!self._flags?.[name],
+            enumerable: true,
+          });
+        }
+        Object.defineProperty(live, 'valid', {
+          get: () => self._valid,
+          enumerable: true,
+        });
+        this._validity = live;
+      }
+      return this._validity;
     }
     setFormValue(value: Any): void {
+      this._associated("execute 'setFormValue' on");
       // a copy of a `FormData`, which the page may go on changing
       if (value instanceof FormData) {
         const copy = new FormData();
@@ -43997,23 +44107,76 @@ export function installDom(
         call('formValue', this._el._id, asText(value));
       }
     }
-    setValidity(flags?: Any, message?: Any): void {
-      this._valid = !flags || !Object.values(flags).some(Boolean);
-      this._message = this._valid ? '' : str(message ?? '');
+    setValidity(flags?: Any, message?: Any, anchor?: Any): void {
+      this._associated("execute 'setValidity' on");
+      const set: Any = {};
+      for (const name of VALIDITY_FLAGS) {
+        if (flags && flags[name]) set[name] = true;
+      }
+      const invalid = Object.keys(set).length > 0;
+      if (invalid && (message === undefined || str(message) === '')) {
+        throw new TypeError(
+          "Failed to execute 'setValidity' on 'ElementInternals': The second argument should not be empty if one or more flags in the first argument are true.",
+        );
+      }
+      if (anchor !== undefined && anchor !== null) {
+        if (!(anchor instanceof HTMLElement)) {
+          throw new TypeError(
+            "Failed to execute 'setValidity' on 'ElementInternals': parameter 3 is not of type 'HTMLElement'.",
+          );
+        }
+        let node: Any = anchor;
+        while (node && node !== this._el) {
+          node =
+            node.parentNode ?? (node instanceof ShadowRoot ? node.host : null);
+        }
+        if (!node) {
+          throw new DOMException(
+            "Failed to execute 'setValidity' on 'ElementInternals': The anchor element should be a shadow-including descendant of the element.",
+            'NotFoundError',
+          );
+        }
+      }
+      this._flags = set;
+      this._valid = !invalid;
+      // its line breaks each a line feed (HTML 4.13.7.3, "normalize
+      // newlines")
+      this._message = invalid ? str(message).replace(/\r\n?/g, '\n') : '';
       // what `:invalid` reads: a reason, however a script put it
-      call(
-        'customValidity',
-        this._el._id,
-        this._valid ? '' : this._message || 'Invalid value.',
-      );
+      call('customValidity', this._el._id, this._valid ? '' : this._message);
     }
     checkValidity(): boolean {
-      return this._valid;
+      this._associated("execute 'checkValidity' on");
+      return internalsCheck(this);
     }
     reportValidity(): boolean {
-      return this._valid;
+      this._associated("execute 'reportValidity' on");
+      return internalsCheck(this);
     }
   }
+  /** Whether a form-associated custom element is a candidate for
+   *  constraint validation. */
+  const internalsWillValidate = (internals: Any): boolean => {
+    const el = internals._el;
+    if (el.hasAttribute('readonly')) return false;
+    if (el.closest?.('datalist')) return false;
+    try {
+      if (el.matches(':disabled')) return false;
+    } catch {
+      // a selector this realm cannot ask
+    }
+    return true;
+  };
+  /** HTML 4.10.21.3, "check validity" of a form-associated custom element:
+   *  an `invalid` at it where it is a candidate and not valid. */
+  const internalsCheck = (internals: Any): boolean => {
+    if (!internalsWillValidate(internals) || internals._valid) return true;
+    dispatch(
+      internals._el,
+      trusted(new Event('invalid', { cancelable: true })),
+    );
+    return false;
+  };
   // ARIAMixin on the internals too (HTML 4.13.7.6): a custom element's
   // default semantics, which no content attribute holds, each null until
   // a page sets it
@@ -44113,6 +44276,8 @@ export function installDom(
       _value: null,
       _valid: true,
       _message: '',
+      _flags: null,
+      _validity: null,
     });
     custom!.internals = internals;
     return internals;
@@ -46365,6 +46530,7 @@ export function installDom(
     CompositionEvent,
     TextEvent,
     SubmitEvent,
+    FormDataEvent,
     CustomEvent,
     ErrorEvent,
     HashChangeEvent,
