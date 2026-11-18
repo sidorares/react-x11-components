@@ -11918,6 +11918,66 @@ test('a page walks its tree, parses markup into documents of its own, and marks 
   );
 });
 
+test("a mark and a measure are User Timing's, its errors and its detail with them", async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var err = function (f) { try { f(); return "none"; } catch (e) { return e.name; } };' +
+      'var a = performance.mark("a", { startTime: 10, detail: { n: 1 } });' +
+      'r.push(Object.prototype.toString.call(a), a instanceof PerformanceEntry, a.startTime, a.detail.n);' +
+      'var made = new PerformanceMark("free", { startTime: 5 });' +
+      'r.push(made.startTime, performance.getEntriesByName("free").length);' +
+      'performance.mark("b", { startTime: 30 });' +
+      'var m = performance.measure("ab", "a", "b");' +
+      'r.push(Object.prototype.toString.call(m), m.startTime, m.duration, m.detail);' +
+      'var d = performance.measure("d", { start: 10, duration: 5, detail: [1] });' +
+      'r.push(d.startTime, d.duration, d.detail[0]);' +
+      'r.push(err(function () { performance.mark(); }));' +
+      'r.push(err(function () { performance.mark("x", 5); }));' +
+      'r.push(err(function () { performance.mark("x", { startTime: -1 }); }));' +
+      'r.push(err(function () { performance.mark("navigationStart"); }));' +
+      'r.push(err(function () { performance.measure("x", "no such mark"); }));' +
+      'r.push(err(function () { performance.measure("x", { start: 1 }, "b"); }));' +
+      'r.push(err(function () { performance.measure("x", { detail: 1 }); }));' +
+      'r.push(err(function () { performance.measure("x", "loadEventEnd"); }));' +
+      'r.push(err(function () { new PerformanceMeasure(); }));' +
+      'r.push(Object.keys(Performance.prototype).indexOf("mark") >= 0);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  await settle(20);
+  assert.equal(
+    doc.text('out'),
+    [
+      '[object PerformanceMark]',
+      'true',
+      '10',
+      '1',
+      // a mark made with `new` is no entry of the timeline
+      '5',
+      '0',
+      '[object PerformanceMeasure]',
+      '10',
+      '20',
+      '',
+      '10',
+      '5',
+      '1',
+      'TypeError',
+      'TypeError',
+      'TypeError',
+      'SyntaxError',
+      'SyntaxError',
+      'TypeError',
+      'TypeError',
+      // a load that has not ended is no time to measure from
+      'InvalidAccessError',
+      'TypeError',
+      'true',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
 test('document.currentScript is the script through the microtasks it queued, and null after', async () => {
   // Turbopack's chunks read it from a promise's callback, as a browser
   // runs those before it puts `currentScript` back
