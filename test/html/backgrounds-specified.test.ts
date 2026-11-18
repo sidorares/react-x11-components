@@ -75,3 +75,15 @@ test('a position is across then down, a side before its offset', () => {
     'bottom 10px, y-end',
   );
 });
+
+test("a mask layer's longhands take what CSS Masking 1 says, and a prefixed operator Porter-Duff's", () => {
+  // CSS Masking 1, 7: a position with no three-value forms, boxes, an
+  // operator and a mode; `-webkit-mask-composite` has names of its own
+  assert.strictEqual(specifiedValue('mask-composite', 'xor'), null);
+  assert.strictEqual(specifiedValue('mask-composite', 'Exclude'), 'exclude');
+  assert.notStrictEqual(specifiedValue('-webkit-mask-composite', 'xor'), null);
+  assert.strictEqual(specifiedValue('mask-mode', 'auto'), null);
+  assert.strictEqual(specifiedValue('mask-position', 'left 4px top'), null);
+  assert.strictEqual(specifiedValue('mask-origin', 'fill-box'), 'fill-box');
+  assert.strictEqual(specifiedValue('-webkit-mask-clip', 'no-clip'), 'no-clip');
+});
