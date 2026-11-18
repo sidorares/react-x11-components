@@ -12820,6 +12820,14 @@ metric(
     });
     await settle();
     assert.equal(doc.byId('t1').attribs['aria-selected'], 'true');
+    // a smooth scroll, a step a frame, until it comes to rest
+    let was = -1;
+    for (let i = 0; i < 100; i += 1) {
+      const x = doc.handle.scrollState(doc.byId('list'))!.x;
+      if (x > 0 && x === was) break;
+      was = x;
+      await settle(20);
+    }
     assert.ok(
       doc.handle.scrollState(doc.byId('list'))!.x > 0,
       'the strip scrolled the tab toward its middle',

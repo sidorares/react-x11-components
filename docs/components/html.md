@@ -9326,7 +9326,15 @@ one axis and another's on the other. Where several areas
 line up at that place, the one snapped to is the focused element or the one
 that holds it, then the URL's target or the one that holds it, then the
 innermost, then one that lines up on both axes, then the first in tree
-order. A scroll that brings an element into view — `scrollIntoView`, the
+order. A page's scroll is smooth where it asks `behavior: 'smooth'`, or asks
+`auto` of a scroller whose `scroll-behavior` is `smooth` (CSSOM View 7):
+`scrollTo`, `scrollBy`, `scroll`, `scrollIntoView` and `scrollLeft` and
+`scrollTop` of an element, the window's, and a frame's window's, a step a
+frame for a quarter to most of a second, eased, with one `scrollend` at its
+end. A scroll of the same scroller ends it, but for one to where it is going
+already, which goes on; nested scrollers line the element up where the
+smooth scrolls inside them will leave it; and a scroller that snaps scrolls
+at once. A scroll that brings an element into view — `scrollIntoView`, the
 URL's fragment, the scroll `focus()` makes — lines the element up as its
 `scroll-snap-align` says where it is an area, whatever `block` and `inline`
 asked, in a container that snaps and in one that does not; A scroll container further out lines up the
