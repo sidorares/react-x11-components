@@ -3935,8 +3935,26 @@ export function supportsCondition(prelude: string): boolean | null {
   // a property whose grammar is read answers by it
   const specified = specifiedValue(property, declaration[2].trim());
   if (specified !== undefined) return specified !== null;
+  const shorthand = SHORTHAND_GRAMMARS[property];
+  if (shorthand) return shorthand(declaration[2].trim().toLowerCase());
   return ANSWERED.has(property) ? true : null;
 }
+
+/** Shorthands of longhands that are kept and read back and lay nothing
+ *  out (`passive-properties.ts`), which a `@supports` asks by their own
+ *  grammar: `font-synthesis` is `none` or each of its longhands' words once
+ *  (CSS Fonts 4, 3.5). */
+const SHORTHAND_GRAMMARS: Readonly<Record<string, (value: string) => boolean>> =
+  {
+    'font-synthesis': (value) => {
+      if (value === 'none') return true;
+      const words = value.split(/\s+/);
+      return (
+        new Set(words).size === words.length &&
+        words.every((w) => /^(?:weight|style|small-caps|position)$/.test(w))
+      );
+    },
+  };
 
 /** `aspect-ratio` and the device's, bare or `min-`/`max-`. */
 const ASPECT_FEATURES = /^(?:min-|max-)?(?:device-)?aspect-ratio$/;

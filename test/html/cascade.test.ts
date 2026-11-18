@@ -1829,6 +1829,17 @@ test('a @supports test of the mask is answered, and every other is entered', () 
   ]) {
     assert.strictEqual(supportsCondition(unknown), null, unknown);
   }
+  // `font-synthesis` by its grammar: a test page keeps a red rule under
+  // `not (font-synthesis: none)`
+  assert.strictEqual(supportsCondition('not (font-synthesis: none)'), false);
+  assert.strictEqual(
+    supportsCondition('(font-synthesis: small-caps weight)'),
+    true,
+  );
+  assert.strictEqual(
+    supportsCondition('(font-synthesis: weight weight)'),
+    false,
+  );
   const sheet = parseStylesheet(
     '@supports not (mask-image: none) { .a { color: red } }' +
       '@supports (mask-image: none) { .b { color: red } }' +
