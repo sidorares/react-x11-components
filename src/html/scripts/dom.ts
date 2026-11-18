@@ -663,6 +663,9 @@ export function installDom(
   /** Whether this realm is a dedicated worker's, whose errors its `Worker`
    *  hears (`__becomeWorker`). */
   let workerRealm = false;
+  /** Whether this realm's global is a worker's, of any kind, and no
+   *  `Window` (`__becomeWorker`). */
+  let workerGlobal = false;
   const reportOut = (init: Any): void => {
     if (!workerRealm) return;
     bridge(
@@ -32109,6 +32112,12 @@ export function installDom(
     },
     later: (fn: () => void, ms: number) => setTimer(fn, ms, [], false),
     queue: queueEntry,
+    now: () => now(),
+    clone: (value: Any) => structuredCopy(value, new Map()),
+    inWindow: () => !workerGlobal,
+    timing: (name: string) => Number(legacyTiming()[name] ?? 0),
+    entries: () => entries,
+    error: (message: string, name: string) => new DOMException(message, name),
   });
   /** Entries in the order a timeline lists them: by when each started. */
   const byStartTime = (list: Any[]): Any[] =>
@@ -47207,77 +47216,53 @@ export function installDom(
   for (const [name, value] of Object.entries(resourceTiming.interfaces)) {
     define(name, value);
   }
+  /** Navigation Timing 1's `PerformanceTiming`, from the page's
+   *  navigation entry: each time since the epoch, and 0 for what has not
+   *  happened. */
+  const legacyTiming = (): Record<string, number> => {
+    const nav = workerGlobal
+      ? null
+      : navigationTimingOf(document, String(call('location')), pageArrival());
+    const at = (field: string): number => {
+      const v = Number(nav?.[field] ?? 0);
+      return v > 0 ? timeOrigin + v : 0;
+    };
+    return {
+      navigationStart: timeOrigin,
+      unloadEventStart: 0,
+      unloadEventEnd: 0,
+      redirectStart: 0,
+      redirectEnd: 0,
+      fetchStart: timeOrigin,
+      domainLookupStart: timeOrigin,
+      domainLookupEnd: timeOrigin,
+      connectStart: timeOrigin,
+      connectEnd: timeOrigin,
+      secureConnectionStart: 0,
+      requestStart: timeOrigin,
+      responseStart: timeOrigin,
+      responseEnd: timeOrigin,
+      domLoading: timeOrigin,
+      domInteractive: at('domInteractive'),
+      domContentLoadedEventStart: at('domContentLoadedEventStart'),
+      domContentLoadedEventEnd: at('domContentLoadedEventEnd'),
+      domComplete: at('domComplete'),
+      loadEventStart: at('loadEventStart'),
+      loadEventEnd: at('loadEventEnd'),
+    };
+  };
   /** `performance`, the one `Performance` there is, and its members. */
   const performanceMembers = {
     now,
     timeOrigin,
-    mark(name: Any, options: Any = {}) {
-      return noteEntry({
-        name: str(name),
-        entryType: 'mark',
-        startTime: Number(options?.startTime ?? now()),
-        duration: 0,
-        detail: options?.detail ?? null,
-      });
-    },
-    measure(name: Any, start?: Any, end?: Any) {
-      const at = (mark: Any, otherwise: number): number => {
-        if (typeof mark === 'number') return mark;
-        if (mark === undefined || mark === null) return otherwise;
-        const found = entries.filter((e) => e.name === str(mark)).at(-1);
-        return found ? found.startTime : otherwise;
-      };
-      const options = start && typeof start === 'object' ? start : null;
-      const from = at(options ? options.start : start, 0);
-      const to = at(options ? options.end : end, now());
-      return noteEntry({
-        name: str(name),
-        entryType: 'measure',
-        startTime: from,
-        duration: to - from,
-        detail: options?.detail ?? null,
-      });
-    },
-    clearMarks(name?: Any) {
-      for (let i = entries.length - 1; i >= 0; i -= 1) {
-        const e = entries[i];
-        if (
-          e.entryType === 'mark' &&
-          (name === undefined || e.name === str(name))
-        ) {
-          entries.splice(i, 1);
-        }
-      }
-    },
-    clearMeasures(name?: Any) {
-      for (let i = entries.length - 1; i >= 0; i -= 1) {
-        const e = entries[i];
-        if (
-          e.entryType === 'measure' &&
-          (name === undefined || e.name === str(name))
-        ) {
-          entries.splice(i, 1);
-        }
-      }
-    },
     getEntries: () => pageEntries(),
     getEntriesByType: (type: Any) =>
       entryList(pageEntries()).getEntriesByType(type),
     getEntriesByName: (name: Any, type?: Any) =>
       entryList(pageEntries()).getEntriesByName(name, type),
     // the legacy timing, where a page reads how long it took to load
-    timing: {
-      navigationStart: timeOrigin,
-      fetchStart: timeOrigin,
-      responseStart: timeOrigin,
-      responseEnd: timeOrigin,
-      domLoading: timeOrigin,
-      domInteractive: 0,
-      domContentLoadedEventStart: 0,
-      domContentLoadedEventEnd: 0,
-      domComplete: 0,
-      loadEventStart: 0,
-      loadEventEnd: 0,
+    get timing() {
+      return legacyTiming();
     },
     // HTML's legacy `PerformanceNavigation`: 0, 1 or 2 for the type
     get navigation() {
@@ -48976,6 +48961,7 @@ export function installDom(
    */
   entry('__becomeWorker', () => {
     const { url, name, shared, service, born } = input();
+    workerGlobal = true;
     // a worker's time starts with it (HR Time 3, the time origin), where one
     // read off the process's clock came to its page's, and which of the two
     // was first was a coin toss. It starts as the page made it, and not as
