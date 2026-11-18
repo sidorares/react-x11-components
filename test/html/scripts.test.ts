@@ -8532,6 +8532,31 @@ test('getSelection() is a Selection, which no page makes, and setting it to what
   );
 });
 
+test('a shadow root is copied with its host alone, its sheets are none out of the document, and a template says how it assigns slots', async () => {
+  const doc = await hosted(
+    '<div id="h"><template shadowrootmode="open" shadowrootslotassignment="MANUAL"><style>p{}</style><slot></slot></template></div>' +
+      '<p id="out"></p><script>' +
+      'var r = [], h = document.getElementById("h"), root = h.shadowRoot;' +
+      'r.push(root.slotAssignment, root.styleSheets.length);' +
+      'try { root.cloneNode(); } catch (e) { r.push(e.name); }' +
+      'var loose = document.createElement("div").attachShadow({ mode: "open" });' +
+      'loose.innerHTML = "<style>p{}</style>"; r.push(loose.styleSheets.length);' +
+      'var t = document.createElement("template"); r.push(t.shadowRootSlotAssignment);' +
+      't.shadowRootSlotAssignment = "manual"; r.push(t.getAttribute("shadowrootslotassignment"));' +
+      't.shadowRootSlotAssignment = "x"; r.push(t.shadowRootSlotAssignment);' +
+      'var s = document.createElement("slot"); s.textContent = "fallback";' +
+      'r.push(s.assignedNodes({ flatten: true }).length);' +
+      'customElements.define("x-no-shadow", class extends HTMLElement { static disabledFeatures = ["shadow"]; });' +
+      'try { document.createElement("x-no-shadow").attachShadow({ mode: "open" }); } catch (e) { r.push(e.name); }' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'manual|1|NotSupportedError|0|named|manual|named|0|NotSupportedError',
+  );
+});
+
 test('a custom element that takes part in forms answers :valid and :invalid, and its form with it', async () => {
   const doc = await hosted(
     '<form id="f"><x-f id="x"></x-f></form><p id="out"></p><script>' +
@@ -12118,6 +12143,31 @@ metric('layout is asked of the document as the script left it', async () => {
   );
   assert.equal(doc.text('out'), '150 rgb(255, 0, 0) true');
 });
+
+metric(
+  "a point in a shadow tree is the host's to the document and its own to the tree",
+  async () => {
+    // CSSOM View 6 and DOM's retargeting: the document is answered with the
+    // host, a shadow root with what is in it, and slotted text with the
+    // element it is a child of, where it was the slot it is drawn in
+    const doc = await hosted(
+      '<style>body{margin:0}</style><div id="a"></div><div id="b"></div><p id="out"></p><script>' +
+        'var a = document.getElementById("a"), b = document.getElementById("b");' +
+        'var sa = a.attachShadow({ mode: "closed" });' +
+        'sa.innerHTML = "<span style=\\"display:block;height:20px\\">in</span>";' +
+        'var sb = b.attachShadow({ mode: "open" });' +
+        'sb.innerHTML = "<div id=wrap style=\\"height:20px\\"><slot></slot></div>";' +
+        'b.textContent = "slotted";' +
+        'var r = [];' +
+        'r.push(document.elementFromPoint(5, 5) === a, sa.elementFromPoint(5, 5).localName);' +
+        'r.push(document.elementFromPoint(5, 25) === b, sb.elementFromPoint(5, 25) === b);' +
+        'r.push(document.elementsFromPoint(5, 25).map(function (e) { return e.id || e.localName; }).join(","));' +
+        'document.getElementById("out").textContent = r.join("|");' +
+        '</script>',
+    );
+    assert.equal(doc.text('out'), 'true|span|true|true|b,body,html');
+  },
+);
 
 metric(
   'a box fixed to the viewport, and what is in it, is measured where it is drawn however far the pane has scrolled the page',
