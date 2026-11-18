@@ -3663,6 +3663,8 @@ function setsFonts(line: ComputedStyle, block: ComputedStyle): boolean {
     line.fontVariantPosition !== block.fontVariantPosition ||
     line.fontKerning !== block.fontKerning ||
     line.fontFeatureSettings !== block.fontFeatureSettings ||
+    line.fontVariantEastAsian !== block.fontVariantEastAsian ||
+    line.fontAlternateFeatures !== block.fontAlternateFeatures ||
     line.textTransform !== block.textTransform
   );
 }

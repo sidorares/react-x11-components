@@ -4288,3 +4288,24 @@ test('an item of a width of its content has an automatic minimum', async () => {
   assert.strictEqual(boxOf(el, 'a').width, 26);
   assert.strictEqual(boxOf(el, 'b').width, 26);
 });
+
+test("a line of a row that wraps is justified though another line's item has an auto margin", async () => {
+  // Yoga 3.2.1 justifies no line of a box where any item has an `auto`
+  // margin along it; CSS Flexbox 9.5 justifies each line that has none
+  // (WPT's flexbox-column-row-gap-001)
+  const { node } = await render(
+    '<style>body{margin:0}.c{display:flex;flex-flow:row wrap;width:200px;' +
+      'column-gap:20px;justify-content:space-around}.i{width:30px;height:30px}' +
+      '.m{margin-left:auto}</style>' +
+      '<div class="c"><div class="i" id="a"></div><div class="i" id="b"></div>' +
+      '<div class="i"></div><div class="i"></div>' +
+      '<div class="i m" id="e"></div><div class="i" id="f"></div></div>',
+  );
+  const el = view(node);
+  // 20px left over, 5 a side of each of the four
+  assert.strictEqual(boxOf(el, 'a').x, 2.5);
+  assert.strictEqual(boxOf(el, 'b').x, 57.5);
+  // the line with the margin takes all that is left in it
+  assert.strictEqual(boxOf(el, 'e').x, 120);
+  assert.strictEqual(boxOf(el, 'f').x, 170);
+});

@@ -21936,10 +21936,49 @@ export function installDom(
     );
     return v.replace(/\u0000(\d+)\u0000/g, (_, i: string) => kept[Number(i)]);
   };
+  /** A selector list's selectors, at the commas no bracket or string
+   *  holds. */
+  const selectorParts = (text: string): string[] => {
+    const out: string[] = [];
+    let depth = 0;
+    let quote = '';
+    let start = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      const c = text[i];
+      if (c === '\\') i += 1;
+      else if (quote) {
+        if (c === quote) quote = '';
+      } else if (c === '"' || c === "'") quote = c;
+      else if (c === '(' || c === '[') depth += 1;
+      else if (c === ')' || c === ']') depth -= 1;
+      else if (c === ',' && depth === 0) {
+        out.push(text.slice(start, i).trim());
+        start = i + 1;
+      }
+    }
+    out.push(text.slice(start).trim());
+    return out;
+  };
+  /** Whether a rule is nested in a style rule, through group rules. */
+  const nestedInStyle = (rule: Any): boolean => {
+    for (let at = rule.parentRule; at; at = at.parentRule) {
+      if (at.type === 1) return true;
+    }
+    return false;
+  };
   class CSSStyleRule extends CSSGroupingRule {
     override _type = 1;
     get selectorText(): string {
-      return serializeSelector(preludeOf(this._text), this.parentStyleSheet);
+      const text = serializeSelector(
+        preludeOf(this._text),
+        this.parentStyleSheet,
+      );
+      // a nested rule's selectors are relative, and serialize with the `&`
+      // they stand for (CSS Nesting 1, 3.2): `> .bar` is `& > .bar`
+      if (!nestedInStyle(this)) return text;
+      return selectorParts(text)
+        .map((part) => (part.includes('&') ? part : `& ${part}`))
+        .join(', ');
     }
     // its selector as it serializes, and its block as it stands, which may
     // hold rules nested in it

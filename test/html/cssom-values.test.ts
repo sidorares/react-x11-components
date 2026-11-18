@@ -241,4 +241,15 @@ test('a grouping rule takes rules in and gives them up, and the page is styled b
     'green',
     'blue',
   ]);
+test("a nested rule's selectorText says the & it is relative to", async () => {
+  // CSS Nesting 1, 3.2: a nested selector with no `&` is relative to one at
+  // its start, which it serializes with (WPT's css-nesting/parsing)
+  const out = await inPage(
+    '<style id="s">.a { > .b { color: red } .c, &.d, .e & { color: red }' +
+      ' @media all { .f { color: red } } }</style>',
+    `var rules = document.getElementById('s').sheet.cssRules[0].cssRules;
+     return [rules[0].selectorText, rules[1].selectorText,
+       rules[2].cssRules[0].selectorText];`,
+  );
+  assert.deepEqual(out, ['& > .b', '& .c, &.d, .e &', '& .f']);
 });
