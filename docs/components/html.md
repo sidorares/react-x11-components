@@ -3247,12 +3247,34 @@ popovers hides those it is not in, and Escape hides the last one.
 `beforetoggle`, which can cancel a show, comes first, and one `toggle`
 comes in a task of its own for any number of changes before it runs.
 Taking a popover out of the document hides it.
+
+**A button runs its `command` at what its `commandfor` names** (HTML
+4.10.6, invoker commands): a `CommandEvent` named `command`, with the
+`command` and the button as its `source`, is dispatched at the target and
+may be cancelled; then a popover is shown, hidden or toggled, and a dialog
+shown as a modal one, closed with the button's `value`, or asked to close.
+`commandForElement` and `command` reflect the attributes, `command` reading
+`""` for one HTML does not know and a custom `--` command as written, and a
+`<button>` with either and no `type` reads `type` as `button`. **A `<form
+method="dialog">`, or a submitter whose `formmethod` is `dialog`, closes the
+dialog it is in** once its `submit` went on, the submitter's `value` its
+`returnValue`; an image button's would be the point it was pressed at, which
+only the host knows, so it leaves the return value as it was.
 What is in the top layer computes to `overlay: auto`, and all else to
 `none`, a page's own `overlay` read back where it is `auto` or `none` and
 doing nothing (CSS Position 4, 3.2). A transition of `overlay` with
 `allow-discrete` holds it at `auto` to its end, so a popover hidden under
-one is still drawn in the top layer, in the place it had there; a closed
-dialog does not yet keep its modal styles and backdrop so.
+one is still drawn in the top layer, in the place it had there, and as
+Chrome keeps it: against what showed it, its implicit anchor until it
+shows again, where a menu placed by `position-area` had faded out in the
+corner, as wide as its own content. A modal dialog closed under one is
+drawn so with its `::backdrop`, and is placed as a modal one to the end,
+fixed and centred: `:modal` matches it no more as it closes, and Chrome
+keeps HTML's `dialog:modal` placement on what is in the top layer. One
+nothing holds there reads as what it is straight after its `close()`,
+`position: absolute`. Its frames, and its backdrop's, are restyled in
+place; the backdrop is beside its dialog in the top layer and in no box
+around it, and a frame repaints its ink as well as the dialog's.
 
 A link or a form whose `target` names one of the page's frames is loaded
 there; every other one still reaches `onLink` and `onSubmit`, which with
@@ -5255,6 +5277,56 @@ apart from the page's. A frame whose
 `scrolling` is `no`, `off` or `noscroll` shows no scroll bars, whatever its
 document's `overflow` (HTML 15.4.4).
 
+## Popovers and dialogs from the markup
+
+**A page's menus, drawers, toasts and dialogs open and close with no script
+at all**, as they do in a browser with JavaScript off. HTML says how from
+the markup alone, and a page written to need nothing else — Alloy CSS's,
+say — has nothing else:
+
+- **A button's `popovertarget` shows, hides or toggles the popover it
+  names** (HTML 6.12), as its `popovertargetaction` says, and is the
+  popover's implicit anchor, so `position-area` and `anchor()` place it
+  against the button.
+- **A button's `command` runs at the element its `commandfor` names**
+  (HTML 4.10.6): `show-modal`, `close` and `request-close` at a
+  `<dialog>`, `show-popover`, `hide-popover` and `toggle-popover` at a
+  popover. A custom command, one starting `--`, is told as `command` and
+  does nothing more. A `<button>` with a `command` or a `commandfor` and
+  no `type` is no submit button, and in a form runs nothing at all.
+- **A `<form method="dialog">` sent closes the dialog it is in**, its
+  return value the submitter's `value`, and sends nothing (HTML
+  4.10.21.3). It is validated first, as any form is: a `required` field
+  left empty keeps the dialog open and is focused, and `formnovalidate`
+  goes past it.
+- **A modal dialog is focused as it opens** (HTML 4.11.4.2, the dialog
+  focusing steps): what in it says `autofocus`, or else the first thing in
+  it Tab reaches, or else the dialog. One a press opened lights no ring,
+  as Chrome has it. What had the focus has it back as the dialog closes.
+- **A press and a release outside the `auto` popovers hide them**, but for
+  the one the press is in and the one a button it is on shows, and **a
+  press on a modal dialog's backdrop closes it where its `closedby` is
+  `any`** (HTML's light dismiss). The press's click is still the click of
+  what was under it as it went down: a menu leaving under an exit
+  transition does not take it from the button beside it.
+- **Escape hides the last `auto` popover shown, or closes the last dialog
+  opened**, whichever came last, after a `cancel` the host may cancel, where
+  the dialog's `closedby` lets a close request close it.
+
+The host hears each of these through `onDomEvent` (see [Events before their
+defaults](#events-before-their-defaults)): `command`, `beforetoggle`,
+`toggle`, `cancel` and `close`, any of the cancelable ones cancelled by a
+`false`.
+
+Where a script engine runs the document — `scripts`, or a host's own engine,
+which says so with `scripting` — all of this is its DOM's to do, as the
+engine under `scripts` does it (see [Scripts](#scripts)), and the markup
+opens nothing by itself. Two things are simpler here than in a browser: a
+`hint` popover is in the one list the `auto` popovers are in, so showing one
+hides the `auto` popovers it is not in, where HTML keeps hints apart; and
+the events are told as things happen, where HTML tells `toggle` and `close`
+in a task of their own.
+
 ## Focus and the keyboard
 
 **Tab goes through a document as it goes through a page in a browser**: its
@@ -5394,7 +5466,11 @@ moves the focus, since nothing cancelled it.
 | `submit`                                                  | A form validated and about to be sent, with its `submitter`                                              | nothing is sent                                  |
 | `reset`                                                   | A reset button pressed                                                                                   | nothing is put back                              |
 | `focusin`, `focusout`                                     | The focus moved, with the other element as `relatedTarget`                                               | —                                                |
-| `toggle`                                                  | A `<details>` opened or closed                                                                           | —                                                |
+| `beforetoggle`                                            | A popover or a dialog about to be shown or hidden, with `oldState` and `newState`                        | a popover or a dialog is not shown               |
+| `toggle`                                                  | A `<details>` opened or closed; a popover or a dialog shown or hidden, with `oldState` and `newState`    | —                                                |
+| `command`                                                 | A button's `command` at what its `commandfor` names, with `command` and `source`, the button             | the command does nothing                         |
+| `cancel`                                                  | A dialog asked to close: Escape, a press outside one whose `closedby` is `any`, `request-close`          | the dialog stays open                            |
+| `close`                                                   | A dialog closed, with its `returnValue` where it was given one                                           | —                                                |
 | `load`, `error`                                           | A sheet's `<link>` applied, or its preload's sheet in; or not to be had; what an `<img>`'s image came to | —                                                |
 
 The order is HTML's and UI Events', and three places in it are worth knowing:
@@ -5784,8 +5860,9 @@ so an accordion can transition its height open and shut (see
 whose menu is down or up (see [Scripts](#scripts)). A `<dialog>` is not drawn
 until it is `open`, and is then HTML's framed box out of the flow, centred
 across its containing block; one a page's scripts opened with
-`showModal()` is in the top layer, centred in the viewport over all of
-the page (see [Scripts](#scripts)).
+`showModal()`, or a button's `command="show-modal"` with scripts or without,
+is in the top layer, centred in the viewport over all of the page (see
+[Popovers and dialogs from the markup](#popovers-and-dialogs-from-the-markup)).
 A flex container is laid out by Yoga's algorithm — the engine react-x11 lays
 itself out with where it wraps or runs the other way, and the same arithmetic
 in JavaScript where it has one line, which is nearly always — and each item by
@@ -9558,7 +9635,13 @@ would take no focus, say nothing to a screen reader, and have to reimplement
 every keyboard convention the platform already has. A widget is keyed by
 its element rather than by where it is, so a field that layout moves — a
 stylesheet or an image arriving above it while someone types — is the same
-widget, and keeps its focus, its caret and its undo.
+widget, and keeps its focus, its caret and its undo. And it is placed and
+sized with its box in the frame that laid the box out: where the rectangles
+a render places it at are a layout behind, core moves its widget by as far
+as the box has moved since, or the box that cuts it where it is cut, and
+lays it out at the size the box came to, so a field in a centred dialog
+keeps to the dialog, and to its width, at every step of a window's edge. A
+widget the document cuts takes its size from the render, a frame late.
 
 **A control's text is the theme's font, whatever the page's is.** Chrome
 sets `<input>`, `<select>`, `<textarea>` and `<button>` in a system font,

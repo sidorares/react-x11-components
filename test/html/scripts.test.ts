@@ -9424,6 +9424,82 @@ test('Escape the page lets be closes the last modal dialog opened, after a cance
   );
 });
 
+test('a button runs its command at what its commandfor names, after a command event the page may cancel, and a dialog form closes its dialog with its submitter’s value', async () => {
+  // HTML 4.10.6 and 4.10.21.3, as Alloy CSS's example uses them with no
+  // script of its own: `show-modal` and `close` at a dialog, `toggle-popover`
+  // at a popover, a custom command told and nothing more, and one HTML
+  // does not give a dialog not told at all
+  const doc = await hosted(
+    '<button id="open" commandfor="d" command="SHOW-MODAL">open</button>' +
+      '<button id="toggle" commandfor="p" command="toggle-popover">p</button>' +
+      '<button id="custom" commandfor="d" command="--Spin">x</button>' +
+      '<button id="bad" commandfor="d" command="toggle-popover">bad</button>' +
+      '<div id="p" popover>pop</div>' +
+      '<dialog id="d"><form id="f" method="dialog">' +
+      '<button id="close" type="button" commandfor="d" command="close" value="x">c</button>' +
+      '<button id="auto" commandfor="d" command="close">auto</button>' +
+      '<button id="ok" value="ok">ok</button></form></dialog>' +
+      '<p id="out"></p><script>' +
+      'var r = [], d = document.getElementById("d"), p = document.getElementById("p");' +
+      'function $(id) { return document.getElementById(id); }' +
+      'for (const t of [d, p]) t.addEventListener("command", function (e) {' +
+      '  r.push("cmd:" + e.command + ":" + e.source.id + ":" + (e instanceof CommandEvent) + ":" + e.cancelable);' +
+      '});' +
+      'd.addEventListener("close", function () { r.push("close:" + d.returnValue); });' +
+      'r.push($("open").command, $("custom").command, $("bad").command, $("open").commandForElement === d,' +
+      '  $("auto").type, $("ok").type);' +
+      'var made = new CommandEvent("command", { command: "--a", source: $("ok") });' +
+      'r.push(made.command + ":" + made.source.id);' +
+      '$("open").click(); r.push("modal:" + d.matches(":modal"));' +
+      '$("custom").click(); $("bad").click();' +
+      // a button in the Auto state in a form runs no command, and submits
+      // nothing either
+      '$("auto").click(); r.push("open:" + d.open);' +
+      '$("close").click(); r.push("open:" + d.open);' +
+      'setTimeout(function () {' +
+      '  $("open").click(); $("f").requestSubmit($("ok")); r.push("open:" + d.open);' +
+      '  setTimeout(function () {' +
+      '    $("toggle").click(); r.push("pop:" + p.matches(":popover-open"));' +
+      '    p.addEventListener("command", function (e) { e.preventDefault(); }, { once: true });' +
+      '    $("toggle").click(); r.push("pop:" + p.matches(":popover-open"));' +
+      '    $("toggle").click(); r.push("pop:" + p.matches(":popover-open"));' +
+      '    $("out").textContent = r.join("|");' +
+      '  }, 0);' +
+      '}, 0);' +
+      '</script>',
+    { pane: 300 },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      'show-modal',
+      '--Spin',
+      'toggle-popover',
+      'true',
+      'button',
+      'submit',
+      '--a:ok',
+      'cmd:show-modal:open:true:true',
+      'modal:true',
+      'cmd:--Spin:custom:true:true',
+      'open:true',
+      'cmd:close:close:true:true',
+      'open:false',
+      'close:x',
+      'cmd:show-modal:open:true:true',
+      'open:false',
+      'close:ok',
+      'cmd:toggle-popover:toggle:true:true',
+      'pop:true',
+      'cmd:toggle-popover:toggle:true:true',
+      'pop:true',
+      'cmd:toggle-popover:toggle:true:true',
+      'pop:false',
+    ].join('|'),
+  );
+});
+
 test('a slotted node knows its slot, a slot what it is assigned, and a popover in a slot is in the popover around the slot', async () => {
   // DOM 4.2.2.3: `assignedSlot` where the tree is open, `assignedNodes()`
   // and its fallback with `flatten`; and HTML's popover ancestry is the

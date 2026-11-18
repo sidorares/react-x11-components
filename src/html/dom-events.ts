@@ -64,9 +64,20 @@ export type HtmlDomEventType =
   | 'reset'
   | 'focusin'
   | 'focusout'
+  // a details opened or closed, and a popover or a dialog shown or hidden,
+  // with `oldState` and `newState`; `beforetoggle` before a popover or a
+  // dialog is, which may cancel one being shown
+  | 'beforetoggle'
   | 'toggle'
-  // a file input's dialog dismissed, with nothing changed by it
+  // a file input's dialog dismissed, with nothing changed by it; and a
+  // dialog asked to close — Escape, a `request-close` command, a press
+  // outside one whose `closedby` is `any` — which may keep it open
   | 'cancel'
+  // a dialog closed, with its `returnValue` where it was given one
+  | 'close'
+  // a button's `command` at the element its `commandfor` names, with
+  // `command` and `source`, before what it does
+  | 'command'
   // a drag of what the document draws, or of something over it
   | 'dragstart'
   | 'drag'
@@ -147,6 +158,18 @@ export interface HtmlDomEvent {
   /** For a drag's events, what it carries: a host writes to it, as a page's
    *  `dataTransfer` does, at `dragstart` and `dragover`. */
   drag?: HtmlDragData;
+  /** For `beforetoggle` and `toggle` of a popover or a dialog, the state
+   *  it goes from and to. */
+  oldState?: 'open' | 'closed';
+  newState?: 'open' | 'closed';
+  /** For `command`, the command — one of HTML's, or a custom one, which
+   *  starts with `--` — and the button that ran it. */
+  command?: string;
+  source?: Element;
+  /** For a dialog's `close`, the return value it was closed with: a
+   *  `<form method="dialog">`'s submitter's value, a `close` command's
+   *  button's. */
+  returnValue?: string;
 }
 
 /** `onDomEvent`: false cancels a cancelable event. */
@@ -202,6 +225,7 @@ const CANCELABLE = new Set<HtmlDomEventType>([
   'drop',
   'submit',
   'reset',
+  'command',
 ]);
 
 /** What an event carries besides its type, its target and whether it can
@@ -213,15 +237,18 @@ export type DomEventInit = Partial<
 /**
  * Tell the host, and answer whether the default goes on: true unless the
  * event is cancelable and the host returned false. With no host, it does.
+ * Whether it is cancelable is its type's, but where one type is both: a
+ * `beforetoggle` as something opens and not as it closes, a dialog's
+ * `cancel` and not a file input's.
  */
 export function fireDomEvent(
   handler: DomEventHandler | undefined,
   type: HtmlDomEventType,
   target: Element,
   init: DomEventInit = {},
+  cancelable: boolean = CANCELABLE.has(type),
 ): boolean {
   if (!handler) return true;
-  const cancelable = CANCELABLE.has(type);
   const answer = handler({
     ...NO_MODIFIERS,
     ...init,

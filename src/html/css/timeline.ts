@@ -2057,6 +2057,19 @@ export function transitionsDisplay(list: Transitions): boolean {
   );
 }
 
+/** Whether a style's transitions run `field` allow-discrete for some
+ *  time, which holds a discrete value as it was until the run is over (CSS
+ *  Transitions 2, 3.1): an `overlay` that holds an element in the top layer
+ *  as it leaves, say. */
+export function transitionsHold(list: Transitions, field: string): boolean {
+  const index = transitionFields(list).get(field);
+  return (
+    index !== undefined &&
+    item(list.behaviors, index) === 'allow-discrete' &&
+    Math.max(0, item(list.durations, index)) + item(list.delays, index) > 0
+  );
+}
+
 const TRANSITION_FIELDS = new WeakMap<Transitions, Map<string, number>>();
 const FIELDS_BY_KEY = new Map<string, Map<string, number>>();
 

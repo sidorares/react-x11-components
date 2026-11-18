@@ -3942,6 +3942,43 @@ goes in `defaultMouseDown`, as `startsSelectionAt` does, since a press on
 `user-select: none` starts no selection and moves the focus in all three
 engines.
 
+**The top layer has one owner: the markup where nothing runs the
+document, and the engine's DOM where something does** (`top-layer.ts`,
+gated on `scripting`). A browser with JavaScript off opens a popover by
+`popovertarget`, a dialog by `commandfor` and `command`, closes one by a
+`<form method="dialog">`, a press outside and Escape, and Alloy CSS's
+example is a page of nothing else; before this a document with no script
+opened nothing, and neither side knew `commandfor`. Both halves place an
+element in the top layer through `dom.ts`'s `setModal` and
+`setPopoverOpen`, so **anything new HTML lets markup do to the top layer
+goes in `top-layer.ts` and in `scripts/dom.ts` both**, and the two are held
+to the same page (`test/html/top-layer.test.ts`, and its scripted twin in
+`scripts.test.ts`). Four things are load-bearing. **A release's target is
+taken before its light dismiss** (`noteRelease`): the dismiss hides a
+popover as the button goes up, before the click, and a menu leaving under
+an `overlay` exit transition is drawn over what is around it, the button
+beside it among them, which a hit test after the dismiss found instead.
+Anything new that a release does after a default may change the document
+hit-tests from there. **An owed focus shows as it was asked for**: the
+dialog focusing steps focus a control that has no widget or stop until the
+next render, and the second `focused` as it mounts recomputed
+`:focus-visible` without the script's ask, so a dialog a press opened lit a
+ring. **What leaves the top layer under an `overlay` transition is placed
+as it was to the end**, as Chrome has it: a popover keeps its implicit
+anchor until it shows again (`setPopoverOpen`), and a dialog that left as a
+modal one is placed by HTML's `dialog:modal` rule, which the UA sheet
+writes `dialog:-rx-modal-placed`, while the style it was drawn in holds its
+`overlay` (`_modalPlaced`, said once as it closes) — let go of, an Alloy
+menu faded out in the corner, narrower, and its dialog at the page's top.
+A dialog nothing holds is placed as what it is from its `close()`, which a
+script reads straight after it. So **anything new that places a box by the
+top layer asks of what drew it, not of `:modal` or `:popover-open`**. And
+**what an element out of the top layer has no more is let go of where its
+style says so**: its `::backdrop`'s transitions and animations are dropped
+as its own style comes to an `overlay` of `none` (`leftTopLayer`), since
+nothing styles a backdrop that has no box, and one run out kept a frame
+asked for at every turn for as long as the document stood.
+
 **The mouse is a pointer to a page, and one object says what it is over**
 (`scripts/pointers.ts`, over the interfaces in `scripts/ui-events.ts`). A
 press, a release and a move go through the steps Chromium's
@@ -8070,6 +8107,41 @@ rect comes out different at every step of a scroll. It still lands in the
 right place, a frame late, so a test of where it ends sees nothing: hold it
 to every paint and to a scroll telling nothing, as `test/html/forms.test.ts`
 does.
+
+**A widget is placed and sized by core's pass, from the document's layout,
+not by the render that reports it** (`FOLLOWS_CONTROL`, `SIZES_CONTROL`,
+`ControlRect.follow`). A report of the controls reaches React a render after
+the layout that moved them, so at every step of a window's edge a centred
+dialog was drawn where the step had it and its fields where the step before
+did, and as wide, a step behind the box around them. So a widget is mounted
+in three boxes, always the same three. The outer is a layout host the
+element's width and of no height, which lays the next out at the rect's
+place and at the size the control's box has in the document's last layout
+(`controlSizeOf`): core places a host's children after the pass whenever
+the host's width changes, which a window's edge does, and the document was
+laid out at its width in that pass. The middle one's position moves it by
+how far the box it follows has moved since the rect was taken
+(`followShiftOf`), to the viewport for one fixed to it, or by a sticky box's
+hold (`heldShiftOf`), which is the one placement that was three nested
+wrappers. Six things are load-bearing. **What a cut widget follows is the
+box that cuts it** (`clipperOf`), so the clip goes with it, and a cut one is
+the rect's size: a field scrolled inside its box is told by the report, as
+before, and not moved out of what shows it. **The place is the rect's**, and
+`sameRects` compares it, so the offset is always from what React drew: kept
+on the element instead, a report React had not drawn yet took the offset
+back. **One position object for an element and what it says**
+(`controlPosition`), or every render of the document is a new style for
+every widget's box. **The host reads the document only when it places**,
+both modes `'exactly'`: a question of another size is asked inside the pass,
+where the document may not have its width yet, and answers nothing of it. And **a change
+of the document that leaves the element's width alone is a render late in
+its size**, since nothing asks the host to place again; its place is not.
+**Nothing a rect notes of where a box is may be what a scroll moves**: a
+sticky box is placed again at every scroll, so a held control has no
+`follow`, and is sized by `held` — given one, every frame of a scroll was a
+report of the controls and a render of every widget. A control a vertical
+flow turns follows nothing of this: its box is across what it is drawn as. The validation message is still `keptWithBox`'s, which places
+it and does not size it.
 
 **A sticky box the viewport holds cuts a mount as a fixed box does, and
 refuses none** (`heldSet`, `heldOver`, `cutByFixed`'s `held`). The pane's

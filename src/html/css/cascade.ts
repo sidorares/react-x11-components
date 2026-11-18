@@ -37,6 +37,10 @@ import {
   isInputButton,
   inActiveTransition,
   isModal,
+  holdModalPlacement,
+  leavingModal,
+  leftTopLayer,
+  letGoOfModalPlacement,
   isFullscreen,
   isCheckable,
   hasPicker,
@@ -127,6 +131,7 @@ import {
   noteSettled,
   settledOf,
   transitionsDisplay,
+  transitionsHold,
 } from './timeline.js';
 import { sampleScripts } from './scripted.js';
 import type { ScriptAnimations } from './scripted.js';
@@ -636,7 +641,7 @@ interface IndexedRule {
  * controls.
  */
 const UNSHAREABLE =
-  /[+~]|:(?:first|last|only)-(?:child|of-type)|:nth-|:empty|:blank|:has\(|:has-slotted|:focus-within|:target|:scope|:(?:checked|selected|parent|defined|modal|(?:user-)?(?:in)?valid|in-range|out-of-range|placeholder-shown|indeterminate|default|read-only|read-write)\b|:(?:state|dir)\(|:i?contains\(/i;
+  /[+~]|:(?:first|last|only)-(?:child|of-type)|:nth-|:empty|:blank|:has\(|:has-slotted|:focus-within|:target|:scope|:-rx-modal-placed\b|:(?:checked|selected|parent|defined|modal|(?:user-)?(?:in)?valid|in-range|out-of-range|placeholder-shown|indeterminate|default|read-only|read-write)\b|:(?:state|dir)\(|:i?contains\(/i;
 
 /**
  * Rules bucketed by the key of their rightmost compound selector. An element
@@ -3193,6 +3198,8 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   // a dialog `showModal()` opened, which the script engine tells as a
   // change of this attribute nothing has (`DomHost`'s `modal`)
   modal: ['a:-rx-modal'],
+  // and as modal while it leaves, which the UA sheet places it by
+  '-rx-modal-placed': ['a:-rx-modal'],
   fullscreen: ['a:-rx-fullscreen'],
   // nothing here fills a form in
   autofill: [],
@@ -5039,6 +5046,7 @@ export class Cascade {
       'focus-visible': (el: Element) =>
         now.cascade._focus.visible && now.cascade._focus.element === el,
       'focus-within': (el: Element) => now.cascade._focus.within.has(el),
+      '-rx-modal-placed': (el: Element) => now.cascade._modalPlaced(el),
     };
     // css-select's default adapter is domutils; `isHovered` and `isActive`
     // are its documented hooks for exactly this, so `:hover` costs an
@@ -8924,6 +8932,29 @@ export class Cascade {
     return style.display === 'none' ? null : style;
   }
 
+  /**
+   * Whether the UA sheet places a dialog as a modal one
+   * (`:-rx-modal-placed`): while it is modal, and as it leaves the top
+   * layer as one, while the transition of its `overlay` the style it was
+   * drawn in runs holds it there — said once, as it closes, from that style
+   * (`leavingModal`), and let go of as its style comes to an `overlay` of
+   * `none`. A dialog nothing holds is placed as what it is from its close:
+   * Chrome reads `position: absolute` straight after one.
+   */
+  private _modalPlaced(el: Element): boolean {
+    if (isModal(el)) return true;
+    const state = leavingModal(el);
+    if (state !== null) return state === true;
+    const drawn = this.previous?.(el, '') ?? null;
+    const held =
+      !!drawn &&
+      drawn !== UNRENDERED &&
+      drawn.overlay === 'auto' &&
+      transitionsHold(drawn.transitions, 'overlay');
+    holdModalPlacement(el, held);
+    return held;
+  }
+
   /** Whether an element is the root a `rem` and an `rlh` are of. */
   private _isRoot(el: Element): boolean {
     return el === this._documentElement || isRootElement(el);
@@ -9110,6 +9141,25 @@ export class Cascade {
             style,
           );
         }
+      }
+    }
+    // an element that left the top layer and whose style no longer holds it
+    // there: a dialog that left it as a modal one is placed as what it is
+    // now (`_modalPlaced`), and it has no `::backdrop`, which nothing styles
+    // again, so the backdrop's transitions and animations are over (CSS
+    // Position 4, 4.1) — kept, one run out asked for a frame at every turn
+    // for as long as the document stood. Of a style the document draws,
+    // whose transitions hold its `overlay`, and of no read's.
+    if (
+      own &&
+      target !== null &&
+      style.overlay !== 'auto' &&
+      leftTopLayer(el)
+    ) {
+      letGoOfModalPlacement(el);
+      if (timeline) {
+        if (!timeline.empty) timeline.drop(el, 'backdrop');
+        timeline.dropTransitions(el, 'backdrop');
       }
     }
     // which faces of the document's own families this family, weight and
@@ -11153,6 +11203,10 @@ const PSEUDOS = {
   // a dialog in its document's top layer, which only a page's scripts put
   // one in (`isModal`)
   modal: (el: Element) => isModal(el),
+  // one, or one a transition holds in the top layer as it leaves as one:
+  // what the UA sheet places as a modal dialog — a cascade's own, which
+  // asks what drew it (`Cascade._modalPlaced`), and only `:modal` here
+  '-rx-modal-placed': (el: Element) => isModal(el),
   // a popover a page's scripts showed (`isPopoverOpen`)
   'popover-open': (el: Element) => isPopoverOpen(el),
   // the root while a view transition is active, and of one of the types

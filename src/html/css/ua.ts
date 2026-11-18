@@ -455,7 +455,7 @@ dialog {
   background-color: Canvas;
   color: CanvasText;
 }
-dialog:modal {
+dialog:-rx-modal-placed {
   overflow: auto;
   position: fixed;
   inset-block: 0;

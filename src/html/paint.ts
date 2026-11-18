@@ -8556,6 +8556,19 @@ export function clipAround(box: Box, scale = 1): Rect | null {
   };
 }
 
+/** The nearest box around `box` whose clip cuts it, as `clipAround` goes
+ *  from it: null where none does. */
+export function clipperOf(box: Box): Box | null {
+  const holder = (inner: Box): Box | null =>
+    inner.outOfFlow ? containingBlockOf(inner) : inner.parent;
+  for (let outer = holder(box); outer; outer = holder(outer)) {
+    if ((outer.outOfFlow && outer.style.clip) || clipsOverflow(outer)) {
+      return outer;
+    }
+  }
+  return null;
+}
+
 /** A length of an `IntersectionObserver`'s margins: CSS pixels, or a
  *  percentage of the rectangle it grows. */
 export interface MarginLength {

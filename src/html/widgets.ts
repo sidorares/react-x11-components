@@ -56,7 +56,9 @@ import { browserSystemColor } from './css/color.js';
 import type { RootLook } from './css/style.js';
 import {
   AT_VIEWPORT,
+  FOLLOWS_CONTROL,
   HELD_AT_VIEWPORT,
+  SIZES_CONTROL,
   between,
   buttonLabel,
   optionsOf,
@@ -101,6 +103,7 @@ import { RangeWidget } from './range.js';
 import { isDateFieldType } from './date-fields.js';
 import { DateField } from './date-picker.js';
 import { SB_AUTOMATIC, SB_FORMS } from './scripts/sandbox.js';
+import type { TopLayer } from './top-layer.js';
 
 const h = React.createElement;
 
@@ -127,6 +130,10 @@ export interface FormsOptions {
    *  `allow-forms` a form is sent nowhere and asked nothing, and with no
    *  `allow-scripts` nothing is focused by `autofocus`. */
   sandbox?: number;
+  /** What a button's `popovertarget` and `commandfor` reach, and what a
+   *  `<form method="dialog">` closes, where no script engine runs the
+   *  document (`top-layer.ts`); null where one does, whose DOM does it. */
+  topLayer?: TopLayer | null;
 }
 
 export interface Forms {
@@ -134,6 +141,10 @@ export interface Forms {
    *  buttons and summaries. */
   onMouseDown: (ev: X11MouseEvent<DrawnNode>) => void;
   onMouseUp: (ev: X11MouseEvent<DrawnNode>) => void;
+  /** A release, heard in the capture phase: what it is on, taken before
+   *  anything its own defaults change — a popover a light dismiss hides
+   *  — which `onMouseUp` presses. */
+  noteRelease: (ev: X11MouseEvent<DrawnNode>) => void;
   /** The widgets for the rectangles layout reported, each at its rect's
    *  index — null where a rect has none — and the message of a form that
    *  would not submit. */
@@ -239,6 +250,7 @@ export function useForms(options: FormsOptions): Forms {
     onDomEvent,
     touch,
     sandbox: sandboxed = 0,
+    topLayer = null,
   } = options;
   /** Tell the host what happened; whether the default goes on. */
   const fire = (
@@ -396,6 +408,12 @@ export function useForms(options: FormsOptions): Forms {
       // button would, which a press lights no ring on
       const ask = asked.current;
       if (ask?.el === el) asked.current = null;
+      // an owed focus its widget or its stop took at last shows as it did
+      // when it was told: a control in a dialog a press opened lights no
+      // ring as it is mounted
+      if (was === el && ask?.el !== el && view.current?.focusedElement === el) {
+        return;
+      }
       const visible =
         isTextField(el) ||
         isDateField(el) ||
@@ -523,9 +541,13 @@ export function useForms(options: FormsOptions): Forms {
     // 4.10.21.3, step 3)
     if (sandboxed & SB_FORMS) return;
     attempted(form);
-    if (!onSubmit && !onDomEvent) return;
+    // a dialog's form closes its dialog, whoever hears of it
+    if (!onSubmit && !onDomEvent && !topLayer?.sendsToDialog(form, submitter)) {
+      return;
+    }
     if (!validate(form, submitter)) return;
     if (!fire('submit', form, { submitter })) return;
+    if (topLayer?.submitted(form, submitter, point)) return;
     send(form, submitter, point);
   };
 
@@ -548,13 +570,18 @@ export function useForms(options: FormsOptions): Forms {
   };
 
   /** A button's activation behaviour (HTML 4.10.6): a submit button
-   *  submits its form, a reset button resets it, and any other does
-   *  nothing. Reported first, as a pressed widget is. */
+   *  submits its form, a reset button resets it, and any other runs its
+   *  `commandfor`'s command or shows its `popovertarget`'s popover, where
+   *  that is the document's to do. Reported first, as a pressed widget
+   *  is. */
   const press = (button: Element, point?: Point) => {
     onControlChange?.(button, attr(button, 'value') ?? '');
     const kind = buttonType(button);
     const form = kind && kind !== 'button' ? formOwner(button) : null;
-    if (!form) return;
+    if (!form) {
+      topLayer?.activate(button);
+      return;
+    }
     if (kind === 'submit') submit(form, button, point);
     else if (fire('reset', form)) resetNow(form);
   };
@@ -787,9 +814,23 @@ export function useForms(options: FormsOptions): Forms {
       if (!ev.defaultPrevented) pickOption(at.control, at.element, ev);
     } else if (at) pressed.current = { at, x: ev.x, y: ev.y };
   };
+  // What a release lands on, taken before anything it does changes what
+  // is there: a light dismiss hides a popover as the button goes up, before
+  // the click, and the popover's exit transition can leave it over the
+  // button the click is for (`noteRelease`).
+  const released = React.useRef<{
+    ev: X11MouseEvent<DrawnNode>;
+    at: Pressable | null;
+  } | null>(null);
+  const noteRelease = (ev: X11MouseEvent<DrawnNode>) => {
+    released.current =
+      pressed.current && ev.button === 1 ? { ev, at: pressableAt(ev) } : null;
+  };
   const onMouseUp = (ev: X11MouseEvent<DrawnNode>) => {
     const start = pressed.current;
+    const noted = released.current?.ev === ev ? released.current : null;
     pressed.current = null;
+    released.current = null;
     if (!start || ev.button !== 1) return;
     if (
       Math.abs(ev.x - start.x) > CLICK_SLOP ||
@@ -797,7 +838,7 @@ export function useForms(options: FormsOptions): Forms {
     ) {
       return;
     }
-    const at = pressableAt(ev);
+    const at = noted ? noted.at : pressableAt(ev);
     if (!at || at.element !== start.at.element) return;
     if (at.kind === 'label') {
       // a label is text, and a drag that selected some of it was reading
@@ -846,6 +887,7 @@ export function useForms(options: FormsOptions): Forms {
   };
 
   const ctx: ControlContext = {
+    view,
     forms,
     widgets,
     ranges,
@@ -886,6 +928,7 @@ export function useForms(options: FormsOptions): Forms {
   return {
     onMouseDown,
     onMouseUp,
+    noteRelease,
     render: (rects, look) => {
       rendered.current = rects;
       return {
@@ -992,7 +1035,9 @@ export function useForms(options: FormsOptions): Forms {
       if (attempt) attempted(form);
       return validate(form, submitter);
     },
-    submitNow: (form, submitter) => send(form, submitter),
+    submitNow: (form, submitter) => {
+      if (!topLayer?.submitted(form, submitter)) send(form, submitter);
+    },
     resetNow,
     activate: (el) => {
       const tag = tagOf(el);
@@ -1226,6 +1271,8 @@ function takesFocus(node: DrawnNode): boolean {
 /** What every mounted control shares: the live state, and what to do when
  *  one changes or is pressed. */
 interface ControlContext {
+  /** The element, which a widget's box asks the size of its control. */
+  view: React.RefObject<HtmlViewNode | null>;
   forms: FormState;
   widgets: WidgetBoxes;
   /** What asks each range's or date field's widget to show what it holds. */
@@ -1304,12 +1351,16 @@ function renderControl(
         height: height + 2 * RING_REACH,
       })
     : { x: left, y: top, width, height };
+  // Whether the widget shows through all of its box, which is then laid
+  // out at the size the control's box has in the document's layout, in the
+  // pass that laid it out (`SIZES_CONTROL`). A cut one is the rect's size.
+  const sized = !rect.clip && (!!rect.follow || !!rect.held);
   const frame: Style = {
     position: 'absolute',
     left: left - port.x,
     top: top - port.y,
-    width,
-    height,
+    width: sized ? '100%' : width,
+    height: sized ? '100%' : height,
     // The face and the size the box was measured in, the element's: the
     // palette's from the UA sheet, or the page's where it set its own. A
     // field inherits them, and so does a `<Button>`'s or a `<Select>`'s
@@ -1650,6 +1701,14 @@ function renderControl(
   // element's. A widget the document comes to cut, or stops cutting, is
   // the same widget in the same place in the tree, and keeps its focus
   // and its caret.
+  //
+  // Three, laid out by core as the document is: a box the element's width
+  // and of no height, which lays the next out at the rect's place and its
+  // control's size; that one, which core moves after the pass with the box
+  // it follows, to the viewport or with a sticky box (`controlPosition`);
+  // and the widget's own. Reported, the rect is a render behind the layout
+  // that moved the control, and a centred dialog's fields were drawn where
+  // the last step of a window's edge had them, and as wide.
   const mounted = hx(
     'box',
     {
@@ -1657,41 +1716,105 @@ function renderControl(
       selectable: false,
       style: {
         position: 'absolute',
-        left: port.x,
-        top: port.y,
-        width: port.width,
-        height: port.height,
-        // cut to it, and nothing itself: a press beside the widget is the
-        // document's
-        ...(rect.clip && { overflow: 'hidden', pointerEvents: 'box-none' }),
+        left: 0,
+        right: 0,
+        top: 0,
+        pointerEvents: 'box-none',
+        layout: {
+          name: SIZES_CONTROL,
+          view: ctx.view,
+          element: el,
+          bare: !!rect.bare,
+          sized,
+          x: port.x,
+          y: port.y,
+          width: port.width,
+          height: port.height,
+          // a name core's declarations do not list, registered by
+          // `registerHtmlView`
+        } as unknown as Style['layout'],
       },
     },
     hx(
       'box',
       {
-        ref: ctx.widgets.refOf(el),
-        style: frame,
         selectable: false,
-        // a control the page keeps from assistive technology is kept from
-        // it here: core leaves the node, and the widget in it, out of the
-        // accessibility tree
-        ...(ariaHidden(el) && { 'aria-hidden': true }),
+        style: {
+          position: controlPosition(rect),
+          // cut to it, and nothing itself: a press beside the widget is the
+          // document's
+          ...(rect.clip && { overflow: 'hidden', pointerEvents: 'box-none' }),
+        },
       },
-      browser
-        ? h(
-            ThemeProvider,
-            {
-              value: BROWSER_CONTROLS[browser],
-              colorScheme: browser,
-              style: FILL,
-            },
-            widget,
-          )
-        : widget,
+      hx(
+        'box',
+        {
+          ref: ctx.widgets.refOf(el),
+          style: frame,
+          selectable: false,
+          // a control the page keeps from assistive technology is kept from
+          // it here: core leaves the node, and the widget in it, out of the
+          // accessibility tree
+          ...(ariaHidden(el) && { 'aria-hidden': true }),
+        },
+        browser
+          ? h(
+              ThemeProvider,
+              {
+                value: BROWSER_CONTROLS[browser],
+                colorScheme: browser,
+                style: FILL,
+              },
+              widget,
+            )
+          : widget,
+      ),
     ),
   );
-  return keptWithBox(rect, key, mounted);
+  return mounted;
 }
+
+/**
+ * Where core moves the box a control's widget shows through
+ * (`FOLLOWS_CONTROL`): with the box it follows (`ControlRect.follow`), to
+ * where the viewport is for one fixed to it, by a sticky box's hold for one
+ * held — or nowhere. One object for an element and what it says, as
+ * `heldPosition` keeps one, since a new one at each render would be a new
+ * style for the box. Always the same three boxes, with only this changing:
+ * a field a page makes fixed or sticky is the same widget, and keeps its
+ * focus and its caret.
+ */
+function controlPosition(rect: ControlRect): Style['position'] {
+  const follow = rect.follow;
+  if (!follow && !rect.atViewport && !rect.held) return 'relative';
+  const key = `${follow ? `${follow.x},${follow.y}` : '-'}|${
+    rect.atViewport ? 1 : 0
+  }${rect.held ? 1 : 0}`;
+  const kept = CONTROL_POSITIONS.get(rect.element);
+  if (kept && kept.key === key && kept.anchor === follow?.element) {
+    return kept.position;
+  }
+  const position = {
+    name: FOLLOWS_CONTROL,
+    element: rect.held ? rect.element : (follow?.element ?? rect.element),
+    follows: !!follow && !rect.held,
+    x: follow?.x ?? 0,
+    y: follow?.y ?? 0,
+    atViewport: rect.atViewport === true,
+    held: rect.held === true,
+  } as unknown as Style['position'];
+  CONTROL_POSITIONS.set(rect.element, {
+    key,
+    anchor: follow?.element,
+    position,
+  });
+  return position;
+}
+
+const CONTROL_POSITIONS = new WeakMap<
+  Element,
+  { key: string; anchor: Element | undefined; position: Style['position'] }
+>();
 
 /**
  * What is mounted for a control, kept where the document draws it: a
@@ -1732,9 +1855,39 @@ function keptWithBox(
   key: string,
   node: ReactElement,
 ): ReactElement {
-  if (!rect?.held) return atViewport(rect?.atViewport === true, key, node);
+  if (!rect?.held) {
+    const followed = rect?.follow
+      ? placed(followPosition(rect.follow), key, node)
+      : node;
+    return atViewport(rect?.atViewport === true, key, followed);
+  }
   return placed(heldPosition(rect.element, false), key, node);
 }
+
+/** The position that moves a widget with the box it follows
+ *  (`ControlRect.follow`): one object for an element and a place, as
+ *  `heldPosition` keeps one, since a new one at each render would be a new
+ *  style for the box it is in. */
+function followPosition(
+  follow: NonNullable<ControlRect['follow']>,
+): Style['position'] {
+  const kept = FOLLOW_POSITIONS.get(follow.element);
+  if (kept && kept.x === follow.x && kept.y === follow.y) return kept.position;
+  const position = {
+    name: FOLLOWS_CONTROL,
+    element: follow.element,
+    follows: true,
+    x: follow.x,
+    y: follow.y,
+  } as unknown as Style['position'];
+  FOLLOW_POSITIONS.set(follow.element, { x: follow.x, y: follow.y, position });
+  return position;
+}
+
+const FOLLOW_POSITIONS = new WeakMap<
+  Element,
+  { x: number; y: number; position: Style['position'] }
+>();
 
 /**
  * What is mounted for an embedded element or a video, kept with the box it

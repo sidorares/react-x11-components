@@ -1190,6 +1190,28 @@ export function installDom(
       this.newState = String(init.newState ?? '');
     }
   }
+  /** A button's `command` at the element its `commandfor` names (HTML
+   *  4.10.6, `CommandEvent`): the command, and the button that ran it. */
+  class CommandEvent extends Event {
+    readonly command: string;
+    readonly source: Any;
+    constructor(type: Any, init: Any = {}) {
+      if (arguments.length < 1) {
+        throw new TypeError(
+          "Failed to construct 'CommandEvent': 1 argument required, but only 0 present.",
+        );
+      }
+      super(type, init);
+      const source = init?.source ?? null;
+      if (source !== null && !(source instanceof Element)) {
+        throw new TypeError(
+          "Failed to construct 'CommandEvent': Failed to read the 'source' property from 'CommandEventInit': Failed to convert value to 'Element'.",
+        );
+      }
+      this.command = String(init?.command ?? '');
+      this.source = source;
+    }
+  }
   /** A snap container's `scrollsnapchange` and `scrollsnapchanging` (CSS
    *  Scroll Snap 2, 6.1): the elements it is snapped to, or about to be, in
    *  its block axis and its inline axis. */
@@ -14102,13 +14124,125 @@ export function installDom(
       showPopoverOf(popover, false, button);
     }
   };
-  /** A click not cancelled, at a button whose `popovertarget` names a
-   *  popover, or in one: the popover shown, hidden or toggled (HTML 6.12,
-   *  the popover target attribute activation behavior). A form's submit
-   *  button has none, and submits. */
+  /** The element a button's `commandfor` names: the one a script set,
+   *  while it is in the button's tree, or the one with the id there. */
+  const explicitCommandTargets = new WeakMap<Any, Any>();
+  const commandForAttribute = (el: Any): Any => {
+    const id = el.getAttribute('commandfor');
+    if (id === null) return null;
+    const set = explicitCommandTargets.get(el);
+    if (set && id === '') {
+      return set.getRootNode() === el.getRootNode() ? set : null;
+    }
+    if (!id) return null;
+    const root = el.getRootNode();
+    return root.getElementById
+      ? root.getElementById(id)
+      : (root.querySelector?.(`#${cssEscape(id)}`) ?? null);
+  };
+  /** HTML's commands, which a `command` attribute names in any case; a
+   *  custom one starts with two dashes and is kept as written. */
+  const BUTTON_COMMANDS = new Set([
+    'toggle-popover',
+    'show-popover',
+    'hide-popover',
+    'close',
+    'request-close',
+    'show-modal',
+  ]);
+  /** A button's `command`'s state: the keyword, a custom command, or null
+   *  for none or one HTML does not know (the Unknown state). */
+  const commandStateOf = (el: Any): string | null => {
+    const v = el.getAttribute('command');
+    if (v === null) return null;
+    if (v.startsWith('--')) return v;
+    const lower = v.toLowerCase();
+    return BUTTON_COMMANDS.has(lower) ? lower : null;
+  };
+  /** A dialog's `showModal()` as HTML's own steps run it, whatever a page
+   *  put on the prototype since. */
+  const showModalOf = HTMLDialogElement.prototype.showModal;
+  /**
+   * A button's activation behaviour past its form's (HTML 4.10.6, steps 3
+   * to 5): where its `commandfor` names an element, its command, told
+   * first as `command`, which the page may cancel, and then run — a
+   * popover shown, hidden or toggled, a dialog shown as a modal, closed
+   * with the button's value, or asked to close. Whether the button had a
+   * `commandfor` target, which leaves its `popovertarget` unread.
+   */
+  const commandActivation = (button: Any): boolean => {
+    if (!(button instanceof HTMLButtonElement) || isDisabled(button)) {
+      return false;
+    }
+    const target = commandForAttribute(button);
+    if (!target) return false;
+    // a form's submit and reset buttons are the form's, and one in the
+    // Auto state with a form does nothing (step 3)
+    if (
+      button.form &&
+      (button.getAttribute('type') ?? '').trim().toLowerCase() !== 'button'
+    ) {
+      return true;
+    }
+    const command = commandStateOf(button);
+    if (command === null) return true;
+    const custom = command.startsWith('--');
+    if (popoverType(target) === null && !custom) {
+      if (!(target instanceof HTMLDialogElement)) return true;
+      if (!['close', 'request-close', 'show-modal'].includes(command)) {
+        return true;
+      }
+    }
+    const ev = new CommandEvent('command', {
+      cancelable: true,
+      command,
+      source: button,
+    });
+    ev.isTrusted = true;
+    if (!dispatch(target, ev)) return true;
+    if (!target.isConnected || custom) return true;
+    if (command === 'hide-popover') {
+      if (popoverValid(target, true, false)) {
+        hidePopoverOf(target, true, true, false);
+      }
+    } else if (command === 'toggle-popover') {
+      if (popoverShowing(target)) hidePopoverOf(target, true, true, false);
+      else if (popoverValid(target, false, false)) {
+        showPopoverOf(target, false, button);
+      }
+    } else if (command === 'show-popover') {
+      if (popoverValid(target, false, false)) {
+        showPopoverOf(target, false, button);
+      }
+    } else if (target instanceof HTMLDialogElement) {
+      // a dialog showing as a popover is the popover's (HTML 4.11.4)
+      if (popoverShowing(target)) return true;
+      const open = target.hasAttribute('open');
+      const value = button.getAttribute('value');
+      if (command === 'close' && open) closeDialog(target, value);
+      else if (command === 'request-close' && open) {
+        requestClose(target, value);
+      } else if (command === 'show-modal' && !open) {
+        // what the method would throw for — not in a document, a popover —
+        // a command does nothing with
+        try {
+          showModalOf.call(target);
+        } catch {
+          // nothing
+        }
+      }
+    }
+    return true;
+  };
+  /** A click not cancelled, at a button whose `commandfor` names an
+   *  element or whose `popovertarget` names a popover, or in one: its
+   *  command run, or the popover shown, hidden or toggled (HTML 4.10.6 and
+   *  6.12, the popover target attribute activation behavior). A form's
+   *  submit button has neither, and submits. */
   const popoverActivation = (target: Any): void => {
     for (let at: Any = target; at instanceof Element; at = at.parentNode) {
       if (at instanceof HTMLButtonElement || at instanceof HTMLInputElement) {
+        if (commandActivation(at)) return;
         const popover = popoverTargetOf(at);
         if (popover) popoverTargetActivate(at, popover, target);
         return;
@@ -14229,6 +14363,42 @@ export function installDom(
         return popoverShowing(this);
       },
       writable: true,
+      configurable: true,
+    },
+  });
+  Object.defineProperties(HTMLButtonElement.prototype, {
+    commandForElement: {
+      get(this: Any): Any {
+        return commandForAttribute(this);
+      },
+      set(this: Any, v: Any) {
+        if (v === null || v === undefined) {
+          explicitCommandTargets.delete(this);
+          this.removeAttribute('commandfor');
+          return;
+        }
+        if (!(v instanceof Element)) {
+          throw new TypeError(
+            "Failed to set the 'commandForElement' property on 'HTMLButtonElement': Failed to convert value to 'Element'.",
+          );
+        }
+        explicitCommandTargets.set(this, v);
+        this.setAttribute('commandfor', '');
+      },
+      enumerable: true,
+      configurable: true,
+    },
+    // the keyword, a custom command as written, or "" for one HTML does
+    // not know (HTML 4.10.6)
+    command: {
+      get(this: Any): string {
+        const state = commandStateOf(this);
+        return state ?? '';
+      },
+      set(this: Any, v: Any) {
+        this.setAttribute('command', str(v));
+      },
+      enumerable: true,
       configurable: true,
     },
   });
@@ -24899,7 +25069,19 @@ export function installDom(
         formNoValidate: FLAG,
         formTarget: TEXT,
         name: TEXT,
-        type: keyword(['submit', 'reset', 'button'], 'submit'),
+        // the Auto state is a submit button but where a `command` or a
+        // `commandfor` makes it none (HTML 4.10.6)
+        type: computed(
+          keyword(['submit', 'reset', 'button'], 'submit'),
+          (el) => {
+            const v = (attrValue(el, 'type') ?? '').trim().toLowerCase();
+            if (v === 'submit' || v === 'reset' || v === 'button') return v;
+            return attrValue(el, 'command') !== null ||
+              attrValue(el, 'commandfor') !== null
+              ? 'button'
+              : 'submit';
+          },
+        ),
         value: TEXT,
         popoverTargetAction: POPOVER_ACTION,
       },
@@ -40637,11 +40819,24 @@ export function installDom(
     // a frame of this document's that the target names is navigated as
     // its own session has it, as the page's is
     const framed = /^(|_self)$/i.test(target) ? null : namedFrame(target);
-    if (
-      (!/^(|_self)$/i.test(target) && !framed) ||
-      method === 'dialog' ||
-      /^javascript:/i.test(url)
-    ) {
+    // a dialog's form closes the dialog around it, its return value the
+    // submitter's, and sends nothing (HTML 4.10.21.3, step 11). An image
+    // button's is the point it was pressed at, which only the host has,
+    // and leaves the return value as it was here
+    if (method === 'dialog') {
+      let dialog: Any = form.parentNode;
+      while (dialog && !(dialog instanceof HTMLDialogElement)) {
+        dialog = dialog.parentNode;
+      }
+      if (!dialog) return;
+      const image =
+        submitter instanceof HTMLInputElement && submitter.type === 'image';
+      const result =
+        submitter && !image ? (submitter.getAttribute('value') ?? '') : null;
+      closeDialog(dialog, result);
+      return;
+    }
+    if ((!/^(|_self)$/i.test(target) && !framed) || /^javascript:/i.test(url)) {
       submit();
       return;
     }
@@ -45355,6 +45550,7 @@ export function installDom(
     NavigationActivation,
     NavigationPrecommitController,
     ToggleEvent,
+    CommandEvent,
     SnapEvent,
     AnimationPlaybackEvent,
     AnimationEffect,
