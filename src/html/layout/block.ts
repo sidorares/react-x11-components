@@ -205,6 +205,7 @@ import {
   strutOf,
   uncutWidth,
   widestWord,
+  breaksBetweenLetters,
 } from './inline.js';
 import type {
   FaceMetrics,
@@ -7364,8 +7365,14 @@ function exactWords(box: Box, fonts: FontsLike): number | null {
       for (const text of line.texts) {
         if (text.layout === last) continue;
         last = text.layout;
-        if (!spaceBreaksOnly(text.layout)) return null;
-        widest = Math.max(widest, widestWord(fonts, text.layout));
+        const anywhere = breaksBetweenLetters(style);
+        if (anywhere !== 'anywhere' && !spaceBreaksOnly(text.layout)) {
+          return null;
+        }
+        widest = Math.max(
+          widest,
+          widestWord(fonts, text.layout, true, anywhere),
+        );
       }
     }
   }
@@ -7454,7 +7461,12 @@ function wordBound(
         const joins = joinsBefore(text);
         if (joins === undefined && text.layout === last) continue;
         last = text.layout;
-        const own = widestWord(fonts, text.layout, measured);
+        const own = widestWord(
+          fonts,
+          text.layout,
+          measured,
+          breaksBetweenLetters(box.style),
+        );
         chain = joins === undefined ? own : chain + joins + own;
         widest = Math.max(widest, chain);
       }
