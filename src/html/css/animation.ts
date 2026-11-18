@@ -924,6 +924,25 @@ export function transitionItemText(parts: readonly string[]): string {
   return out.length ? out.join(' ') : 'all';
 }
 
+/**
+ * The `transition` shorthand as `el.style` keeps it: each of its five
+ * longhands with its value (CSS Transitions 1, 2.5), or null for a value
+ * that is none.
+ */
+export function transitionLonghandsOf(
+  value: string,
+): [string, string][] | null {
+  const t = parseTransition(value);
+  if (!t) return null;
+  return [
+    ['transition-property', t.properties.join(', ') || 'none'],
+    ['transition-duration', t.durations.map(secondsText).join(', ')],
+    ['transition-timing-function', t.easings.map(easingText).join(', ')],
+    ['transition-delay', t.delays.map(secondsText).join(', ')],
+    ['transition-behavior', t.behaviors.join(', ')],
+  ];
+}
+
 /** A time as CSSOM writes it, in seconds. */
 export function secondsText(ms: number): string {
   const r = Math.round(ms) / 1000;
