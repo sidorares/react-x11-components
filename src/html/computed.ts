@@ -29,7 +29,7 @@ import {
 import type { Animations } from './css/animation.js';
 import { RANGE_END, RANGE_START } from './css/triggers.js';
 import type { RangeEdge } from './css/triggers.js';
-import { composeShorthand } from './css/specified.js';
+import { composeShorthand, serializeIdent } from './css/specified.js';
 import { fontVariantPartText, fontVariantText, urlOf } from './css/style.js';
 import type { CounterChange } from './css/content.js';
 import type { FilterFunction } from './css/filter.js';
@@ -317,6 +317,11 @@ function animationRangeText(
 
 /** Each `animation-*` longhand as it is resolved. An `auto` duration reads
  *  `0s` where the timeline is the clock's, and `auto` where it may not be. */
+/** What a name that is a string serializes as a string for: what would
+ *  otherwise read as `none` or a keyword every property takes. */
+const NAME_KEYWORDS =
+  /^(?:none|initial|inherit|unset|revert|revert-layer|default)$/i;
+
 function animationProperties(
   out: Record<string, string>,
   style: ComputedStyle,
@@ -333,7 +338,15 @@ function animationProperties(
   const iterations = a.iterations.map((n) =>
     n === Infinity ? 'infinite' : num(n),
   );
-  const names = a.names.map((n) => n ?? 'none');
+  // each as an identifier, but where it would read as a keyword, which is
+  // a string (CSS Animations 1, 3.2: a name written `"none"` is a name)
+  const names = a.names.map((n) =>
+    n === null
+      ? 'none'
+      : NAME_KEYWORDS.test(n)
+        ? `"${n.replace(/["\\]/g, '\\$&')}"`
+        : serializeIdent(n),
+  );
   const starts = style.animationRangeStart;
   const ends = style.animationRangeEnd;
   out['animation-name'] = names.join(', ');
