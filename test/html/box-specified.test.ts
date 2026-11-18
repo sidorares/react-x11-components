@@ -99,3 +99,41 @@ test('transition-property takes property names, or none alone, and nothing else'
     assert.notStrictEqual(specifiedValue('transition-property', good), null);
   }
 });
+
+test('a filter list and a corner shape that the cascade would refuse are refused by a style', () => {
+  // Filter Effects 1, 5 and CSS Borders 4, 3.9: kept as written where they
+  // are values, and a math function left to the cascade, which clamps it
+  for (const bad of [
+    'blur(-1px)',
+    'brightness(30px)',
+    'opacity(0.5 0.5)',
+    'auto',
+  ]) {
+    assert.strictEqual(specifiedValue('filter', bad), null, bad);
+    assert.strictEqual(specifiedValue('backdrop-filter', bad), null, bad);
+  }
+  for (const good of [
+    'none',
+    'blur(2px) grayscale(50%)',
+    'brightness(calc(-10%))',
+  ]) {
+    assert.notStrictEqual(specifiedValue('filter', good), null, good);
+  }
+  assert.strictEqual(specifiedValue('corner-shape', '10px'), null);
+  assert.strictEqual(
+    specifiedValue('corner-shape', 'round round round round round'),
+    null,
+  );
+  assert.strictEqual(
+    specifiedValue('corner-top-left-shape', 'round bevel'),
+    null,
+  );
+  assert.notStrictEqual(
+    specifiedValue('corner-shape', 'bevel superellipse(2)'),
+    null,
+  );
+  assert.notStrictEqual(
+    specifiedValue('corner-top-shape', 'scoop notch'),
+    null,
+  );
+});

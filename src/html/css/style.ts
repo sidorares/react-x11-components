@@ -40,6 +40,7 @@ import {
   trimValue,
 } from './values.js';
 import type { FontSizeBasis, Len, Pct, UnitContext } from './values.js';
+import { cornerShapeOf } from './corner-shape.js';
 import { textIndentParts } from './text-indent.js';
 import { CALC_SIZE, calcSizeOf } from './calc-size.js';
 import { joinFamilies, parseUrl, readFamilies } from './parse.js';
@@ -9507,28 +9508,6 @@ function applyGapRule(
 
 /** What each `corner-shape` keyword is as a superellipse's parameter (CSS
  *  Borders 4, 3.9.1). */
-const CORNER_KEYWORDS: Record<string, number> = {
-  round: 1,
-  squircle: 2,
-  square: Infinity,
-  bevel: 0,
-  scoop: -1,
-  notch: -Infinity,
-};
-
-/** One corner's shape — a keyword, or `superellipse()` of a number or of
- *  an infinity — as its parameter; null for none. */
-function cornerShapeOf(value: string): number | null {
-  const v = value.trim().toLowerCase();
-  const keyword = CORNER_KEYWORDS[v];
-  if (keyword !== undefined) return keyword;
-  const m = /^superellipse\(\s*([\s\S]+?)\s*\)$/.exec(v);
-  if (!m) return null;
-  if (m[1] === 'infinity') return Infinity;
-  if (m[1] === '-infinity') return -Infinity;
-  return parseNumber(m[1]);
-}
-
 /** Which corners each `corner-*-shape` property sets, in `border-radius`'s
  *  order: a side's two, the first value the one at its left or its top. */
 const CORNER_SHAPE_TARGETS: Record<string, readonly number[]> = {
