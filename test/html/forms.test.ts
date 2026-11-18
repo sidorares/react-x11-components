@@ -4817,3 +4817,45 @@ test('an element whose direction is its text’s is set in it, and turns with it
   await act();
   assert.strictEqual(direction('b'), 'rtl');
 });
+
+test('a dir=auto field takes its direction from the text a script gives it', async () => {
+  // HTML 3.2.6.4: a `dir=auto` input's direction is its value's first
+  // strong letter's, and so its style's (`autoDirected`). A value a script
+  // set left the field in the direction of the value it had, and its widget
+  // read left to right (WPT's dir_auto-input-script-*)
+  type Internals = {
+    setControlValue(el: unknown, value: string | boolean): boolean;
+  };
+  let handle: ReturnType<typeof useHtmlHandle> | null = null;
+  function Form() {
+    handle = useHtmlHandle();
+    return h(Html, {
+      source: '<input id="i" dir="auto" value="abc">',
+      partial: false,
+      ref: handle.ref,
+    });
+  }
+  await renderX11(
+    h('box', { style: { width: 400, flexDirection: 'column' } }, h(Form)),
+    FONTS
+      ? { width: 440, height: 200, fonts: FONTS }
+      : { backend: 'mock', width: 440, height: 200 },
+  );
+  await act();
+  const node = screen.all((n) => n.kind === 'htmlview')[0] as unknown as {
+    computedStyle(e: unknown): { direction: string } | null;
+  };
+  const input = findById(handle!.document, 'i')!;
+  assert.strictEqual(node.computedStyle(input)?.direction, 'ltr');
+  await act(async () => {
+    (handle as unknown as Internals).setControlValue(input, 'אבג abc');
+  });
+  await act();
+  assert.strictEqual(node.computedStyle(input)?.direction, 'rtl');
+  await waitFor(() => {
+    const [field] = screen.all((n) => n.kind === 'textinput') as unknown as {
+      style: { direction?: string };
+    }[];
+    assert.strictEqual(field.style.direction, 'rtl');
+  });
+});
