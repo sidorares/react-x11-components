@@ -6404,6 +6404,91 @@ export function installDom(
       }
     }
   };
+  /**
+   * Smooth scrolls under way (CSSOM View 7, "perform a scroll" with smooth
+   * behavior), by what scrolls: an element, or the root for the viewport.
+   * Each moves a step a frame, eased, from where it was to where it goes,
+   * and a scroll of the same thing that is not one of its steps ends it.
+   */
+  const smoothRuns = new Map<Any, { token: number; to: [number, number] }>();
+  let smoothSeq = 0;
+  /** Whether a scroll asked with `behavior` is smooth: as it says, or, for
+   *  `auto`, as the scroller's `scroll-behavior` says. One that snaps goes
+   *  at once, since each step would snap. */
+  const scrollsSmoothly = (scroller: Any, behavior: Any): boolean => {
+    const asked = behavior === undefined ? 'auto' : str(behavior);
+    if (asked === 'instant') return false;
+    let style: Any = null;
+    try {
+      style = getComputedStyle(scroller);
+    } catch {
+      return false;
+    }
+    if (!style || style.display === 'none') return false;
+    const snap = str(style.getPropertyValue?.('scroll-snap-type') ?? 'none');
+    if (snap && snap !== 'none') return false;
+    return (
+      asked === 'smooth' ||
+      str(style.getPropertyValue?.('scroll-behavior') ?? 'auto') === 'smooth'
+    );
+  };
+  /** The scrollers whose `scrollend` a smooth scroll held back, which they
+   *  are owed once it is over. */
+  const scrollendOwed = new Set<Any>();
+  /** A smooth scroll is over: where its last step moved nothing, no
+   *  `scrollend` comes after it, so the one held back is told two frames
+   *  on, where the host has told none since. */
+  const smoothEnded = (key: Any): void => {
+    if (!scrollendOwed.has(key)) return;
+    requestFrame(() =>
+      requestFrame(() => {
+        if (!scrollendOwed.delete(key) || smoothRuns.has(key)) return;
+        const root = key === key.ownerDocument?.documentElement;
+        const ev = new Event('scrollend', { bubbles: root });
+        ev.isTrusted = true;
+        dispatch(root ? key.ownerDocument : key, ev);
+      }),
+    );
+  };
+  /** A scroll of `key` from `from` to `to` over frames, each step handed to
+   *  `step`, the last one marked. */
+  const smoothScroll = (
+    key: Any,
+    from: [number, number],
+    to: [number, number],
+    step: (x: number, y: number, last: boolean) => void,
+  ): void => {
+    // one going there already goes on: a page that asks again at every
+    // turn of a timer would otherwise start it again for good
+    const going = smoothRuns.get(key);
+    if (going && going.to[0] === to[0] && going.to[1] === to[1]) return;
+    const token = ++smoothSeq;
+    smoothRuns.set(key, { token, to });
+    const distance = Math.hypot(to[0] - from[0], to[1] - from[1]);
+    // longer for a longer way, within what a browser takes
+    const duration = Math.min(700, Math.max(250, distance / 4));
+    let start: number | null = null;
+    const tick = (now: number): void => {
+      if (smoothRuns.get(key)?.token !== token) return;
+      start ??= now;
+      const t = Math.min(1, (now - start) / duration);
+      const eased = t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
+      const last = t >= 1;
+      if (last) {
+        smoothRuns.delete(key);
+        smoothEnded(key);
+      }
+      // in whole pixels: a scroll moves nothing less than half of one,
+      // which would leave the last step short of where it goes
+      step(
+        last ? to[0] : Math.round(from[0] + (to[0] - from[0]) * eased),
+        last ? to[1] : Math.round(from[1] + (to[1] - from[1]) * eased),
+        last,
+      );
+      if (!last) requestFrame(tick);
+    };
+    requestFrame(tick);
+  };
   /** A scroll happened: the next frame comes soon. */
   const nudgeFrames = (): void => {
     quietFrames = 0;
@@ -10949,9 +11034,39 @@ export function installDom(
       x: number | undefined,
       y: number | undefined,
       relative = false,
+      /** `behavior` as asked; `step` for a step of a smooth scroll. */
+      behavior?: Any,
     ): void {
       const ok = (v: number | undefined) =>
         v !== undefined && Number.isFinite(v);
+      if (behavior !== 'step') {
+        if (!scrollsSmoothly(this, behavior)) smoothRuns.delete(this);
+        else {
+          const from: [number, number] = [this.scrollLeft, this.scrollTop];
+          // a viewport's reach is the host's to clamp to, which a frame's
+          // root does not read back
+          const viewport = this._viewport();
+          const maxX = viewport
+            ? Infinity
+            : Math.max(0, this.scrollWidth - this.clientWidth);
+          const maxY = viewport
+            ? Infinity
+            : Math.max(0, this.scrollHeight - this.clientHeight);
+          const to: [number, number] = [
+            ok(x) ? Math.max(0, Math.min(maxX, x!)) : from[0],
+            ok(y) ? Math.max(0, Math.min(maxY, y!)) : from[1],
+          ];
+          if (to[0] !== from[0] || to[1] !== from[1]) {
+            smoothScroll(this, from, to, (sx, sy, last) =>
+              this._scrollTo(sx, sy, relative && last, 'step'),
+            );
+          } else {
+            // where it is already: one under way elsewhere stops
+            smoothRuns.delete(this);
+          }
+          return;
+        }
+      }
       // what a scroll-driven animation draws follows at the next frame
       nudgeFrames();
       if (this._viewport() && this.ownerDocument !== document) {
@@ -10990,6 +11105,8 @@ export function installDom(
         this._scrollTo(
           a.left === undefined ? undefined : Number(a.left),
           a.top === undefined ? undefined : Number(a.top),
+          false,
+          a.behavior,
         );
       } else if (a !== undefined) this._scrollTo(Number(a), Number(b));
     }
@@ -11002,6 +11119,7 @@ export function installDom(
         this.scrollLeft + (Number.isFinite(by.x) ? by.x : 0),
         this.scrollTop + (Number.isFinite(by.y) ? by.y : 0),
         true,
+        a && typeof a === 'object' ? a.behavior : undefined,
       );
     }
     /** Brought into view through every scroll container around it whose
@@ -11032,13 +11150,23 @@ export function installDom(
         arg && typeof arg === 'object'
           ? str(arg.inline ?? 'nearest')
           : 'nearest';
-      this._intoView(block, inline, false);
+      this._intoView(
+        block,
+        inline,
+        false,
+        arg && typeof arg === 'object' ? arg.behavior : undefined,
+      );
     }
     /** `scrollIntoView` as the focusing steps run it, and as it is
      *  asked: where `quiet`, a container the element shows in already is
      *  not scrolled at all, nor snapped again, so that a focus moved
      *  within a snapped carousel leaves the slide it is on. */
-    _intoView(block: string, inline: string, quiet: boolean): void {
+    _intoView(
+      block: string,
+      inline: string,
+      quiet: boolean,
+      behavior?: Any,
+    ): void {
       const place = (
         how: string,
         top: number,
@@ -11128,13 +11256,20 @@ export function installDom(
         const y = Math.min(Math.max(r[1] + top, r[1]), r[1] + r[3] - lh);
         return [r[0], y, r[2], Math.min(lh, r[3])];
       };
+      // how far the smooth scrolls of the containers it has come through
+      // will move it, which have not moved it yet: a container further out
+      // lines it up where they leave it
+      let pendX = 0;
+      let pendY = 0;
+      const moved = (r: number[] | null): number[] | null =>
+        r && (pendX || pendY) ? [r[0] - pendX, r[1] - pendY, r[2], r[3]] : r;
       // up to its own document's root, whose scroll is its viewport's
       const root = this.ownerDocument.documentElement;
       for (let at = this.parentElement; at; at = at.parentElement) {
         if (at === root) break;
         const s = scrollStateOf(at);
         if (!s || call('scrollMoves', at._id, this._id) !== true) continue;
-        const me = shown(target());
+        const me = shown(moved(target()));
         passed.push(at);
         const port = docRect(at);
         if (!me || !port) return;
@@ -11152,6 +11287,19 @@ export function installDom(
           s[5] - pt - pb,
         );
         if (quiet && !byX && !byY) continue;
+        if (scrollsSmoothly(at, behavior) && (byX || byY)) {
+          const maxX = Math.max(0, at.scrollWidth - at.clientWidth);
+          const maxY = Math.max(0, at.scrollHeight - at.clientHeight);
+          const toX = Math.max(0, Math.min(maxX, s[0] + byX));
+          const toY = Math.max(0, Math.min(maxY, s[1] + byY));
+          pendX += toX - s[0];
+          pendY += toY - s[1];
+          smoothScroll(at, [s[0], s[1]], [toX, toY], (x, y, last) =>
+            call('scrollElement', at._id, x, y, last ? this._id : undefined),
+          );
+          continue;
+        }
+        smoothRuns.delete(at);
         call(
           'scrollElement',
           at._id,
@@ -11164,7 +11312,7 @@ export function installDom(
       // fixed to it, and for a fixed box that follows its anchor, those
       const moves = String(call('atViewport', this._id) ?? 'xy');
       if (!moves) return;
-      const r = shown(target());
+      const r = shown(moved(target()));
       if (!r) return;
       // the viewport of the document it is in: a frame's of this realm's,
       // which its own view scrolls, where it is not this one's
@@ -11196,6 +11344,17 @@ export function installDom(
         );
         return;
       }
+      const page = document.documentElement;
+      if (page && scrollsSmoothly(page, behavior) && (byX || byY)) {
+        page._scrollTo(
+          pageScrollX(v) + byX,
+          pageScrollY(v) + byY,
+          false,
+          behavior,
+        );
+        return;
+      }
+      if (page) smoothRuns.delete(page);
       call('scrollTo', pageScrollX(v) + byX, pageScrollY(v) + byY, this._id);
     }
     /** A shadow root `<Html>` draws, as it draws a declarative one: the
@@ -15625,6 +15784,18 @@ export function installDom(
         };
         const x = axis(given.x, at.scrollX);
         const y = axis(given.y, at.scrollY);
+        // through its root, which scrolls smoothly where it is asked or its
+        // `scroll-behavior` says, and ends a smooth scroll under way
+        const root = current.documentElement;
+        if (root?._scrollTo) {
+          root._scrollTo(
+            relative ? at.scrollX + x : x,
+            relative ? at.scrollY + y : y,
+            relative,
+            a && typeof a === 'object' ? a.behavior : undefined,
+          );
+          return;
+        }
         call(
           'viewScrollTo',
           current._id,
@@ -47174,27 +47345,27 @@ export function installDom(
   define('Image', Image);
   define('Option', Option);
   define('Audio', Audio);
+  // the root's scroll, which is the viewport's, smooth where it is asked
+  // to be or the root's `scroll-behavior` says (`_scrollTo`)
   define('scrollTo', (x: Any, y?: Any) => {
     const to = typeof x === 'object' && x ? x : { left: x, top: y };
     const v = viewport();
-    call(
-      'scrollTo',
-      Number(to.left ?? pageScrollX(v)) || 0,
-      Number(to.top ?? pageScrollY(v)) || 0,
-    );
+    const left = Number(to.left ?? pageScrollX(v)) || 0;
+    const top = Number(to.top ?? pageScrollY(v)) || 0;
+    const root = document.documentElement;
+    if (root) root._scrollTo(left, top, false, to.behavior);
+    else call('scrollTo', left, top);
   });
   define('scroll', G.scrollTo);
   define('scrollBy', (x: Any, y?: Any) => {
     const by = typeof x === 'object' && x ? x : { left: x, top: y };
     const v = viewport();
+    const left = pageScrollX(v) + (Number(by.left) || 0);
+    const top = pageScrollY(v) + (Number(by.top) || 0);
+    const root = document.documentElement;
     // a relative scroll, which a snapping root snaps the way it went
-    call(
-      'scrollTo',
-      pageScrollX(v) + (Number(by.left) || 0),
-      pageScrollY(v) + (Number(by.top) || 0),
-      undefined,
-      true,
-    );
+    if (root) root._scrollTo(left, top, true, by.behavior);
+    else call('scrollTo', left, top, undefined, true);
   });
   // a string handed to one is compiled as script, which a policy without
   // `'unsafe-eval'` refuses: the timer is then never set, and its handle is
@@ -49647,6 +49818,12 @@ export function installDom(
   // window (CSSOM View 13.1)
   entry('__scrollended', () => {
     if (scrollOwed) tellScroll();
+    const root = document.documentElement;
+    if (root && smoothRuns.has(root)) {
+      scrollendOwed.add(root);
+      return false;
+    }
+    if (root) scrollendOwed.delete(root);
     const ev = new Event('scrollend', { bubbles: true });
     ev.isTrusted = true;
     return dispatch(document, ev);
@@ -50050,6 +50227,16 @@ export function installDom(
     // a scroll container scrolled: the timelines on it move at the next
     // frame
     if (type === 'scroll') nudgeFrames();
+    // a smooth scroll is one scroll, whose `scrollend` comes after its last
+    // step's, and not between two of them (`smoothEnded`)
+    if (type === 'scrollend') {
+      const key = target instanceof Document ? target.documentElement : target;
+      if (smoothRuns.has(key)) {
+        scrollendOwed.add(key);
+        return false;
+      }
+      scrollendOwed.delete(key);
+    }
     // a render-blocking script or sheet that settles unblocks animation
     // frames (`renderOpportunitiesBlocked`)
     if (type === 'load' || type === 'error') {
