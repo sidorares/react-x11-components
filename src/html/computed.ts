@@ -131,6 +131,16 @@ function float6(n: number): string {
 }
 
 /** CSS pixels from device ones. */
+/** `letter-spacing` or `word-spacing` as its computed value keeps it (CSS
+ *  Text 4, 7.2 and 7.3): a length, a percentage of the font's size, or
+ *  both as a `calc()`. */
+function spacingText(pct: number, fixed: number, scale: number): string {
+  if (!pct) return px(fixed, scale);
+  const percent = `${num(pct * 100)}%`;
+  if (!fixed) return percent;
+  return `calc(${percent} ${fixed < 0 ? '-' : '+'} ${px(Math.abs(fixed), scale)})`;
+}
+
 function px(device: number, scale: number): string {
   return `${num(device / scale)}px`;
 }
@@ -1295,10 +1305,15 @@ function cssomAt(
         : style.lineHeightIsLength
           ? px(style.lineHeight, scale)
           : num(style.lineHeight),
-    'letter-spacing': style.letterSpacing
-      ? px(style.letterSpacing, scale)
-      : 'normal',
-    'word-spacing': px(style.wordSpacing, scale),
+    'letter-spacing':
+      style.letterSpacing || style.letterSpacingPct
+        ? spacingText(style.letterSpacingPct, style.letterSpacingFixed, scale)
+        : 'normal',
+    'word-spacing': spacingText(
+      style.wordSpacingPct,
+      style.wordSpacingFixed,
+      scale,
+    ),
     'text-align': style.textAlign,
     'text-transform': style.textTransform,
     'text-autospace': style.textAutospace,
