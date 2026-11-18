@@ -10,6 +10,8 @@
 // |u|ⁿ + |v|ⁿ = 1 for K < 0, with n = 2^|K|. Where it crosses the diagonal
 // is the one number everything else here is read from.
 
+import { parseNumber, splitValue } from './values.js';
+
 /** The spec's normalized half corner of a superellipse (3.9.6): where the
  *  curve crosses the corner's diagonal, from its outer corner, 0, to its
  *  inner one, 1. A half for a bevel; about 0.71 for `round`. */
@@ -55,4 +57,56 @@ export function cornerInset(k: number): number {
   if (k === 1) return 1;
   const reach = cornerReach(k);
   return reach > 0 ? Math.min(64, ROUND_REACH / reach) : 64;
+}
+
+const CORNER_KEYWORDS: Record<string, number> = {
+  round: 1,
+  squircle: 2,
+  square: Infinity,
+  bevel: 0,
+  scoop: -1,
+  notch: -Infinity,
+};
+
+/** One corner's shape — a keyword, or `superellipse()` of a number or of
+ *  an infinity — as its parameter; null for none. */
+export function cornerShapeOf(value: string): number | null {
+  const v = value.trim().toLowerCase();
+  const keyword = CORNER_KEYWORDS[v];
+  if (keyword !== undefined) return keyword;
+  const m = /^superellipse\(\s*([\s\S]+?)\s*\)$/.exec(v);
+  if (!m) return null;
+  if (m[1] === 'infinity') return Infinity;
+  if (m[1] === '-infinity') return -Infinity;
+  return parseNumber(m[1]);
+}
+
+/** How many shapes each `corner-*-shape` property takes at most: four for
+ *  the shorthand, two for a side's, one for a corner's. */
+const CORNER_SHAPE_COUNTS: Record<string, number> = {
+  'corner-shape': 4,
+  'corner-top-shape': 2,
+  'corner-right-shape': 2,
+  'corner-bottom-shape': 2,
+  'corner-left-shape': 2,
+  'corner-top-left-shape': 1,
+  'corner-top-right-shape': 1,
+  'corner-bottom-right-shape': 1,
+  'corner-bottom-left-shape': 1,
+};
+
+/** Whether a `corner-*-shape` declaration's value is one the property
+ *  takes; undefined for a name that is none of them. */
+export function cornerShapeValid(
+  name: string,
+  value: string,
+): boolean | undefined {
+  const most = CORNER_SHAPE_COUNTS[name];
+  if (most === undefined) return undefined;
+  const parts = splitValue(value);
+  return (
+    parts.length > 0 &&
+    parts.length <= most &&
+    parts.every((p) => cornerShapeOf(p) !== null)
+  );
 }
