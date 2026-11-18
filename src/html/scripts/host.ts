@@ -48,6 +48,7 @@ import {
   Text,
 } from 'domhandler';
 import { isTag } from 'domhandler';
+import { parseColor } from '../css/values.js';
 import type { AnyNode, ChildNode, ParentNode } from 'domhandler';
 import type { Rect } from 'react-x11';
 
@@ -2031,6 +2032,15 @@ function declarationText(block: string | null | undefined): string {
  * a property it did not declare goes at the end. An empty value removes
  * the property.
  */
+/** The names a style has beside its computed longhands: its shorthands,
+ *  the properties kept as declared, SVG's and `marker`. */
+const STYLE_NAMES_BESIDE: readonly string[] = [
+  ...SHORTHAND_NAMES,
+  ...declaredProperties(),
+  ...Object.keys(SVG_PROPERTIES),
+  'marker',
+];
+
 function withDeclaration(
   block: string | null | undefined,
   name: string,
@@ -3941,6 +3951,42 @@ export class DomHost {
     if (!node) throw new DomError('NotFoundError', 'No such node.');
     return node;
   }
+  /** Whether a page's `CSS.supports()` takes a declaration: a custom
+   *  property, or one a style has (`styleProperties`), a colour property's
+   *  value a colour. */
+  private _supportsDeclaration(
+    property: string,
+    value: string,
+    root: Primitive,
+  ): boolean {
+    if (property.startsWith('--')) return true;
+    if (!this._styleNames) {
+      const style =
+        root === null || root === undefined
+          ? null
+          : this._handle.computedStyle(this._element(root), null);
+      if (!style) return true;
+      this._styleNames = new Set([
+        ...Object.keys(style),
+        ...STYLE_NAMES_BESIDE,
+      ]);
+    }
+    if (!this._styleNames.has(property)) return false;
+    // and a colour that is none, where the grammar is a colour's alone
+    if (
+      /(?:^|-)color$/.test(property) &&
+      !/^(?:inherit|initial|unset|revert|revert-layer|currentcolor)$/i.test(
+        value,
+      ) &&
+      !/\b(?:var|env|attr)\(/i.test(value) &&
+      parseColor(value) === null
+    ) {
+      return false;
+    }
+    return true;
+  }
+  private _styleNames: Set<string> | null = null;
+
   private _element(id: Primitive): Element {
     const node = this._node(id);
     if (!(node instanceof Element)) {
@@ -5847,7 +5893,23 @@ export class DomHost {
 
       case 'supports': {
         const condition = text(a);
-        const answer = supportsCondition(condition);
+        // a page's `CSS.supports()` asks of a declaration this cannot
+        // answer whether the property is one a style has and the value
+        // one it takes, as setting it would (`supportsDeclaration`)
+        const declare =
+          b === true
+            ? (property: string, value: string) =>
+                this._supportsDeclaration(property, value, c)
+            : undefined;
+        const answer = supportsCondition(condition, declare);
+        // to a page, what is no condition is false: a declaration it knows
+        // answers true or false, and only what does not parse is left
+        if (declare) {
+          if (answer !== false || /^\s*\(/.test(condition)) {
+            return answer !== false;
+          }
+          return supportsCondition(`(${condition})`, declare) !== false;
+        }
         if (answer !== null || /^\s*\(/.test(condition))
           return answer !== false;
         return supportsCondition(`(${condition})`) !== false;
@@ -6584,13 +6646,7 @@ export class DomHost {
       case 'styleProperties': {
         const style = this._handle.computedStyle(this._element(a), null);
         if (!style) return '';
-        return [
-          ...Object.keys(style),
-          ...SHORTHAND_NAMES,
-          ...declaredProperties(),
-          ...Object.keys(SVG_PROPERTIES),
-          'marker',
-        ].join(',');
+        return [...Object.keys(style), ...STYLE_NAMES_BESIDE].join(',');
       }
       case 'computed': {
         this.flush();

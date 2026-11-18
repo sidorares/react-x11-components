@@ -47224,11 +47224,40 @@ export function installDom(
     // a property it does not draw, and true for the rest, as the modern
     // engine a page tests for. vercel.com sent an engine that answered
     // false to `var()` to its old-browser page.
-    supports: (...args: Any[]): boolean =>
-      call(
-        'supports',
-        args.length >= 2 ? `(${str(args[0])}: ${str(args[1])})` : str(args[0]),
-      ) === true,
+    // A declaration it cannot answer by its grammar is asked as setting it
+    // would take it (`supportsDeclaration`): a name a style has not got,
+    // and a value that property does not take, are false
+    supports: (...args: Any[]): boolean => {
+      if (!args.length) {
+        throw new TypeError(
+          "Failed to execute 'supports' on 'CSS': 1 argument required, but only 0 present.",
+        );
+      }
+      if (args.length >= 2) {
+        const property = str(args[0]);
+        const value = str(args[1]);
+        // a name is matched as written, white space and all, and a value
+        // is one declaration's, which nothing past a `;` is
+        if (property !== property.trim() || !property) return false;
+        if (
+          /;/.test(value.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, ''))
+        ) {
+          return false;
+        }
+        return (
+          call(
+            'supports',
+            `(${property}: ${value})`,
+            true,
+            document.documentElement?._id,
+          ) === true
+        );
+      }
+      return (
+        call('supports', str(args[0]), true, document.documentElement?._id) ===
+        true
+      );
+    },
   };
   define('CSS', cssNamespace);
   define('customElements', customElements);
