@@ -13220,6 +13220,436 @@ export function installDom(
     consumeActivation();
   };
 
+  // --- the input types whose value is a place on a line ----------------------
+  //
+  // `valueAsNumber`, `valueAsDate`, `stepUp()` and `stepDown()` (HTML
+  // 4.10.5.4). A value is read as `fieldNumber` in form.ts reads it, which
+  // the host validates with, so that a value the host keeps and a number a
+  // page reads of it agree; the facade cannot import it. Where HTML leaves
+  // the arithmetic open — what a step rounds to, where a value off its steps
+  // goes, how finely a time is written — it is Blink's: `InputType::
+  // ApplyStep`, `StepRange` and `DateComponents`.
+
+  const DAY = 86400000;
+  /** The first day HTML's dates have, 0001-01-01, and the last a `Date`
+   *  has, 275760-09-13, in milliseconds. */
+  const FIRST_DAY = -62135596800000;
+  const LAST_DAY = 8640000000000000;
+  /**
+   * How a type steps: the step it takes with none said, how many of its
+   * numbers make a unit of the `step` attribute, what its steps count from
+   * with no `min` and no `value`, the least and the greatest value Blink
+   * lets it reach, and whether a step is a whole number of units
+   * (`'parsed'`: date, month, week), a whole number of milliseconds
+   * (`'scaled'`: time, datetime-local) or any number.
+   */
+  interface StepKind {
+    step: number;
+    scale: number;
+    base: number;
+    min: number;
+    max: number;
+    whole: 'parsed' | 'scaled' | null;
+  }
+  const STEPPED = new Map<string, StepKind>([
+    [
+      'number',
+      {
+        step: 1,
+        scale: 1,
+        base: 0,
+        min: -Number.MAX_VALUE,
+        max: Number.MAX_VALUE,
+        whole: null,
+      },
+    ],
+    ['range', { step: 1, scale: 1, base: 0, min: 0, max: 100, whole: null }],
+    [
+      'date',
+      {
+        step: 1,
+        scale: DAY,
+        base: 0,
+        min: FIRST_DAY,
+        max: LAST_DAY,
+        whole: 'parsed',
+      },
+    ],
+    // months since 1970-01: 0001-01 to 275760-09
+    [
+      'month',
+      {
+        step: 1,
+        scale: 1,
+        base: 0,
+        min: -23628,
+        max: 3285488,
+        whole: 'parsed',
+      },
+    ],
+    // counted from 1970-W01's Monday, to 275760-W37's
+    [
+      'week',
+      {
+        step: 1,
+        scale: 7 * DAY,
+        base: -259200000,
+        min: FIRST_DAY,
+        max: 8639999568000000,
+        whole: 'parsed',
+      },
+    ],
+    [
+      'time',
+      { step: 60, scale: 1000, base: 0, min: 0, max: DAY - 1, whole: 'scaled' },
+    ],
+    [
+      'datetime-local',
+      {
+        step: 60,
+        scale: 1000,
+        base: 0,
+        min: FIRST_DAY,
+        max: LAST_DAY,
+        whole: 'scaled',
+      },
+    ],
+  ]);
+  /** The types `valueAsDate` applies to: datetime-local is not one, its
+   *  value being no instant (HTML 4.10.5.1.9). */
+  const DATED = new Set(['date', 'month', 'week', 'time']);
+  /** HTML's valid floating-point number, as form.ts's `FLOAT`. */
+  const FLOAT_TEXT = /^-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+  /** C's `round`, half away from zero, which Blink rounds a step and a
+   *  value with. */
+  const roundC = (n: number): number =>
+    n < 0 ? -Math.round(-n) : Math.round(n);
+
+  /** Days from 1970-01-01 to a day of the proleptic Gregorian calendar,
+   *  its month from 1. No `Date` of the page's is asked. */
+  const daysFrom = (year: number, month: number, day: number): number => {
+    const y = month <= 2 ? year - 1 : year;
+    const era = Math.floor(y / 400);
+    const ofEra = y - era * 400;
+    const ofYear =
+      Math.floor((153 * (month > 2 ? month - 3 : month + 9) + 2) / 5) + day - 1;
+    return (
+      era * 146097 +
+      ofEra * 365 +
+      Math.floor(ofEra / 4) -
+      Math.floor(ofEra / 100) +
+      ofYear -
+      719468
+    );
+  };
+  /** The year, month and day a count of days from 1970-01-01 comes to. */
+  const civilOf = (days: number): [number, number, number] => {
+    const z = days + 719468;
+    const era = Math.floor(z / 146097);
+    const ofEra = z - era * 146097;
+    const yearOfEra = Math.floor(
+      (ofEra -
+        Math.floor(ofEra / 1460) +
+        Math.floor(ofEra / 36524) -
+        Math.floor(ofEra / 146096)) /
+        365,
+    );
+    const ofYear =
+      ofEra -
+      (365 * yearOfEra +
+        Math.floor(yearOfEra / 4) -
+        Math.floor(yearOfEra / 100));
+    const m = Math.floor((5 * ofYear + 2) / 153);
+    const month = m < 10 ? m + 3 : m - 9;
+    return [
+      yearOfEra + era * 400 + (month <= 2 ? 1 : 0),
+      month,
+      ofYear - Math.floor((153 * m + 2) / 5) + 1,
+    ];
+  };
+  const monthDays = (year: number, month: number): number =>
+    month === 2
+      ? year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+        ? 29
+        : 28
+      : month === 4 || month === 6 || month === 9 || month === 11
+        ? 30
+        : 31;
+  /** The day ISO 8601's first week of a year starts on, a Monday. */
+  const weekOne = (year: number): number => {
+    const fourth = daysFrom(year, 1, 4);
+    return fourth - ((((fourth + 3) % 7) + 7) % 7);
+  };
+  /** A day as milliseconds since the epoch, or null for none the calendar
+   *  has. */
+  const dayMs = (year: number, month: number, day: number): number | null =>
+    year >= 1 &&
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= monthDays(year, month)
+      ? daysFrom(year, month, day) * DAY
+      : null;
+  /** A time of day as milliseconds, or null for none. */
+  const timeMs = (text: string): number | null => {
+    const m = /^(\d\d):(\d\d)(?::(\d\d)(?:\.(\d{1,3}))?)?$/.exec(text);
+    if (!m) return null;
+    const hour = Number(m[1]);
+    const minute = Number(m[2]);
+    const second = Number(m[3] ?? '0');
+    if (hour > 23 || minute > 59 || second > 59) return null;
+    const ms = Number((m[4] ?? '').padEnd(3, '0'));
+    return (hour * 3600 + minute * 60 + second) * 1000 + ms;
+  };
+  /**
+   * What a value of a type in `STEPPED` is as a number (HTML 4.10.5.1, its
+   * "convert a string to a number"), or null where the text is no valid
+   * value of the type: milliseconds since the epoch for a date, a week and
+   * a datetime-local, since midnight for a time, months since 1970-01 for a
+   * month.
+   */
+  const numberOfText = (type: string, text: string): number | null => {
+    if (type === 'number' || type === 'range') {
+      const n = FLOAT_TEXT.test(text) ? Number(text) : NaN;
+      return Number.isFinite(n) ? n : null;
+    }
+    if (type === 'time') return timeMs(text);
+    if (type === 'datetime-local') {
+      const m = /^(\d{4,})-(\d\d)-(\d\d)[T ](.+)$/.exec(text);
+      const day = m && dayMs(Number(m[1]), Number(m[2]), Number(m[3]));
+      const time = m && timeMs(m[4]);
+      return day === null || time === null ? null : day + time;
+    }
+    if (type === 'date') {
+      const m = /^(\d{4,})-(\d\d)-(\d\d)$/.exec(text);
+      return m && dayMs(Number(m[1]), Number(m[2]), Number(m[3]));
+    }
+    if (type === 'month') {
+      const m = /^(\d{4,})-(\d\d)$/.exec(text);
+      const month = m ? Number(m[2]) : 0;
+      if (!m || Number(m[1]) < 1 || month < 1 || month > 12) return null;
+      return (Number(m[1]) - 1970) * 12 + month - 1;
+    }
+    if (type === 'week') {
+      const m = /^(\d{4,})-W(\d\d)$/.exec(text);
+      if (!m) return null;
+      const year = Number(m[1]);
+      const week = Number(m[2]);
+      if (year < 1 || week < 1) return null;
+      const first = weekOne(year);
+      if (week > (weekOne(year + 1) - first) / 7) return null;
+      return (first + (week - 1) * 7) * DAY;
+    }
+    return null;
+  };
+
+  const pad = (n: number, width: number): string =>
+    String(n).padStart(width, '0');
+  const dayText = (days: number): string => {
+    const [year, month, day] = civilOf(days);
+    return `${pad(year, 4)}-${pad(month, 2)}-${pad(day, 2)}`;
+  };
+  /** A time of day as Blink writes it: to the minute, or to the second or
+   *  the millisecond where it has them, or where `fine` asks for them, 1
+   *  seconds and 2 milliseconds. */
+  const timeText = (ms: number, fine: number): string => {
+    const part = ms % 1000;
+    const second = Math.floor(ms / 1000) % 60;
+    const text = `${pad(Math.floor(ms / 3600000), 2)}:${pad(Math.floor(ms / 60000) % 60, 2)}`;
+    if (part || fine === 2) return `${text}:${pad(second, 2)}.${pad(part, 3)}`;
+    return second || fine === 1 ? `${text}:${pad(second, 2)}` : text;
+  };
+  /** How finely a time is written: as finely as its step can reach, which
+   *  Blink's `SerializeWithComponents` decides. */
+  const timeFineness = (el: Any, kind: StepKind): number => {
+    const step = stepOf(el, kind);
+    return step === null || step % 60000 === 0 ? 0 : step % 1000 === 0 ? 1 : 2;
+  };
+  /**
+   * The value a number is in a type in `STEPPED` (HTML 4.10.5.1, its
+   * "convert a number to a string"), or `''` where the type has none at it.
+   * A date and a week are of the day a number of milliseconds falls on, a
+   * time goes round the clock, and a datetime-local is written as short as
+   * it can be, as Blink's sanitization leaves one.
+   */
+  const textOfNumber = (el: Any, type: string, n: number): string => {
+    if (type === 'number' || type === 'range') return n === 0 ? '0' : String(n);
+    if (type === 'time') {
+      const rest = n % DAY;
+      const ms = Math.min(DAY - 1, Math.floor(rest < 0 ? rest + DAY : rest));
+      return timeText(ms, timeFineness(el, STEPPED.get(type)!));
+    }
+    if (type === 'month') {
+      const months = roundC(n);
+      const month = ((months % 12) + 12) % 12;
+      const year = 1970 + (months - month) / 12;
+      if (year < 1 || year > 275760 || (year === 275760 && month > 8)) {
+        return '';
+      }
+      return `${pad(year, 4)}-${pad(month + 1, 2)}`;
+    }
+    const ms = roundC(n);
+    if (ms < FIRST_DAY || ms > LAST_DAY) return '';
+    const days = Math.floor(ms / DAY);
+    if (type === 'date') return dayText(days);
+    if (type === 'datetime-local') {
+      const time = timeText(ms - days * DAY, 0);
+      return `${dayText(days)}T${time.includes('.') ? time.replace(/0+$/, '') : time}`;
+    }
+    if (type === 'week') {
+      let [year] = civilOf(days);
+      if (days < weekOne(year)) year -= 1;
+      else if (days >= weekOne(year + 1)) year += 1;
+      const week = Math.floor((days - weekOne(year)) / 7) + 1;
+      if (year < 1 || year > 275760 || (year === 275760 && week > 37)) {
+        return '';
+      }
+      return `${pad(year, 4)}-W${pad(week, 2)}`;
+    }
+    return '';
+  };
+
+  /** A type's step in its numbers, as Blink's `StepRange::ParseStep` reads
+   *  `step`: null at `any`, and the type's own where it is no number above
+   *  0. */
+  const stepOf = (el: Any, kind: StepKind): number | null => {
+    const written = el.getAttribute('step');
+    const own = kind.step * kind.scale;
+    if (written === null || written === '') return own;
+    if (/^any$/i.test(written)) return null;
+    const asked = FLOAT_TEXT.test(written) ? Number(written) : NaN;
+    if (!Number.isFinite(asked) || asked <= 0) return own;
+    if (kind.whole === 'parsed') {
+      return Math.max(roundC(asked), 1) * kind.scale;
+    }
+    if (kind.whole === 'scaled') {
+      return Math.max(roundC(asked * kind.scale), 1);
+    }
+    return asked * kind.scale;
+  };
+  /** What a control steps over: its step base, its limits, and its step. */
+  interface StepLine {
+    base: number;
+    min: number;
+    max: number;
+    step: number | null;
+    /** Whether its numbers are any, which a double's error reaches. */
+    real: boolean;
+  }
+  const stepLine = (el: Any, type: string, kind: StepKind): StepLine => {
+    const read = (name: string): number | null => {
+      const text = el.getAttribute(name);
+      return text === null ? null : numberOfText(type, text);
+    };
+    const min = read('min');
+    const max = read('max');
+    const low = min ?? kind.min;
+    // a range's maximum is never below its minimum (HTML 4.10.5.1.13)
+    const high =
+      type === 'range' ? Math.max(low, max ?? kind.max) : (max ?? kind.max);
+    return {
+      base: min ?? read('value') ?? kind.base,
+      min: low,
+      max: high,
+      step: stepOf(el, kind),
+      real: kind.whole === null,
+    };
+  };
+  /** A quotient of a number's, rid of a double's error to a decimal's
+   *  fifteen digits, as Blink's decimal arithmetic would have it: 1.2 is
+   *  3.9999999999999996 steps of .3. */
+  const toDecimal = (n: number): number => {
+    const kept = Number(n.toPrecision(15));
+    return Number.isFinite(kept) ? kept : n;
+  };
+  const stepsTo = (line: StepLine, n: number): number => {
+    const steps = (n - line.base) / line.step!;
+    return line.real ? toDecimal(steps) : steps;
+  };
+  /** Whether a value is off its steps, with Blink's room for a double's
+   *  error (`StepRange::StepMismatch`). */
+  const offStep = (line: StepLine, value: number): boolean => {
+    const step = line.step;
+    if (step === null || !Number.isFinite(value)) return false;
+    const off = Math.abs(value - line.base);
+    if (!Number.isFinite(off) || off / 2 ** 53 > step) return false;
+    const rest = Math.abs(off - step * Math.round(off / step));
+    const room = line.real ? step / 2 ** 24 : 0;
+    return room < rest && rest < step - room;
+  };
+  /** The greatest value on a step at or below the maximum, or null where
+   *  none is at or above the minimum (`StepRange::StepSnappedMaximum`). */
+  const topStep = (line: StepLine): number | null => {
+    const { base, max } = line;
+    const step = line.step!;
+    if (base - step === base || !Number.isFinite(base / step)) return null;
+    const steps = stepsTo(line, max);
+    let top =
+      steps === Math.floor(steps) ? max : base + Math.floor(steps) * step;
+    if (top > max) top -= step;
+    return top < line.min ? null : top;
+  };
+  /**
+   * `stepUp(n)` and `stepDown(n)` (HTML 4.10.5.4), as Blink's `ApplyStep`
+   * has them where HTML leaves room: a value off its steps goes to the next
+   * step the way it is stepped, and then on by the rest of `n`; a negative
+   * `n` steps the other way; and an empty or invalid value starts from 0,
+   * which the limits may move either way.
+   */
+  const stepInput = (el: Any, n: Any, down: boolean): void => {
+    const by = n === undefined ? 1 : n | 0;
+    const type = el.type;
+    const kind = STEPPED.get(type);
+    const refuse = (message: string): Any =>
+      new DOMException(
+        `Failed to execute '${down ? 'stepDown' : 'stepUp'}' on 'HTMLInputElement': ${message}`,
+        'InvalidStateError',
+      );
+    if (!kind) throw refuse('This form element is not steppable.');
+    const line = stepLine(el, type, kind);
+    const step = line.step;
+    if (step === null) {
+      throw refuse('This form element does not have an allowed value step.');
+    }
+    if (line.min > line.max) return;
+    const top = topStep(line);
+    if (top === null) return;
+    const read = numberOfText(type, INPUT_VALUE.get!.call(el));
+    const current = read ?? 0;
+    const { base } = line;
+    let count = down ? -by : by;
+    let next = current;
+    const off = offStep(line, current);
+    if (off && count < 0) {
+      next = base + Math.floor(stepsTo(line, next)) * step;
+      count += 1;
+    } else if (off && count > 0) {
+      next = base + Math.ceil(stepsTo(line, next)) * step;
+      count -= 1;
+    }
+    next += step * count;
+    if (next < 1e21 && !off) next = base + roundC(stepsTo(line, next)) * step;
+    if (next < line.min) {
+      next = base + Math.ceil(stepsTo(line, line.min)) * step;
+    }
+    if (next > line.max) next = top;
+    // a step that would go back the way it was not asked to goes nowhere,
+    // but from a value that was none
+    if (
+      read !== null &&
+      ((count < 0 && current < next) || (count > 0 && current > next))
+    ) {
+      return;
+    }
+    INPUT_VALUE.set!.call(
+      el,
+      textOfNumber(el, type, line.real ? toDecimal(next) : next),
+    );
+  };
+  /** `Date.prototype.getTime`, which tells a `Date` from what is none. */
+  const dateTime = Date.prototype.getTime;
+  const RealmDate = Date;
+
   const BOX_TYPES = new Set(['checkbox', 'radio']);
   class HTMLInputElement extends FormControl {
     // its `type` is `REFLECTED`'s, and an enumerated attribute's
@@ -13281,11 +13711,69 @@ export function installDom(
         valueSet(this, was);
       }
     }
+    // what these read and set is the value IDL attribute's own, past a
+    // `value` a page's library put on the element, as a browser's are
     get valueAsNumber(): number {
-      return this.value === '' ? NaN : Number(this.value);
+      const type = this.type;
+      if (!STEPPED.has(type)) return NaN;
+      return numberOfText(type, INPUT_VALUE.get!.call(this)) ?? NaN;
     }
-    set valueAsNumber(v: number) {
-      this.value = String(v);
+    set valueAsNumber(v: Any) {
+      const n = +v;
+      if (n === Infinity || n === -Infinity) {
+        throw new TypeError(
+          "Failed to set the 'valueAsNumber' property on 'HTMLInputElement': The value provided is infinite.",
+        );
+      }
+      const type = this.type;
+      if (!STEPPED.has(type)) {
+        throw new DOMException(
+          "Failed to set the 'valueAsNumber' property on 'HTMLInputElement': This input element does not support Number values.",
+          'InvalidStateError',
+        );
+      }
+      INPUT_VALUE.set!.call(
+        this,
+        Number.isNaN(n) ? '' : textOfNumber(this, type, n),
+      );
+    }
+    get valueAsDate(): Any {
+      const type = this.type;
+      if (!DATED.has(type)) return null;
+      const n = numberOfText(type, INPUT_VALUE.get!.call(this));
+      if (n === null) return null;
+      if (type !== 'month') return new RealmDate(n);
+      const month = ((n % 12) + 12) % 12;
+      return new RealmDate(
+        daysFrom(1970 + (n - month) / 12, month + 1, 1) * DAY,
+      );
+    }
+    set valueAsDate(v: Any) {
+      const type = this.type;
+      if (!DATED.has(type)) {
+        throw new DOMException(
+          "Failed to set the 'valueAsDate' property on 'HTMLInputElement': This input element does not support Date values.",
+          'InvalidStateError',
+        );
+      }
+      let ms = NaN;
+      // `object?`: undefined is null, and an object is a `Date` or refused
+      if (v !== null && v !== undefined) {
+        try {
+          ms = dateTime.call(v);
+        } catch {
+          throw new TypeError(
+            "Failed to set the 'valueAsDate' property on 'HTMLInputElement': The provided value is not a Date.",
+          );
+        }
+      }
+      let text = '';
+      if (!Number.isNaN(ms) && type === 'month') {
+        // the month of the day the instant falls on, in UTC
+        const [year, month] = civilOf(Math.floor(roundC(ms) / DAY));
+        text = textOfNumber(this, type, (year - 1970) * 12 + month - 1);
+      } else if (!Number.isNaN(ms)) text = textOfNumber(this, type, ms);
+      INPUT_VALUE.set!.call(this, text);
     }
     // Every input has a checkedness (HTML 4.10.5), which a box's and a
     // radio's widget shows and no other type's does: there it is the
@@ -13385,12 +13873,22 @@ export function installDom(
       const now = fieldSelectionOf(this);
       selectField(this, now.start, now.end, v);
     }
-    stepUp(): void {}
-    stepDown(): void {}
+    stepUp(n?: Any): void {
+      stepInput(this, n, false);
+    }
+    stepDown(n?: Any): void {
+      stepInput(this, n, true);
+    }
     showPicker(): void {
       showPicker(this, 'HTMLInputElement');
     }
   }
+  /** The value IDL attribute's own accessors, which `valueAsNumber`,
+   *  `valueAsDate` and the steps read and set the value through. */
+  const INPUT_VALUE = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value',
+  )!;
   const DEFAULT_MODE = new Set([
     'hidden',
     'submit',
