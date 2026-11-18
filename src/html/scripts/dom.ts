@@ -758,9 +758,23 @@ export function installDom(
    *  `document.tagName`. The accessor it leaves on the event has no
    *  setter, which is why the dispatch writes the state and never the
    *  attribute. */
+  const TRUSTED_ACCESSOR = {
+    get(this: Any): boolean {
+      return this._trusted;
+    },
+    set(this: Any, v: Any): void {
+      this._trusted = !!v;
+    },
+    enumerable: true,
+    configurable: false,
+  };
   class Event {
-    /** The event's own, not the prototype's: `[LegacyUnforgeable]`. */
-    isTrusted = false;
+    /** Whether the user agent made it, which `isTrusted` reads: an
+     *  accessor of the event's own, not the prototype's, one getter for
+     *  every event (`[LegacyUnforgeable]`), as a page reads it with
+     *  `getOwnPropertyDescriptor`. */
+    _trusted = false;
+    declare isTrusted: boolean;
     _type: string;
     _bubbles: boolean;
     _cancelable: boolean;
@@ -779,6 +793,7 @@ export function installDom(
       if (arguments.length === 0) {
         throw new TypeError("Failed to construct 'Event': 1 argument required");
       }
+      Object.defineProperty(this, 'isTrusted', TRUSTED_ACCESSOR);
       this._type = String(type);
       this._bubbles = !!init.bubbles;
       this._cancelable = !!init.cancelable;
@@ -1346,6 +1361,31 @@ export function installDom(
     throw new TypeError('Illegal invocation');
   };
 
+  /** DOM 2.7, "default passive value": a `touchstart`, `touchmove`,
+   *  `wheel` or `mousewheel` listener on the window, a document, its root or
+   *  its body is passive unless it says. */
+  const defaultPassive = (target: Any, type: string): boolean => {
+    if (!/^(?:touchstart|touchmove|wheel|mousewheel)$/.test(type)) return false;
+    if (target === G || target === windowTarget) return true;
+    const doc = target?.ownerDocument;
+    if (target?.nodeType === 9) return true;
+    return !!doc && (target === doc.documentElement || target === doc.body);
+  };
+  /** Whether anything on an event's way to a target would hear it and may
+   *  cancel it: a listener that is not passive, or a handler on what is not
+   *  the whole page. A user's wheel or touch with none is not cancelable, as
+   *  browsers send it. */
+  const cancelableOnWay = (target: Any, type: string): boolean => {
+    const active = (at: Any): boolean => {
+      if (!at) return false;
+      if (at._listeners?.[type]?.some((l: Listener) => !l.passive)) return true;
+      return !!at._handlers?.[type] && !defaultPassive(at, type);
+    };
+    for (let at = target; at; at = at.parentNode ?? at.host ?? null) {
+      if (active(at)) return true;
+    }
+    return active(windowTarget);
+  };
   class EventTarget {
     _listeners: Record<string, Listener[]> = Object.create(null);
     _handlers: Record<string, Any> = Object.create(null);
@@ -1365,7 +1405,12 @@ export function installDom(
         fn,
         capture,
         once: !!opts.once,
-        passive: !!opts.passive,
+        // a listener for what scrolls, on what is the whole page, is
+        // passive unless it says (DOM 2.7, "default passive value")
+        passive:
+          opts.passive === undefined || opts.passive === null
+            ? defaultPassive(this, String(type))
+            : !!opts.passive,
         signal,
       };
       list.push(listener);
@@ -48572,7 +48617,7 @@ export function installDom(
           trusted(
             new WheelEvent('wheel', {
               bubbles: true,
-              cancelable: true,
+              cancelable: cancelableOnWay(target, 'wheel'),
               composed: true,
               view: G,
               clientX: (e.x ?? 0) - v.scrollX,
