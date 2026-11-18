@@ -16,15 +16,24 @@ import { XK_DOWN, XK_ESCAPE, XK_RETURN, XK_UP } from 'react-x11/keysyms';
 import { hx } from '../internal/hx.js';
 import { useDismissOnWindowBlur } from '../internal/widget.js';
 import type { WidgetChangeEvent } from '../internal/widget.js';
-import { CALENDAR_HEIGHT, CALENDAR_WIDTH, Calendar } from './Calendar.js';
+import {
+  CALENDAR_HEIGHT,
+  CALENDAR_WIDTH,
+  Calendar,
+} from '../internal/calendar/Calendar.js';
 import type {
   CalendarHandle,
   CalendarProps,
   DateRange,
   DateRangeInput,
-} from './Calendar.js';
-import { formatDay, formatDayRange, toDay } from './dates.js';
-import type { DayInput } from './dates.js';
+} from '../internal/calendar/Calendar.js';
+import {
+  formatDay,
+  formatDayRange,
+  toDay,
+} from '../internal/calendar/dates.js';
+import type { DayInput } from '../internal/calendar/dates.js';
+import { CalendarGlyph } from '../internal/calendar/glyph.js';
 
 // A hairline round the sheet, as the menus and `Select` use: this border is
 // where the popup meets the desktop, not a control's outline, so a theme that
@@ -54,29 +63,8 @@ const s = createStyles({
     cursor: 'pointer',
   },
   label: { flexGrow: 1 },
-  icon: { width: 14, height: 14, flexShrink: 0 },
   sheet: { flexGrow: 1, flexShrink: 1, borderWidth: SHEET_BORDER },
 });
-
-/** A wall calendar, 14×14: the page, its two hangers and the ruled week. */
-function CalendarGlyph({ color }: { color: string }): ReactElement {
-  return hx('canvas', {
-    style: s.icon,
-    onDraw: (ctx, { width, height }) => {
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(0.5, 2.5, width - 1, height - 3);
-      ctx.beginPath();
-      ctx.moveTo(0.5, 6.5);
-      ctx.lineTo(width - 0.5, 6.5);
-      ctx.moveTo(4.5, 0.5);
-      ctx.lineTo(4.5, 3.5);
-      ctx.moveTo(width - 4.5, 0.5);
-      ctx.lineTo(width - 4.5, 3.5);
-      ctx.stroke();
-    },
-  });
-}
 
 /** What the trigger says, when the app has not said it itself. */
 function defaultFormat(
@@ -298,6 +286,7 @@ export function DatePicker(props: DatePickerProps): ReactElement {
       text,
     ),
     React.createElement(CalendarGlyph, {
+      size: 14,
       color: disabled ? theme.border : theme.textMuted,
     }),
     open &&

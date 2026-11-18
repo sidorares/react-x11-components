@@ -33,6 +33,17 @@ import {
   typedText,
 } from './form.js';
 import type { RangeLine } from './form.js';
+import {
+  fieldLayout,
+  isDateFieldType,
+  precisionOf,
+  segmentText,
+} from './date-fields.js';
+import type {
+  DateFieldType,
+  FieldLayout,
+  SegmentValues,
+} from './date-fields.js';
 import { fadeColor } from './css/color.js';
 import { cursorKeyword, inkColor } from './css/values.js';
 import { verticalMode } from './css/style.js';
@@ -944,6 +955,21 @@ export function measureControl(
       };
     }
     case 'input': {
+      // a date or a time is as wide as what it shows and its indicator,
+      // as a browser's is, whatever its `size` (which applies to none of
+      // them)
+      const type = attr(el, 'type')?.trim().toLowerCase() ?? '';
+      if (isDateFieldType(type)) {
+        const shown = dateFieldWidth(el, type, style, fonts, ch);
+        const glyph = Math.max(10, Math.min(18, Math.round(em / scale)));
+        const inner = Math.ceil(shown + (glyph + DATE_INDICATOR_GAP) * scale);
+        return styledField(kind, style)
+          ? { width: inner, height: Math.round(fieldLine(style, fonts)) }
+          : {
+              width: Math.round(inner + DATE_FIELD_PAD * 2 * scale + chrome),
+              height: lineHeight + chrome,
+            };
+      }
       const size = numberAttr(el, 'size') ?? 20;
       if (styledField(kind, style)) {
         return {
@@ -1054,6 +1080,20 @@ function widestText(
   style: ComputedStyle,
   fonts: FontsLike | null,
 ): number | null {
+  return widestOf(
+    optionsOf(el).flatMap((option) => (option.label ? [option.label] : [])),
+    style,
+    fonts,
+  );
+}
+
+/** How wide the widest of `texts` is set in the element's font, or null
+ *  with no fonts to set them in. */
+function widestOf(
+  texts: readonly string[],
+  style: ComputedStyle,
+  fonts: FontsLike | null,
+): number | null {
   if (!fonts) return null;
   const run = {
     family: style.fontFamily,
@@ -1064,19 +1104,73 @@ function widestText(
   } as const;
   try {
     let widest = 0;
-    for (const option of optionsOf(el)) {
-      if (!option.label) continue;
-      const width = fonts.layout(
-        [{ text: option.label, ...run }],
-        run,
-        {},
-      ).width;
-      widest = Math.max(widest, width);
+    for (const text of texts) {
+      widest = Math.max(
+        widest,
+        fonts.layout([{ text, ...run }], run, {}).width,
+      );
     }
     return widest;
   } catch {
     return null;
   }
+}
+
+/** Between a date field's segments and its indicator, and inside its frame
+ *  either side: the widget's, in CSS pixels (`date-picker.ts`, and the
+ *  palette field's padding in `widgets.ts`). */
+const DATE_INDICATOR_GAP = 4;
+const DATE_FIELD_PAD = 6;
+
+/**
+ * How wide a date field's segments are: the wider of what it shows empty
+ * ("mm/dd/yyyy") and what it shows at its widest, in the runtime's locale.
+ * Each segment and each piece between two is a text of its own in the
+ * widget, rounded up as it is laid out, so they are measured so too: the
+ * whole string set at once comes to a pixel or two less.
+ */
+function dateFieldWidth(
+  el: Element,
+  type: DateFieldType,
+  style: ComputedStyle,
+  fonts: FontsLike | null,
+  ch: number,
+): number {
+  const { seconds, millis } = precisionOf(
+    attr(el, 'step'),
+    attr(el, 'value') ?? '',
+  );
+  const layout = fieldLayout(type, undefined, seconds, millis);
+  const widest = widestValues(layout);
+  let width = 0;
+  for (const values of [{}, widest]) {
+    let sum = 0;
+    for (const part of layout.parts) {
+      const text =
+        'text' in part ? part.text : segmentText(part.segment, values, layout);
+      sum += Math.ceil(widestOf([text], style, fonts) ?? ch * text.length);
+    }
+    width = Math.max(width, sum);
+  }
+  return width;
+}
+
+/** Segments as wide as they come: the longest month's name, the longer
+ *  half of the day, and digits elsewhere. */
+function widestValues(layout: FieldLayout): SegmentValues {
+  const longest = (names: readonly string[]) =>
+    names.reduce((at, name, i) => (name.length > names[at].length ? i : at), 0);
+  return {
+    year: 2000,
+    month: layout.type === 'month' ? longest(layout.months) + 1 : 12,
+    day: 28,
+    week: 52,
+    hour: layout.hour12 ? 12 : 23,
+    minute: 59,
+    second: 59,
+    millisecond: 999,
+    period: longest(layout.periods),
+  };
 }
 
 function optionWidths(el: Element): number {

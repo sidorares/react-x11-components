@@ -12,6 +12,11 @@ Neither registers a host element. They are compositions of `<box>`, `<text>`,
 `<canvas>` and core's `<Icon>`, so importing them has **no side effect at
 import time at all** — no `registerElement`, no JSX augmentation.
 
+The grid is also the picker [`<Html>`](html.md#date-and-time-inputs) drops from
+a date, a week or a `datetime-local` input, which is why it lives in
+`src/internal/calendar/` and this subpath re-exports it: two components draw
+it, and neither imports the other.
+
 ## `<Calendar>`
 
 ```jsx
@@ -162,11 +167,10 @@ A `CalendarDay` is a `'YYYY-MM-DD'` string and a `CalendarMonth` is
 `Map` without a helper, and they carry no timezone, which a `Date` cannot
 avoid carrying.
 
-`src/calendar/dates.ts` and `src/calendar/internal.ts` are **copies** of code
-that is still in react-x11 today. They were copied rather than imported
-because they are not on core's exports map, and they are pure. Core is
-expected to drop `<Calendar>`, so divergence here is intended rather than
-drift — do not try to keep them in sync.
+`src/internal/calendar/dates.ts` and `src/internal/widget.ts` began as
+**copies** of react-x11's, made because they were not on core's exports map
+and are pure. Core has since dropped `<Calendar>` and `<DatePicker>`, so this
+package is the only owner.
 
 ## Example
 

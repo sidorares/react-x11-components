@@ -113,7 +113,7 @@ handle.refresh();
 | `setControlValue(el, v)`                                                                | Set it, as a script sets `value` or `checked`: no event, and a field's widget shows it in place, its focus and caret kept.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `controlSelection(el)`                                                                  | A text field's selection, as a script reads `selectionStart`, `selectionEnd` and `selectionDirection`: `{ start, end, direction }` in UTF-16 code units into what it holds — its widget's, the user's caret and what they selected, where core's field says, and else what was last set; a caret at the end of its text where nothing was. Null for what is no text field.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `setControlSelection(el, start, end, direction?)`                                       | Select in it, as `setSelectionRange()` does: clamped to its text, no event, shown by its widget while it has the focus where core's field takes a selection, and kept for the widget mounted next.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `showPicker(el)`                                                                        | Drop a control's picker, as a page's `showPicker()` does once it is allowed to: a drop-down `<select>`'s menu, which `:open` matches while it is down. No focus moves. False where nothing drops: a list box, a disabled select, an `<input>`, or an older core's select.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `showPicker(el)`                                                                        | Drop a control's picker, as a page's `showPicker()` does once it is allowed to: a drop-down `<select>`'s menu, or a date or time input's calendar or columns, which `:open` matches while it is down. No focus moves. False where nothing drops: a list box, a disabled or read-only control, an `<input>` of another type, or an older core's select.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `focus(el)` / `blur()`                                                                  | Give an element the focus, as Tab would — a control, a link, a button, a `tabindex` — or take it off the document. `focus` answers false where the element takes none.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `activeElement`                                                                         | The element whose widget or stop has the focus, or null.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `activate(el)`                                                                          | What a click on it does, with no click told of: a link followed through `onLink`, a button pressed, a `<details>` opened.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
@@ -3220,7 +3220,9 @@ whose type `readonly` applies to; `NotAllowedError` where no press or key
 of the user's is behind it, which a browser calls transient activation and
 which lasts five seconds and is spent by the call; and `NotSupportedError`
 for a `<select>` that is not rendered. None of them spends the activation.
-A list box, and an `<input>`, whose pickers have no widget here, drop
+A date, a time, a month, a week and a `datetime-local` input drop theirs
+too ([Date and time inputs](#date-and-time-inputs)). A list box, and an
+`<input>` of any other type, whose pickers have no widget here, drop
 nothing and are not refused. No focus moves, as none does in a browser.
 `navigator.userActivation` says whether the page has been used and whether
 the activation is live.
@@ -4640,6 +4642,74 @@ part under `:hover` written after the pseudo-element. `accent-color` is not read
 `::-moz-range-thumb` is nothing, as it is in Chrome, and a `list`'s tick marks are
 not drawn. A track at `appearance: auto` runs across the content box, where Chrome
 paints it across the border box, which only a range with padding or a border shows.
+
+### Date and time inputs
+
+```html
+<input type="date" value="2026-11-18" min="2026-11-01" />
+<input type="datetime-local" step="900" />
+```
+
+A date, a time, a month, a week and a `datetime-local` input are what a
+browser draws: a row of segments in the locale's order — `11/18/2026`,
+`02:30 PM`, `November 2026`, `Week 47, 2026` — and an indicator at its end
+that drops a picker. The picker is the grid an app's
+[`<Calendar>`](calendar.md) is, on a `<popup>` under the field:
+
+| Type             | Picker                                                                       |
+| ---------------- | ---------------------------------------------------------------------------- |
+| `date`           | The calendar. A day picked is the value, and takes the picker up.            |
+| `week`           | The calendar from Monday, the week drawn from its Monday to its Sunday.      |
+| `datetime-local` | The calendar beside a column each of hours, minutes and the half of the day. |
+| `time`           | The columns alone.                                                           |
+| `month`          | A year's twelve months, three across, under the year.                        |
+
+Each segment is typed into with digits, a period and a month input's month by
+the first letters of their names too, stepped with Up and Down (Page Up and
+Page Down further: ten years, a week of days, a quarter of an hour), cleared with Backspace or
+Delete, and left with Left, Right, Home, End, a separator, or Tab, which goes
+through the segments before it leaves the field, as it does in Chrome and
+Firefox. A segment takes the next once no digit more could make a value it
+holds: a "2" in a month, two digits in a day, four in a year. Alt+Down and F4
+drop the picker, as in Chrome, as does a press on the indicator or a page's
+`showPicker()`; Escape, a press outside it or the field losing the focus
+takes it up. While it is down the field keeps the keyboard and hands the grid
+its keys: the arrows move the day, Page Up and Page Down the month (with
+Shift, the year), Enter and Space pick. A time's columns take no keys, and
+follow the segments the keys go on editing; Enter takes them up. The input
+matches `:open` while its picker is down, and `:closed` while it is not.
+
+**What the page reads is whole or empty.** The value is the empty string while
+any segment says nothing, or the segments come to no value of the type — the
+31st of a thirty-day month, week 53 of a year of 52 — and HTML's form of it
+(`2026-11-18`, `14:30`, `2026-W47`, `2026-11-18T14:30`) once they do. What it
+holds is `FormState`'s, as a field's is, and a script's `value` and a form's
+reset are what the segments show from then on. Every change of it is an
+`input` and a `change` at once, as Chrome tells a date field's, with no
+`change` held for the field losing the focus. So a year typed a digit at a
+time is told at each one that makes a whole value, `0002`, `0020`, `0202` and
+`2026`, as in Chrome. It is no text field: `selectionStart` and its kin are
+`null`, as HTML has them for these types.
+
+Seconds show where the field's `step` is no whole number of minutes, or its
+value has them, and milliseconds where the step or the value has a fraction
+of a second. A step of whole minutes that go into an hour lists the minutes
+that far apart in the columns. `min` and `max` block the days and the months
+past them in the picker. A read-only input has no indicator, and its
+`showPicker()` is refused; a disabled one takes no focus.
+
+The segments are written in the runtime's locale, as Chrome writes them in the
+browser's and not the page's `lang`, and a week as Chrome writes one in
+English, since `Intl` has no form for it. The field is as wide as the wider of
+what it shows empty and what it shows at its widest, and its indicator,
+whatever its `size`, which applies to none of these types.
+
+What a browser has that this does not: a week picker's column of week
+numbers; a calendar that blocks the days off a `step`; a year of more than
+four digits typed rather than stepped to; a `list` of suggestions; and the
+`::-webkit-datetime-edit` pseudo-elements, which are not read. A page's
+`valueAsNumber`, `valueAsDate`, `stepUp()` and `stepDown()` do not know these
+types yet.
 
 ### File inputs
 

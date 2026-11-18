@@ -5,11 +5,19 @@
 // `registerElement` call, no JSX augmentation, and **no side effect at import
 // time at all**. An app that names neither pays for neither.
 //
-// The date arithmetic in `./dates.js` is exported too. It is the vocabulary
+// The date arithmetic is exported too. It is the vocabulary
 // the props speak — a day is a `'YYYY-MM-DD'` string, not a `Date` — and an
 // app that renders a calendar almost always has to do a little of the same
 // arithmetic to decide what to block or what to mark.
-export { Calendar, CALENDAR_WIDTH, CALENDAR_HEIGHT } from './Calendar.js';
+//
+// The grid and the arithmetic live in `../internal/calendar/`, since `<Html>`
+// drops the same grid from a date input: this directory is their public face,
+// and `<DatePicker>` is its own.
+export {
+  Calendar,
+  CALENDAR_WIDTH,
+  CALENDAR_HEIGHT,
+} from '../internal/calendar/Calendar.js';
 export type {
   CalendarProps,
   SingleCalendarProps,
@@ -18,7 +26,7 @@ export type {
   CalendarHandle,
   DateRange,
   DateRangeInput,
-} from './Calendar.js';
+} from '../internal/calendar/Calendar.js';
 
 export { DatePicker } from './DatePicker.js';
 export type { DatePickerProps } from './DatePicker.js';
@@ -42,10 +50,10 @@ export {
   toMonth,
   today,
   weekdayLabels,
-} from './dates.js';
+} from '../internal/calendar/dates.js';
 export type {
   CalendarDay,
   CalendarMonth,
   DayInput,
   DayParts,
-} from './dates.js';
+} from '../internal/calendar/dates.js';

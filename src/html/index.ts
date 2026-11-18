@@ -1096,9 +1096,11 @@ export interface HtmlHandle {
    * Drop a control's picker, as a script's `showPicker()` does once it is
    * allowed to: a drop-down `<select>`'s menu, which its widget drops
    * where core's `<Select>` takes `open` (react-x11 with the select's open
-   * state), and which `:open` matches while it is down. No focus moves.
-   * False where nothing drops: a list box, a disabled select, an `<input>`,
-   * none of whose pickers is a widget here, or an older core's select.
+   * state), or a date, a time, a month, a week or a `datetime-local`
+   * input's calendar or columns; `:open` matches either while it is down.
+   * No focus moves. False where nothing drops: a list box, a disabled or
+   * read-only control, an `<input>` of any other type, or an older core's
+   * select.
    */
   showPicker(element: Element): boolean;
   /** Give an element the focus, as Tab gives it: a control's widget, a

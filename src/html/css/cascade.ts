@@ -39,6 +39,7 @@ import {
   isModal,
   isFullscreen,
   isCheckable,
+  hasPicker,
   isDropDown,
   isPickerOpen,
   isPopoverOpen,
@@ -11181,14 +11182,14 @@ const PSEUDOS = {
   stalled: (el: Element) => hasMediaFlag(el, 'stalled'),
   // a `<details>` or a `<dialog>` open, and one shut (Selectors 4, 14.1):
   // css-select has neither, and dropped every rule that named one — and a
-  // `<select>` whose drop-down box is down or up (HTML 16.6.1), as its
-  // widget says (`isPickerOpen`)
+  // `<select>` whose drop-down box is down or up, or a date input whose
+  // calendar is (HTML 16.6.1), as its widget says (`isPickerOpen`)
   open: (el: Element) =>
     opens(el) ? el.attribs.open !== undefined : isPickerOpen(el),
   closed: (el: Element) =>
     opens(el)
       ? el.attribs.open === undefined
-      : isDropDown(el) && !isPickerOpen(el),
+      : hasPicker(el) && !isPickerOpen(el),
   focus: (_el: Element) => false,
   'focus-visible': (_el: Element) => false,
   'focus-within': (_el: Element) => false,

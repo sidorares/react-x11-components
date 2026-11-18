@@ -4,6 +4,11 @@
 // host primitives, so there is no `registerElement` here and nothing for the
 // reconciler to learn — a `<Calendar>` is `<box>`es, `<text>` and, for the
 // month nav, two glyphs out of core's system icon set.
+//
+// It lives under `src/internal/` because two components draw it: an app's
+// `<Calendar>` and `<DatePicker>` (`src/calendar/`, which re-exports it), and
+// the picker `<Html>` drops from a date, a week or a `datetime-local` input
+// (`src/html/date-picker.ts`).
 import React, { useImperativeHandle, useMemo, useState } from 'react';
 import type { ReactElement, ReactNode, Ref } from 'react';
 import { createStyles, tint } from 'react-x11/style';
@@ -22,10 +27,10 @@ import {
   XK_UP,
 } from 'react-x11/keysyms';
 
-import { hx } from '../internal/hx.js';
-import type { Host } from '../internal/hx.js';
-import { changeEvent } from '../internal/widget.js';
-import type { WidgetChangeEvent } from '../internal/widget.js';
+import { hx } from '../hx.js';
+import type { Host } from '../hx.js';
+import { changeEvent } from '../widget.js';
+import type { WidgetChangeEvent } from '../widget.js';
 import {
   addDays,
   addMonths,

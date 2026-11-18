@@ -98,6 +98,8 @@ import {
 import type { FieldSelection, FormSubmission } from './form.js';
 import { isSummaryOf, tabIndexOf } from './focus.js';
 import { RangeWidget } from './range.js';
+import { isDateFieldType } from './date-fields.js';
+import { DateField } from './date-picker.js';
 import { SB_AUTOMATIC, SB_FORMS } from './scripts/sandbox.js';
 
 const h = React.createElement;
@@ -285,6 +287,7 @@ export function useForms(options: FormsOptions): Forms {
           // menu is down, and `:open` says so.
           if (
             picker.current === el &&
+            isDropDown(el) &&
             holdsOpen(widgets.triggerOf(el)) === false
           ) {
             pickerChanged(el, false);
@@ -299,9 +302,10 @@ export function useForms(options: FormsOptions): Forms {
     [view, forms],
   );
 
-  // Each range's way to show what `forms` holds: what it holds moves with a
-  // drag and with a script's `value`, each of which reaches one widget and
-  // no render of the document's.
+  // Each range's and each date field's way to show what `forms` holds: what
+  // it holds moves with a drag or a pick, with a script's `value` and with a
+  // reset, each of which reaches one widget and no render of the
+  // document's.
   const ranges = React.useMemo(() => new Map<Element, () => void>(), []);
 
   // Whose picker is open: the `<select>` whose menu is down, as its widget
@@ -394,6 +398,7 @@ export function useForms(options: FormsOptions): Forms {
       if (ask?.el === el) asked.current = null;
       const visible =
         isTextField(el) ||
+        isDateField(el) ||
         (ask?.el === el
           ? ask.visible
           : !isRange(el) || lastInput.current !== 'pointer');
@@ -537,6 +542,7 @@ export function useForms(options: FormsOptions): Forms {
     for (const el of controlsOf(form)) {
       const field = widgets.fieldOf(el);
       if (field) field.value = forms.value(el);
+      ranges.get(el)?.();
     }
     touch();
   };
@@ -921,6 +927,16 @@ export function useForms(options: FormsOptions): Forms {
         if (moved) touch(moved);
         return true;
       }
+      // a date field's segments show what the form holds, sanitized: what
+      // is no value of its type is none
+      if (isDateField(el)) {
+        const was = answers(el);
+        forms.setTyped(el, String(value), true);
+        ranges.get(el)?.();
+        const moved = answersMoved(el, was);
+        if (moved) touch(moved);
+        return true;
+      }
       if (!isTextField(el)) return false;
       const text = String(value);
       const was = answers(el);
@@ -957,6 +973,13 @@ export function useForms(options: FormsOptions): Forms {
       return true;
     },
     showPicker: (el) => {
+      // a date field's picker is the widget's own popup, dropped from its
+      // first render where its widget is still to mount
+      if (isDateField(el)) {
+        if (isDisabled(el) || attr(el, 'readonly') !== undefined) return false;
+        pickerChanged(el, true);
+        return true;
+      }
       if (!isDropDown(el) || isDisabled(el)) return false;
       // Asked before its widget is mounted — a select just shown — it is
       // down from the widget's first commit, where the core's select takes
@@ -1205,11 +1228,13 @@ function takesFocus(node: DrawnNode): boolean {
 interface ControlContext {
   forms: FormState;
   widgets: WidgetBoxes;
-  /** What asks each range's widget to show what it holds. */
+  /** What asks each range's or date field's widget to show what it holds. */
   ranges: Map<Element, () => void>;
-  /** The `<select>` whose menu is down, or null. */
+  /** The `<select>` whose menu is down, or the date field whose picker
+   *  is, or null. */
   picker: Element | null;
-  /** A `<select>`'s widget says its menu went down, or came up. */
+  /** A `<select>`'s widget says its menu went down, or came up, or a date
+   *  field's its picker. */
   pickerChanged: (el: Element, open: boolean) => void;
   /** What a rule can read of a control, and the change to tell of it where
    *  that moved since. */
@@ -1556,6 +1581,34 @@ function renderControl(
       break;
     case 'input': {
       const type = inputType(el);
+      if (isDateFieldType(type)) {
+        widget = h(DateField, {
+          element: el,
+          type,
+          forms,
+          disabled,
+          readOnly,
+          order,
+          style: [field, FIELD_BOX, { cursor }],
+          ink: rect.bare?.color,
+          bare: !!rect.bare,
+          fontSize: rect.fontSize,
+          open: ctx.picker === el,
+          onOpenChange: (open) => ctx.pickerChanged(el, open),
+          // the form holds it from here, and the page hears an `input` and
+          // a `change` at once, as Chrome tells a date field's
+          picked: (value) => {
+            const was = ctx.answers(el);
+            forms.setTyped(el, value);
+            ctx.changed(el, value, ctx.answersMoved(el, was));
+            ctx.selected(el);
+          },
+          focused: (on) => ctx.focused(el, on),
+          submit: () => ctx.submitFrom(el),
+          redraws: ctx.ranges,
+        });
+        break;
+      }
       widget = hx('textinput', {
         defaultValue: forms.value(el),
         // a field's hint is one line, its breaks taken out (HTML
@@ -2037,9 +2090,18 @@ function setSelectedOption(el: Element, value: string): HtmlChange[] {
 function isTextField(el: Element): boolean {
   const tag = tagOf(el);
   if (tag === 'textarea') return true;
-  return (
-    tag === 'input' && buttonType(el) === null && !CHECKABLE.has(inputType(el))
-  );
+  if (tag !== 'input' || buttonType(el) !== null) return false;
+  const type = inputType(el);
+  return !CHECKABLE.has(type) && !isDateFieldType(type);
+}
+
+/** Whether a control is a date, a time, a month, a week or a
+ *  `datetime-local`: a row of segments and a picker (`date-picker.ts`),
+ *  not a text field. It has no selection a script reads (HTML 4.10.5.2.10
+ *  applies to none of them), and its `change` comes as its value does,
+ *  not as it is left. */
+function isDateField(el: Element): boolean {
+  return tagOf(el) === 'input' && isDateFieldType(inputType(el));
 }
 
 const CHECKABLE = new Set([
