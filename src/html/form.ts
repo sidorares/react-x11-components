@@ -560,7 +560,7 @@ function timeNumber(text: string): number | null {
  * by, or null where the text is no valid value of the type (HTML 2.3.5):
  * milliseconds for a date, a week and a time, months for a month.
  */
-function fieldNumber(type: string, text: string): number | null {
+export function fieldNumber(type: string, text: string): number | null {
   if (type === 'number' || type === 'range') {
     const n = FLOAT.test(text) ? Number(text) : NaN;
     return Number.isFinite(n) ? n : null;

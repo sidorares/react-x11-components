@@ -145,7 +145,10 @@ finds out from a blank window has been failed by the page.
   `<Calendar>`/`<DatePicker>` and `<ColorPicker>`/`<ColorField>`, the
   signed distance field `<Map>`'s and `<Flow>`'s GL labels are drawn from
   (`sdf.ts`), and the blocks of lines `<Code>` and `<Markdown>`'s fences
-  draw code in (`codelines.ts`) — that no app needs yet. Deliberately without an `index.ts`,
+  draw code in (`codelines.ts`) — that no app needs yet. `calendar/` is the
+  one an app does reach: the month grid and its day arithmetic, which
+  `src/calendar/` re-exports as `<Calendar>` and `<Html>` drops as a date
+  input's picker, so the subpath stays its public face. Deliberately without an `index.ts`,
   so it has no subpath and no docs page; `test/docs.test.ts` and
   `scripts/check-package.ts` both key on `src/<name>/index.ts`, and that
   is the seam this uses. Giving it an `index.ts` and the full
@@ -324,17 +327,18 @@ it in any component that writes more than a couple of elements.
 
 ### Vendored from core
 
-`src/calendar/dates.ts` and `src/internal/widget.ts` are copies of code that
-is still in react-x11 today — the day arithmetic, `changeEvent`,
+`src/internal/calendar/dates.ts` and `src/internal/widget.ts` began as copies
+of core's code — the day arithmetic, `changeEvent`,
 `useDismissOnWindowBlur`. They were copied rather than imported because they
-are not on core's exports map, and they are pure, so the copy is cheap.
+were not on core's exports map, and they are pure, so the copy was cheap.
 (`widget.ts` started as `src/calendar/internal.ts` and moved when
-`<ColorPicker>` became its second consumer — the promotion `src/internal/`
-exists for.)
+`<ColorPicker>` became its second consumer, and `Calendar.ts` and `dates.ts`
+moved under `src/internal/calendar/` when `<Html>`'s date inputs became
+theirs — the promotion `src/internal/` exists for.)
 
-**Core is expected to drop `<Calendar>` and `<DatePicker>`, so divergence here
-is intended rather than drift.** This package is the owner now. Until that
-lands, the two copies exist; do not try to keep them in sync.
+**Core has dropped `<Calendar>` and `<DatePicker>`** (react-x11 3.0 ships
+neither), so this package is their only owner, and divergence from what core
+had is nothing to undo.
 
 Everything else the calendar stands on is public API: `useTheme`,
 `createStyles`, `tint`, `<Icon>`, `useAnchor`/`useAnchorTracking`, the `XK_*`
@@ -2218,6 +2222,26 @@ Chromium and not off its sheet** (`rangeLook`, `ownThickness`): a thumb has no
 left a range at `appearance: none` with no thumb, and a range at `appearance:
 auto` draws no border or background of the page's (`themed` in `paint.ts`). Put
 a page beside Chromium's before changing either.
+
+**A date or a time input is a row of segments and a picker, and the form
+holds its value** (`date-fields.ts`, `date-picker.ts`). The segments are a
+pure model over `Intl`'s parts, asserted with no display; the widget draws
+them, and drops the grid `<Calendar>` is (`src/internal/calendar/`) on a
+`<popup>`, or a month grid or columns of times. What the page reads is
+`FormState`'s, whole or empty: a part of a value is the widget's alone, and
+every change of the whole is an `input` and a `change` at once, a year typed
+a digit at a time at each digit, as Chrome tells it. Four things are
+load-bearing. **It is no text field** (`isTextField`, `isDateField`): no
+selection a script reads, and no `change` held for a blur. **Anything new
+that sets its value outside the widget calls its redraw** (`ctx.ranges`, a
+range's way in), as a script's `value` and a reset do, or the segments show
+what they held. **The popup never takes the focus**, so nothing in a sheet
+may be focusable: a scroll pane is by default, a press on it took the focus
+from the field, and the field's blur took the picker up before the press was
+a click — the time columns say `focusable: false`, and so does the calendar.
+And **whether its picker is down is the document's** (`pickerChanged`), as a
+`<select>`'s is, so `showPicker()` drops it, `:open` and `:closed` read it
+(`hasPicker`), and a widget that goes takes it up.
 
 **A `display: contents` element's `::before` and `::after` are items of the
 flex or grid box around it**, as its children are. A pseudo-element is styled

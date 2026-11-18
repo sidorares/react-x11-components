@@ -1269,7 +1269,8 @@ export function isPopoverOpen(el: Element): boolean {
   return IN_TOP_LAYER.get(el)?.kind === 'popover';
 }
 
-/** The controls whose picker is open: a `<select>`'s menu, down. */
+/** The controls whose picker is open: a `<select>`'s menu, down, or a
+ *  date input's calendar or a time input's columns. */
 const PICKER_OPEN = new WeakSet<Element>();
 
 /** A control's picker opened or shut, as its widget says (`useForms`):
@@ -1282,9 +1283,29 @@ export function setPickerOpen(el: Element, open: boolean): boolean {
 }
 
 /** Whether a control's picker is open (HTML's `:open`, 16.6.1): a
- *  `<select>` whose drop-down box is down. */
+ *  `<select>` whose drop-down box is down, or an input whose picker is. */
 export function isPickerOpen(el: Element): boolean {
   return PICKER_OPEN.has(el);
+}
+
+/** The `<input>` types with a picker here: a date, a time, a month, a week
+ *  and a `datetime-local` (`date-picker.ts`). A colour well is the
+ *  document's to draw, and drops nothing. */
+const PICKER_INPUTS: ReadonlySet<string> = new Set([
+  'date',
+  'month',
+  'week',
+  'time',
+  'datetime-local',
+]);
+
+/** Whether a control has a picker to open or shut, which `:open` and
+ *  `:closed` answer for: a drop-down `<select>`, or an input HTML gives a
+ *  picker that has one here (HTML 4.10.5.4, "supports a picker"). */
+export function hasPicker(el: Element): boolean {
+  if (isDropDown(el)) return true;
+  if (el.name !== 'input') return false;
+  return PICKER_INPUTS.has((el.attribs.type ?? '').trim().toLowerCase());
 }
 
 /** Whether a `<select>` is a drop-down box, which has a picker to open, and

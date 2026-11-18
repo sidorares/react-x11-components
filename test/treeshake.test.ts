@@ -37,7 +37,10 @@ const COMPONENTS = [
   // throws.
   { exportName: 'QmlView', dir: 'qml', marker: 'Unknown QML type' },
   { exportName: 'CodeEditor', dir: 'code-editor', marker: 'codeeditor' },
-  { exportName: 'Calendar', dir: 'calendar', marker: 'Previous month' },
+  // The month grid is `src/internal/calendar/`'s, which `<Html>` draws a
+  // date input's picker with, so `<Calendar>` has no string of its own:
+  // `<DatePicker>`'s prompt is the one only `src/calendar/` writes.
+  { exportName: 'DatePicker', dir: 'calendar', marker: 'Pick a date' },
   // `<Markdown>`, `<Code>` and `<CodeEditor>` share `src/richtext/` and
   // `src/code-language/`, so their markers name what is theirs alone: the
   // warning only `<Markdown>`'s expression evaluator writes (its parser is
