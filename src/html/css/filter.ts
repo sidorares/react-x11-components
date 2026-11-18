@@ -71,6 +71,9 @@ const DEFAULT_AMOUNT: Record<string, number> = {
  * list whose `var()`s were all empty — Tailwind's `filter: var(--tw-blur,)
  * var(--tw-brightness,) …` with none of them set — is no list.
  */
+/** The functions whose amount is a share of the effect, no more than all. */
+const UNIT_AMOUNTS = new Set(['grayscale', 'invert', 'opacity', 'sepia']);
+
 export function parseFilter(
   value: string,
   ctx: UnitContext,
@@ -100,9 +103,14 @@ function filterFunction(
   const arg = m[2].trim();
   if (name in DEFAULT_AMOUNT) {
     if (!arg) return { fn: name as 'grayscale', amount: DEFAULT_AMOUNT[name] };
-    const amount = parseFactor(arg);
-    // none of them takes a negative amount
-    if (amount === null || amount < 0) return undefined;
+    const read = parseFactor(arg);
+    // none of them takes a negative amount, which a math function is
+    // clamped from (CSS Values 4, 10.12); and one that is a share of the
+    // effect is all of it past 100% (Filter Effects 1, 13.1)
+    if (read === null || (read < 0 && !arg.includes('('))) return undefined;
+    const amount = UNIT_AMOUNTS.has(name)
+      ? Math.min(1, Math.max(0, read))
+      : Math.max(0, read);
     return { fn: name as 'grayscale', amount };
   }
   switch (name) {
