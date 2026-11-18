@@ -8,7 +8,7 @@
 import { PASSIVE } from './passive-properties.js';
 import { parseTransform } from './transform.js';
 import { parseFilter } from './filter.js';
-import { borderImageTakes } from './style.js';
+import { borderImageTakes, maskShorthandTakes } from './style.js';
 import {
   CORNER_SHAPE_SHORTHANDS,
   cornerShapeComposed,
@@ -345,8 +345,8 @@ export function specifiedValue(
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
     return translateSpecified(word);
   }
-  // the `border-image` shorthand (CSS Backgrounds 3, 6.7), refused where
-  // the cascade would refuse it; a math function is the cascade's to judge
+  // the `border-image` shorthand (CSS Backgrounds 3, 6.7), refused where the cascade would
+  // refuse it; a math function is the cascade's to judge
   if (name === 'border-image') {
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
@@ -354,6 +354,16 @@ export function specifiedValue(
       return undefined;
     }
     return borderImageTakes(word, CHECK) ? undefined : null;
+  }
+  // the `mask` shorthand (CSS Masking 1, 7.10), refused where the cascade would
+  // refuse it; a math function is the cascade's to judge
+  if (name === 'mask' || name === '-webkit-mask') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    if (/(?:calc|min|max|clamp|sign|abs|round|mod|rem)\(/i.test(word)) {
+      return undefined;
+    }
+    return maskShorthandTakes(word, CHECK) ? undefined : null;
   }
   // `clip` (CSS Masking 1, 6.1): `auto`, or `rect()` of four lengths or
   // `auto`, with commas between all of them or none
