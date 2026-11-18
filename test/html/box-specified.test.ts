@@ -195,3 +195,25 @@ test('a filter list and a corner shape that the cascade would refuse are refused
     null,
   );
 });
+
+test('a transform list is written as Chromium writes it', () => {
+  // CSS Transforms 1, 9: names in lower case, a scale's percentages as
+  // numbers, a bare nought angle in degrees
+  assert.strictEqual(
+    specifiedValue('transform', 'scaleX(720%)'),
+    'scalex(7.2)',
+  );
+  assert.strictEqual(
+    specifiedValue('transform', 'scale3d(50%, 250%, 300%)'),
+    'scale3d(0.5, 2.5, 3)',
+  );
+  assert.strictEqual(
+    specifiedValue('transform', 'skew(0, -90deg)'),
+    'skew(0deg, -90deg)',
+  );
+  assert.strictEqual(
+    specifiedValue('transform', 'translateX(1px) rotate(0)'),
+    'translatex(1px) rotate(0deg)',
+  );
+  assert.strictEqual(specifiedValue('transform', 'scale(1px)'), null);
+});

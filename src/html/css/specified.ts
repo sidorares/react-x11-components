@@ -250,7 +250,8 @@ export function specifiedValue(
     if (/(?:calc|min|max|clamp|sign|abs|round|mod|rem)\(/i.test(word)) {
       return undefined;
     }
-    return parseTransform(word, CHECK) === undefined ? null : undefined;
+    if (parseTransform(word, CHECK) === undefined) return null;
+    return transformText(word);
   }
   if (name === 'scale') {
     const word = value.trim();
@@ -1471,3 +1472,57 @@ const ANCHOR_GRAMMARS: Record<string, (value: string) => string | null> = {
     return order === 'normal' ? fallbacks : `${order} ${fallbacks}`;
   },
 };
+
+/** Functions whose arguments are angles, which a bare nought is one of. */
+const ANGLE_FUNCTIONS = new Set([
+  'rotate',
+  'rotatex',
+  'rotatey',
+  'rotatez',
+  'skew',
+  'skewx',
+  'skewy',
+]);
+
+/** Functions whose arguments are factors, which a percentage is one of. */
+const SCALE_FUNCTIONS = new Set([
+  'scale',
+  'scalex',
+  'scaley',
+  'scalez',
+  'scale3d',
+]);
+
+/**
+ * A transform list the cascade takes, written as Chromium writes it back
+ * (CSS Transforms 1, 9): each function's name in lower case, a scale's
+ * percentages as numbers and a bare nought angle in degrees. Where a
+ * function is none of these, it is as written.
+ */
+function transformText(word: string): string {
+  if (word.toLowerCase() === 'none') return 'none';
+  const fns = /([a-z0-9-]+)\(([^()]*)\)/gi;
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  let rest = word;
+  while ((m = fns.exec(word))) {
+    const name = m[1].toLowerCase();
+    let args = m[2]
+      .split(',')
+      .map((a) => a.trim())
+      .filter((a) => a !== '');
+    if (SCALE_FUNCTIONS.has(name)) {
+      args = args.map((a) => {
+        const p = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)%$/i.exec(a);
+        return p ? String(Math.round((Number(p[1]) / 100) * 1e6) / 1e6 + 0) : a;
+      });
+    } else if (ANGLE_FUNCTIONS.has(name)) {
+      args = args.map((a) => (/^[+-]?0*\.?0*$/.test(a) ? '0deg' : a));
+    }
+    out.push(`${name}(${args.join(', ')})`);
+    rest = rest.replace(m[0], '');
+  }
+  // anything but functions and white space is no list this writes
+  if (rest.trim()) return word;
+  return out.join(' ');
+}
