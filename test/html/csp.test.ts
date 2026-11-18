@@ -268,7 +268,7 @@ async function policed(
   sent: FetchRequest[];
   asked: string[];
   requests: ResourceRequest[];
-  until(prefix: string): Promise<string>;
+  until(prefix: string, ms?: number): Promise<string>;
   unmount(): void;
 }> {
   const logs: string[] = [];
@@ -311,8 +311,8 @@ async function policed(
     sent,
     asked,
     requests,
-    async until(prefix) {
-      const end = Date.now() + 5000;
+    async until(prefix, ms = 5000) {
+      const end = Date.now() + ms;
       const found = () => logs.find((l) => l.startsWith(`log: ${prefix}`));
       while (!found() && Date.now() < end) {
         await act(() => new Promise((r) => setTimeout(r, 10)));
@@ -647,7 +647,9 @@ scripted(
         return null;
       },
     );
-    assert.deepEqual(JSON.parse(await page.until('out')), [
+    // three module workers, each a thread with an engine of its own, which
+    // a loaded Node 20 runner took more than five seconds to start
+    assert.deepEqual(JSON.parse(await page.until('out', 20000)), [
       'dynamic 7',
       'own TypeError',
       'static error',
