@@ -98,6 +98,11 @@ const GEOMETRY_BOXES =
  * null for a value the property does not take — which leaves the
  * declaration as it was — and undefined where this has no grammar for it.
  */
+/** What an animation's name is written as a string for: what would
+ *  otherwise read as `none` or a keyword every property takes. */
+const NAME_AS_STRING =
+  /^(?:none|initial|inherit|unset|revert|revert-layer|default)$/i;
+
 /** Properties whose every value is one of a few keywords. */
 const KEYWORD_ONLY: Record<string, ReadonlySet<string>> = {
   overlay: new Set(['none', 'auto']),
@@ -384,7 +389,22 @@ export function specifiedValue(
   if (animationKey) {
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
-    return animationLonghand(NO_ANIMATIONS, animationKey, word) ? word : null;
+    const read = animationLonghand(NO_ANIMATIONS, animationKey, word);
+    if (!read) return null;
+    if (animationKey !== 'names') return word;
+    // a name as its identifier, or as a string where it would read as a
+    // keyword (CSS Animations 1, 3.2), and none as an empty string
+    if (read.names.some((n) => n === '')) return null;
+    if (word.includes('(')) return word;
+    return read.names
+      .map((n) =>
+        n === null
+          ? 'none'
+          : NAME_AS_STRING.test(n)
+            ? `"${n.replace(/["\\]/g, '\\$&')}"`
+            : serializeIdent(n),
+      )
+      .join(', ');
   }
   if (name === 'animation-composition') {
     const word = value.trim();
