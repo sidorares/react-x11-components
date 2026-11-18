@@ -18,6 +18,42 @@ const longhandsOf = (name: string, value: string) => {
   return Object.fromEntries(expandShorthand(name, specified) ?? []);
 };
 
+test('scale is one to three numbers or percentages, written as numbers and as few as say them', () => {
+  // CSS Transforms 2, 4.2, as Chromium serializes it
+  for (const bad of ['100px', '100 200 300 400', '1 junk']) {
+    assert.strictEqual(specifiedValue('scale', bad), null, bad);
+  }
+  assert.strictEqual(specifiedValue('scale', '100%'), '1');
+  assert.strictEqual(specifiedValue('scale', '-100 -100 1'), '-100');
+  assert.strictEqual(specifiedValue('scale', '100% 200% 1'), '1 2');
+  assert.strictEqual(specifiedValue('scale', '1 2 3'), '1 2 3');
+});
+
+test('rotate is an angle and an axis either side of it, written axis first and by name where it can be', () => {
+  // CSS Transforms 2, 4.1, as Chromium serializes it: an axis along x or y
+  // named, one the other way the angle turned back, z left out
+  for (const bad of [
+    '100px',
+    '100 400deg',
+    'x y 45deg',
+    '45deg x y',
+    'z',
+    '1 2 3',
+  ]) {
+    assert.strictEqual(specifiedValue('rotate', bad), null, bad);
+  }
+  assert.strictEqual(specifiedValue('rotate', '400grad x'), 'x 400grad');
+  assert.strictEqual(
+    specifiedValue('rotate', '0 -0.5 0 400grad'),
+    'y -400grad',
+  );
+  assert.strictEqual(specifiedValue('rotate', '400grad z'), '400grad');
+  assert.strictEqual(
+    specifiedValue('rotate', '400grad 100 200 300'),
+    '100 200 300 400grad',
+  );
+});
+
 test('a side takes a length, a percentage and auto where its kind does', () => {
   const cases: [string, string, string | null][] = [
     ['margin-top', '0', '0px'],
@@ -100,6 +136,28 @@ test('transition-property takes property names, or none alone, and nothing else'
   }
 });
 
+test("a 3D transform's viewer is none or a length no less than nought, and where it stands a <position>", () => {
+  // CSS Transforms 2, 7.1 and 7.2, and CSS Values 4's <position>, which has
+  // no three-value form; written back across first, as Chromium writes it
+  for (const bad of ['1000', '-1px', '80%', 'auto']) {
+    assert.strictEqual(specifiedValue('perspective', bad), null, bad);
+  }
+  assert.strictEqual(specifiedValue('perspective', '0'), '0px');
+  assert.notStrictEqual(specifiedValue('perspective', '10em'), null);
+  assert.strictEqual(
+    specifiedValue('perspective-origin', 'center left 1px'),
+    null,
+  );
+  assert.strictEqual(specifiedValue('perspective-origin', 'left right'), null);
+  assert.strictEqual(specifiedValue('perspective-origin', 'top'), 'center top');
+  assert.strictEqual(
+    specifiedValue('perspective-origin', 'bottom 10% right 20%'),
+    'right 20% bottom 10%',
+  );
+  assert.strictEqual(specifiedValue('backface-visibility', 'auto'), null);
+  assert.strictEqual(specifiedValue('backface-visibility', 'HIDDEN'), 'hidden');
+});
+
 test('a filter list and a corner shape that the cascade would refuse are refused by a style', () => {
   // Filter Effects 1, 5 and CSS Borders 4, 3.9: kept as written where they
   // are values, and a math function left to the cascade, which clamps it
@@ -175,4 +233,26 @@ test('translate takes lengths and percentages, its depth a length, and drops wha
     specifiedValue('translate', '100px 0px 300px'),
     '100px 0px 300px',
   );
+});
+
+test('a transform list is written as Chromium writes it', () => {
+  // CSS Transforms 1, 9: names in lower case, a scale's percentages as
+  // numbers, a bare nought angle in degrees
+  assert.strictEqual(
+    specifiedValue('transform', 'scaleX(720%)'),
+    'scalex(7.2)',
+  );
+  assert.strictEqual(
+    specifiedValue('transform', 'scale3d(50%, 250%, 300%)'),
+    'scale3d(0.5, 2.5, 3)',
+  );
+  assert.strictEqual(
+    specifiedValue('transform', 'skew(0, -90deg)'),
+    'skew(0deg, -90deg)',
+  );
+  assert.strictEqual(
+    specifiedValue('transform', 'translateX(1px) rotate(0)'),
+    'translatex(1px) rotate(0deg)',
+  );
+  assert.strictEqual(specifiedValue('transform', 'scale(1px)'), null);
 });

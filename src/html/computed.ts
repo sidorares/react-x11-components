@@ -182,8 +182,15 @@ function rotateText(t: ComputedStyle['rotate']): string {
   if (!t) return 'none';
   if (t.kind === 'rotate') return `${num(t.angle)}deg`;
   const angle = `${num(t.angle)}deg`;
-  if (t.x === 1 && !t.y && !t.z) return `x ${angle}`;
-  if (!t.x && t.y === 1 && !t.z) return `y ${angle}`;
+  // an axis along x or y is that axis, whatever its length, and one the
+  // other way round is it with the angle turned back (CSS Transforms 2,
+  // 4.1, as Chromium and WebKit serialize it)
+  if (t.x && !t.y && !t.z) {
+    return `x ${num(Math.sign(t.x) * t.angle)}deg`;
+  }
+  if (!t.x && t.y && !t.z) {
+    return `y ${num(Math.sign(t.y) * t.angle)}deg`;
+  }
   if (!t.x && !t.y && t.z === 1) return `z ${angle}`;
   return `${num(t.x)} ${num(t.y)} ${num(t.z)} ${angle}`;
 }
