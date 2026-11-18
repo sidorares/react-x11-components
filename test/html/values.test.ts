@@ -825,6 +825,27 @@ test("getComputedStyle reads a mix or a contrast of currentColor with the elemen
   assert.strictEqual(bg('mix'), 'color(srgb 0.5 0 0.5)');
 });
 
+test('letter-spacing and word-spacing keep a percentage in their computed value', async () => {
+  // CSS Text 4, 7.2 and 7.3: a percentage of the font's size is what a
+  // child inherits, so it is what getComputedStyle reads, with a length
+  // beside it as a calc()
+  const { node } = await render(
+    '<p id="a" style="letter-spacing: 10%; word-spacing: 50%">a</p>' +
+      '<p id="b" style="letter-spacing: calc(10% + 2px); word-spacing: calc(5% - 3px)">b</p>' +
+      '<p id="c" style="letter-spacing: 3px; word-spacing: normal">c</p>',
+  );
+  const el = view(node);
+  const read = (id: string) => {
+    const s = el.computedStyle(findById(el.document, id)!)!;
+    return [s['letter-spacing'], s['word-spacing']];
+  };
+  assert.deepStrictEqual(['a', 'b', 'c'].map(read), [
+    ['10%', '50%'],
+    ['calc(10% + 2px)', 'calc(5% - 3px)'],
+    ['3px', '0px'],
+  ]);
+});
+
 test('a computed colour keeps the space it was written or mixed in, as CSS Color 4 serializes it', () => {
   // CSS Color 4, 15: lab(), lch(), oklab() and oklch() as themselves, their
   // calculations simplified, the lightness within its range, a chroma no
