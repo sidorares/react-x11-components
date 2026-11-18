@@ -6958,8 +6958,34 @@ test('a resize observer is told a size as its target is observed and again each 
       '</script>',
   );
   const text = await settled(doc, 'out', (t) => t !== '');
-  // nothing for what has no size, and nothing again for what did not move
-  assert.equal(text, 'box:100:20:5:114,box:100:40:5:114|function');
+  // what has no size once, at 0 by 0, since what was last told starts at
+  // -1 by -1 (Resize Observer 1, 3.3), and nothing again for what did not
+  // move
+  assert.equal(text, 'box:100:20:5:114,none:0:0:0:0,box:100:40:5:114|function');
+});
+
+test("a resize observer watches the box it is asked for, in the target's own axes, and no transform", async () => {
+  // Resize Observer 1: `box` picks what is compared, a vertical writing
+  // mode makes the inline size the height, and a transform resizes nothing
+  const doc = await hosted(
+    '<style>#a{width:100px;height:20px;padding:5px;border:2px solid}' +
+      '#v{writing-mode:vertical-rl;width:30px;height:60px}</style>' +
+      '<div id="a"></div><div id="v"></div><p id="out"></p><script>' +
+      'var seen = [], a = document.getElementById("a"), v = document.getElementById("v");' +
+      'var ro = new ResizeObserver(function (entries) { entries.forEach(function (e) {' +
+      '  var s = e.target === a ? e.borderBoxSize[0] : e.contentBoxSize[0];' +
+      '  seen.push(e.target.id + ":" + s.inlineSize + "x" + s.blockSize); }); });' +
+      'ro.observe(a, { box: "border-box" }); ro.observe(v);' +
+      'try { ro.observe({}); } catch (e) { seen.push(e.name); }' +
+      'try { ro.observe(a, { box: "x" }); } catch (e) { seen.push(e.name); }' +
+      'setTimeout(function () { a.style.transform = "scale(2)"; }, 150);' +
+      'setTimeout(function () { document.getElementById("out").textContent = seen.join(","); }, 500);' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'TypeError,TypeError,a:114x34,v:60x30',
+  );
 });
 
 test('a resize observer measures nothing while the page is at rest, and is told the next change all the same', async (t) => {
@@ -6971,7 +6997,7 @@ test('a resize observer measures nothing while the page is at rest, and is told 
   );
   const measured = () =>
     ops.mock.calls.filter((c) =>
-      ['rect', 'edges'].includes(c.arguments[0] as string),
+      ['rect', 'offset', 'edges'].includes(c.arguments[0] as string),
     ).length;
   const doc = await hosted(
     '<style>#box{width:100px;height:20px}</style>' +
