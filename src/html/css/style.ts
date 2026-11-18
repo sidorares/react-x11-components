@@ -6971,6 +6971,12 @@ function imageRepeatOf(
  * a slash and an outset after a second — and the repeat, in any order; each
  * at most once, and what it does not name reset (CSS Backgrounds 3, 6.8).
  */
+/** Whether the `border-image` shorthand takes a value, as the cascade
+ *  reads it. */
+export function borderImageTakes(value: string, ctx: UnitContext): boolean {
+  return readBorderImage(value, ctx) !== null;
+}
+
 function readBorderImage(value: string, ctx: UnitContext): BorderImage | null {
   const parts = splitValue(value).flatMap(splitSlash);
   const image: {

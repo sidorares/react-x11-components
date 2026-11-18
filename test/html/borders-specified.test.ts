@@ -147,3 +147,20 @@ test('cssText has a shorthand where the block declares all its longhands', () =>
   ]);
   assert.equal(borderDeclared('border-width', 'var(--w)'), null);
 });
+
+test('the border-image shorthand refuses what the cascade refuses', () => {
+  // CSS Backgrounds 3, 6.7
+  for (const bad of [
+    'auto',
+    'fill',
+    '1 2 3 4 5',
+    '1 / -2px',
+    '1 / none / 1px',
+  ]) {
+    assert.strictEqual(specifiedValue('border-image', bad), null, bad);
+  }
+  assert.notStrictEqual(
+    specifiedValue('border-image', '1 / 2px / 3px round'),
+    null,
+  );
+});
