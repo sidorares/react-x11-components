@@ -1,4 +1,4 @@
-// An animated image — a GIF, a WebP or a PNG — as `<Html>` draws it: which frame
+// An animated image — a GIF or a WebP — as `<Html>` draws it: which frame
 // shows when.
 //
 // A browser plays an animated image wherever it is drawn — an `<img>`, a
@@ -12,13 +12,11 @@
 // played its last loop or nothing that draws one is painted any more.
 //
 // The frames are made as they are first shown, on the format's canvas
-// (`GifCanvas`, `WebPCanvas`, `ApngCanvas`), and kept
+// (`GifCanvas`, `WebPCanvas`), and kept
 // — the same `Image` for a frame every time it comes round, so what is
 // uploaded to the server or kept scaled for it is made once — where all of
 // them come to no more than `KEPT_PIXELS`. Past that only the frame showing
 // is, and the one it replaces is given up as it does.
-import { ApngCanvas } from './apng.js';
-import type { ApngFile, DecodePng } from './apng.js';
 import { GifCanvas } from './gif.js';
 import type { GifFile } from './gif.js';
 import { WebPCanvas } from './webp.js';
@@ -58,16 +56,6 @@ export function webpAnimation(
   decode: DecodeStill,
 ): AnimationSource {
   const canvas = new WebPCanvas(file, decode);
-  return { ...file, at: (index) => canvas.at(index) };
-}
-
-/** An animated PNG's frames, drawn on an `ApngCanvas`, each decoded by
- *  `decode`. */
-export function apngAnimation(
-  file: ApngFile,
-  decode: DecodePng,
-): AnimationSource {
-  const canvas = new ApngCanvas(file, decode);
   return { ...file, at: (index) => canvas.at(index) };
 }
 

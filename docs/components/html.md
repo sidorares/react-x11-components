@@ -34,7 +34,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `contentType`        | `string`                                         | What `source` was served as, a MIME type. Default `text/html`. An XML type reads it by XML's rules and not HTML's — see [XML documents](#xml-documents).                                                                                                                                            |
 | `partial`            | `boolean`                                        | Whether more source may still arrive. Default true. While true, a `source` that extends the last one is written to the open parser as a delta — see [Streaming](#streaming).                                                                                                                        |
 | `selectable`         | `boolean`                                        | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                                                                                                                                            |
-| `animate`            | `boolean`                                        | Whether CSS animations and animated images run. Default true. False draws each animation as it stands once it has run — see [Animations](#what-renders) — and each animated GIF, WebP or PNG at its first frame.                                                                                    |
+| `animate`            | `boolean`                                        | Whether CSS animations and animated images run. Default true. False draws each animation as it stands once it has run — see [Animations](#what-renders) — and each animated GIF or WebP at its first frame.                                                                                         |
 | `reducedMotion`      | `boolean`                                        | What `prefers-reduced-motion` is answered from: true takes a page's `reduce` branch. Default: the desktop's setting, followed live — see [Selectors](#what-renders).                                                                                                                                |
 | `defaultColorScheme` | `'light' \| 'dark'`                              | The scheme a page that names none (`color-scheme: normal`) is drawn in. Default: the palette's. A host that shows the web names `'light'`, as every browser draws one — see [Colours](#what-renders).                                                                                               |
 | `stylesheet`         | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control. Compared by the sheets it holds: an array made again at each render with the same ones is no change.                                                                                     |
@@ -171,7 +171,7 @@ images draw as a frame at their attribute size, an `<object>` shows its
 fallback content, linked stylesheets are skipped and text is set in the
 fonts the system has.
 
-An animated GIF, WebP or PNG plays, wherever the document draws it — an
+An animated GIF or WebP plays, wherever the document draws it — an
 `<img>`, a background, a border image, a list marker — as a browser plays
 one: every place one URL is drawn shows the same frame, its clock started by
 the first paint, each frame shown for its delay (10 ms or less is 100 ms, as
@@ -181,13 +181,7 @@ before, and nothing else; an image no paint reaches — scrolled out of view —
 asks for no frame until one does. `animate={false}` draws each at its first
 frame. A WebP's frames are decoded by image-in-browser, the decoder core
 reads a still WebP with under Node, loaded the first time an animated one
-arrives, so an animation lands a moment after its bytes do. So are an
-animated PNG's, each frame handed to image-in-browser's PNG decoder as a
-still PNG of its own, and drawn as its `fcTL` says: blended or not, and its
-rectangle left, cleared or put back once it has been shown. An APNG that
-breaks its rules — sequence numbers out of order, a frame outside the
-canvas, an `acTL` after the image data, fewer frames than it says — shows
-its default image, as a browser shows it.
+arrives, so an animation lands a moment after its bytes do.
 
 A resource may arrive whenever it arrives, with two things to know about
 when:

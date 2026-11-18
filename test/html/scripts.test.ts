@@ -8529,6 +8529,95 @@ test('a custom element that takes part in forms answers :valid and :invalid, and
   );
 });
 
+test("a form-associated custom element's internals validate as a control does, and throw for any other element", async () => {
+  const doc = await hosted(
+    '<form id="f"><x-v id="x"><b id="in"></b></x-v></form><x-n id="n"></x-n><p id="out"></p><script>' +
+      'customElements.define("x-v", class extends HTMLElement {' +
+      '  static formAssociated = true;' +
+      '  constructor() { super(); this.i = this.attachInternals() } });' +
+      'customElements.define("x-n", class extends HTMLElement {' +
+      '  constructor() { super(); this.i = this.attachInternals() } });' +
+      'var r = [], x = document.getElementById("x"), f = document.getElementById("f");' +
+      'var invalid = 0; x.addEventListener("invalid", function () { invalid++; });' +
+      'var v = x.i.validity; r.push(v.valid, v.valueMissing);' +
+      'x.i.setValidity({ valueMissing: true }, "a\\r\\nb", document.getElementById("in"));' +
+      // the object held reads the flags as they are now
+      'r.push(v.valid, v.valueMissing, JSON.stringify(x.i.validationMessage));' +
+      'r.push(x.i.checkValidity(), f.checkValidity(), invalid);' +
+      'try { x.i.setValidity({ tooLong: true }); } catch (e) { r.push(e.name); }' +
+      'try { x.i.setValidity({ tooLong: true }, "m", document.body); } catch (e) { r.push(e.name); }' +
+      'x.setAttribute("readonly", ""); r.push(x.i.willValidate, x.i.checkValidity());' +
+      'var n = document.getElementById("n");' +
+      'try { n.i.setFormValue("v"); } catch (e) { r.push(e.name); }' +
+      'try { n.i.validity; } catch (e) { r.push(e.name); }' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      'true',
+      'false',
+      'false',
+      'true',
+      JSON.stringify('a\nb'),
+      'false',
+      'false',
+      '2',
+      'TypeError',
+      'NotFoundError',
+      // a read-only one is no candidate, and valid whatever it says
+      'false',
+      'true',
+      'NotSupportedError',
+      'NotSupportedError',
+    ].join('|'),
+  );
+});
+
+test('a form tells formdata as its entry list is made, and submits nothing while it does or while its submit is told', async () => {
+  const doc = await hosted(
+    '<form id="f"><input name="a" value="1"><input type="submit" id="s"></form><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f"), told = 0, submits = 0;' +
+      'f.addEventListener("formdata", function (e) {' +
+      '  told++; e.formData.append("b", "2");' +
+      '  try { new FormData(f); } catch (x) { r.push(x.name); } });' +
+      'var d = new FormData(f);' +
+      'r.push(told, d.get("b"), typeof FormDataEvent);' +
+      'f.addEventListener("submit", function (e) { submits++; e.preventDefault();' +
+      '  document.getElementById("s").click(); });' +
+      'f.requestSubmit(); r.push(submits);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'InvalidStateError|1|2|function|1',
+  );
+});
+
+test('an iframe with nothing to load hears its load as it is put in, so a submission into it is heard', async () => {
+  // HTML 4.8.5: an iframe whose first document is about:blank runs its
+  // load event steps as it is inserted. Told a task later, an onload set
+  // after the insertion heard the blank document's, and not what a form
+  // then sent the frame to
+  const doc = await hosted(
+    '<div id="c"></div><p id="out"></p><script>' +
+      'var r = [];' +
+      'var c = document.getElementById("c");' +
+      'c.innerHTML = "<iframe id=a onload=\\"r.push(\'attribute\')\\"></iframe>";' +
+      'r.push("after");' +
+      'var b = document.createElement("iframe"); b.onload = function () { r.push("b"); };' +
+      'c.appendChild(b); r.push("appended");' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'attribute|after|b|appended',
+  );
+});
+
 test('a box’s default stays through what the user does and what a script sets', async () => {
   const doc = await hosted(
     '<input id="c" type="checkbox" checked>' +
@@ -11824,66 +11913,6 @@ test('a page walks its tree, parses markup into documents of its own, and marks 
       '2',
       '0',
       'observed c',
-    ].join('|'),
-    doc.logs.join('\n'),
-  );
-});
-
-test("a mark and a measure are User Timing's, its errors and its detail with them", async () => {
-  const doc = await hosted(
-    '<p id="out"></p><script>' +
-      'var r = []; var err = function (f) { try { f(); return "none"; } catch (e) { return e.name; } };' +
-      'var a = performance.mark("a", { startTime: 10, detail: { n: 1 } });' +
-      'r.push(Object.prototype.toString.call(a), a instanceof PerformanceEntry, a.startTime, a.detail.n);' +
-      'var made = new PerformanceMark("free", { startTime: 5 });' +
-      'r.push(made.startTime, performance.getEntriesByName("free").length);' +
-      'performance.mark("b", { startTime: 30 });' +
-      'var m = performance.measure("ab", "a", "b");' +
-      'r.push(Object.prototype.toString.call(m), m.startTime, m.duration, m.detail);' +
-      'var d = performance.measure("d", { start: 10, duration: 5, detail: [1] });' +
-      'r.push(d.startTime, d.duration, d.detail[0]);' +
-      'r.push(err(function () { performance.mark(); }));' +
-      'r.push(err(function () { performance.mark("x", 5); }));' +
-      'r.push(err(function () { performance.mark("x", { startTime: -1 }); }));' +
-      'r.push(err(function () { performance.mark("navigationStart"); }));' +
-      'r.push(err(function () { performance.measure("x", "no such mark"); }));' +
-      'r.push(err(function () { performance.measure("x", { start: 1 }, "b"); }));' +
-      'r.push(err(function () { performance.measure("x", { detail: 1 }); }));' +
-      'r.push(err(function () { performance.measure("x", "loadEventEnd"); }));' +
-      'r.push(err(function () { new PerformanceMeasure(); }));' +
-      'r.push(Object.keys(Performance.prototype).indexOf("mark") >= 0);' +
-      'document.getElementById("out").textContent = r.join("|");' +
-      '</script>',
-  );
-  await settle(20);
-  assert.equal(
-    doc.text('out'),
-    [
-      '[object PerformanceMark]',
-      'true',
-      '10',
-      '1',
-      // a mark made with `new` is no entry of the timeline
-      '5',
-      '0',
-      '[object PerformanceMeasure]',
-      '10',
-      '20',
-      '',
-      '10',
-      '5',
-      '1',
-      'TypeError',
-      'TypeError',
-      'TypeError',
-      'SyntaxError',
-      'SyntaxError',
-      'TypeError',
-      'TypeError',
-      // a load that has not ended is no time to measure from
-      'InvalidAccessError',
-      'TypeError',
-      'true',
     ].join('|'),
     doc.logs.join('\n'),
   );

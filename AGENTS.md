@@ -7369,12 +7369,7 @@ a WebP's first frame. A WebP frame's pixels are image-in-browser's,
 handed each frame as a still of its own (`stillOf`), and the compositing is
 `WebPCanvas`'s: image-in-browser's own blends every frame and clears the
 whole canvas before a frame whose dispose flag is set, where the flags say
-to replace and to clear the frame's rectangle after it shows. `apng.ts` is
-the same for an animated PNG, of which the ladder answers the default image:
-each frame is made a still PNG (`stillOf`, CRCs and all, since
-image-in-browser checks them) for image-in-browser's PNG decoder, and
-`ApngCanvas` composites, a frame disposed to `previous` putting back what
-its rectangle held. Should core's
+to replace and to clear the frame's rectangle after it shows. Should core's
 `<image>` come to play animations, the frames belong on the ladder, and the
 rule in "Vendored from core" applies: delete the copy, import the export.
 Two things are load-bearing. **A paint that draws an image for a box names

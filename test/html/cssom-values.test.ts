@@ -208,33 +208,6 @@ test('a grid shorthand in cssText is its longhands, read back as the longest sho
   ]);
 });
 
-test('CSS.supports() is false for a property a style has not got, a value that is no colour, and what is no condition', async () => {
-  // CSSOM's `CSS.supports()` answers what the page could set: an unknown
-  // name, `color: rainbow`, `;` and a condition cut short are false, where
-  // all four were true. A function this knows nothing of stays true, and a
-  // property named `not-…` is no `not` (WPT's css/cssom/CSS-supports).
-  const out = await inPage(
-    '<div></div>',
-    `return [CSS.supports('color', 'red'), CSS.supports('--x', 'y'),
-       CSS.supports('not-a-real-property', 'red'), CSS.supports('color', 'rainbow'),
-       CSS.supports('(color: red)'), CSS.supports('color: red'),
-       CSS.supports('not (colour: red)'), CSS.supports(';'),
-       CSS.supports('(color: red) and'), CSS.supports(' color', 'red')];`,
-  );
-  assert.deepEqual(out, [
-    true,
-    true,
-    false,
-    false,
-    true,
-    true,
-    true,
-    false,
-    false,
-    false,
-  ]);
-});
-
 test('a grouping rule takes rules in and gives them up, and the page is styled by them', async () => {
   // CSSOM 6.4.2: `insertRule` and `deleteRule` on `@media` and on a style
   // rule that nests, where both threw (WPT's CSSGroupingRule-insertRule)

@@ -9,7 +9,7 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { brotliDecompressSync, deflateSync } from 'node:zlib';
+import { brotliDecompressSync } from 'node:zlib';
 import React from 'react';
 
 import { renderX11, cleanup, screen, act } from 'react-x11/test';
@@ -28,11 +28,9 @@ import { bestFace, refusal } from '../src/html/fonts.js';
 import { GifCanvas, decodeGif, readGif } from '../src/html/gif.js';
 import { AnimatedImage, gifAnimation } from '../src/html/animated.js';
 import { WebPCanvas, readAnimatedWebP } from '../src/html/webp.js';
-import { ApngCanvas, readApng } from '../src/html/apng.js';
 import { headerSize } from '../src/html/image-header.js';
 import * as ntk from 'react-x11/ntk';
 import { WebPDecoder } from 'image-in-browser/lib/src/formats/webp-decoder.js';
-import { PngDecoder } from 'image-in-browser/lib/src/formats/png-decoder.js';
 import { gifBytes } from './gif-fixture.js';
 import { fontAxes } from '../src/html/layout/axes.js';
 import type { FontsLike } from '../src/html/layout/inline.js';
@@ -897,156 +895,6 @@ test("an animated WebP's frames blend, replace and are disposed of as their flag
     "a lossy frame's alpha is its ALPH chunk's",
   );
   assert.ok(lossy[2] > 200 && lossy[0] < 60, 'and its colour its own');
-});
-
-/** A PNG chunk: its length, name, data and CRC. */
-function pngChunk(name: string, data: Uint8Array): Uint8Array {
-  const out = new Uint8Array(12 + data.length);
-  const view = new DataView(out.buffer);
-  view.setUint32(0, data.length);
-  for (let i = 0; i < 4; i += 1) out[4 + i] = name.charCodeAt(i);
-  out.set(data, 8);
-  view.setUint32(8 + data.length, crc32Of(out.subarray(4, 8 + data.length)));
-  return out;
-}
-
-function crc32Of(bytes: Uint8Array): number {
-  let c = 0xffffffff;
-  for (const byte of bytes) {
-    c ^= byte;
-    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  }
-  return (c ^ 0xffffffff) >>> 0;
-}
-
-const u32be = (...ns: number[]) => {
-  const out = new Uint8Array(ns.length * 4);
-  ns.forEach((n, i) => new DataView(out.buffer).setUint32(i * 4, n));
-  return out;
-};
-
-/** RGBA pixels, `width` across, as a PNG's compressed scanlines. */
-function scanlines(width: number, pixels: number[][]): Uint8Array {
-  const rows: number[] = [];
-  for (let i = 0; i < pixels.length; i += 1) {
-    if (i % width === 0) rows.push(0);
-    rows.push(...pixels[i]);
-  }
-  return new Uint8Array(deflateSync(new Uint8Array(rows)));
-}
-
-interface ApngFrameSpec {
-  left: number;
-  top: number;
-  width: number;
-  pixels: number[][];
-  dispose: number;
-  blend: number;
-}
-
-/** An animated PNG: the first frame is its default image. `seqFrom` moves
- *  the sequence numbers, to break them. */
-function apngBytes(
-  width: number,
-  height: number,
-  frames: ApngFrameSpec[],
-  plays: number,
-  seqFrom = 0,
-): Uint8Array {
-  const parts: Uint8Array[] = [
-    new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
-    pngChunk('IHDR', new Uint8Array([...u32be(width, height), 8, 6, 0, 0, 0])),
-    pngChunk('acTL', u32be(frames.length, plays)),
-  ];
-  let seq = seqFrom;
-  frames.forEach((f, i) => {
-    const h = f.pixels.length / f.width;
-    const control = new Uint8Array(26);
-    control.set(u32be(seq++, f.width, h, f.left, f.top));
-    control.set([0, 5, 0, 100, f.dispose, f.blend], 20);
-    parts.push(pngChunk('fcTL', control));
-    const data = scanlines(f.width, f.pixels);
-    if (i === 0) parts.push(pngChunk('IDAT', data));
-    else
-      parts.push(pngChunk('fdAT', new Uint8Array([...u32be(seq++), ...data])));
-  });
-  parts.push(pngChunk('IEND', new Uint8Array(0)));
-  return Buffer.concat(parts);
-}
-
-const decodePngStill = (bytes: Uint8Array) => {
-  const decoded = new PngDecoder().decode({ bytes });
-  return decoded
-    ? {
-        width: decoded.width,
-        height: decoded.height,
-        data: decoded.getBytes({ order: 0 }),
-      }
-    : null;
-};
-
-test("an animated PNG's frames are found, and drawn as their fcTL says", () => {
-  const R = [255, 0, 0, 255];
-  const G = [0, 255, 0, 255];
-  const B = [0, 0, 255, 255];
-  const T = [0, 0, 0, 0];
-  const frames: ApngFrameSpec[] = [
-    { left: 0, top: 0, width: 2, pixels: [R, R], dispose: 0, blend: 0 },
-    // shown, then put back as it was
-    { left: 1, top: 0, width: 1, pixels: [G], dispose: 2, blend: 0 },
-    // blended over: a transparent pixel leaves what is under it
-    { left: 0, top: 0, width: 2, pixels: [T, B], dispose: 1, blend: 1 },
-    { left: 0, top: 0, width: 1, pixels: [G], dispose: 0, blend: 0 },
-  ];
-  const file = readApng(apngBytes(2, 1, frames, 0));
-  assert.ok(file);
-  assert.deepStrictEqual(
-    [file.width, file.height, file.plays],
-    [2, 1, Infinity],
-  );
-  assert.deepStrictEqual(
-    file.frames.map((f) => [f.left, f.width, f.delay, f.dispose, f.blend]),
-    [
-      [0, 2, 50, 0, false],
-      [1, 1, 50, 2, false],
-      [0, 2, 50, 1, true],
-      [0, 1, 50, 0, false],
-    ],
-  );
-  const canvas = new ApngCanvas(file, decodePngStill);
-  const at = (i: number) => {
-    const data = canvas.at(i);
-    return [[...data.subarray(0, 4)], [...data.subarray(4, 8)]];
-  };
-  assert.deepStrictEqual(at(0), [R, R]);
-  assert.deepStrictEqual(at(1), [R, G]);
-  assert.deepStrictEqual(at(2), [R, B]);
-  // the frame before was cleared, all of it
-  assert.deepStrictEqual(at(3), [G, T]);
-  // and from the start again
-  assert.deepStrictEqual(at(1), [R, G]);
-  assert.strictEqual(readApng(apngBytes(2, 1, frames, 3))?.plays, 3);
-});
-
-test('an animated PNG that breaks its rules is its default image', () => {
-  const R = [255, 0, 0, 255];
-  const one = { left: 0, top: 0, width: 1, pixels: [R], dispose: 0, blend: 0 };
-  // sequence numbers out of order
-  assert.strictEqual(readApng(apngBytes(1, 1, [one, one], 0, 1)), null);
-  // a frame out of the canvas
-  assert.strictEqual(
-    readApng(apngBytes(1, 1, [one, { ...one, left: 1 }], 0)),
-    null,
-  );
-  // a still PNG, and something that is no PNG
-  const still = Buffer.concat([
-    new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
-    pngChunk('IHDR', new Uint8Array([...u32be(1, 1), 8, 6, 0, 0, 0])),
-    pngChunk('IDAT', scanlines(1, [R])),
-    pngChunk('IEND', new Uint8Array(0)),
-  ]);
-  assert.strictEqual(readApng(still), null);
-  assert.strictEqual(readApng(bytesOf(PLAIN_GIF)), null);
 });
 
 // --- an image's size, from its header ----------------------------------------

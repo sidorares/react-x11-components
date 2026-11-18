@@ -4005,16 +4005,10 @@ const ANSWERED = new Set(
  * `@property`, which this is, and false there would drop every shadow and
  * gradient it writes.
  */
-export function supportsCondition(
-  prelude: string,
-  /** What a declaration this cannot answer comes to, where a caller can
-   *  say: a page's `CSS.supports()`, which knows the properties a style
-   *  has (`supportsDeclaration`). */
-  declare?: (property: string, value: string) => boolean | null,
-): boolean | null {
+export function supportsCondition(prelude: string): boolean | null {
   const text = prelude.trim();
-  if (/^not(?=[\s(])/i.test(text)) {
-    const inner = supportsCondition(text.slice(3), declare);
+  if (/^not\b/i.test(text)) {
+    const inner = supportsCondition(text.slice(3));
     return inner === null ? null : !inner;
   }
   // the terms at the top level, and the one operator between them
@@ -4041,7 +4035,7 @@ export function supportsCondition(
   }
   if (terms.length) {
     terms.push(text.slice(start));
-    const values = terms.map((term) => supportsCondition(term, declare));
+    const values = terms.map(supportsCondition);
     if (op === 'and') {
       if (values.includes(false)) return false;
       return values.includes(null) ? null : true;
@@ -4057,21 +4051,14 @@ export function supportsCondition(
     return !!written && isSelector(replaceNesting(written, ':scope'));
   }
   // one term: a condition in parentheses, or a declaration in them
-  if (!(text.startsWith('(') && text.endsWith(')'))) {
-    return declare ? strictUnknown(text) : null;
-  }
+  if (!(text.startsWith('(') && text.endsWith(')'))) return null;
   const inner = text.slice(1, -1).trim();
-  if (inner.startsWith('(') || /^(?:not(?=[\s(])|selector\()/i.test(inner)) {
-    return supportsCondition(inner, declare);
+  if (inner.startsWith('(') || /^(?:not\b|selector\()/i.test(inner)) {
+    return supportsCondition(inner);
   }
   const declaration = /^([a-z-]+)\s*:\s*(\S[\s\S]*)$/i.exec(inner);
-  // what is no declaration is none to a caller that asks strictly
-  if (!declaration) return declare ? strictUnknown(inner) : null;
+  if (!declaration) return null;
   const property = declaration[1].toLowerCase();
-  // a name the caller knows to be none, whatever its value
-  if (declare && declare(property, declaration[2].trim()) === false) {
-    return false;
-  }
   // a value read only once it is substituted is not parsed until then,
   // and a declaration whose `var()`s and `env()`s are not well formed is
   // never one (CSS Conditional 3, 6.1)
@@ -4081,15 +4068,7 @@ export function supportsCondition(
   if (specified !== undefined) return specified !== null;
   const shorthand = SHORTHAND_GRAMMARS[property];
   if (shorthand) return shorthand(declaration[2].trim().toLowerCase());
-  // a name the caller knows, with a value this cannot read, is taken
-  return ANSWERED.has(property) || declare ? true : null;
-}
-
-/** What a caller that asks strictly makes of a term that is neither a
- *  declaration nor a condition it reads: a function it does not know of is
- *  left unknown, and anything else is false. */
-function strictUnknown(text: string): boolean | null {
-  return /^[a-z-]+\([\s\S]*\)$/i.test(text.trim()) ? null : false;
+  return ANSWERED.has(property) ? true : null;
 }
 
 /** Shorthands of longhands that are kept and read back and lay nothing
