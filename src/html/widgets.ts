@@ -50,6 +50,7 @@ import {
   tagOf,
 } from './dom.js';
 import type { Document, Element, HtmlChange } from './dom.js';
+import { directionOf } from './direction.js';
 import type { HtmlFile, HtmlPickFiles } from './files.js';
 import type { HtmlViewNode } from './node.js';
 import { browserSystemColor } from './css/color.js';
@@ -447,20 +448,39 @@ export function useForms(options: FormsOptions): Forms {
     if (node?.focusedElement === el) node.setFocus(null);
   };
 
+  /** The direction a field of `dir=auto` had before a change of its text
+   *  (`answers`), to tell whether the change turned it. */
+  const directionsBefore = React.useRef(new WeakMap<Element, string>()).current;
   /** What a rule can read of a control, to tell whether a change moved it:
    *  nothing where no rule reads any, so a keystroke in a document with
    *  none works nothing out. */
-  const answers = (el: Element): number =>
-    view.current?.readsControls ? controlAnswers(el) : 0;
+  const answers = (el: Element): number => {
+    if (attr(el, 'dir')?.toLowerCase() === 'auto') {
+      directionsBefore.set(el, directionOf(el));
+    }
+    return view.current?.readsControls ? controlAnswers(el) : 0;
+  };
   /** The change to tell of a control, where what a rule reads of it is not
-   *  what it was: no refresh for a keystroke that moved no answer. */
+   *  what it was: no refresh for a keystroke that moved no answer. And a
+   *  field of `dir=auto` whose text turned its direction, which its style
+   *  takes from it (`autoDirected`). */
   const answersMoved = (
     el: Element,
     was: number,
-  ): readonly HtmlChange[] | null =>
-    view.current?.readsControls && controlAnswers(el) !== was
-      ? [controlChange(el)]
-      : null;
+  ): readonly HtmlChange[] | null => {
+    const out: HtmlChange[] = [];
+    if (view.current?.readsControls && controlAnswers(el) !== was) {
+      out.push(controlChange(el));
+    }
+    const before = directionsBefore.get(el);
+    if (before !== undefined) {
+      directionsBefore.delete(el);
+      if (directionOf(el) !== before) {
+        out.push({ type: 'attributes', target: el, attributeName: '-rx-dir' });
+      }
+    }
+    return out.length ? out : null;
+  };
   /** A control's validity is the user's to see from now: `:user-valid` and
    *  `:user-invalid`. */
   const showValidity = (el: Element) => {
