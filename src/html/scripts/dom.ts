@@ -9754,9 +9754,64 @@ export function installDom(
       ),
     );
   };
+  /** What a point hits, as the DOM has it: the element a slotted text is
+   *  a child of, which the boxes say is its slot (a slot that shows what
+   *  was assigned to it holds no text of its own), or null. */
+  const hitAt = (x: number, y: number): Any => {
+    const hit = wrap(Number(call('at', Number(x), Number(y))));
+    if (hit instanceof HTMLSlotElement && hit.assignedNodes().length) {
+      return (hit.getRootNode() as Any)?.host ?? hit;
+    }
+    return hit;
+  };
+  /** DOM 4.2.2.2, "retarget `a` against `b`": up through the hosts until
+   *  what is left is in `b`'s tree or one around it. */
+  const retargetTo = (a: Any, b: Any): Any => {
+    for (let at = a; at;) {
+      const root = at.getRootNode();
+      if (!(root instanceof ShadowRoot)) return at;
+      for (let n = b; n; n = n instanceof ShadowRoot ? n.host : n.parentNode) {
+        if (n === root) return at;
+      }
+      at = root.host;
+    }
+    return null;
+  };
+  /** DocumentOrShadowRoot's `elementFromPoint` (CSSOM View 6): what is
+   *  hit, retargeted against the document or shadow root asked. */
+  const elementFromPointIn = (scope: Any, x: number, y: number): Any =>
+    retargetTo(hitAt(x, y), scope);
+  /** And `elementsFromPoint`: each element from what is hit out, up the
+   *  flat tree, retargeted, each once. */
+  const elementsFromPointIn = (scope: Any, x: number, y: number): Any[] => {
+    const out: Any[] = [];
+    const hit = hitAt(x, y);
+    for (let at = hit; at;) {
+      // a slot on the way up draws no box of its own, and is no element a
+      // point is on: one hit shows its fallback content
+      const seen =
+        at instanceof HTMLSlotElement && at !== hit
+          ? null
+          : retargetTo(at, scope);
+      if (seen && !out.includes(seen)) out.push(seen);
+      // up the flat tree: what is assigned to a slot goes through it, in a
+      // closed tree as much as an open one
+      const parent =
+        wrap(Number(call('assignedSlot', at._id, true))) ?? at.parentNode;
+      at = parent instanceof ShadowRoot ? parent.host : parent;
+      if (at && at.nodeType !== 1) at = null;
+    }
+    return out;
+  };
   class ShadowRoot extends DocumentFragment {
     override get nodeName(): string {
       return '#document-fragment';
+    }
+    elementFromPoint(x: number, y: number): Any {
+      return elementFromPointIn(this, x, y);
+    }
+    elementsFromPoint(x: number, y: number): Any[] {
+      return elementsFromPointIn(this, x, y);
     }
     /** The animations of what is in the tree (DocumentOrShadowRoot). */
     getAnimations(): Any[] {
@@ -25328,13 +25383,10 @@ export function installDom(
       return node;
     }
     elementFromPoint(x: number, y: number): Any {
-      return wrap(Number(call('at', Number(x), Number(y))));
+      return elementFromPointIn(this, x, y);
     }
     elementsFromPoint(x: number, y: number): Any[] {
-      const top = this.elementFromPoint(x, y);
-      const out: Any[] = [];
-      for (let at = top; at; at = at.parentElement) out.push(at);
-      return out;
+      return elementsFromPointIn(this, x, y);
     }
     getSelection(): Any {
       return G.getSelection();
@@ -26692,7 +26744,7 @@ export function installDom(
      * those of its ranges whose client rects hold the point (CSS Highlight
      * API 1, 6): none outside the viewport, and none where what is hit
      * there is in a shadow tree whose root `options.shadowRoots` leaves
-     * out, as `elementFromPoint` keeps a closed tree's nodes to itself.
+     * out, as `elementFromPoint` keeps a tree's nodes to itself.
      */
     highlightsFromPoint(x: Any, y: Any, options: Any = undefined): Any[] {
       if (arguments.length < 2) {
@@ -26721,7 +26773,8 @@ export function installDom(
         if (!root || px > root.clientWidth || py > root.clientHeight) {
           return [];
         }
-        const top = document.elementFromPoint(px, py);
+        // what is hit, before it is retargeted to the document
+        const top = hitAt(px, py);
         const tree = top?.getRootNode();
         if (tree instanceof ShadowRoot && !roots.includes(tree)) return [];
       } else {
