@@ -173,6 +173,8 @@ export interface Stylesheet {
   /** `@counter-style` rules, in order: a name and its descriptors, which
    *  the cascade reads into counter styles (CSS Counter Styles 3, 3). */
   counterStyles?: { prelude: string; declarations: Declaration[] }[];
+  /** `@font-feature-values` rules, in order (`FeatureValuesRule`). */
+  featureValues?: FeatureValuesRule[];
   /** `@keyframes` rules, in order (`KeyframesRule`). */
   keyframes?: KeyframesRule[];
   /** The custom properties its `@property` rules register, in order. */
@@ -188,6 +190,63 @@ export interface Stylesheet {
     declarations: Declaration[];
     layer: readonly number[] | null;
   }[];
+}
+
+/**
+ * One `@font-feature-values` rule (CSS Fonts 4, 6.9): the families it is
+ * for, lower case, and the numbers each name stands for, by the feature
+ * type's block (`stylistic`, `styleset`, `character-variant`, `swash`,
+ * `ornaments`, `annotation`).
+ */
+export interface FeatureValuesRule {
+  families: string[];
+  values: [type: string, name: string, numbers: number[]][];
+}
+
+const FEATURE_TYPES = new Set([
+  'stylistic',
+  'styleset',
+  'character-variant',
+  'swash',
+  'ornaments',
+  'annotation',
+]);
+
+/** A `@font-feature-values` rule's prelude and block, or null for one whose
+ *  families are no list of names. A name with a value that is no list of
+ *  whole numbers at or above nought is left out. */
+function parseFeatureValues(
+  prelude: string,
+  block: string,
+): FeatureValuesRule | null {
+  const families: string[] = [];
+  for (const part of prelude.split(',')) {
+    const name = part
+      .trim()
+      .replace(/^(['"])(.*)\1$/, '$2')
+      .replace(/\s+/g, ' ')
+      .toLowerCase();
+    if (!name) return null;
+    families.push(name);
+  }
+  const values: FeatureValuesRule['values'] = [];
+  const blocks = /@([-a-zA-Z]+)\s*\{([^}]*)\}/g;
+  for (let m = blocks.exec(block); m; m = blocks.exec(block)) {
+    const type = m[1].toLowerCase();
+    if (!FEATURE_TYPES.has(type)) continue;
+    for (const declaration of m[2].split(';')) {
+      const at = declaration.indexOf(':');
+      if (at < 0) continue;
+      const name = declaration.slice(0, at).trim();
+      const words = declaration
+        .slice(at + 1)
+        .trim()
+        .split(/\s+/);
+      if (!name || !words.every((w) => /^\d+$/.test(w))) continue;
+      values.push([type, name, words.map(Number)]);
+    }
+  }
+  return { families, values };
 }
 
 /**
@@ -574,6 +633,9 @@ export function parseStylesheet(
         } else if (name === 'function' && at.block !== null) {
           const fn = parseFunction(at.prelude, at.block, note);
           if (fn) (sheet.functions ??= []).push({ ...fn, media, layer });
+        } else if (name === 'font-feature-values' && at.block !== null) {
+          const rule = parseFeatureValues(at.prelude, at.block);
+          if (rule) (sheet.featureValues ??= []).push(rule);
         } else if (name === 'counter-style' && at.block !== null) {
           (sheet.counterStyles ??= []).push({
             prelude: at.prelude,

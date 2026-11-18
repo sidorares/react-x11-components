@@ -5870,11 +5870,22 @@ export function featuresOf(
     fontVariantCaps: caps,
     fontVariantPosition: position,
     fontFeatureSettings: settings,
+    fontVariantEastAsian: eastAsian,
+    fontAlternateFeatures: alternates,
   } = style;
-  if (!kerning && !ligatures && !numeric && !caps && !position && !settings) {
+  if (
+    !kerning &&
+    !ligatures &&
+    !numeric &&
+    !caps &&
+    !position &&
+    !settings &&
+    !eastAsian &&
+    !alternates
+  ) {
     return null;
   }
-  const key = `${kerning}|${ligatures}|${numeric}|${caps}|${position}|${settings}`;
+  const key = `${kerning}|${ligatures}|${numeric}|${caps}|${position}|${eastAsian}|${alternates}|${settings}`;
   let features = FEATURES.get(key);
   if (!features) {
     const out: Record<string, number> = {};
@@ -5884,6 +5895,8 @@ export function featuresOf(
       numeric,
       caps,
       position,
+      eastAsian,
+      alternates,
       settings,
     ]) {
       if (!part) continue;

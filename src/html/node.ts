@@ -19103,7 +19103,8 @@ function onlyRules(sheet: Stylesheet, layers = false): boolean {
     !sheet.properties?.length &&
     !sheet.functions?.length &&
     !sheet.positionTries?.length &&
-    !sheet.counterStyles?.length
+    !sheet.counterStyles?.length &&
+    !sheet.featureValues?.length
   );
 }
 
@@ -19127,7 +19128,8 @@ function rulesAfter(was: Stylesheet, now: Stylesheet): StyleRule[] | null {
     !sameValue(now.properties ?? null, was.properties ?? null) ||
     !sameValue(now.functions ?? null, was.functions ?? null) ||
     !sameValue(now.positionTries ?? null, was.positionTries ?? null) ||
-    !sameValue(now.counterStyles ?? null, was.counterStyles ?? null)
+    !sameValue(now.counterStyles ?? null, was.counterStyles ?? null) ||
+    !sameValue(now.featureValues ?? null, was.featureValues ?? null)
   ) {
     return null;
   }

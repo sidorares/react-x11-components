@@ -469,6 +469,44 @@ metric('text is shaped with the features its style asks for', async () => {
 });
 
 metric(
+  'east-asian variants and alternates are features, the latter named by a family',
+  async () => {
+    // CSS Fonts 4, 6.8 to 6.10: neither reached the text. An alternate's
+    // function names a value its family's `@font-feature-values` gives, and a
+    // name no family of the element's gives does nothing.
+    const { node } = await render(
+      '<style>@font-feature-values Other, "My Face" {' +
+        ' @stylistic { fancy: 3 } @styleset { pair: 2 4; } @swash { s: 1 }' +
+        ' @character-variant { c: 7 2 } }' +
+        ' p { font-family: "my face", sans-serif }</style>' +
+        '<p id="a" style="font-variant-east-asian:jis78 full-width">1</p>' +
+        '<p id="b" style="font-variant-alternates:stylistic(fancy) styleset(pair) swash(s) character-variant(c) historical-forms">1</p>' +
+        '<p id="c" style="font-variant-alternates:stylistic(nope)">1</p>' +
+        '<p id="d" style="font-variant: historical-forms jis04">1</p>',
+    );
+    const el = view(node);
+    type Spans = { lines: { runs: { span?: { features?: unknown } }[] }[] };
+    const features = (id: string) => {
+      const [line] = linesOf(el, id);
+      const layout = line.texts[0].layout as unknown as Spans;
+      return layout.lines[line.texts[0].layoutLine].runs[0].span?.features;
+    };
+    assert.deepStrictEqual(features('a'), { jp78: 1, fwid: 1 });
+    assert.deepStrictEqual(features('b'), {
+      salt: 3,
+      ss02: 1,
+      ss04: 1,
+      swsh: 1,
+      cswh: 1,
+      cv07: 2,
+      hist: 1,
+    });
+    assert.strictEqual(features('c'), undefined);
+    assert.deepStrictEqual(features('d'), { jp04: 1, hist: 1 });
+  },
+);
+
+metric(
   "a document's faces are asked for before its layout sets text in them",
   async () => {
     // a `th` at 600 is none of the four faces a family is warmed in, and its

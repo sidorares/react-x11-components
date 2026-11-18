@@ -895,6 +895,15 @@ export interface ComputedStyle {
   fontVariantPosition: string;
   fontKerning: string;
   fontFeatureSettings: string;
+  /** `font-variant-east-asian`'s features (CSS Fonts 4, 6.10), as the
+   *  other variants' are. */
+  fontVariantEastAsian: string;
+  /** `font-variant-alternates` as written, its words in order and '' for
+   *  `normal`: its functions name values a `@font-feature-values` rule
+   *  gives a family, so its features (`fontAlternateFeatures`) are worked
+   *  out against the element's families (`settleAlternates`). */
+  fontVariantAlternates: string;
+  fontAlternateFeatures: string;
   /** Which of the longhands `font` sets that no text is set by here have a
    *  value other than their initial one, a bit each (`UNSAID_FONT`). */
   fontUnsaid: number;
@@ -1822,6 +1831,9 @@ export const INHERITED = [
   'fontVariantPosition',
   'fontKerning',
   'fontFeatureSettings',
+  'fontVariantEastAsian',
+  'fontVariantAlternates',
+  'fontAlternateFeatures',
   'fontUnsaid',
   'tabSize',
   'tabSizeIsLength',
@@ -1999,6 +2011,9 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     fontVariantPosition: '',
     fontKerning: '',
     fontFeatureSettings: '',
+    fontVariantEastAsian: '',
+    fontVariantAlternates: '',
+    fontAlternateFeatures: '',
     fontUnsaid: 0,
     tabSize: 8,
     tabSizeIsLength: false,
@@ -2429,6 +2444,9 @@ export function inherit(
   out.fontVariantPosition = parent.fontVariantPosition;
   out.fontKerning = parent.fontKerning;
   out.fontFeatureSettings = parent.fontFeatureSettings;
+  out.fontVariantEastAsian = parent.fontVariantEastAsian;
+  out.fontVariantAlternates = parent.fontVariantAlternates;
+  out.fontAlternateFeatures = parent.fontAlternateFeatures;
   out.fontUnsaid = parent.fontUnsaid;
   out.tabSize = parent.tabSize;
   out.tabSizeIsLength = parent.tabSizeIsLength;
@@ -2601,6 +2619,9 @@ export const FIRST_LINE_INHERITED = [
   'fontVariantPosition',
   'fontKerning',
   'fontFeatureSettings',
+  'fontVariantEastAsian',
+  'fontVariantAlternates',
+  'fontAlternateFeatures',
   'underline',
   'underlineStyle',
   'underlineThickness',
@@ -4729,8 +4750,16 @@ export function applyDeclaration(
     case 'font-variant-emoji': {
       const { bit, initial, takes } = UNSAID_FONT[name];
       const v = value.toLowerCase();
+      const taken = v === initial || takes(v);
       if (v === initial) style.fontUnsaid &= ~bit;
-      else if (takes(v)) style.fontUnsaid |= bit;
+      else if (taken) style.fontUnsaid |= bit;
+      if (!taken) return;
+      if (name === 'font-variant-east-asian') {
+        style.fontVariantEastAsian = eastAsianFeatures(v);
+      } else if (name === 'font-variant-alternates') {
+        style.fontVariantAlternates =
+          v === 'normal' ? '' : alternatesText(value);
+      }
       return;
     }
     case 'font-kerning': {
@@ -8066,6 +8095,118 @@ function applyVariantShorthand(style: ComputedStyle, value: string): void {
   if (!variant) return;
   Object.assign(style, variant);
   style.fontUnsaid = (style.fontUnsaid & ~VARIANT_UNSAID) | bits;
+  style.fontVariantEastAsian = eastAsianFeatures(unsaid[0].join(' '));
+  style.fontVariantAlternates = unsaid[1].length
+    ? alternatesText(unsaid[1].join(' '))
+    : '';
+}
+
+/** `font-variant-east-asian`'s words as the features they stand for. */
+const EAST_ASIAN_FEATURES: Readonly<Record<string, string>> = {
+  jis78: 'jp78=1',
+  jis83: 'jp83=1',
+  jis90: 'jp90=1',
+  jis04: 'jp04=1',
+  simplified: 'smpl=1',
+  traditional: 'trad=1',
+  'full-width': 'fwid=1',
+  'proportional-width': 'pwid=1',
+  ruby: 'ruby=1',
+};
+
+function eastAsianFeatures(value: string): string {
+  const out: string[] = [];
+  for (const word of splitValue(value)) {
+    const features = EAST_ASIAN_FEATURES[word];
+    if (features) out.push(features);
+  }
+  return out.join(',');
+}
+
+/** A `font-variant-alternates` value with its functions' names in lower
+ *  case and the names in them as written, which a `@font-feature-values`
+ *  rule's are matched to. */
+function alternatesText(value: string): string {
+  return splitValue(value.trim())
+    .map((word) => {
+      const at = word.indexOf('(');
+      return at < 0
+        ? word.toLowerCase()
+        : word.slice(0, at).toLowerCase() + word.slice(at).replace(/\s+/g, '');
+    })
+    .join(' ');
+}
+
+/** The values a `@font-feature-values` rule gives a family's names, by the
+ *  feature type's at-rule (`stylistic`, `styleset`, …), lower case. */
+export type FeatureValues = Map<string, Map<string, Map<string, number[]>>>;
+
+/**
+ * The OpenType features a style's `font-variant-alternates` comes to (CSS
+ * Fonts 4, 6.8, 6.9): `historical-forms` is `hist`, and each function's
+ * name is looked up in the `@font-feature-values` of the first of the
+ * element's families that gives it one. A name no family gives does
+ * nothing.
+ */
+export function settleAlternates(
+  style: ComputedStyle,
+  values: FeatureValues | null,
+): void {
+  const text = style.fontVariantAlternates;
+  if (!text) {
+    style.fontAlternateFeatures = '';
+    return;
+  }
+  const families = style.familyWritten.split(',').map((family) =>
+    family
+      .trim()
+      .replace(/^(['"])(.*)\1$/, '$2')
+      .toLowerCase(),
+  );
+  const find = (type: string, name: string): number[] | null => {
+    if (!values) return null;
+    for (const family of families) {
+      const found = values.get(family)?.get(type)?.get(name);
+      if (found) return found;
+    }
+    return null;
+  };
+  const out: string[] = [];
+  const two = (n: number) => String(n).padStart(2, '0');
+  for (const word of text.split(' ')) {
+    if (word === 'historical-forms') {
+      out.push('hist=1');
+      continue;
+    }
+    const m = /^([a-z-]+)\((.*)\)$/.exec(word);
+    if (!m) continue;
+    const [, fn, args] = m;
+    const names = args.split(',');
+    if (fn === 'styleset') {
+      for (const name of names) {
+        for (const n of find('styleset', name) ?? []) {
+          if (n >= 1 && n <= 20) out.push(`ss${two(n)}=1`);
+        }
+      }
+      continue;
+    }
+    if (fn === 'character-variant') {
+      for (const name of names) {
+        const v = find('character-variant', name);
+        if (v && v[0] >= 1 && v[0] <= 99 && v.length <= 2) {
+          out.push(`cv${two(v[0])}=${v.length > 1 ? v[1] : 1}`);
+        }
+      }
+      continue;
+    }
+    const v = find(fn, names[0]);
+    if (!v || v.length !== 1) continue;
+    if (fn === 'stylistic') out.push(`salt=${v[0]}`);
+    else if (fn === 'swash') out.push(`swsh=${v[0]}`, `cswh=${v[0]}`);
+    else if (fn === 'ornaments') out.push(`ornm=${v[0]}`);
+    else if (fn === 'annotation') out.push(`nalt=${v[0]}`);
+  }
+  style.fontAlternateFeatures = out.join(',');
 }
 
 /** A `font` shorthand's parts, as written (CSS Fonts 4, 2.8). */
@@ -8175,6 +8316,8 @@ function applyFontShorthand(
   style.fontVariantPosition = '';
   style.fontKerning = '';
   style.fontFeatureSettings = '';
+  style.fontVariantEastAsian = '';
+  style.fontVariantAlternates = '';
   style.fontUnsaid = 0;
   style.lineHeight = 'normal';
   style.lineHeightIsLength = false;
@@ -10298,6 +10441,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'fontVariantPosition',
     'fontKerning',
     'fontFeatureSettings',
+    'fontVariantEastAsian',
+    'fontVariantAlternates',
+    'fontAlternateFeatures',
   ],
   'line-height': ['lineHeight', 'lineHeightIsLength'],
   'text-align': ['textAlign', 'alignBlocks'],
@@ -10316,6 +10462,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'fontVariantCaps',
     'fontVariantLigatures',
     'fontVariantPosition',
+    'fontVariantEastAsian',
+    'fontVariantAlternates',
+    'fontAlternateFeatures',
   ],
   'font-variant-numeric': ['fontVariantNumeric'],
   'font-variant-caps': ['fontVariantCaps'],
@@ -10323,6 +10472,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'font-variant-position': ['fontVariantPosition'],
   'font-kerning': ['fontKerning'],
   'font-feature-settings': ['fontFeatureSettings'],
+  'font-variant-east-asian': ['fontVariantEastAsian'],
+  'font-variant-alternates': ['fontVariantAlternates', 'fontAlternateFeatures'],
   'tab-size': ['tabSize', 'tabSizeIsLength'],
   '-moz-tab-size': ['tabSize', 'tabSizeIsLength'],
   'white-space': ['whiteSpace', 'breakSpaces'],
