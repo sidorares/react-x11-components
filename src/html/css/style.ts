@@ -6761,6 +6761,11 @@ function maskBox(text: string): VisualBox | null {
  * makes of one. Null where a layer is not one, which drops the
  * declaration.
  */
+/** Whether the `mask` shorthand takes a value, as the cascade reads it. */
+export function maskShorthandTakes(value: string, ctx: UnitContext): boolean {
+  return readMask(value, ctx) !== null;
+}
+
 function readMask(value: string, ctx: UnitContext): MaskLayers | null {
   const out = {
     images: [] as BackgroundImage[],

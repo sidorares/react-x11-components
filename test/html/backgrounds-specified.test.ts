@@ -75,3 +75,12 @@ test('a position is across then down, a side before its offset', () => {
     'bottom 10px, y-end',
   );
 });
+
+test('the mask shorthand refuses what the cascade refuses', () => {
+  // CSS Masking 1, 7.10: each part at most once, and a size only after a
+  // position
+  for (const bad of ['none alpha luminance', 'none / auto', 'none scroll']) {
+    assert.strictEqual(specifiedValue('mask', bad), null, bad);
+  }
+  assert.notStrictEqual(specifiedValue('mask', 'none left top / cover'), null);
+});
