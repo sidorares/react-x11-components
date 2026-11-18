@@ -196,6 +196,45 @@ test('a filter list and a corner shape that the cascade would refuse are refused
   );
 });
 
+test('transform-origin is a point and a depth, written across first', () => {
+  // CSS Transforms 1, 6, as Chromium writes it back
+  for (const bad of [
+    '1px 2px 3%',
+    '1px 2px left',
+    '1px 2px 3px 4px',
+    '1px left',
+    'top 1px',
+    'right left',
+    'bottom 10% right 20%',
+  ]) {
+    assert.strictEqual(specifiedValue('transform-origin', bad), null, bad);
+  }
+  assert.strictEqual(specifiedValue('transform-origin', 'top'), 'center top');
+  assert.strictEqual(specifiedValue('transform-origin', '-4%'), '-4% center');
+  assert.strictEqual(
+    specifiedValue('transform-origin', 'bottom right 7px'),
+    'right bottom 7px',
+  );
+  assert.strictEqual(
+    specifiedValue('transform-origin', '-1px -2px -3px'),
+    '-1px -2px -3px',
+  );
+});
+
+test('translate takes lengths and percentages, its depth a length, and drops what moves nowhere at its end', () => {
+  // CSS Transforms 2, 4.3
+  for (const bad of ['100deg', '100px 200px 300%', '100px junk']) {
+    assert.strictEqual(specifiedValue('translate', bad), null, bad);
+  }
+  assert.strictEqual(specifiedValue('translate', '0'), '0px');
+  assert.strictEqual(specifiedValue('translate', '100px 0px 0px'), '100px');
+  assert.strictEqual(specifiedValue('translate', '100px 0%'), '100px 0%');
+  assert.strictEqual(
+    specifiedValue('translate', '100px 0px 300px'),
+    '100px 0px 300px',
+  );
+});
+
 test('a transform list is written as Chromium writes it', () => {
   // CSS Transforms 1, 9: names in lower case, a scale's percentages as
   // numbers, a bare nought angle in degrees
@@ -213,7 +252,7 @@ test('a transform list is written as Chromium writes it', () => {
   );
   assert.strictEqual(
     specifiedValue('transform', 'translateX(1px) rotate(0)'),
-    'translatex(1px) rotate(0deg)',
+    'translateX(1px) rotate(0deg)',
   );
   assert.strictEqual(specifiedValue('transform', 'scale(1px)'), null);
 });
@@ -246,5 +285,34 @@ test('animation-range sets its two ends, and each is written as Chromium writes 
       p === 'animation-range-start' ? 'entry' : 'entry',
     ),
     'entry',
+  );
+});
+
+test('a transition sets its five longhands, and is written back from them', () => {
+  // CSS Transitions 1, 2 and 2, 2.1: what the cascade refuses is refused
+  for (const bad of ['1s 2s 3s', 'none, top', '-1s']) {
+    assert.strictEqual(specifiedValue('transition', bad), null, bad);
+  }
+  assert.strictEqual(specifiedValue('transition-duration', '-1s'), null);
+  assert.strictEqual(
+    specifiedValue('transition-timing-function', 'steps(2, end)'),
+    'steps(2)',
+  );
+  assert.strictEqual(
+    specifiedValue('transition', 'allow-discrete display 3s'),
+    'display 3s allow-discrete',
+  );
+  assert.deepStrictEqual(
+    Object.fromEntries(
+      expandShorthand('transition', '1s -3s, cubic-bezier(0, -2, 1, 3) top') ??
+        [],
+    ),
+    {
+      'transition-property': 'all, top',
+      'transition-duration': '1s, 0s',
+      'transition-timing-function': 'ease, cubic-bezier(0, -2, 1, 3)',
+      'transition-delay': '-3s, 0s',
+      'transition-behavior': 'normal, normal',
+    },
   );
 });
