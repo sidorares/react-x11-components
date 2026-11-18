@@ -148,6 +148,7 @@ import {
   settleContentVisibility,
   settleDecorationInset,
   settleOverflow,
+  settleSpacing,
   settleOutline,
   settleClamp,
   copyStyle,
@@ -9637,6 +9638,7 @@ export class Cascade {
     // parent's.
     style.fontSize = settled;
     style.fontSizeBasis = basis;
+    settleSpacing(style);
 
     // A table never keeps HTML's alignment, `-webkit-center` and its kin:
     // the `<td align="center">` every mail centres its body table in

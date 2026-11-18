@@ -2292,3 +2292,20 @@ metric(
       assert.ok(!run.kernAcross, 'an element spaces apart');
   },
 );
+
+test('a percentage of letter- and word-spacing is of each element’s own font size', async () => {
+  // CSS Text 4, 7.2, 7.3: what is inherited is the percentage, so a `small`
+  // half the size is spaced half as far. The length it came to was inherited
+  // instead, and `word-spacing: 50%` was dropped (WPT's
+  // letter-spacing-percent-001, word-spacing-percent-001).
+  const { node } = await render(
+    '<div id="a" style="font-size:20px;letter-spacing:10%;word-spacing:calc(2px + 50%)">' +
+      '<small id="b" style="font-size:10px">x</small></div>',
+  );
+  const el = view(node);
+  const style = (id: string) => el.computedStyle(findById(el.document, id)!)!;
+  assert.strictEqual(style('a')['letter-spacing'], '2px');
+  assert.strictEqual(style('b')['letter-spacing'], '1px');
+  assert.strictEqual(style('a')['word-spacing'], '12px');
+  assert.strictEqual(style('b')['word-spacing'], '7px');
+});
