@@ -5343,3 +5343,14 @@ test('an animation-name written as a string reads as an identifier, and as a str
     'multi\\ word',
   ]);
 });
+
+test('an animation name is written as its identifier, a keyword as a string, and an empty string is none', () => {
+  // CSS Animations 1, 3.2
+  assert.strictEqual(specifiedValue('animation-name', 'NONE'), 'none');
+  assert.strictEqual(
+    specifiedValue('animation-name', '"multi word string"'),
+    'multi\\ word\\ string',
+  );
+  assert.strictEqual(specifiedValue('animation-name', '"none"'), '"none"');
+  assert.strictEqual(specifiedValue('animation-name', '""'), null);
+});
