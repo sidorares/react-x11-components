@@ -18,6 +18,31 @@ const longhandsOf = (name: string, value: string) => {
   return Object.fromEntries(expandShorthand(name, specified) ?? []);
 };
 
+test('rotate is an angle and an axis either side of it, written axis first and by name where it can be', () => {
+  // CSS Transforms 2, 4.1, as Chromium serializes it: an axis along x or y
+  // named, one the other way the angle turned back, z left out
+  for (const bad of [
+    '100px',
+    '100 400deg',
+    'x y 45deg',
+    '45deg x y',
+    'z',
+    '1 2 3',
+  ]) {
+    assert.strictEqual(specifiedValue('rotate', bad), null, bad);
+  }
+  assert.strictEqual(specifiedValue('rotate', '400grad x'), 'x 400grad');
+  assert.strictEqual(
+    specifiedValue('rotate', '0 -0.5 0 400grad'),
+    'y -400grad',
+  );
+  assert.strictEqual(specifiedValue('rotate', '400grad z'), '400grad');
+  assert.strictEqual(
+    specifiedValue('rotate', '400grad 100 200 300'),
+    '100 200 300 400grad',
+  );
+});
+
 test('a side takes a length, a percentage and auto where its kind does', () => {
   const cases: [string, string, string | null][] = [
     ['margin-top', '0', '0px'],

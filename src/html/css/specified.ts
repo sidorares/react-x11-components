@@ -91,6 +91,46 @@ const KEYWORD_ONLY: Record<string, ReadonlySet<string>> = {
   isolation: new Set(['auto', 'isolate']),
 };
 
+const ANGLE = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:deg|grad|rad|turn)$/i;
+const NUMBER_TOKEN = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/;
+
+/**
+ * `rotate` (CSS Transforms 2, 4.1): `none`, an angle, or an angle and an
+ * axis — `x`, `y`, `z` or three numbers — either side of it; written as
+ * Chromium writes it back, the axis first, `x` or `y` for one along it
+ * (the angle turned back for one the other way), and none for `z`. Null
+ * for none; a math function is the cascade's.
+ */
+function rotateSpecified(value: string): string | null | undefined {
+  if (value.toLowerCase() === 'none') return 'none';
+  if (value.includes('(')) return undefined;
+  const words = splitValue(value);
+  const at = words.findIndex((w) => ANGLE.test(w));
+  if (at < 0 || (at !== 0 && at !== words.length - 1)) return null;
+  const angle = words[at].toLowerCase();
+  const axis = words.filter((_, i) => i !== at);
+  if (!axis.length) return angle;
+  let v: number[];
+  if (axis.length === 1) {
+    const k = axis[0].toLowerCase();
+    if (k === 'x') v = [1, 0, 0];
+    else if (k === 'y') v = [0, 1, 0];
+    else if (k === 'z') v = [0, 0, 1];
+    else return null;
+  } else if (axis.length === 3 && axis.every((w) => NUMBER_TOKEN.test(w))) {
+    v = axis.map(Number);
+  } else {
+    return null;
+  }
+  const turned = (sign: number): string =>
+    sign < 0 ? (angle.startsWith('-') ? angle.slice(1) : `-${angle}`) : angle;
+  const [x, y, z] = v;
+  if (x && !y && !z) return `x ${turned(x)}`;
+  if (!x && y && !z) return `y ${turned(y)}`;
+  if (!x && !y && z) return turned(z);
+  return `${v.map((n) => String(n + 0)).join(' ')} ${angle}`;
+}
+
 export function specifiedValue(
   prop: string,
   value: string,
@@ -151,6 +191,11 @@ export function specifiedValue(
     return transitionLonghand(NO_TRANSITIONS, 'properties', word) === null
       ? null
       : undefined;
+  }
+  if (name === 'rotate') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return rotateSpecified(word);
   }
   if (name === 'user-select' || name === '-webkit-user-select') {
     const word = value.trim().toLowerCase();
