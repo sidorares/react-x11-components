@@ -19352,6 +19352,8 @@ test("an IntersectionObserver's options are read as Chrome reads them, and what 
       'function fails(f) { try { f(); return "none"; } catch (e) { return e.name; } }' +
       'r.push(fails(function () { new IntersectionObserver(function () {}, { rootMargin: "10" }); }));' +
       'r.push(fails(function () { new IntersectionObserver(function () {}, { rootMargin: "1em" }); }));' +
+      // an absolute length is so many whole pixels
+      'r.push(new IntersectionObserver(function () {}, { rootMargin: "10cm 10pt" }).rootMargin);' +
       'r.push(fails(function () { new IntersectionObserver(function () {}, { threshold: 2 }); }));' +
       'r.push(fails(function () { new IntersectionObserver(function () {}, { root: {} }); }));' +
       'r.push(fails(function () { io.observe(document); }));' +
@@ -19362,7 +19364,7 @@ test("an IntersectionObserver's options are read as Chrome reads them, and what 
   assert.equal(
     await settled(doc, 'out', (t) => t !== ''),
     '10px 5% 10px 5%|0px 0px 0px 0px|0,0.5,1|true|true|true|true|' +
-      'SyntaxError|SyntaxError|RangeError|TypeError|TypeError|0',
+      'SyntaxError|SyntaxError|377px 13px 377px 13px|RangeError|TypeError|TypeError|0',
   );
 });
 
