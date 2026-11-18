@@ -18,6 +18,7 @@ import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { animationClock } from '../../src/html/node.js';
 import { FilterStore } from '../../src/html/filters.js';
+import { parseFilter } from '../../src/html/css/filter.js';
 import {
   applyMatrices,
   blurPixels,
@@ -1137,4 +1138,17 @@ test("a box's backdrop holds the backdrop of a box with one painted before it, m
     secondInner.ops.some((o) => o.startsWith(`drawImage ${firstOut.name}`)),
     "the first box's filtered backdrop drawn into the second's",
   );
+});
+
+test('a share of the effect is no more than all of it, and a math function below nought is nought', () => {
+  // Filter Effects 1, 13.1, and CSS Values 4, 10.12
+  const ctx = { em: 16, rem: 16, vw: 1, vh: 1, scale: 1 };
+  assert.deepStrictEqual(parseFilter('grayscale(300%) brightness(2)', ctx), [
+    { fn: 'grayscale', amount: 1 },
+    { fn: 'brightness', amount: 2 },
+  ]);
+  assert.deepStrictEqual(parseFilter('contrast(calc(-10))', ctx), [
+    { fn: 'contrast', amount: 0 },
+  ]);
+  assert.strictEqual(parseFilter('contrast(-10)', ctx), undefined);
 });
