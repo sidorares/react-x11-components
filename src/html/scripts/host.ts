@@ -2924,6 +2924,24 @@ export class DomHost {
   /** An event `<Html>` told of, dispatched in the page; whether its default
    *  goes on. */
   dispatch(event: HtmlDomEvent): boolean {
+    // a summary's activation opened or closed its details (`toggleDetails`
+    // in `widgets.ts`): told as the attribute's change is, one `toggle` a
+    // task with its states, and its name group closed around it
+    if (
+      event.type === 'toggle' &&
+      !event.oldState &&
+      event.target instanceof Element &&
+      event.target.name === 'details' &&
+      namespaceOf(event.target) === XHTML_NS
+    ) {
+      const el = event.target;
+      this._detailsChanged(
+        el,
+        'open',
+        el.attribs.open === undefined ? '' : null,
+      );
+      return true;
+    }
     if (event.type.startsWith('mouse')) this._under = event.target;
     // a user's press or key has used the page (HTML 6.4.1, "activation
     // triggering input event"): what the realm notes of it is the page's to
