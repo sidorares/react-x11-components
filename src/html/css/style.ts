@@ -4449,7 +4449,22 @@ export function applyDeclaration(
         if (image === undefined) return;
         images.push(image);
       }
-      if (images.length) style.mask = { ...style.mask, images };
+      if (images.length) {
+        const imageTexts = splitCommas(value).map((part) =>
+          /^\s*none\s*$/i.test(part) ? null : part.trim(),
+        );
+        style.mask = { ...style.mask, images, imageTexts };
+      }
+      return;
+    }
+    case 'mask-mode': {
+      const modes = layerValues(value, (part) => {
+        const v = part.trim().toLowerCase();
+        return v === 'alpha' || v === 'luminance' || v === 'match-source'
+          ? (v as MaskMode)
+          : null;
+      });
+      if (modes) style.mask = { ...style.mask, modes };
       return;
     }
     case 'mask-repeat':
@@ -6688,7 +6703,14 @@ export interface MaskLayers {
   clips: readonly VisualBox[];
   /** How each layer is composited with the layers below it (7.8). */
   composites: readonly MaskComposite[];
+  /** Each layer's image as it was written, for `getComputedStyle`, null
+   *  for `none`; and its mode, which nothing here draws by (7.3). */
+  imageTexts: readonly (string | null)[];
+  modes: readonly MaskMode[];
 }
+
+/** A `mask-mode` keyword (CSS Masking 1, 7.3). */
+export type MaskMode = 'alpha' | 'luminance' | 'match-source';
 
 /** A `mask-composite` operator (CSS Masking 1, 7.8). */
 export type MaskComposite = 'add' | 'subtract' | 'intersect' | 'exclude';
@@ -6775,6 +6797,8 @@ function readMask(value: string, ctx: UnitContext): MaskLayers | null {
     origins: [] as VisualBox[],
     clips: [] as VisualBox[],
     composites: [] as MaskComposite[],
+    imageTexts: [] as (string | null)[],
+    modes: [] as MaskMode[],
   };
   for (const text of splitCommas(value)) {
     const parts = splitValue(text).flatMap(splitSlash);
@@ -6783,6 +6807,8 @@ function readMask(value: string, ctx: UnitContext): MaskLayers | null {
     let size: ComputedStyle['backgroundSize'] = 'auto';
     let position: [Len, Len] = [0, 0];
     let composite: MaskComposite = 'add';
+    let imageText: string | null = null;
+    let mode: MaskMode = 'match-source';
     const boxes: VisualBox[] = [];
     let seen = 0;
     const once = (bit: number): boolean => {
@@ -6798,6 +6824,7 @@ function readMask(value: string, ctx: UnitContext): MaskLayers | null {
         const read = maskImageOf(part, ctx);
         if (read === undefined) return null;
         image = read;
+        imageText = v === 'none' ? null : part;
         i += 1;
       } else if (v === 'repeat-x' || v === 'repeat-y' || REPEATS.has(v)) {
         if (!once(2)) return null;
@@ -6816,6 +6843,7 @@ function readMask(value: string, ctx: UnitContext): MaskLayers | null {
         i += 1;
       } else if (/^(?:alpha|luminance|match-source)$/.test(v)) {
         if (!once(16)) return null;
+        mode = v as MaskMode;
         i += 1;
       } else if (isPositionPart(v, ctx)) {
         if (!once(32)) return null;
@@ -6856,6 +6884,8 @@ function readMask(value: string, ctx: UnitContext): MaskLayers | null {
     out.origins.push(boxes[0] ?? 'border-box');
     out.clips.push(boxes[1] ?? boxes[0] ?? 'border-box');
     out.composites.push(composite);
+    out.imageTexts.push(imageText);
+    out.modes.push(mode);
   }
   return out.images.length ? out : null;
 }
@@ -7062,6 +7092,8 @@ export const NO_MASK: MaskLayers = {
   origins: ['border-box'],
   clips: ['border-box'],
   composites: ['add'],
+  imageTexts: [null],
+  modes: ['match-source'],
 };
 
 function applyBorderShorthand(
@@ -10119,7 +10151,12 @@ function inheritOne(
   }
   const list = MASK_LISTS[name];
   if (list) {
-    style.mask = { ...style.mask, [list]: parent.mask[list] };
+    const companion = MASK_COMPANIONS[list];
+    style.mask = {
+      ...style.mask,
+      [list]: parent.mask[list],
+      ...(companion ? { [companion]: parent.mask[companion] } : {}),
+    };
     return;
   }
   // each longhand of the animation is a list of its own, as the mask's are
@@ -10247,6 +10284,12 @@ const MASK_LISTS: Record<string, keyof MaskLayers> = {
   '-webkit-mask-clip': 'clips',
   'mask-composite': 'composites',
   '-webkit-mask-composite': 'composites',
+  'mask-mode': 'modes',
+};
+
+/** What a mask's list carries beside it, set and reset with it. */
+const MASK_COMPANIONS: Partial<Record<keyof MaskLayers, keyof MaskLayers>> = {
+  images: 'imageTexts',
 };
 
 /** A longhand's share of a field, from `from` into `style`, what its

@@ -100,3 +100,26 @@ test('a computed style is read only, and an element in no document reads empty s
     true,
   ]);
 });
+
+test("a mask layer's longhands are read back, each a value a layer", async () => {
+  // CSS Masking 1, 7: as Chrome writes them, a size with its height
+  const page = await scriptedPage(
+    `<div id="m" style="mask: no-repeat 10px 20px / 30px luminance, linear-gradient(red, blue) subtract"></div><script>
+      var cs = getComputedStyle(document.getElementById('m'));
+      console.log('out ' + JSON.stringify([
+        'maskRepeat', 'maskSize', 'maskPosition', 'maskComposite', 'maskMode',
+        'maskImage',
+      ].map(function (k) { return cs[k]; })));
+    </script>`,
+  );
+  const out = JSON.parse(await page.until('out'));
+  page.result.unmount();
+  assert.deepEqual(out, [
+    'no-repeat, repeat',
+    '30px auto, auto',
+    '10px 20px, 0px 0px',
+    'add, subtract',
+    'luminance, match-source',
+    'none, linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))',
+  ]);
+});

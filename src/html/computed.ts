@@ -2315,6 +2315,32 @@ const SHORTHANDS: Record<string, Composer> = {
     eachLayer(all, style.backgroundPositions, positionOf(style), ([, y]) =>
       len(y, scale),
     ),
+  // a mask layer's longhands (CSS Masking 1, 7), a value a layer, composed
+  // as a background's are
+  'mask-image': (_, style) =>
+    style.mask.imageTexts
+      .map((text) => (text === null ? 'none' : backgroundImageText(text)))
+      .join(', '),
+  'mask-repeat': (_, style) => style.mask.repeats.map(repeatText).join(', '),
+  // with its height, `auto` too, as Chrome writes a mask's and not a
+  // background's
+  'mask-size': (_, style, scale) =>
+    style.mask.sizes
+      .map((size) => {
+        const text = backgroundSizeText(size, scale);
+        return /^\S+$/.test(text) && !/^(?:auto|cover|contain)$/.test(text)
+          ? `${text} auto`
+          : text;
+      })
+      .join(', '),
+  'mask-position': (_, style, scale) =>
+    style.mask.positions
+      .map(([x, y]) => `${len(x, scale)} ${len(y, scale)}`)
+      .join(', '),
+  'mask-origin': (_, style) => style.mask.origins.join(', '),
+  'mask-clip': (_, style) => style.mask.clips.join(', '),
+  'mask-composite': (_, style) => style.mask.composites.join(', '),
+  'mask-mode': (_, style) => style.mask.modes.join(', '),
   'border-image-source': (_, style) => {
     const source = style.borderImage.source;
     if (!source) return 'none';

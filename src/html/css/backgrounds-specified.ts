@@ -68,6 +68,15 @@ const oneOf =
 
 const ATTACHMENTS = new Set(['scroll', 'fixed', 'local']);
 const BOXES = new Set(['border-box', 'padding-box', 'content-box']);
+/** A `<geometry-box>` (CSS Masking 1, 7.5). */
+const MASK_BOXES = new Set([
+  'border-box',
+  'padding-box',
+  'content-box',
+  'fill-box',
+  'stroke-box',
+  'view-box',
+]);
 
 /** A layer's `background-clip` (Backgrounds 4, 2.3): a box, or
  *  `border-area` and `text`, either or both, `border-area` first. */
@@ -230,6 +239,16 @@ const READERS: Record<string, (words: string[]) => string | null> = {
   'background-position': positionOf,
   'background-position-x': X_AXIS,
   'background-position-y': Y_AXIS,
+  // a mask layer's (CSS Masking 1, 7): a background's repeat, size and
+  // position, and boxes, an operator and a mode of its own
+  'mask-repeat': repeatOf,
+  'mask-size': sizeOf,
+  // CSS Values 4's `<position>`, with no three-value forms
+  'mask-position': (words) => positionSpecified(words),
+  'mask-origin': oneOf(MASK_BOXES),
+  'mask-clip': oneOf(new Set([...MASK_BOXES, 'no-clip'])),
+  'mask-composite': oneOf(new Set(['add', 'subtract', 'intersect', 'exclude'])),
+  'mask-mode': oneOf(new Set(['alpha', 'luminance', 'match-source'])),
 };
 
 /** A background layer property as `el.style` keeps it; undefined for a
@@ -238,7 +257,13 @@ export function backgroundSpecified(
   name: string,
   value: string,
 ): string | null | undefined {
-  const read = READERS[name];
+  // a `-webkit-` mask longhand is the same property, but for an operator,
+  // whose prefixed names are Porter-Duff's (Compatibility, 5)
+  const read =
+    READERS[name] ??
+    (name.startsWith('-webkit-mask-') && name !== '-webkit-mask-composite'
+      ? READERS[name.slice(8)]
+      : undefined);
   if (!read) return undefined;
   if (CSS_WIDE.test(value.trim())) return undefined;
   return layers(value, read);
