@@ -233,3 +233,40 @@ test('a custom element’s internals have ARIA, and its form value is submitted'
     ],
   ]);
 });
+
+test('a wheel or touch listener on the page as a whole is passive, and isTrusted is each event’s own accessor', async () => {
+  // DOM 2.7, "default passive value": on the window, the document, its root
+  // or its body a `wheel`, `mousewheel`, `touchstart` or `touchmove`
+  // listener is passive unless it says, and so cannot cancel; elsewhere it
+  // is not. `isTrusted` is `[LegacyUnforgeable]`: an accessor of the
+  // event's own, one getter for all (WPT's passive-by-default,
+  // Event-isTrusted)
+  const out = await inPage(
+    `var r = [];
+     function probe(target, options) {
+       var seen;
+       var fn = function (e) { e.preventDefault(); seen = e.defaultPrevented; };
+       target.addEventListener('wheel', fn, options);
+       target.dispatchEvent(new WheelEvent('wheel', { cancelable: true }));
+       target.removeEventListener('wheel', fn, options);
+       return seen;
+     }
+     var box = document.getElementById('box');
+     r.push(probe(window), probe(document), probe(document.body),
+       probe(box), probe(window, { passive: false }));
+     var a = Object.getOwnPropertyDescriptor(new Event('x'), 'isTrusted');
+     var b = Object.getOwnPropertyDescriptor(new Event('y'), 'isTrusted');
+     r.push(typeof a.get, a.get === b.get, new Event('x').isTrusted);
+     return r;`,
+  );
+  assert.deepEqual(out, [
+    false,
+    false,
+    false,
+    true,
+    true,
+    'function',
+    true,
+    false,
+  ]);
+});
