@@ -238,7 +238,11 @@ export function widestWord(
   fonts: FontsLike,
   layout: TextLayoutLike,
   measured = true,
+  /** The text may break between any two letters (`breaksAnywhere`): its
+   *  widest letter is its word. */
+  anywhere: 'anywhere' | 'letters' | null = null,
 ): number {
+  if (anywhere) return widestCluster(fonts, layout, anywhere);
   if (!measured) return longestWord(layout);
   let widest = WIDEST_WORD.get(layout);
   if (widest !== undefined) return widest;
@@ -260,6 +264,127 @@ export function widestWord(
   for (const line of words.lines) widest = Math.max(widest, line.width);
   WIDEST_WORD.set(layout, widest);
   return widest;
+}
+
+const WIDEST_CLUSTER = new WeakMap<TextLayoutLike, number>();
+const WIDEST_LETTER = new WeakMap<TextLayoutLike, number>();
+
+let graphemes: Intl.Segmenter | null = null;
+
+/**
+ * The widest grapheme cluster of a layout's text: the min-content width of
+ * a text that may break between any two of them (CSS Text 3, 5.2, 5.5:
+ * `overflow-wrap: anywhere`, `word-break: break-all` and `break-word`,
+ * `line-break: anywhere`), where `break-word`'s cuts are for a word no
+ * line holds and no part of it. Laid out with a line break between each,
+ * so a cluster is shaped whole. Infinity where the runs are no longer kept.
+ */
+function widestCluster(
+  fonts: FontsLike,
+  layout: TextLayoutLike,
+  how: 'anywhere' | 'letters',
+): number {
+  const cache = how === 'anywhere' ? WIDEST_CLUSTER : WIDEST_LETTER;
+  let widest = cache.get(layout);
+  if (widest !== undefined) return widest;
+  const held = LAYOUT_RUNS.get(layout);
+  if (!held || (held.length > 0 && typeof held[0] === 'number')) {
+    return Infinity;
+  }
+  const lines = fonts.layout(
+    clustersApart(held as TextRun[], how),
+    {},
+    {
+      fit: PARAGRAPH_FIT,
+    },
+  ).lines;
+  widest = 0;
+  for (const line of lines) widest = Math.max(widest, line.width);
+  cache.set(layout, widest);
+  return widest;
+}
+
+/**
+ * Where a text may break between any two letters (`breaksBetweenLetters`),
+ * a line holds one at least: in less room than its widest letter, it is
+ * laid out at that, a letter or so to a line, as a browser lays it out in
+ * none. The engines keep a word whole where no letter of it fits, which is
+ * right for `overflow-wrap: break-word`, whose cuts are no part of the
+ * min-content width, and wrong for these: a float of `overflow-wrap:
+ * anywhere` in no room was as wide as its longest word.
+ */
+function roomForCluster(
+  block: Box,
+  options: InlineOptions,
+  items: readonly Item[],
+): InlineOptions {
+  const fonts = options.fonts;
+  const how = breaksBetweenLetters(block.style);
+  if (!fonts || !how) return options;
+  // no letter is wider than its font's size twice over, nearly
+  const size = block.style.fontSize;
+  if (!(options.width < size * 2)) return options;
+  const runs: TextRun[] = [];
+  for (const item of items) {
+    if (item.kind === 'text' && !item.control) runs.push(item.run);
+  }
+  if (!runs.length) return options;
+  let widest = 0;
+  const apart = clustersApart(runs, how);
+  for (const line of fonts.layout(apart, {}, { fit: PARAGRAPH_FIT }).lines) {
+    widest = Math.max(widest, line.width);
+  }
+  return widest > options.width ? { ...options, width: widest } : options;
+}
+
+/** Runs with a line break after each grapheme cluster, their white space
+ *  left out: laid out, a line to each cluster, shaped whole. */
+function clustersApart(
+  runs: readonly TextRun[],
+  how: 'anywhere' | 'letters',
+): TextRun[] {
+  graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  const out: TextRun[] = [];
+  for (const run of runs) {
+    let text = '';
+    for (const { segment } of graphemes!.segment(run.text)) {
+      if (/^[ \t\n\u200b]+$/.test(segment)) continue;
+      // `break-all` breaks between letters, and punctuation keeps its own
+      // rules: a full stop or an Ethiopic word space stays after its word,
+      // in the run before it as much as in its own
+      if (how === 'letters' && CLOSING.test(segment)) {
+        if (text) text = text.slice(0, -1);
+        else {
+          const last = out[out.length - 1];
+          if (last?.text.endsWith('\n')) last.text = last.text.slice(0, -1);
+        }
+      }
+      text += segment + '\n';
+    }
+    out.push({ ...run, text });
+  }
+  return out;
+}
+
+/** What `break-all` breaks before no more than `normal` does: punctuation
+ *  that closes or follows, a full stop or a word space. */
+const CLOSING = /^[\p{Po}\p{Pe}\p{Pf}]/u;
+
+/** Whether a style lets its text break between any two letters, which is
+ *  what its min-content width reads (`widestCluster`). */
+export function breaksBetweenLetters(style: {
+  overflowWrap: string;
+  wordBreak: string;
+  lineBreakAnywhere: boolean;
+}): 'anywhere' | 'letters' | null {
+  if (
+    style.overflowWrap === 'anywhere' ||
+    style.wordBreak === 'break-word' ||
+    style.lineBreakAnywhere
+  ) {
+    return 'anywhere';
+  }
+  return style.wordBreak === 'break-all' ? 'letters' : null;
 }
 
 const WIDEST_WORD_LINE = new WeakMap<TextLayoutLike, number>();
@@ -607,7 +732,12 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
     statics,
   );
   const items = autospaced(collected, statics);
-  const result = linesOf(block, options, items, floatCount);
+  const result = linesOf(
+    block,
+    roomForCluster(block, options, items),
+    items,
+    floatCount,
+  );
   // lines made a piece at a time that `text-wrap: pretty` would break
   // otherwise, made again with its breaks asked for — and kept where the
   // engine broke where it was asked to

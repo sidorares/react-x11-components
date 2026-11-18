@@ -2317,6 +2317,34 @@ metric(
   },
 );
 
+metric(
+  'text that may break between any two letters is as narrow as its widest letter',
+  async () => {
+    // CSS Text 3, 5.2 and 5.5: `overflow-wrap: anywhere`, `word-break:
+    // break-all` and `line-break: anywhere` make a break between letters a
+    // place to break, which the min-content width takes; `break-word`'s
+    // cuts are no part of it. A cell and a float of them were as wide as
+    // their longest word (WPT's overflow-wrap-min-content-size-*,
+    // word-break-min-content-*), and a full stop stays with its word.
+    const { node } = await render(
+      '<style>body{margin:0}table,div{font:20px/1 monospace}' +
+        'table{max-width:0;border-collapse:collapse}td{padding:0}</style>' +
+        '<table><tr><td id="a" style="overflow-wrap:anywhere">XXXX</td></tr></table>' +
+        '<table><tr><td id="b" style="overflow-wrap:break-word">XXXX</td></tr></table>' +
+        '<div style="width:0"><div id="c" style="float:left;word-break:break-all">XX<span>.</span></div></div>',
+    );
+    const el = view(node);
+    const one = linesOf(el, 'a')[0].width;
+    assert.strictEqual(linesOf(el, 'a').length, 4);
+    assert.ok(boxOf(el, 'a').width < one + 1, `${boxOf(el, 'a').width}`);
+    assert.strictEqual(linesOf(el, 'b').length, 1, 'break-word: whole');
+    // as wide as `X.`, which `break-all` does not break
+    assert.ok(
+      Math.abs(boxOf(el, 'c').width - 2 * one) < 1,
+      `${boxOf(el, 'c').width}`,
+    );
+  },
+);
 test('a percentage of letter- and word-spacing is of each element’s own font size', async () => {
   // CSS Text 4, 7.2, 7.3: what is inherited is the percentage, so a `small`
   // half the size is spaced half as far. The length it came to was inherited
