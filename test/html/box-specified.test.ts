@@ -136,6 +136,28 @@ test('transition-property takes property names, or none alone, and nothing else'
   }
 });
 
+test("a 3D transform's viewer is none or a length no less than nought, and where it stands a <position>", () => {
+  // CSS Transforms 2, 7.1 and 7.2, and CSS Values 4's <position>, which has
+  // no three-value form; written back across first, as Chromium writes it
+  for (const bad of ['1000', '-1px', '80%', 'auto']) {
+    assert.strictEqual(specifiedValue('perspective', bad), null, bad);
+  }
+  assert.strictEqual(specifiedValue('perspective', '0'), '0px');
+  assert.notStrictEqual(specifiedValue('perspective', '10em'), null);
+  assert.strictEqual(
+    specifiedValue('perspective-origin', 'center left 1px'),
+    null,
+  );
+  assert.strictEqual(specifiedValue('perspective-origin', 'left right'), null);
+  assert.strictEqual(specifiedValue('perspective-origin', 'top'), 'center top');
+  assert.strictEqual(
+    specifiedValue('perspective-origin', 'bottom 10% right 20%'),
+    'right 20% bottom 10%',
+  );
+  assert.strictEqual(specifiedValue('backface-visibility', 'auto'), null);
+  assert.strictEqual(specifiedValue('backface-visibility', 'HIDDEN'), 'hidden');
+});
+
 test('a filter list and a corner shape that the cascade would refuse are refused by a style', () => {
   // Filter Effects 1, 5 and CSS Borders 4, 3.9: kept as written where they
   // are values, and a math function left to the cascade, which clamps it

@@ -10,7 +10,10 @@ import { parseTransform } from './transform.js';
 import { parseFilter } from './filter.js';
 import { cornerShapeValid } from './corner-shape.js';
 import { NO_TRANSITIONS, transitionLonghand } from './animation.js';
-import { backgroundSpecified } from './backgrounds-specified.js';
+import {
+  backgroundSpecified,
+  positionSpecified,
+} from './backgrounds-specified.js';
 import {
   borderComposed,
   borderLonghands,
@@ -50,7 +53,7 @@ import {
   parseTextBoxTrim,
   textBoxText,
 } from './text-box.js';
-import { parseZoom, splitValue } from './values.js';
+import { parseLength, parseZoom, splitValue } from './values.js';
 import {
   GRID_SPECIFIED,
   gridLonghands,
@@ -91,6 +94,7 @@ const GEOMETRY_BOXES =
 /** Properties whose every value is one of a few keywords. */
 const KEYWORD_ONLY: Record<string, ReadonlySet<string>> = {
   overlay: new Set(['none', 'auto']),
+  'backface-visibility': new Set(['visible', 'hidden']),
   isolation: new Set(['auto', 'isolate']),
 };
 
@@ -217,6 +221,25 @@ export function specifiedValue(
     return transitionLonghand(NO_TRANSITIONS, 'properties', word) === null
       ? null
       : undefined;
+  }
+  // a 3D transform's viewer (CSS Transforms 2, 7.1, 7.2): `none` or a
+  // length no less than nought, and where it stands, a `<position>`
+  if (name === 'perspective') {
+    const word = value.trim();
+    const lower = word.toLowerCase();
+    if (CSS_WIDE.test(lower)) return undefined;
+    if (lower === 'none') return 'none';
+    if (/\(/.test(word)) return undefined;
+    const m = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)([a-z]*)$/i.exec(word);
+    if (!m || Number(m[1]) < 0) return null;
+    if (!m[2]) return Number(m[1]) === 0 ? '0px' : null;
+    return parseLength(`1${m[2]}`, CHECK) === null ? null : undefined;
+  }
+  if (name === 'perspective-origin') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    if (/\(/.test(word)) return undefined;
+    return positionSpecified(splitValue(word));
   }
   // a transform list (CSS Transforms 1, 7), refused where the cascade
   // would refuse it; a math function is the cascade's to judge, since it
