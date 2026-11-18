@@ -81,3 +81,21 @@ test('an axis shorthand sets its two sides, the second the first again', () => {
     'margin-left': 'initial',
   });
 });
+
+test('transition-property takes property names, or none alone, and nothing else', () => {
+  // CSS Transitions 1, 2.1: `<single-transition-property>#`, `none` the
+  // whole value, and no CSS-wide keyword or `default` among the names
+  for (const bad of [
+    'one two three',
+    '1, 2, 3',
+    'none, one',
+    'top, initial',
+    'inherit, top',
+    'default, top',
+  ]) {
+    assert.strictEqual(specifiedValue('transition-property', bad), null, bad);
+  }
+  for (const good of ['none', 'all', 'top, left', '--x, opacity', 'inherit']) {
+    assert.notStrictEqual(specifiedValue('transition-property', good), null);
+  }
+});

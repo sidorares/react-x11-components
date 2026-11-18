@@ -5132,6 +5132,12 @@ export class DomHost {
         return (this._node(a) as ShadowRoot).mode;
       case 'shadowDelegates':
         return (this._node(a) as ShadowRoot).delegatesFocus;
+      // whether an element is a focusable area of itself (HTML 6.6.2):
+      // what a host that delegates its focus hands it to
+      case 'focusable': {
+        const el = this._element(a);
+        return focusableElement(el) && !isInert(el);
+      }
       // a declarative root whose registry is null, which the page's
       // registries are kept by
       case 'shadowRegistryNull':
