@@ -3868,7 +3868,12 @@ export function applyDeclaration(
       }
       // a distance, and none behind the viewer
       const depth = parseLength(value, ctx);
+      // a math function is clamped to the range, where a bare negative
+      // length is no value (CSS Values 4, 10.12)
       if (typeof depth === 'number' && depth >= 0) style.perspective = depth;
+      else if (typeof depth === 'number' && value.includes('(')) {
+        style.perspective = 0;
+      }
       return;
     }
     case 'perspective-origin':

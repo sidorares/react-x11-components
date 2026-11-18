@@ -14,7 +14,14 @@ import {
   cornerShapeLonghands,
   cornerShapeText,
 } from './corner-shape.js';
-import { NO_TRANSITIONS, transitionLonghand } from './animation.js';
+import {
+  NO_TRANSITIONS,
+  TRANSITION_LONGHANDS,
+  easingText,
+  transitionItemText,
+  transitionLonghand,
+  transitionLonghandsOf,
+} from './animation.js';
 import {
   backgroundSpecified,
   positionSpecified,
@@ -228,15 +235,30 @@ export function specifiedValue(
     if (CSS_WIDE.test(word)) return undefined;
     return words.has(word) ? word : null;
   }
-  // a list of property names, or `none` alone (CSS Transitions 1, 2.1)
-  if (
-    name === 'transition-property' ||
-    name === '-webkit-transition-property'
-  ) {
+  // a transition's longhands, each a comma list, and the shorthand (CSS
+  // Transitions 1, 2): refused where the cascade would refuse them; a math
+  // function is the cascade's to judge
+  const transitionKey = TRANSITION_LONGHANDS[name.replace(/^-webkit-/, '')];
+  const transitionShorthand =
+    name === 'transition' || name === '-webkit-transition';
+  if (transitionKey || transitionShorthand) {
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
-    return transitionLonghand(NO_TRANSITIONS, 'properties', word) === null
-      ? null
+    if (
+      transitionKey !== 'properties' &&
+      /(?:calc|min|max|clamp|sign|abs|round|mod|rem)\(/i.test(word)
+    ) {
+      return undefined;
+    }
+    if (!transitionKey) {
+      const parts = transitionLonghandsOf(word);
+      return parts ? composeTransition(parts.map(([, v]) => v)) : null;
+    }
+    const read = transitionLonghand(NO_TRANSITIONS, transitionKey, word);
+    if (read === null) return null;
+    // a timing function is written as its function, as Chromium writes it
+    return transitionKey === 'easings'
+      ? read.easings.map(easingText).join(', ')
       : undefined;
   }
   // a 3D transform's viewer (CSS Transforms 2, 7.1, 7.2): `none` or a
@@ -1183,6 +1205,7 @@ export function expandShorthand(
   const corners = cornerShapeLonghands(name, value);
   if (corners) return corners;
   if (name === 'animation') return animationLonghandsOf(value);
+  if (name === 'transition') return transitionLonghandsOf(value);
   if (name === 'marker') return MARKER_LONGHANDS.map((side) => [side, value]);
   if (name === 'position-try') {
     const order =
@@ -1219,6 +1242,26 @@ export function expandShorthand(
 
 /** The longhands an `animation` is read back from, in the order its
  *  items are written. */
+const TRANSITION_PARTS = [
+  'transition-property',
+  'transition-duration',
+  'transition-timing-function',
+  'transition-delay',
+  'transition-behavior',
+];
+
+/** The `transition` shorthand from its longhands' values, in
+ *  `TRANSITION_PARTS`' order: an item a property, the others taken with
+ *  it, or '' where their lists are not one transition each. */
+function composeTransition(values: readonly string[]): string {
+  const lists = values.map((v) => splitTopLevel(v).map((x) => x.trim()));
+  const count = lists[0].length;
+  if (lists.some((l) => l.length !== count)) return '';
+  return lists[0]
+    .map((_, i) => transitionItemText(lists.map((l) => l[i])))
+    .join(', ');
+}
+
 const ANIMATION_PARTS = [
   'animation-duration',
   'animation-timing-function',
@@ -1260,6 +1303,15 @@ export function composeShorthand(
     const fallbacks = longhand('position-try-fallbacks');
     if (order === null || fallbacks === null) return '';
     return order === 'normal' ? fallbacks : `${order} ${fallbacks}`;
+  }
+  if (name === 'transition') {
+    const values: string[] = [];
+    for (const part of TRANSITION_PARTS) {
+      const v = longhand(part);
+      if (v === null) return '';
+      values.push(v);
+    }
+    return composeTransition(values);
   }
   if (name === 'animation') {
     if (
@@ -1613,7 +1665,7 @@ const SCALE_FUNCTIONS = new Set([
 
 /**
  * A transform list the cascade takes, written as Chromium writes it back
- * (CSS Transforms 1, 9): each function's name in lower case, a scale's
+ * (CSS Transforms 1, 9): a scale's and a skew's name in lower case, a scale's
  * percentages as numbers and a bare nought angle in degrees. Where a
  * function is none of these, it is as written.
  */
@@ -1624,17 +1676,21 @@ function transformText(word: string): string {
   let m: RegExpExecArray | null;
   let rest = word;
   while ((m = fns.exec(word))) {
-    const name = m[1].toLowerCase();
+    // Chromium writes a scale's and a skew's names in lower case, and
+    // every other as written
+    const lower = m[1].toLowerCase();
+    const name =
+      SCALE_FUNCTIONS.has(lower) || lower.startsWith('skew') ? lower : m[1];
     let args = m[2]
       .split(',')
       .map((a) => a.trim())
       .filter((a) => a !== '');
-    if (SCALE_FUNCTIONS.has(name)) {
+    if (SCALE_FUNCTIONS.has(lower)) {
       args = args.map((a) => {
         const p = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)%$/i.exec(a);
         return p ? String(Math.round((Number(p[1]) / 100) * 1e6) / 1e6 + 0) : a;
       });
-    } else if (ANGLE_FUNCTIONS.has(name)) {
+    } else if (ANGLE_FUNCTIONS.has(lower)) {
       args = args.map((a) => (/^[+-]?0*\.?0*$/.test(a) ? '0deg' : a));
     }
     out.push(`${name}(${args.join(', ')})`);
