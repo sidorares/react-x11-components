@@ -256,3 +256,32 @@ test('a transform list is written as Chromium writes it', () => {
   );
   assert.strictEqual(specifiedValue('transform', 'scale(1px)'), null);
 });
+
+test('a transition sets its five longhands, and is written back from them', () => {
+  // CSS Transitions 1, 2 and 2, 2.1: what the cascade refuses is refused
+  for (const bad of ['1s 2s 3s', 'none, top', '-1s']) {
+    assert.strictEqual(specifiedValue('transition', bad), null, bad);
+  }
+  assert.strictEqual(specifiedValue('transition-duration', '-1s'), null);
+  assert.strictEqual(
+    specifiedValue('transition-timing-function', 'steps(2, end)'),
+    'steps(2)',
+  );
+  assert.strictEqual(
+    specifiedValue('transition', 'allow-discrete display 3s'),
+    'display 3s allow-discrete',
+  );
+  assert.deepStrictEqual(
+    Object.fromEntries(
+      expandShorthand('transition', '1s -3s, cubic-bezier(0, -2, 1, 3) top') ??
+        [],
+    ),
+    {
+      'transition-property': 'all, top',
+      'transition-duration': '1s, 0s',
+      'transition-timing-function': 'ease, cubic-bezier(0, -2, 1, 3)',
+      'transition-delay': '-3s, 0s',
+      'transition-behavior': 'normal, normal',
+    },
+  );
+});
