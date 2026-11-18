@@ -7277,8 +7277,8 @@ a colour, the shorter list padded with shadows of nothing in transparent
 three that keeps its hue as it fades in; a pair inset at one end and not
 the other goes over whole. What none of
 that reads goes over half-way, as CSS has a discrete value go; so does a
-shorthand any of whose longhands does, a custom property and a logical
-one. A frame's `animation-timing-function` eases to the next frame, and
+shorthand any of whose longhands does, a custom property — but for one
+registered as a type that interpolates (below) — and a logical one. A frame's `animation-timing-function` eases to the next frame, and
 the animation's own where it gives none. The values sit at the animation
 origin, over the author's normal declarations and under their
 `!important` ones (CSS Cascade 5, 6.1). And what an animation sets acts as
@@ -8471,8 +8471,12 @@ element that sets it to nothing of its own; and one a `var()` makes invalid
 where it is computed is as though `unset`. A rule with no `syntax` or no
 `inherits`, or with no `initial-value` and a syntax other than `*`,
 registers nothing. The `syntax` is read and not checked: a value is the one
-written, not computed to its type, and a registered property does not
-animate between values. A page's `CSS.registerProperty` registers one as a
+written, not computed to its type. One registered as a `<number>`, an
+`<integer>`, a `<length>`, a `<percentage>`, a `<length-percentage>`, an
+`<angle>`, a `<time>`, a `<resolution>` or a `<color>`, or a list of one
+of them, is interpolated as that type by an animation and added as it, a
+list item by item (`registered-mix.ts`); any other syntax goes over
+half-way. A transition of one is not run yet. A page's `CSS.registerProperty` registers one as a
 rule does, ahead of any rule's, and at once: it throws a `SyntaxError`
 for a name that is no custom property's, a syntax that is none, or an
 initial value that is missing, not of the syntax, or not computationally
