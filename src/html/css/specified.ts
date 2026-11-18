@@ -6,6 +6,7 @@
 // reads back is never lost to a grammar this has not got.
 
 import { PASSIVE } from './passive-properties.js';
+import { parseTransform } from './transform.js';
 import { NO_TRANSITIONS, transitionLonghand } from './animation.js';
 import { backgroundSpecified } from './backgrounds-specified.js';
 import {
@@ -214,6 +215,17 @@ export function specifiedValue(
     return transitionLonghand(NO_TRANSITIONS, 'properties', word) === null
       ? null
       : undefined;
+  }
+  // a transform list (CSS Transforms 1, 7), refused where the cascade
+  // would refuse it; a math function is the cascade's to judge, since it
+  // may read what no check here resolves
+  if (name === 'transform' || name === '-webkit-transform') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    if (/(?:calc|min|max|clamp|sign|abs|round|mod|rem)\(/i.test(word)) {
+      return undefined;
+    }
+    return parseTransform(word, CHECK) === undefined ? null : undefined;
   }
   if (name === 'scale') {
     const word = value.trim();
