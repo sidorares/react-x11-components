@@ -44,6 +44,7 @@ import { cornerShapeOf } from './corner-shape.js';
 import { textIndentParts } from './text-indent.js';
 import { CALC_SIZE, calcSizeOf } from './calc-size.js';
 import { parseMath, parseMathNumberWith } from './calc.js';
+import { crossFadeSyntax, gradientSyntax } from './gradient-syntax.js';
 import { joinFamilies, parseUrl, readFamilies } from './parse.js';
 import type { FamilyName } from './parse.js';
 import { decodesImageType } from '../image-types.js';
@@ -3937,6 +3938,11 @@ export function applyDeclaration(
     case 'min-height': {
       const across = name.endsWith('width');
       if (setCalcSize(style, name, value, ctx)) return;
+      // a value that is no size sets nothing, an earlier declaration's
+      // `calc-size()` and anchor size included
+      if (!ANCHOR_SIZE.test(value) && !takesSize(value, ctx, across, false)) {
+        return;
+      }
       const sizeField = `${camel(name)}Size` as SizeField;
       style[sizeField] = null;
       // the anchor's size, kept beside the size, which takes the fallback
@@ -4000,6 +4006,9 @@ export function applyDeclaration(
     case 'max-height': {
       const across = name === 'max-width';
       if (setCalcSize(style, name, value, ctx)) return;
+      if (!ANCHOR_SIZE.test(value) && !takesSize(value, ctx, across, true)) {
+        return;
+      }
       style[across ? 'maxWidthSize' : 'maxHeightSize'] = null;
       if (
         setAnchorSize(
@@ -4616,6 +4625,14 @@ export function applyDeclaration(
       return;
     }
     case 'font-weight': {
+      // a keyword, or a number from 1 to 1000; anything else is dropped,
+      // and leaves the weight an earlier declaration gave (CSS Fonts 4,
+      // 2.2), where it had been the parent's
+      const v = value.trim().toLowerCase();
+      if (!/^(?:normal|bold|bolder|lighter)$/.test(v)) {
+        const n = parseNumber(v);
+        if (n === null || n < 1 || n > 1000) return;
+      }
       style.fontWeight = parseWeight(value, parent.fontWeight);
       return;
     }
@@ -5972,6 +5989,22 @@ export const ANCHOR_SIZE_UNSET: Record<AnchorSizeField, Len | 'none'> = {
  * not parse is dropped — and false for any other value, which clears what
  * was kept for the field.
  */
+/** Whether a size property takes a value that is no `calc-size()` and no
+ *  anchor size: a content size's keyword, a length or percentage that is
+ *  not negative (`auto` but for a limit), or a limit's `none`. */
+function takesSize(
+  value: string,
+  ctx: UnitContext,
+  across: boolean,
+  limit: boolean,
+): boolean {
+  if (contentSizeOf(value, ctx, across)) return true;
+  if (limit && value.trim().toLowerCase() === 'none') return true;
+  const len = parseLength(value, ctx);
+  // a limit is no `auto`
+  return len !== null && notNegative(len) && !(limit && len === AUTO);
+}
+
 function setAnchorSize(
   style: ComputedStyle,
   field: AnchorSizeField,
@@ -7264,7 +7297,13 @@ function backgroundImageOf(
   const v = text.trim();
   if (IMAGE_SET.test(v)) return imageSetOf(v, ctx);
   const lower = v.toLowerCase();
-  if (IMAGE_FUNCTION.test(lower)) return parseGradient(v, ctx);
+  if (IMAGE_FUNCTION.test(lower)) {
+    // a gradient written as none is no image, and the declaration goes
+    if (gradientSyntax(v) === false || crossFadeSyntax(lower) === false) {
+      return undefined;
+    }
+    return parseGradient(v, ctx);
+  }
   if (lower.startsWith('src(')) return srcUrl(v);
   if (lower.startsWith('image(')) return imageFunctionOf(v);
   if (lower !== 'none' && !lower.startsWith('url(')) return undefined;
@@ -7956,6 +7995,27 @@ const VARIANTS: Record<string, [VariantKind, string]> = {
   super: ['position', 'sups=1'],
 };
 
+/** The group each `font-variant` keyword excludes the rest of, where it
+ *  is not its longhand's whole: caps and position have one each. */
+const VARIANT_GROUPS: Readonly<Record<string, string>> = {
+  'lining-nums': 'figures',
+  'oldstyle-nums': 'figures',
+  'proportional-nums': 'spacing',
+  'tabular-nums': 'spacing',
+  'diagonal-fractions': 'fractions',
+  'stacked-fractions': 'fractions',
+  ordinal: 'ordinal',
+  'slashed-zero': 'zero',
+  'common-ligatures': 'common',
+  'no-common-ligatures': 'common',
+  'discretionary-ligatures': 'discretionary',
+  'no-discretionary-ligatures': 'discretionary',
+  'historical-ligatures': 'historical',
+  'no-historical-ligatures': 'historical',
+  contextual: 'contextual',
+  'no-contextual': 'contextual',
+};
+
 const VARIANT_FIELDS = {
   numeric: 'fontVariantNumeric',
   caps: 'fontVariantCaps',
@@ -8050,9 +8110,16 @@ function parseFontVariant(
   ) {
     named.ligatures = [NO_LIGATURES];
   } else {
+    // each of a longhand's exclusive groups at most once (CSS Fonts 4,
+    // 6.4-6.7): a caps value and a position are one keyword, and a
+    // ligature, figure, spacing or fraction value one of each pair
+    const groups = new Set<string>();
     for (const word of words) {
       const known = VARIANTS[word];
       if (!known || !kinds.includes(known[0])) return null;
+      const group = VARIANT_GROUPS[word] ?? known[0];
+      if (groups.has(group)) return null;
+      groups.add(group);
       (named[known[0]] ??= []).push(known[1]);
     }
   }
@@ -11069,9 +11136,23 @@ export function cascadeTakes(name: string, value: string): boolean | undefined {
 
 const TAKES = new Map<string, boolean | undefined>();
 
+const CSS_WIDE_KEYWORD =
+  /^(?:inherit|initial|unset|revert|revert-layer|revert-rule)$/;
+
 function cascadeTakesNow(name: string, value: string): boolean | undefined {
   const prop = name.toLowerCase();
   if (UNASKED.has(prop)) return undefined;
+  // a font property kept as a bit of `fontUnsaid`, which another sets as
+  // well, answers by its own grammar
+  const unsaid = UNSAID_FONT[prop];
+  if (unsaid) {
+    const v = value.trim().toLowerCase();
+    if (!v || CSS_WIDE_KEYWORD.test(v) || /\b(?:var|env|attr)\(/.test(v)) {
+      return undefined;
+    }
+    if (unreadValue(prop, v)) return undefined;
+    return v === unsaid.initial || unsaid.takes(v);
+  }
   const fields = INHERIT_TARGETS[PREFIXED_ALIASES[prop] ?? prop];
   if (!fields?.length) return undefined;
   const v = value.trim();

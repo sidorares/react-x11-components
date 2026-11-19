@@ -3820,6 +3820,24 @@ but the one test that asks V8. The facade reads a property of the parsed
 record, and makes its lists only where a page asks for them: built at every
 read, they were most of what a read cost a page.
 
+**A box's baseline as a flex or grid item is one answer, its first or its
+last** (`itemBaselineOf`, `alignmentLast`, `flexBaseline`, `baselineKind`
+in `layout/inline.ts`). A flex box's are its first line's and its last
+line's, a grid's its first row's and its last row's (`firstItem`,
+`lastItem`), a table's its first row's and its last row's, and a block's
+its first line's and its last line's — not an inline block's last, which
+`lastBaselineIn` takes Blink's way. Three things are load-bearing. **The
+layout keyword for `last baseline` is `flex-end`**, its fallback, so
+anything that aligns by a last baseline asks `baselineKind`, which reads
+the text, and never `alignSelf` alone. **A flex box's first and last lines,
+and its startmost and endmost items, are where they stand**: the top line
+and the bottom one wherever `wrap-reverse` stacks them, the leftmost item in
+a reversed row, as Chromium takes them, and not the first in `order`. And
+**an item aligned by its last baseline is in the group of the row it ends
+in**, which a grid's first baseline does not read and its last does. In a
+vertical writing mode a `last baseline` keeps its fallback, the end: its
+baselines across the page are no line's yet.
+
 **A block's `justify-self` and a block container's `align-content` are
 read from their texts, and the content they move goes the way a button's
 does** (`blockJustify`, `contentAlignment`, `centreButton`). A block that
@@ -4833,7 +4851,21 @@ closes a way out a DOM binding opens by accident:
   a measurement. It had been a stand-in that reported each target once,
   whole, and joshwcomeau.com's header, which hears that it is stuck from
   an observer with `rootMargin: "-1px 0px 0px 0px"` and a threshold of 1,
-  never put its glass on.
+  never put its glass on. **A target in another document than the
+  realm's is measured in the view that draws it** (`_throughFrames`), with
+  the viewport for its root, and cut by each frame's content box and what
+  shows of the frame up to the realm's document; its box is told in its
+  own viewport, and the root and its margin are still the realm's to cut.
+  An element of the realm's document is no root of it. A frame's paint
+  tells the page's runner as well as its own (`_onPaint` in `frames.ts`),
+  or what it laid out after the page's last paint is never asked again: a
+  frame with no realm has no runner to ask. **A shape in an
+  inline `<svg>` is measured by its outermost `<svg>`**
+  (`intersectionStandIn`): it has no box of the document's, so its own
+  bounding box is cut by what shows of the drawing. And a target with no
+  box is told with no root bounds, as Chromium tells it. Anything new that
+  hands the host a target it has no box for goes through the stand-in, or
+  it is told 0 by 0 and never in view.
 - **A `ResizeObserver` is told in the frame, and measures only where the
   boxes moved.** Its steps run after the animation frame callbacks and
   before the intersection observers (`updateResizeObservers`, Resize
