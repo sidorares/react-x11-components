@@ -3938,6 +3938,11 @@ export function applyDeclaration(
     case 'min-height': {
       const across = name.endsWith('width');
       if (setCalcSize(style, name, value, ctx)) return;
+      // a value that is no size sets nothing, an earlier declaration's
+      // `calc-size()` and anchor size included
+      if (!ANCHOR_SIZE.test(value) && !takesSize(value, ctx, across, false)) {
+        return;
+      }
       const sizeField = `${camel(name)}Size` as SizeField;
       style[sizeField] = null;
       // the anchor's size, kept beside the size, which takes the fallback
@@ -4001,6 +4006,9 @@ export function applyDeclaration(
     case 'max-height': {
       const across = name === 'max-width';
       if (setCalcSize(style, name, value, ctx)) return;
+      if (!ANCHOR_SIZE.test(value) && !takesSize(value, ctx, across, true)) {
+        return;
+      }
       style[across ? 'maxWidthSize' : 'maxHeightSize'] = null;
       if (
         setAnchorSize(
@@ -5973,6 +5981,22 @@ export const ANCHOR_SIZE_UNSET: Record<AnchorSizeField, Len | 'none'> = {
  * not parse is dropped — and false for any other value, which clears what
  * was kept for the field.
  */
+/** Whether a size property takes a value that is no `calc-size()` and no
+ *  anchor size: a content size's keyword, a length or percentage that is
+ *  not negative (`auto` but for a limit), or a limit's `none`. */
+function takesSize(
+  value: string,
+  ctx: UnitContext,
+  across: boolean,
+  limit: boolean,
+): boolean {
+  if (contentSizeOf(value, ctx, across)) return true;
+  if (limit && value.trim().toLowerCase() === 'none') return true;
+  const len = parseLength(value, ctx);
+  // a limit is no `auto`
+  return len !== null && notNegative(len) && !(limit && len === AUTO);
+}
+
 function setAnchorSize(
   style: ComputedStyle,
   field: AnchorSizeField,
