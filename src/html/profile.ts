@@ -24,6 +24,11 @@
 // neither — Node 20 — has no profile: `HtmlProfile.open` answers null and a
 // host keeps memory. Nothing happens as this module is imported.
 //
+// The bytes of the blobs IndexedDB records hold are another,
+// `indexeddb-blobs.sqlite` (`ProfileIdbBlobs`): a page that keeps a
+// game's two gigabytes of content as blobs would otherwise have them all
+// in its records, read back as text whenever it opens the database.
+//
 // The HTTP cache is a second file beside it, `cache.sqlite`
 // (`profile.httpCache`): its rows are bodies of up to megabytes, which would
 // grow the profile's write-ahead log, and every write to it would move the
@@ -36,6 +41,7 @@ import type {
 } from './http-cache.js';
 import { MemoryStorageArea } from './storage.js';
 import type {
+  HtmlIdbBlobs,
   HtmlIdbCommit,
   HtmlIdbSnapshot,
   HtmlIdbStoreSchema,
@@ -63,10 +69,13 @@ import type { ClearTimeout, SetTimeout } from './scripts/platform.js';
 declare const setInterval: SetTimeout;
 declare const clearInterval: ClearTimeout;
 declare const crypto: { getRandomValues(array: Uint8Array): Uint8Array };
+declare const Buffer: {
+  from(text: string, encoding: 'base64'): Uint8Array;
+};
 
 /** The schema this module writes and reads. A file of a later one is not
  *  opened; an earlier one is brought up to this. */
-export const PROFILE_VERSION = 3;
+export const PROFILE_VERSION = 4;
 
 /** The file in a profile's directory. */
 export const PROFILE_FILE = 'profile.sqlite';
@@ -79,6 +88,14 @@ const CACHE_VERSION = 1;
  *  and the schema it is in. */
 export const WORKERS_FILE = 'workers.sqlite';
 const WORKERS_VERSION = 1;
+
+/** The bytes of the blobs IndexedDB records hold, a fourth file, and the
+ *  schema it is in. */
+export const IDB_BLOBS_FILE = 'indexeddb-blobs.sqlite';
+const IDB_BLOBS_VERSION = 1;
+/** How many of a blob's bytes are a row: a read of a range reads the rows
+ *  it meets, and no more. */
+const BLOB_PART = 1 << 20;
 
 /** A prepared statement: the slice `node:sqlite` and `bun:sqlite` share,
  *  with positional parameters alone. */
@@ -203,6 +220,14 @@ CREATE TABLE IF NOT EXISTS idb_records (
   value TEXT NOT NULL,
   PRIMARY KEY (origin, db, store, key)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS idb_blob_refs (
+  origin TEXT NOT NULL,
+  db TEXT NOT NULL,
+  store TEXT NOT NULL,
+  key TEXT NOT NULL,
+  id TEXT NOT NULL,
+  PRIMARY KEY (origin, db, store, key, id)
+) WITHOUT ROWID;
 `;
 
 /** How long a change stays in `storage_events` for another process to
@@ -235,6 +260,7 @@ export class HtmlProfile {
   readonly serviceWorkers: HtmlServiceWorkerStore | null;
   private _cache: ProfileHttpCache | null;
   private _workers: ProfileWorkers | null;
+  private _blobs: ProfileIdbBlobs | null = null;
   private _db: Database;
   private _dataVersion: Statement;
   private _lastData = -1;
@@ -272,9 +298,22 @@ export class HtmlProfile {
       db.close();
       return null;
     }
+    let blobs: ProfileIdbBlobs | null = null;
+    try {
+      blobs = ProfileIdbBlobs.open(Database, fs, dir);
+    } catch {
+      // a store that cannot be opened keeps each blob in its record, as
+      // a profile did before it had one
+    }
     if (version < PROFILE_VERSION) {
       db.exec('BEGIN IMMEDIATE');
       db.exec(SCHEMA);
+      // asked again inside the transaction: another process may have just
+      // brought the file up
+      const now = Number(
+        db.prepare('PRAGMA user_version').get()?.user_version ?? 0,
+      );
+      if (now < 4 && blobs) blobsOutOfRecords(db, blobs);
       db.exec(`PRAGMA user_version = ${PROFILE_VERSION}`);
       db.exec('COMMIT');
     }
@@ -300,7 +339,7 @@ export class HtmlProfile {
       // a store that cannot be opened is memory: a page's `caches` still
       // work, for as long as the process
     }
-    return new HtmlProfile(db, options, cache, workers);
+    return new HtmlProfile(db, options, cache, workers, blobs);
   }
 
   private constructor(
@@ -308,11 +347,13 @@ export class HtmlProfile {
     options: HtmlProfileOptions,
     cache: ProfileHttpCache | null,
     workers: ProfileWorkers | null,
+    blobs: ProfileIdbBlobs | null,
   ) {
     this._db = db;
     this._dataVersion = db.prepare('PRAGMA data_version');
     this.cookies = new ProfileCookies(this, db);
-    this.storage = new ProfileStorage(this, db, options.tab ?? null);
+    this.storage = new ProfileStorage(this, db, options.tab ?? null, blobs);
+    this._blobs = blobs;
     this.permissions = new ProfilePermissions(db);
     this._cache = cache;
     this.httpCache = cache;
@@ -364,6 +405,17 @@ export class HtmlProfile {
       } else this._db.prepare('DELETE FROM session_storage').run();
       this._db.prepare('DELETE FROM storage_events').run();
     });
+    // the blobs no record names: no document of the last session can
+    // still hold one, and none of this one has read one yet
+    if (this._blobs) {
+      const named = new Set(
+        this._db
+          .prepare('SELECT DISTINCT id FROM idb_blob_refs')
+          .all()
+          .map((row) => String(row.id)),
+      );
+      this._blobs.keepOnly(named);
+    }
   }
 
   /** Drop what a closed tab kept of its session. */
@@ -379,6 +431,7 @@ export class HtmlProfile {
     this._db.close();
     this._cache?.close();
     this._workers?.close();
+    this._blobs?.close();
   }
 
   /** A function run in one transaction, which a throw rolls back. */
@@ -1113,6 +1166,7 @@ class ProfileStorage implements HtmlStorage {
     private readonly _profile: HtmlProfile,
     db: Database,
     private readonly _tab: string | null,
+    blobs: ProfileIdbBlobs | null = null,
   ) {
     this._localStatements = {
       all: db.prepare('SELECT key, value FROM local_storage WHERE origin = ?'),
@@ -1149,7 +1203,7 @@ class ProfileStorage implements HtmlStorage {
       'SELECT * FROM storage_events WHERE seq > ? ORDER BY seq',
     );
     this._lastEvent = db.prepare('SELECT MAX(seq) AS seq FROM storage_events');
-    this.indexedDB = new ProfileIndexedDB(_profile, db);
+    this.indexedDB = new ProfileIndexedDB(_profile, db, blobs);
   }
   local(origin: string): HtmlStorageArea {
     let area = this._local.get(origin);
@@ -1266,6 +1320,260 @@ class ProfileSessionArea implements HtmlStorageArea {
 
 // --- IndexedDB -------------------------------------------------------------------
 
+const IDB_BLOBS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS blobs (
+  id TEXT PRIMARY KEY,
+  origin TEXT NOT NULL,
+  size INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS parts (
+  id TEXT NOT NULL,
+  n INTEGER NOT NULL,
+  bytes BLOB NOT NULL,
+  PRIMARY KEY (id, n)
+) WITHOUT ROWID;
+`;
+
+/**
+ * The bytes of the blobs IndexedDB records hold (`HtmlIndexedDB.blobs`),
+ * in `IDB_BLOBS_FILE`, a `BLOB_PART` of them a row. A file of its own, as
+ * the HTTP cache is: two gigabytes of a page's content written to the
+ * profile's would go through the log every cookie write does, and move the
+ * `data_version` every reader of a cookie watches.
+ *
+ * A blob is written before the record that names it is committed, in the
+ * profile's file, so the two files can disagree only by a blob no record
+ * names, which `keepOnly` lets go of.
+ */
+class ProfileIdbBlobs implements HtmlIdbBlobs {
+  private _made: Statement;
+  private _owner: Statement;
+  private _part: Statement;
+  private _put: Statement;
+  private _parts: Statement;
+  private _ids: Statement;
+  private _dropBlob: Statement;
+  private _dropParts: Statement;
+  /** Whose each blob asked about is, by its id. */
+  private _origins = new Map<string, string>();
+
+  static open(
+    Database: DatabaseClass,
+    fs: FsModule,
+    dir: string,
+  ): ProfileIdbBlobs {
+    const path = `${dir.replace(/[\\/]+$/, '')}/${IDB_BLOBS_FILE}`;
+    const db = new Database(path);
+    try {
+      try {
+        fs.chmodSync(path, 0o600);
+      } catch {
+        // a file system with no modes
+      }
+      db.exec('PRAGMA busy_timeout = 5000');
+      db.exec('PRAGMA journal_mode = WAL');
+      db.exec('PRAGMA synchronous = NORMAL');
+      const version = (): number =>
+        Number(db.prepare('PRAGMA user_version').get()?.user_version ?? 0);
+      if (version() > IDB_BLOBS_VERSION) {
+        throw new Error('a later schema');
+      }
+      if (version() < IDB_BLOBS_VERSION) {
+        db.exec('BEGIN IMMEDIATE');
+        db.exec(IDB_BLOBS_SCHEMA);
+        db.exec(`PRAGMA user_version = ${IDB_BLOBS_VERSION}`);
+        db.exec('COMMIT');
+      }
+      return new ProfileIdbBlobs(db);
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+  }
+
+  private constructor(private readonly _db: Database) {
+    this._made = _db.prepare(
+      'INSERT INTO blobs (id, origin, size) VALUES (?, ?, ?)',
+    );
+    this._owner = _db.prepare('SELECT origin FROM blobs WHERE id = ?');
+    this._part = _db.prepare('SELECT bytes FROM parts WHERE id = ? AND n = ?');
+    this._put = _db.prepare(
+      'INSERT OR REPLACE INTO parts (id, n, bytes) VALUES (?, ?, ?)',
+    );
+    this._parts = _db.prepare(
+      'SELECT n, bytes FROM parts WHERE id = ? AND n >= ? AND n <= ? ORDER BY n',
+    );
+    this._ids = _db.prepare('SELECT id FROM blobs');
+    this._dropBlob = _db.prepare('DELETE FROM blobs WHERE id = ?');
+    this._dropParts = _db.prepare('DELETE FROM parts WHERE id = ?');
+  }
+
+  create(origin: string, size: number): string {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    const id = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+    this._made.run(id, origin, Math.max(0, Math.floor(size)));
+    this._origins.set(id, origin);
+    return id;
+  }
+
+  private _isOf(origin: string, id: string): boolean {
+    let owner = this._origins.get(id);
+    if (owner === undefined) {
+      const row = this._owner.get(id);
+      if (!row) return false;
+      owner = String(row.origin);
+      this._origins.set(id, owner);
+    }
+    return owner === origin;
+  }
+
+  write(origin: string, id: string, at: number, bytes: Uint8Array): void {
+    if (!this._isOf(origin, id) || !bytes.length) return;
+    this._db.exec('BEGIN IMMEDIATE');
+    try {
+      for (let done = 0; done < bytes.length;) {
+        const offset = at + done;
+        const n = Math.floor(offset / BLOB_PART);
+        const into = offset - n * BLOB_PART;
+        const take = Math.min(BLOB_PART - into, bytes.length - done);
+        const piece = bytes.subarray(done, done + take);
+        let row: Uint8Array = piece;
+        if (into > 0 || take < BLOB_PART) {
+          // a part written a piece at a time keeps what it had around it
+          const had = this._part.get(id, n)?.bytes as Uint8Array | undefined;
+          const length = Math.max(had?.length ?? 0, into + take);
+          row = new Uint8Array(length);
+          if (had) row.set(had);
+          row.set(piece, into);
+        }
+        this._put.run(id, n, row);
+        done += take;
+      }
+      this._db.exec('COMMIT');
+    } catch (error) {
+      this._db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  read(origin: string, id: string, at: number, length: number): Uint8Array {
+    if (!this._isOf(origin, id) || length <= 0 || at < 0) {
+      return new Uint8Array(0);
+    }
+    const first = Math.floor(at / BLOB_PART);
+    const last = Math.floor((at + length - 1) / BLOB_PART);
+    const out = new Uint8Array(length);
+    let filled = 0;
+    for (const row of this._parts.all(id, first, last)) {
+      const n = Number(row.n);
+      const bytes = row.bytes as Uint8Array;
+      const start = n * BLOB_PART;
+      const from = Math.max(at, start) - start;
+      const to = Math.min(at + length, start + bytes.length) - start;
+      if (to <= from) continue;
+      out.set(bytes.subarray(from, to), start + from - at);
+      filled = Math.max(filled, start + to - at);
+    }
+    return filled === length ? out : out.subarray(0, filled);
+  }
+
+  /** Let go of every blob but those `named`. */
+  keepOnly(named: ReadonlySet<string>): void {
+    const gone = this._ids
+      .all()
+      .map((row) => String(row.id))
+      .filter((id) => !named.has(id));
+    if (!gone.length) return;
+    this._db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const id of gone) {
+        this._dropParts.run(id);
+        this._dropBlob.run(id);
+        this._origins.delete(id);
+      }
+      this._db.exec('COMMIT');
+    } catch (error) {
+      this._db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  close(): void {
+    this._db.close();
+  }
+}
+
+/** How long a record has to be before it may hold a blob written into it,
+ *  as a profile before `IDB_BLOBS_FILE` kept each: a blob of a few bytes
+ *  in a short record is left where it is. */
+const INLINE_BLOB_LENGTH = 64 * 1024;
+
+/**
+ * A profile of before `IDB_BLOBS_FILE` brought up to it, in its upgrade's
+ * transaction: each blob a long record holds written to `blobs`, and named
+ * in the record in its place. A database with gigabytes in it could not be
+ * opened, since it was read back as one string, so this is what lets a page
+ * that kept one use it again. A record at a time, so no more than one is
+ * read at once.
+ */
+function blobsOutOfRecords(db: Database, blobs: ProfileIdbBlobs): void {
+  const long = db
+    .prepare(
+      'SELECT origin, db, store, key FROM idb_records WHERE length(value) > ?',
+    )
+    .all(INLINE_BLOB_LENGTH);
+  if (!long.length) return;
+  const read = db.prepare(
+    'SELECT value FROM idb_records WHERE origin = ? AND db = ? AND store = ? AND key = ?',
+  );
+  const write = db.prepare(
+    'UPDATE idb_records SET value = ? WHERE origin = ? AND db = ? AND store = ? AND key = ?',
+  );
+  const ref = db.prepare(
+    'INSERT OR IGNORE INTO idb_blob_refs (origin, db, store, key, id) VALUES (?, ?, ?, ?, ?)',
+  );
+  for (const row of long) {
+    const where = [row.origin, row.db, row.store, row.key].map(String);
+    const origin = where[0];
+    const value = read.get(...where)?.value;
+    if (typeof value !== 'string') continue;
+    let tree: unknown;
+    try {
+      tree = JSON.parse(value);
+    } catch {
+      continue;
+    }
+    const ids: string[] = [];
+    // a blob of the realm's encoding: `{ t: 'L', b: <base64>, … }`, which no
+    // value of a page's can be, since an object of the page's is `t: 'O'`
+    const walk = (node: unknown): void => {
+      if (node === null || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        for (const item of node) walk(item);
+        return;
+      }
+      const blob = node as Record<string, unknown>;
+      if (blob.t === 'L' && typeof blob.b === 'string') {
+        const bytes = Buffer.from(blob.b, 'base64');
+        const id = blobs.create(origin, bytes.length);
+        for (let at = 0; at < bytes.length; at += BLOB_PART) {
+          blobs.write(origin, id, at, bytes.subarray(at, at + BLOB_PART));
+        }
+        delete blob.b;
+        blob.h = id;
+        blob.s = bytes.length;
+        ids.push(id);
+        return;
+      }
+      for (const key of Object.keys(blob)) walk(blob[key]);
+    };
+    walk(tree);
+    if (!ids.length) continue;
+    write.run(JSON.stringify(tree), ...where);
+    for (const id of ids) ref.run(...where, id);
+  }
+}
+
 class ProfileIndexedDB implements HtmlIndexedDB {
   private _secret: Uint8Array | null = null;
   private _makeSecret: Statement;
@@ -1285,10 +1593,29 @@ class ProfileIndexedDB implements HtmlIndexedDB {
    *  else wrote. */
   private _stamps = new Map<string, number>();
   private _seen = -1;
+  private _unref: Statement;
+  private _ref: Statement;
+  private _unrefStore: Statement;
+  private _unrefDatabase: Statement;
+  readonly blobs?: HtmlIdbBlobs;
   constructor(
     private readonly _profile: HtmlProfile,
     db: Database,
+    blobs: ProfileIdbBlobs | null = null,
   ) {
+    if (blobs) this.blobs = blobs;
+    this._unref = db.prepare(
+      'DELETE FROM idb_blob_refs WHERE origin = ? AND db = ? AND store = ? AND key = ?',
+    );
+    this._ref = db.prepare(
+      'INSERT OR IGNORE INTO idb_blob_refs (origin, db, store, key, id) VALUES (?, ?, ?, ?, ?)',
+    );
+    this._unrefStore = db.prepare(
+      'DELETE FROM idb_blob_refs WHERE origin = ? AND db = ? AND store = ?',
+    );
+    this._unrefDatabase = db.prepare(
+      'DELETE FROM idb_blob_refs WHERE origin = ? AND db = ?',
+    );
     this._list = db.prepare(
       'SELECT name, version FROM idb_databases WHERE origin = ?',
     );
@@ -1378,13 +1705,21 @@ class ProfileIndexedDB implements HtmlIndexedDB {
       const kept = new Set(commit.stores.map((s) => s.name));
       for (const row of this._storeRecords.all(origin, name)) {
         const store = String(row.store);
-        if (!kept.has(store)) this._dropRecords.run(origin, name, store);
+        if (!kept.has(store)) {
+          this._dropRecords.run(origin, name, store);
+          this._unrefStore.run(origin, name, store);
+        }
       }
       for (const [store, key] of commit.delete) {
         this._delete.run(origin, name, store, key);
+        this._unref.run(origin, name, store, key);
       }
-      for (const [store, key, value] of commit.put) {
+      for (const [store, key, value, blobs] of commit.put) {
         this._put.run(origin, name, store, key, value);
+        this._unref.run(origin, name, store, key);
+        for (const id of blobs ?? []) {
+          this._ref.run(origin, name, store, key, id);
+        }
       }
       return Number(this._stamp.get(origin, name)?.stamp ?? 0);
     });
@@ -1415,6 +1750,7 @@ class ProfileIndexedDB implements HtmlIndexedDB {
       for (const row of this._storeRecords.all(origin, name)) {
         this._dropRecords.run(origin, name, String(row.store));
       }
+      this._unrefDatabase.run(origin, name);
     });
     this._stamps.delete(`${origin}\u0000${name}`);
   }

@@ -231,6 +231,15 @@ Where it does (`HtmlStorage.indexedDB`):
   (docs/prd-webcrypto.md), and `key_secret`, one row made by the first process
   to ask, is what opens it, here and after a restart. A profile is as readable
   to the local user as Chrome's: the boundary is a page's scripts.
+- A `Blob` a record holds is kept apart from it (`HtmlIndexedDB.blobs`), its
+  bytes in `indexeddb-blobs.sqlite`, a megabyte a row: the record names it by
+  id, written after its bytes, and the realm reads a range of it as the page
+  asks, holding none. `idb_blob_refs` beside the records says which records
+  name which blobs, and a blob none names is let go of at `endSession`, when
+  no document can still hold one. A file of its own for the reason the HTTP
+  cache has one. Written into its record as base64, a database of 2 GB of
+  files was read back as one string as it opened, past V8's string limit and
+  a tab's heap.
 - A worker's IndexedDB is the worker's realm's and is not kept: the worker's
   thread has no storage seam yet.
 

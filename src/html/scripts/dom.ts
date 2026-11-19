@@ -33536,6 +33536,9 @@ export function installDom(
     value: Any,
     moved?: Set<Any>,
     transfer?: { across: Across; moving: Any[]; later: Array<() => void> },
+    /** Where a blob's bytes go instead of into the text: the id of a blob
+     *  the host keeps (`idbBlobAside`), or null to write them in. */
+    blobAside?: (blob: Any) => string | null,
   ): string => {
     const seen = new Map<Any, number>();
     const wireOf = new Map<Any, string>();
@@ -33581,6 +33584,17 @@ export function installDom(
       seen.set(v, index);
       const tag = Object.prototype.toString.call(v).slice(8, -1);
       if (v instanceof Blob) {
+        const kept = blobAside?.(v);
+        if (kept) {
+          return {
+            i: index,
+            t: 'L',
+            h: kept,
+            s: v.size,
+            y: v.type,
+            ...(v instanceof File && { fn: v.name, fm: v.lastModified }),
+          };
+        }
         return {
           i: index,
           t: 'L',
@@ -33837,6 +33851,16 @@ export function installDom(
           out = byWire.get(str(v.w)) ?? null;
           break;
         case 'L':
+          // a blob the host keeps, read from there as it is asked for
+          if (typeof v.h === 'string') {
+            out = sourcedBlob(
+              v.fn === undefined
+                ? new Blob([], { type: v.y })
+                : new File([], str(v.fn), { type: v.y, lastModified: v.fm }),
+              idbBlobSource(v.h, Number(v.s) || 0),
+            );
+            break;
+          }
           out =
             v.fn === undefined
               ? new Blob([bytesOfBase64(v.b)], { type: v.y })
@@ -34197,9 +34221,78 @@ export function installDom(
       type: options?.type === undefined ? '' : str(options.type),
     };
   };
+  /** Where a blob's bytes are read from as they are asked for, a range at
+   *  a time, where it does not hold them: a blob an IndexedDB record holds,
+   *  kept by the host (`idbBlobSource`). `id` is the host's name for the
+   *  blob it reads all of, which a record that keeps it again names. */
+  interface BlobSource {
+    size: number;
+    read(from: number, to: number): Uint8Array;
+    id?: string;
+  }
+  /** A blob made to read its bytes from `src` each time they are asked
+   *  for, and to hold none: a page that keeps gigabytes of files in a
+   *  database holds none of them until it reads one. */
+  const sourcedBlob = (blob: Any, src: BlobSource): Any => {
+    blob._size = src.size;
+    blob._src = src;
+    Object.defineProperty(blob, '_bytes', {
+      get: (): Uint8Array => src.read(0, src.size),
+      set(value: Uint8Array) {
+        Object.defineProperty(blob, '_bytes', {
+          value,
+          writable: true,
+          configurable: true,
+        });
+        blob._src = undefined;
+        blob._size = undefined;
+      },
+      configurable: true,
+    });
+    return blob;
+  };
+  /** The source a blob made of `parts` reads from, where one of them reads
+   *  from one: each part a range of it, in order. Null where every part
+   *  holds its bytes. */
+  const sourceOfParts = (parts: Any[], endings: string): BlobSource | null => {
+    if (!parts.some((part) => part instanceof Blob && part._src)) return null;
+    // a copy of one such blob, as a clone makes, reads what it reads
+    if (parts.length === 1) return parts[0]._src;
+    const pieces = parts.map((part) =>
+      part instanceof Blob && part._src
+        ? part._src
+        : { bytes: blobBytes([part], endings) },
+    );
+    const sizes = pieces.map((p: Any) => (p.bytes ? p.bytes.length : p.size));
+    const size = sizes.reduce((n: number, k: number) => n + k, 0);
+    return {
+      size,
+      read(from: number, to: number): Uint8Array {
+        const out = new Uint8Array(Math.max(0, to - from));
+        let start = 0;
+        pieces.forEach((piece: Any, i: number) => {
+          const end = start + sizes[i];
+          const a = Math.max(from, start);
+          const b = Math.min(to, end);
+          if (b > a) {
+            out.set(
+              piece.bytes
+                ? piece.bytes.subarray(a - start, b - start)
+                : piece.read(a - start, b - start),
+              a - from,
+            );
+          }
+          start = end;
+        });
+        return out;
+      },
+    };
+  };
   class Blob {
-    _bytes: Uint8Array;
+    _bytes!: Uint8Array;
     _type: string;
+    /** What its bytes are read from, where it holds none. */
+    _src?: BlobSource;
     // a rest, since the interface's `length` is what it requires
     constructor(...given: Any[]) {
       const init = blobInit(
@@ -34207,7 +34300,9 @@ export function installDom(
         given[0],
         given[1],
       );
-      this._bytes = blobBytes(init.list, init.endings);
+      const src = sourceOfParts(init.list, init.endings);
+      if (src) sourcedBlob(this, src);
+      else this._bytes = blobBytes(init.list, init.endings);
       this._type = blobType(init.type);
     }
     get type(): string {
@@ -34228,6 +34323,14 @@ export function installDom(
       const from = edge(start, 0);
       const to = Math.max(edge(end, size), from);
       const blob = new Blob([], { type: type === undefined ? '' : str(type) });
+      const src = this._src;
+      if (src) {
+        return sourcedBlob(blob, {
+          size: to - from,
+          read: (a: number, b: number) => src.read(from + a, from + b),
+          ...(from === 0 && to === size && src.id && { id: src.id }),
+        });
+      }
       if (this._size === undefined) {
         blob._bytes = this._bytes.slice(from, to);
         return blob;
@@ -34253,6 +34356,25 @@ export function installDom(
       return new ReadableStream({
         type: 'bytes',
         pull(controller: Any): void {
+          // a blob read from a source is read a chunk at a time
+          const src = blob._src;
+          if (src) {
+            let piece: Uint8Array;
+            try {
+              piece = src.read(at, Math.min(at + BLOB_CHUNK, src.size));
+            } catch (error) {
+              controller.error(error);
+              return;
+            }
+            if (!piece.length) {
+              controller.close();
+              controller.byobRequest?.respond(0);
+              return;
+            }
+            at += piece.length;
+            controller.enqueue(piece);
+            return;
+          }
           try {
             bytes ??= blob._bytes;
           } catch (error) {
@@ -36034,6 +36156,60 @@ export function installDom(
       return undefined;
     }
   };
+  /** Whether the host keeps the blobs records hold apart from them
+   *  (`HtmlIdbBlobs`), asked once. */
+  let idbApart: boolean | undefined;
+  const idbBlobsApart = (): boolean =>
+    (idbApart ??= call('idb', 'blobs') === true);
+  /** The blobs a commit wrote to the host, each with the id it has there,
+   *  to be read from there once the commit is in. */
+  type IdbAside = [blob: Any, id: string][];
+  /** How many bytes of a blob cross to the host in one op, as base64. */
+  const IDB_BLOB_PIECE = 1 << 20;
+  /** A blob the host keeps, by its id there: read a range at a time, each
+   *  a few ops at most (the host answers up to its chunk). */
+  const idbBlobSource = (id: string, size: number): BlobSource => ({
+    id,
+    size,
+    read(from: number, to: number): Uint8Array {
+      from = Math.max(0, from);
+      to = Math.min(size, to);
+      const out = new Uint8Array(Math.max(0, to - from));
+      for (let at = from; at < to;) {
+        const piece = bytesOfBase64(
+          str(call('idb', 'blobRead', id, String(at), String(to - at))),
+        );
+        if (!piece.length) {
+          throw new DOMException(
+            'The blob could not be read from IndexedDB.',
+            'NotReadableError',
+          );
+        }
+        out.set(piece, at - from);
+        at += piece.length;
+      }
+      return out;
+    },
+  });
+  /** The id a record names a blob by: one the host has already, or a new
+   *  one its bytes are written to now, a piece at a time. Null where the
+   *  host would not make one, and the bytes go in the record. */
+  const idbBlobAside = (blob: Any, aside: IdbAside): string | null => {
+    const kept = blob._src?.id;
+    if (typeof kept === 'string') return kept;
+    const size = blob.size;
+    const id = call('idb', 'blobNew', String(size));
+    if (typeof id !== 'string') return null;
+    const src: BlobSource | undefined = blob._src;
+    const whole: Uint8Array | null = src ? null : blob._bytes;
+    for (let at = 0; at < size; at += IDB_BLOB_PIECE) {
+      const end = Math.min(size, at + IDB_BLOB_PIECE);
+      const piece = whole ? whole.subarray(at, end) : src!.read(at, end);
+      call('idb', 'blobWrite', id, String(at), base64OfBytes(piece));
+    }
+    aside.push([blob, id]);
+    return id;
+  };
   /** What changed between a store's records before a transaction and
    *  after, both in key order: the records to write, and the keys gone. */
   const idbDiff = (
@@ -36042,11 +36218,27 @@ export function installDom(
     after: { key: Any; value: Any }[],
     put: Any[],
     gone: Any[],
+    aside?: IdbAside,
   ): void => {
     let i = 0;
     let j = 0;
     const write = (record: { key: Any; value: Any }) => {
       try {
+        if (aside) {
+          const ids: string[] = [];
+          const value = serializeClone(
+            record.value,
+            undefined,
+            undefined,
+            (blob) => {
+              const id = idbBlobAside(blob, aside);
+              if (id) ids.push(id);
+              return id;
+            },
+          );
+          put.push([store, encodeKey(record.key), value, ids]);
+          return;
+        }
         put.push([store, encodeKey(record.key), serializeClone(record.value)]);
       } catch (error) {
         call(
@@ -36531,6 +36723,10 @@ export function installDom(
       const data: IdbData = this._db._data;
       const put: Any[] = [];
       const gone: Any[] = [];
+      // the blobs the records written hold go to the host apart, where it
+      // keeps them so, and those this realm held the bytes of read from
+      // there once the commit names them
+      const aside: IdbAside | undefined = idbBlobsApart() ? [] : undefined;
       const names =
         this.mode === 'versionchange'
           ? new Set([...this._before.keys(), ...data.stores.keys()])
@@ -36545,6 +36741,7 @@ export function installDom(
           after.records,
           put,
           gone,
+          aside,
         );
       }
       const stores = schemaOf(data);
@@ -36562,6 +36759,9 @@ export function installDom(
           if (stamp !== (data.stamp ?? 0) + 1) data.stale = true;
           data.stamp = stamp;
           data.schema = schema;
+          for (const [blob, id] of aside ?? []) {
+            sourcedBlob(blob, idbBlobSource(id, blob.size));
+          }
         }
       } catch (error) {
         call(

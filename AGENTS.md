@@ -4931,7 +4931,14 @@ closes a way out a DOM binding opens by accident:
   differs goes in `GpuContext._command`, with a test in
   `test/html/webgl-gpu.test.ts` that reads it from pixels.** A page's GL
   reaches the driver with none of ANGLE's validation, which `src/html/webgl.ts`
-  says at its top, and is why this is the host's to hand in.
+  says at its top, and is why this is the host's to hand in. **A call with
+  WebGL 2's `srcOffset` and `srcLength` crosses as the range they name**
+  (`windowed` in `scripts/webgl.ts`), the host taking WebGL 1's form:
+  Emscripten hands every uniform, buffer and texture its whole heap and an
+  offset, and sent whole, ut2004.dev's first `clearBufferfv` was 512 MB of
+  base64. Anything new with a view and an offset joins `windowed`, and an
+  upload whose length WebGL 2 leaves to the image's size works it out there
+  (`imageCount`).
 - **A synchronous request sleeps, and something else has to be awake.** The
   page's thread cannot wait for its own network, since nothing in JavaScript
   waits for a promise, and it cannot run the request while it sleeps either, so
@@ -5775,7 +5782,17 @@ list.
   lost at the next restart. A database another document committed to is
   read again as a transaction starts (`idbRefresh`), never while one of the
   realm's is under way (`active`), and nothing of it runs where the host
-  keeps none, which is what holds the Interop area where it was.
+  keeps none, which is what holds the Interop area where it was. **A blob
+  a record holds is kept apart from it, where the host has blobs**
+  (`HtmlIndexedDB.blobs`, `idbBlobAside`): its bytes go to the host a piece
+  at a time at the commit, the record names it by id (`h`), and the realm's
+  blob becomes one that reads a range from the host as it is asked
+  (`sourcedBlob`, `idbBlobSource`) and holds none. Written into the record,
+  ut2004.dev's 2 GB of game content was read back as one string when the
+  page opened its database, and the tab ran out of heap at every visit.
+  **Anything new that makes a blob of a blob keeps a `_src` lazy**
+  (`sourceOfParts`, `slice`, `stream`): `getAll()` clones every record, and
+  a clone that read `_bytes` read every file in the database.
 - **The origin private file system is the process's, and a worker asks for
   it** (`storage-manager.ts` in the realm, `opfs.ts` on the host, the `opfs`
   op). The tree and its locks are by origin at `opfs.ts`'s module scope, so a
