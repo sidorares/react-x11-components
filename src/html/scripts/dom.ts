@@ -660,6 +660,21 @@ export function installDom(
     reportOut(init);
     bridge('log', 'error', `Uncaught ${describe(error).text}`);
   };
+  /** An exception a callback threw reported in the callback's realm, which
+   *  is another of this page's where a page handed a frame's function on
+   *  (Web IDL 3.11, "invoke a callback function"): found by the callback's
+   *  own `Function`, and this realm where it cannot be. */
+  const reportFor = (fn: Any, error: Any): void => {
+    let here: Any = null;
+    try {
+      const F = Object.getPrototypeOf(fn)?.constructor;
+      if (typeof F === 'function' && F !== Function) {
+        here = F('return this')()?.__reportHere;
+      }
+    } catch {}
+    if (typeof here === 'function') here(error);
+    else report(error);
+  };
   /** Whether this realm is a dedicated worker's, whose errors its `Worker`
    *  hears (`__becomeWorker`). */
   let workerRealm = false;
@@ -38989,6 +39004,25 @@ export function installDom(
    * 0px"` and a threshold of 1 to hear that it is stuck: it reported every
    * target once, whole, and the header's glass never came.
    */
+  /** An observer's target, of this realm or another of this page's, by the
+   *  id this realm has for it: another's is handed over (`idOf`), and the
+   *  entries name the element the page passed (WPT's
+   *  target-in-different-window). */
+  const observedId = (target: Any, method: string): number => {
+    const element =
+      target instanceof Element ||
+      (!!target &&
+        typeof target === 'object' &&
+        !(target instanceof Node) &&
+        typeof target.__handOver === 'function' &&
+        target.nodeType === 1);
+    if (!element) {
+      throw new TypeError(
+        `Failed to execute '${method}' on 'IntersectionObserver': parameter 1 is not of type 'Element'.`,
+      );
+    }
+    return idOf(target);
+  };
   class IntersectionObserver {
     _fn: Any;
     _root: Any;
@@ -39001,7 +39035,10 @@ export function installDom(
      *  it was last past and whether it was in the root — -1 and false
      *  before it is first measured (3.1, the registration's
      *  `previousThresholdIndex` and `previousIsIntersecting`). */
-    _targets = new Map<Any, { index: number; intersecting: boolean }>();
+    _targets = new Map<
+      Any,
+      { index: number; intersecting: boolean; id: number }
+    >();
     /** What it has yet to hand its callback. */
     _queued: Any[] = [];
     constructor(fn: Any, options: Any = {}) {
@@ -39074,22 +39111,14 @@ export function installDom(
       return this._trackVisibility;
     }
     observe(target: Any): void {
-      if (!(target instanceof Element)) {
-        throw new TypeError(
-          "Failed to execute 'observe' on 'IntersectionObserver': parameter 1 is not of type 'Element'.",
-        );
-      }
+      const id = observedId(target, 'observe');
       if (this._targets.has(target)) return;
-      this._targets.set(target, { index: -1, intersecting: false });
+      this._targets.set(target, { index: -1, intersecting: false, id });
       intersecting.add(this);
       wantFrame();
     }
     unobserve(target: Any): void {
-      if (!(target instanceof Element)) {
-        throw new TypeError(
-          "Failed to execute 'unobserve' on 'IntersectionObserver': parameter 1 is not of type 'Element'.",
-        );
-      }
+      observedId(target, 'unobserve');
       this._targets.delete(target);
       if (!this._targets.size) intersecting.delete(this);
     }
@@ -39137,6 +39166,14 @@ export function installDom(
       let i = 1;
       for (const [target, was] of this._targets) {
         let part = parts[i++] ?? '';
+        // one in a document of no browsing context is measured against the
+        // implicit root by nothing until it is adopted, as Chromium has it:
+        // no rendering updates such a document (WPT's
+        // target-in-detached-document). An element root tells it it is in
+        // no root (explicit-root-different-document)
+        if (this._root === null && !target.ownerDocument?.defaultView) {
+          continue;
+        }
         // a target in a frame's document: its box in its own viewport, and
         // where that viewport's corner is in this one's document
         const framed = part.startsWith('F');
@@ -39241,7 +39278,7 @@ export function installDom(
       observers.map((o) => [
         o._root instanceof Element ? o._root._id : 0,
         o.scrollMargin,
-        [...o._targets.keys()].map((t: Any) => t._id),
+        [...o._targets.values()].map((t) => t.id),
       ]),
     );
     intersectionsAsked = true;
@@ -39259,7 +39296,7 @@ export function installDom(
           try {
             observer._fn.call(observer, entries, observer);
           } catch (e) {
-            report(e);
+            reportFor(observer._fn, e);
           }
         }
       },
@@ -51040,6 +51077,15 @@ export function installDom(
     G.__handed = undefined;
     return value;
   };
+  // an exception a callback of this realm's threw where another realm
+  // called it, reported here, as Web IDL's "invoke a callback function"
+  // reports it in the callback's realm (`reportFor`)
+  Object.defineProperty(G, '__reportHere', {
+    value: (error: Any) => report(error),
+    configurable: false,
+    enumerable: false,
+    writable: false,
+  });
   // a node of this realm's, for another realm's op to take (`idOf`)
   Object.defineProperty(Node.prototype, '__handOver', {
     value(this: Any) {

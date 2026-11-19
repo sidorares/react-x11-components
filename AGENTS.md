@@ -4856,7 +4856,11 @@ closes a way out a DOM binding opens by accident:
   the viewport for its root, and cut by each frame's content box and what
   shows of the frame up to the realm's document; its box is told in its
   own viewport, and the root and its margin are still the realm's to cut.
-  An element of the realm's document is no root of it. A frame's paint
+  An element of the realm's document is no root of it. A target of
+  another realm of the page's is handed over for this realm's id
+  (`observedId`), the entries naming the element the page passed, and a
+  popup's is measured in its own viewport, which its paint asks the other
+  windows of its group to look at again (`intersectionsMoved`). A frame's paint
   tells the page's runner as well as its own (`_onPaint` in `frames.ts`),
   or what it laid out after the page's last paint is never asked again: a
   frame with no realm has no runner to ask. **A shape in an
