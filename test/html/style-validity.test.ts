@@ -54,6 +54,12 @@ const INVALID: [string, string][] = [
   ['z-index', '1.5'],
   ['letter-spacing', '1'],
   ['font-family', 'a, , b'],
+  ['background-image', 'linear-gradient(red, blue, lab)'],
+  ['background-image', 'linear-gradient(in lab shorter hue, red, blue)'],
+  ['background-image', 'radial-gradient(circle -10px at center, red, blue)'],
+  ['background-image', 'radial-gradient(at top 0px, red, blue)'],
+  ['background-image', 'conic-gradient(lab lab, red, blue)'],
+  ['background-image', 'cross-fade(101% red, green)'],
 ];
 
 const VALID: [string, string][] = [
@@ -68,6 +74,19 @@ const VALID: [string, string][] = [
   ['letter-spacing', 'normal'],
   ['font-family', 'Arial, sans-serif'],
   ['display', 'inline-block'],
+  [
+    'background-image',
+    'linear-gradient(to right in oklch longer hue, red, blue)',
+  ],
+  [
+    'background-image',
+    'radial-gradient(ellipse 10px 20% at left 10px top 20px, red, blue)',
+  ],
+  [
+    'background-image',
+    'conic-gradient(from 45deg at 10% 20%, red 0deg 90deg, blue)',
+  ],
+  ['background-image', '-webkit-linear-gradient(top, red, blue)'],
   ['width', 'calc(1px + 2%)'],
   ['color', 'var(--x)'],
   ['box-shadow', 'inherit'],
