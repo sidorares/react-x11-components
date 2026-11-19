@@ -859,3 +859,82 @@ test('a margin collapses through a line whose inline boxes have edges only above
   assert.strictEqual(boxOf(el, 'a').height, 0);
   assert.strictEqual(boxOf(el, 'b').y, 0);
 });
+
+test("a block's justify-self, or its parent's justify-items, shrinks it to fit and sets it across its containing block", async () => {
+  // CSS Box Alignment 3, 6.1: a block-level box in a block container is
+  // aligned across it by its `justify-self`, sized to fit where its width
+  // is `auto`; `normal` and `stretch` fill the line, and an `auto` margin
+  // takes it over. Every block filled its line, whatever it said
+  const item = (id: string, style: string) =>
+    `<div id="${id}" style="${style}"></div>`;
+  const { node } = await render(
+    '<style>body{margin:0} .c{width:100px} .c>div::before{content:"";' +
+      'display:block;width:20px;height:10px}</style>' +
+      '<div class="c">' +
+      item('start', 'justify-self:start') +
+      item('center', 'justify-self:center') +
+      item('end', 'justify-self:end') +
+      item('margin', 'justify-self:end;margin-left:auto;margin-right:auto') +
+      item('normal', '') +
+      '</div>' +
+      `<div class="c" style="justify-items:center">${item('items', '')}</div>`,
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).width];
+  assert.deepStrictEqual(at('start'), [0, 20], 'start');
+  assert.deepStrictEqual(at('center'), [40, 20], 'center');
+  assert.deepStrictEqual(at('end'), [80, 20], 'end');
+  assert.deepStrictEqual(at('margin'), [40, 20], 'auto margins first');
+  assert.deepStrictEqual(at('normal'), [0, 100], 'normal fills the line');
+  assert.deepStrictEqual(at('items'), [40, 20], "the parent's justify-items");
+});
+
+test("justify-items reaches only the boxes of its element's children, not an anonymous block nor a block in an inline", async () => {
+  // csswg-drafts#11461 and #11462: an anonymous block's `auto` is `normal`,
+  // and so is a block's whose parent element is an inline, the block around
+  // that inline being no parent of its. Both took the block's justify-items
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="width:200px;justify-items:right">' +
+      '<span id="in-anon" style="display:inline-block;width:100px;height:10px"></span>' +
+      '<div></div></div>' +
+      '<div style="width:200px;justify-items:right"><span style="justify-items:center">' +
+      '<div id="in-inline" style="min-width:50px;height:10px"></div></span></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(
+    boxOf(el, 'in-anon').x,
+    0,
+    'the anonymous block fills the line',
+  );
+  const b = boxOf(el, 'in-inline');
+  assert.deepStrictEqual(
+    [b.x, b.width],
+    [0, 200],
+    'the block in an inline stretches',
+  );
+});
+
+test("a block container's align-content holds its margins in and sets its content down it", async () => {
+  // CSS Box Alignment 3, 5.1: any value but `normal` makes the container a
+  // formatting context of its own, so its first child's margin stays inside
+  // it, and moves what it holds by its alignment in the height it has
+  const box = (id: string, align: string) =>
+    `<div id="${id}" style="height:100px;align-content:${align}">` +
+    `<div id="${id}-in" style="margin-top:10px;height:20px"></div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      box('normal', 'normal') +
+      box('start', 'start') +
+      box('center', 'center') +
+      box('end', 'end') +
+      box('around', 'space-around'),
+  );
+  const el = view(node);
+  const down = (id: string) => boxOf(el, `${id}-in`).y - boxOf(el, id).y;
+  assert.strictEqual(down('normal'), 0, 'its margin through the top');
+  assert.strictEqual(down('start'), 10, 'held in');
+  assert.strictEqual(down('center'), 45, 'in the middle of the room left');
+  assert.strictEqual(down('end'), 80, 'at the end');
+  assert.strictEqual(down('around'), 45, 'space-around as a safe centre');
+});

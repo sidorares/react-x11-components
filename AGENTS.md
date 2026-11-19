@@ -3838,6 +3838,19 @@ in**, which a grid's first baseline does not read and its last does. In a
 vertical writing mode a `last baseline` keeps its fallback, the end: its
 baselines across the page are no line's yet.
 
+**A block's `justify-self` and a block container's `align-content` are
+read from their texts, and the content they move goes the way a button's
+does** (`blockJustify`, `contentAlignment`, `centreButton`). A block that
+`justify-self` aligns is sized `fit-content` (`fitsContent`) and set in the
+slack `placeBlock` has, which an `auto` margin takes first. A container that
+`align-content` aligns is a formatting context of its own
+(`establishesBFC`), and its content is moved down by `centreButton`, which
+is asked wherever a height is decided after a box's layout — so **anything
+new that sets a block's height once it is laid out calls `centreButton`**,
+as the rule for buttons already says, or an aligned container keeps its
+content where its old height put it. `establishesBFC` asks every block, so
+`contentAlignment` tests the text for `normal` before anything else.
+
 **A computed colour is sRGB, and keeps what it was written as beside
 it.** Every drawing context reads a colour field as `#rrggbb` or `rgba()`,
 and the field holds that, whatever it was written in. Where its computed
@@ -4843,7 +4856,11 @@ closes a way out a DOM binding opens by accident:
   the viewport for its root, and cut by each frame's content box and what
   shows of the frame up to the realm's document; its box is told in its
   own viewport, and the root and its margin are still the realm's to cut.
-  An element of the realm's document is no root of it. An observer in a
+  An element of the realm's document is no root of it. A target of
+  another realm of the page's is handed over for this realm's id
+  (`observedId`), the entries naming the element the page passed, and a
+  popup's is measured in its own viewport, a popup's document being in its
+  opener's tree. An observer in a
   frame's realm with the implicit root measures against the top-level
   viewport, through every frame up to it (`_throughFrames`, which finds the
   page's document from the top of the tree, since a frame's realm knows no

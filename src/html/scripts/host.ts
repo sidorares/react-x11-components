@@ -3703,13 +3703,13 @@ export class DomHost {
    *  through it, a frame's observers the top viewport, may have moved. */
   othersPainted(): void {
     for (const host of this._s.observing) {
-      if (host !== this) host._intersectionsMoved();
+      if (host !== this) host.intersectionsMoved();
     }
   }
 
   /** Whether what this realm's intersection observers measure moved, which
    *  wakes a frame. */
-  private _intersectionsMoved(): void {
+  intersectionsMoved(): void {
     if (this._disposed || !this.entries || this._viewportsWoken) return;
     const seen = this._intersecting;
     if (seen && this._intersections(seen.query) !== seen.answer) {
@@ -3932,6 +3932,12 @@ export class DomHost {
     let oy = 0;
     for (let depth = 0; depth < 16; depth++) {
       const frame = this._s.frameOf.get(doc);
+      // a window's own document, a popup's, has its own viewport for the
+      // implicit root, as Chromium measures it (WPT's
+      // target-in-different-window)
+      if (!frame && depth === 0) {
+        return shown ? `F${rect(box)},0,0,${rect(shown)}` : `F${rect(box)},0,0`;
+      }
       if (!frame) return '';
       // the document it is in, which from a frame's realm may be no
       // document this realm knows: the page's, at the top of the tree

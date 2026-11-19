@@ -19430,6 +19430,45 @@ test('an IntersectionObserver measures a target in a same-origin frame through t
   );
 });
 
+test('an IntersectionObserver observes an element of another realm of the page, and a target in a document of no window only against an element root', async () => {
+  // a frame with a script runs in a realm of its own, whose elements are
+  // no `Element` of the page's: `observe` refused them, where Chrome
+  // measures them (WPT's target-in-different-window). A target in a
+  // document made by `createHTMLDocument` is measured against the implicit
+  // root by nothing until it is adopted (target-in-detached-document), and
+  // against an element root it is told it is in none
+  // (explicit-root-different-document)
+  const { text } = await hostedFrames(
+    '<style>body{margin:0} iframe{display:block;border:0;width:100px;height:50px}</style>' +
+      '<div id="root" style="height:10px"></div>' +
+      '<iframe id="f" srcdoc="<style>body{margin:0}</style><div id=&quot;t&quot; style=&quot;width:40px;height:40px&quot;></div><script>var own = 1;</script>"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var seen = [];' +
+      'function tell(what) { seen.push(what); document.getElementById("out").textContent = seen.sort().join("|"); }' +
+      'var lone = document.implementation.createHTMLDocument("").createElement("div");' +
+      'new IntersectionObserver(function (es) { tell("lone " + es.length); }).observe(lone);' +
+      'new IntersectionObserver(function (es) { tell("rooted " + es[0].isIntersecting); }, { root: document.getElementById("root") }).observe(lone);' +
+      'document.getElementById("f").onload = function () {' +
+      '  var t = document.getElementById("f").contentDocument.getElementById("t");' +
+      '  try {' +
+      '    new IntersectionObserver(function (es) {' +
+      '      var e = es[es.length - 1];' +
+      '      if (e.isIntersecting) tell(["framed", e.target === t, e.boundingClientRect.width].join(" "));' +
+      '    }).observe(t);' +
+      '  } catch (e) { tell("threw " + e.name); }' +
+      '};' +
+      '</script>',
+    {},
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t.includes('framed') || t.includes('threw'),
+    ),
+    'framed true 40|rooted false',
+  );
+});
+
 test('an IntersectionObserver in a frame measures against the top-level viewport, and one with a document for its root against that document', async () => {
   // Intersection Observer, 3.2.8: the implicit root of an observer in a
   // frame is the top-level document's viewport, which the frame's realm
@@ -22213,4 +22252,30 @@ test('animate() reads every easing it is handed, and a calculation of numbers is
   const text = await settled(doc, 'out', (t) => t !== '');
   assert.ok(text, doc.logs.join('\n'));
   assert.deepEqual(JSON.parse(text), ['TypeError', 'TypeError', '0.5']);
+});
+
+test("a <style>'s disabled is its sheet's, so a page turns the style off through the element", async () => {
+  // WPT css-align's align-content-block-006 to -010 scramble their boxes with
+  // a `<style>` they then turn off this way: with no `disabled` on the
+  // element, the scramble stayed and every box was checked under it
+  const doc = await hosted(
+    '<style id="s">#b{padding-left:30px}</style><p id="out">-</p>' +
+      '<div id="b"><span id="i">x</span></div><script>' +
+      'var s = document.getElementById("s"), i = document.getElementById("i"), r = [];' +
+      'r.push(s.disabled, i.offsetLeft);' +
+      's.disabled = true; r.push(s.disabled, s.sheet.disabled, i.offsetLeft);' +
+      's.sheet.disabled = false; r.push(s.disabled, i.offsetLeft);' +
+      'var loose = document.createElement("style"); loose.disabled = true;' +
+      'r.push(loose.disabled);' +
+      'document.getElementById("out").textContent = JSON.stringify(r);</script>',
+  );
+  const [off, at, on, sheet, after, back, again, loose] = JSON.parse(
+    doc.text('out'),
+  );
+  assert.deepEqual(
+    [off, on, sheet, back, loose],
+    [false, true, true, false, false],
+  );
+  assert.equal(at - after, 30, `${at} then ${after}`);
+  assert.equal(again, at);
 });
