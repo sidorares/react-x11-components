@@ -39004,10 +39004,16 @@ export function installDom(
       this._fn = fn;
       const o = options ?? {};
       const root = o.root ?? null;
-      if (
-        root !== null &&
-        !(root instanceof Element || root instanceof Document)
-      ) {
+      // an element or a document, of this realm or another of the page's
+      const node =
+        root instanceof Element ||
+        root instanceof Document ||
+        (!!root &&
+          typeof root === 'object' &&
+          !(root instanceof Node) &&
+          typeof root.__handOver === 'function' &&
+          (root.nodeType === 1 || root.nodeType === 9));
+      if (root !== null && !node) {
         throw new TypeError(
           "Failed to construct 'IntersectionObserver': Failed to read the 'root' property from 'IntersectionObserverInit': The provided value is not of type '(Document or Element)'.",
         );
@@ -39110,7 +39116,28 @@ export function installDom(
       let ry = 0;
       let rw = v.width;
       let rh = v.height;
-      if (this._root instanceof Element) {
+      // a frame's document for the root answers in its own viewport, which
+      // no scroll of this one's moves
+      let sx = v.scrollX;
+      let sy = v.scrollY;
+      // a frame's realm with the implicit root: the top-level viewport, its
+      // size and scroll, and with no root bounds where it is another
+      // origin's (`X`)
+      let noBounds = false;
+      if (rootLine.startsWith('T') || rootLine.startsWith('X')) {
+        const t = rootLine.slice(1).split(',').map(Number);
+        rw = t[0] || 0;
+        rh = t[1] || 0;
+        sx = t[2] || 0;
+        sy = t[3] || 0;
+        noBounds = rootLine.startsWith('X');
+      } else if (rootLine.startsWith('D')) {
+        const d = rootLine.slice(1).split(',').map(Number);
+        rw = d[0] || 0;
+        rh = d[1] || 0;
+        sx = 0;
+        sy = 0;
+      } else if (this._root?.nodeType === 1) {
         const r = rootLine ? rootLine.split(',').map(Number) : [0, 0, 0, 0];
         rx = r[0] - v.scrollX;
         ry = r[1] - v.scrollY;
@@ -39136,15 +39163,15 @@ export function installDom(
         let ox = 0;
         let oy = 0;
         if (framed && n.length >= 6) {
-          ox = n[4] - v.scrollX;
-          oy = n[5] - v.scrollY;
+          ox = n[4] - sx;
+          oy = n[5] - sy;
           n = [n[0] + ox, n[1] + oy, n[2], n[3], ...n.slice(6)];
         } else if (n.length >= 4) {
-          n = [n[0] - v.scrollX, n[1] - v.scrollY, n[2], n[3], ...n.slice(4)];
+          n = [n[0] - sx, n[1] - sy, n[2], n[3], ...n.slice(4)];
         }
         if (n.length >= 8) {
-          n[4] -= v.scrollX;
-          n[5] -= v.scrollY;
+          n[4] -= sx;
+          n[5] -= sy;
         }
         // a stand-in's part shown cuts the target's own bounding box
         if (n.length >= 4 && intersectionStandIn(target) !== target) {
@@ -39171,7 +39198,7 @@ export function installDom(
         // remove-element and cross-document-root)
         let rootBounds = new DOMRectReadOnly();
         if (n.length >= 4) {
-          rootBounds = rootRect;
+          rootBounds = noBounds ? null : rootRect;
           // in the target's own viewport: this one's, or its frame's
           box = new DOMRectReadOnly(n[0] - ox, n[1] - oy, n[2], n[3]);
           if (n.length >= 8) {
@@ -39255,9 +39282,12 @@ export function installDom(
     const observers = [...intersecting];
     const query = JSON.stringify(
       observers.map((o) => [
-        o._root instanceof Element ? o._root._id : 0,
+        o._root?.nodeType === 1 ? idOf(o._root) : 0,
         o.scrollMargin,
         [...o._targets.keys()].map((t: Any) => intersectionStandIn(t)._id),
+        // a document for the root: its own viewport, and only what is in
+        // it (3.2.8), the realm's own document as much as a frame's
+        o._root?.nodeType === 9 ? idOf(o._root) : 0,
       ]),
     );
     intersectionsAsked = true;

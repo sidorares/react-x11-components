@@ -19400,6 +19400,40 @@ test('an IntersectionObserver measures a target in a same-origin frame through t
   );
 });
 
+test('an IntersectionObserver in a frame measures against the top-level viewport, and one with a document for its root against that document', async () => {
+  // Intersection Observer, 3.2.8: the implicit root of an observer in a
+  // frame is the top-level document's viewport, which the frame's realm
+  // took for its own; a document for the root is its own viewport, and a
+  // target in another document is in no root (WPT's
+  // document-scrolling-element-root, cross-document-root)
+  const { text } = await hostedFrames(
+    '<style>body{margin:0} iframe{display:block;border:0;width:100px;height:50px}</style>' +
+      '<iframe id="f" srcdoc="<style>body{margin:0}</style><div style=&quot;height:30px&quot;></div><div id=&quot;t&quot; style=&quot;width:40px;height:40px&quot;></div><script>' +
+      'new IntersectionObserver(function (es) { var e = es[es.length - 1]; parent.tell(&quot;own &quot; + [e.isIntersecting, e.intersectionRect.height, e.rootBounds.width].join(&quot; &quot;)); }).observe(document.getElementById(&quot;t&quot;));' +
+      '</script>"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var seen = [];' +
+      'function tell(what) { seen.push(what); document.getElementById("out").textContent = seen.sort().join("|"); }' +
+      '(function look() {' +
+      '  var d = document.getElementById("f").contentDocument, t = d && d.getElementById("t");' +
+      '  if (!t) return setTimeout(look, 10);' +
+      '  try {' +
+      '    new IntersectionObserver(function (es) { var e = es[es.length - 1]; if (e.isIntersecting) tell("doc " + [e.isIntersecting, e.boundingClientRect.y, e.intersectionRect.height, e.rootBounds.width, e.rootBounds.height].join(" ")); }, { root: d }).observe(t);' +
+      '    new IntersectionObserver(function (es) { var e = es[0]; tell("top " + [e.isIntersecting, e.rootBounds.width].join(" ")); }, { root: document }).observe(t);' +
+      '  } catch (e) { tell("threw " + e.name); }' +
+      '})();' +
+      '</script>',
+    {},
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t.split('|').length === 3,
+    ),
+    'doc true 30 20 100 50|own true 20 400|top false 0',
+  );
+});
+
 test('an IntersectionObserver reports what it was asked to observe in one callback, once', async () => {
   // Wikipedia's contents observe every heading and mark the one closest
   // above the top from all their entries; a callback a heading marked each
