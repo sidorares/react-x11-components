@@ -38940,6 +38940,9 @@ export function installDom(
       enumerable: true,
     });
   }
+  // named `get time` and the rest, and called on nothing else, as Web IDL's
+  // are (WPT's idlharness)
+  idlAttributes(IntersectionObserverEntry);
 
   /** The observers observing something, in the order each began to, which
    *  each frame measures (`updateIntersections`). */
@@ -39190,6 +39193,23 @@ export function installDom(
       rw += left + marginOn(mr, rw);
       rh += top + marginOn(mb, rh);
       const rootRect = new DOMRectReadOnly(rx, ry, rw, rh);
+      // the viewport, the implicit root, is the document's scroll container
+      // too, which the scroll margin grows as it grows the others, past
+      // the root margin and not in the root bounds (WPT's
+      // scroll-and-root-margin)
+      let cx = rx;
+      let cy = ry;
+      let cw = rw;
+      let ch = rh;
+      if (this._root === null) {
+        const [st, sr, sb, sl] = this._scrollMargin;
+        const t = marginOn(st, rh);
+        const l = marginOn(sl, rw);
+        cx -= l;
+        cy -= t;
+        cw += l + marginOn(sr, rw);
+        ch += t + marginOn(sb, rh);
+      }
       let i = 1;
       for (const [target, was] of this._targets) {
         let part = parts[i++] ?? '';
@@ -39235,10 +39255,10 @@ export function installDom(
           if (n.length >= 8) {
             // what the boxes around it leave to be seen, in the root's
             // rectangle, an edge that only meets it counting (3.2.8)
-            const x0 = Math.max(n[4], rx);
-            const y0 = Math.max(n[5], ry);
-            const x1 = Math.min(n[4] + n[6], rx + rw);
-            const y1 = Math.min(n[5] + n[7], ry + rh);
+            const x0 = Math.max(n[4], cx);
+            const y0 = Math.max(n[5], cy);
+            const x1 = Math.min(n[4] + n[6], cx + cw);
+            const y1 = Math.min(n[5] + n[7], cy + ch);
             if (x0 <= x1 && y0 <= y1) {
               isIntersecting = true;
               shown = new DOMRectReadOnly(x0 - ox, y0 - oy, x1 - x0, y1 - y0);
@@ -39284,6 +39304,7 @@ export function installDom(
     }
   }
   idlAttributes(IntersectionObserver);
+  idlOperations(IntersectionObserver, { observe: 1, unobserve: 1 });
   /**
    * The intersection observers' steps for the frame (HTML 8.1.7.3, "run the
    * update intersection observations steps"): every observer's targets

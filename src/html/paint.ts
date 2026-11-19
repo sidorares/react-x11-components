@@ -8626,24 +8626,42 @@ export function intersectionClips(
     if (outer.outOfFlow && outer.style.clip) {
       under(clipOf(outer, space), outer, false);
     }
-    if (clipsOverflow(outer)) {
+    if (clipsOverflow(outer) && !scrollingTable(outer)) {
       under(clipEdge(outer, space).rect, outer, scrolls(outer.style));
     }
   }
   if (!reached) return null;
   // up to a box in the top layer, which nothing around it cuts
   for (let at: Box | null = box; at && at !== root;) {
-    if (pathClips(at)) under(clipPathOf(at, space).rect, at, false);
+    if (pathClips(at)) {
+      // a clip path that encloses no area shows nothing, though an edge
+      // that only meets the root would count (WPT's clip-path: an inset
+      // of 1000px is a box's centre)
+      // and one on a scroll container around the box is grown by the
+      // scroll margin, as its overflow clip is (WPT's
+      // scroll-margin-clip-path)
+      const r = clipPathOf(at, space).rect;
+      const grown = at !== box && scrolls(at.style);
+      under(r.w > 0 && r.h > 0 ? r : { ...r, w: -1, h: -1 }, at, grown);
+    }
     at = at.topLayer ? null : at.parent;
   }
   return clips;
+}
+
+/** A table box whose `overflow` would scroll: no scroll container, since
+ *  overflow applies to no table (CSS Overflow 3, 3), so no content clip of
+ *  an `IntersectionObserver`'s, as Chromium measures it: its root
+ *  rectangle is its border box (WPT's root-is-table-with-overflow-scroll). */
+function scrollingTable(box: Box): boolean {
+  return box.kind === 'table' && scrolls(box.style);
 }
 
 /** Where a box that clips its overflow cuts what it holds, as a rectangle
  *  in the document's coordinates (`clipEdge`); null for one that does not.
  *  An `IntersectionObserver`'s root rectangle, where its root is one. */
 export function overflowClipRect(box: Box, scale: number): Rect | null {
-  if (!clipsOverflow(box)) return null;
+  if (!clipsOverflow(box) || scrollingTable(box)) return null;
   const space: ClipSpace = { originX: 0, originY: 0, scale, damage: null };
   const r = clipEdge(box, space).rect;
   return { x: r.x, y: r.y, width: r.w, height: r.h };
