@@ -443,6 +443,58 @@ function interpolateClipPaths(
 }
 
 /**
+ * A `clip-path` added onto another (CSS Shapes 1, 4.1, "basic shape
+ * addition"): two shapes of one kind, in one box, each length added onto
+ * the other's — a circle's and an ellipse's radii where both are lengths
+ * and their centres, an inset's, a `rect()`'s and an `xywh()`'s edges and
+ * its corners, a square corner as one of nothing, a polygon's vertices
+ * where it has as many and fills by the same rule. Undefined for any other
+ * pair, and the value replaces what is under it.
+ */
+function addClipPaths(a: ClipPath | null, b: ClipPath | null): unknown {
+  if (!a || !b || a.box !== b.box || a.shape !== b.shape) return undefined;
+  const add = <T>(x: T, y: T): T | undefined => sum(x, y) as T | undefined;
+  const corners = (
+    r: readonly [Len, Len, Len, Len] | null,
+  ): readonly [Len, Len, Len, Len] => r ?? [0, 0, 0, 0];
+  switch (a.shape) {
+    case 'inset':
+    case 'rect':
+    case 'xywh': {
+      const lengths = add(a.lengths, b.lengths);
+      if (!lengths) return undefined;
+      const round = a.radii || b.radii;
+      const radii = round ? add(corners(a.radii), corners(b.radii)) : null;
+      const radiiY =
+        a.radiiY || b.radiiY
+          ? add(corners(a.radiiY ?? a.radii), corners(b.radiiY ?? b.radii))
+          : null;
+      if (radii === undefined || radiiY === undefined) return undefined;
+      return { ...b, lengths, radii, radiiY };
+    }
+    case 'polygon': {
+      if (a.fillRule !== b.fillRule || !a.points || !b.points) return undefined;
+      const points = add(a.points, b.points);
+      return points ? { ...b, points } : undefined;
+    }
+    case 'basic': {
+      const x = a.basic;
+      const y = b.basic;
+      if (!x || !y || x.kind !== y.kind) return undefined;
+      if (x.kind !== 'circle' && x.kind !== 'ellipse') return undefined;
+      const lengthsOnly = (shape: object): boolean =>
+        Object.values(shape).every(
+          (v) => typeof v !== 'string' || v === x.kind,
+        );
+      if (!lengthsOnly(x) || !lengthsOnly(y)) return undefined;
+      const basic = add(x, y);
+      return basic ? { ...b, basic } : undefined;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Two lists of shadows `q` of the way between (CSS Backgrounds 3, 7.2): the
  * shorter padded with shadows of nothing — no offset, blur or spread, in
  * transparent, inset as the other end's is — and each pair by its parts,
@@ -1281,8 +1333,9 @@ export function addField(
     case 'flexBasisSize':
     case 'fontSizeBasis':
     case 'cornerShape':
-    case 'clipPath':
       return undefined;
+    case 'clipPath':
+      return addClipPaths(under as ClipPath | null, value as ClipPath | null);
     case 'opacity':
       return typeof under === 'number' && typeof value === 'number'
         ? clamp(under + value, 0, 1)

@@ -19,6 +19,7 @@ import {
 import type { Timing } from '../../src/html/css/animation.js';
 import { blend } from '../../src/html/css/color.js';
 import {
+  addField,
   interpolateField,
   interpolateTransforms,
 } from '../../src/html/css/interpolate.js';
@@ -35,7 +36,7 @@ import {
   rotate4,
   translate4,
 } from '../../src/html/css/transform3d.js';
-import type { ComputedStyle } from '../../src/html/css/style.js';
+import type { ClipPath, ComputedStyle } from '../../src/html/css/style.js';
 import { animationClock } from '../../src/html/node.js';
 import {
   timelineTriggersOf,
@@ -4597,3 +4598,48 @@ metric(
     assert.deepStrictEqual(await pixelAt(doc, 26, 16), [255, 0, 0]);
   },
 );
+
+test('a clip-path adds onto one of its kind, length by length, and replaces any other', () => {
+  // CSS Shapes 1, 4.1: an inset's edges and its corners, a square corner
+  // as one of nothing, where `add` replaced what was under it
+  const inset = (
+    lengths: ClipPath['lengths'],
+    radii: ClipPath['radii'] = null,
+  ): ClipPath => ({
+    box: 'border-box',
+    shape: 'inset',
+    lengths,
+    points: null,
+    fillRule: 'nonzero',
+    radii,
+    radiiY: null,
+  });
+  const out = addField(
+    'clipPath',
+    inset([1, 2, 1, 2], [100, 100, 100, 100]),
+    inset([101, 102, 101, 102]),
+    false,
+  ) as ClipPath;
+  assert.deepStrictEqual(out.lengths, [102, 104, 102, 104]);
+  assert.deepStrictEqual(out.radii, [100, 100, 100, 100]);
+  const polygon = (points: ClipPath['points']): ClipPath => ({
+    ...inset([0, 0, 0, 0]),
+    shape: 'polygon',
+    points,
+  });
+  assert.strictEqual(
+    addField('clipPath', inset([1, 1, 1, 1]), polygon([0, 0]), false),
+    undefined,
+  );
+  assert.deepStrictEqual(
+    (
+      addField(
+        'clipPath',
+        polygon([1, 2]),
+        polygon([10, 20]),
+        false,
+      ) as ClipPath
+    ).points,
+    [11, 22],
+  );
+});
