@@ -945,6 +945,12 @@ export interface HandleInternals {
   /** What the boxes were laid out and scrolled as, as a key that moves
    *  wherever a measurement of them may (`HtmlViewNode.geometryKey`). */
   geometryKey(): string;
+  /** Whether a change waits to be laid out, asked with nothing moved,
+   *  where `geometryKey` would make the key new (`renderingMoved`). */
+  geometryOwed?(): boolean;
+  /** An element's effective zoom, its zooms multiplied down to it
+   *  (`HtmlViewNode.effectiveZoomOf`). */
+  effectiveZoom?(element: Element): number;
   /** Whether the page waits to hear of its viewport, given how long its
    *  tasks have taken so far (`HtmlViewNode.viewportHeld`). */
   viewportHeld(busy: number): boolean;
@@ -3644,8 +3650,40 @@ export class DomHost {
     if (seen && this._intersections(seen.query) !== seen.answer) {
       this._viewportsWoken = true;
       this.entries.call('__rendering', null);
+      return;
     }
+    // the boxes the page's resize observers measure, laid out or scrolled
+    // since their last frame
+    // — once what is owed is laid out, where it can be: a frame now would
+    // lay it out, in the middle of a drag's step, so it is asked again a
+    // little later, when the layout has most likely come, and woken then
+    // whatever is owed, since a layout that paints nothing asks nothing
+    this._resizeMoved(false);
   }
+
+  /** Whether the boxes the page's resize observers measure were laid out
+   *  or scrolled since their last frame, which a frame is asked for;
+   *  `late` where a layout owed has been waited for already. */
+  private _resizeMoved(late: boolean): void {
+    if (this._disposed || !this.entries || this._viewportsWoken) return;
+    if (!this._resizeWatched || !this._looked || this._viewportHeld()) return;
+    if (!late && this._handle.geometryOwed?.()) {
+      if (this._resizeLater) return;
+      this._resizeLater = setTimeout(() => {
+        this._resizeLater = null;
+        this._resizeMoved(true);
+      }, 32);
+      return;
+    }
+    if ((this._handle.geometryKey?.() || '') === this._looked) return;
+    this._viewportsWoken = true;
+    this.entries.call('__rendering', null);
+  }
+  private _resizeLater: ReturnType<typeof setTimeout> | null = null;
+
+  /** Whether the page's `ResizeObserver`s watch anything, as their last
+   *  frame said (`geometry`). */
+  private _resizeWatched = false;
 
   /**
    * What the page's intersection observers asked at their last frame, and
@@ -6605,9 +6643,16 @@ export class DomHost {
       // an element's padding and border widths, top, right, bottom, left
       // each, in CSS pixels: what its content box is less than its border
       // box (`ResizeObserver`)
+      // whether what the page hears of its viewport waits, which a resize
+      // observer's later passes in a frame go by (`_viewportHeld`)
+      case 'viewportHeld':
+        return this._viewportHeld();
+      // and its effective zoom, which its sizes are taken off by
+      // (`ResizeObserver`, `currentCSSZoom`)
       case 'edges': {
         this.flush();
-        const style = this._handle.computedStyle(this._element(a), null);
+        const element = this._element(a);
+        const style = this._handle.computedStyle(element, null);
         if (!style) return '';
         const n = (name: string) => parseFloat(style[name] ?? '0') || 0;
         return [
@@ -6619,12 +6664,17 @@ export class DomHost {
           n('border-right-width'),
           n('border-bottom-width'),
           n('border-left-width'),
+          this._handle.effectiveZoom?.(element) ?? 1,
         ].join(',');
       }
       // what the boxes were laid out and scrolled as: a look of the page's
       // observers that finds the same skips what it would find again, and
       // one with no such key asks for it each time
+      // — and, where `a` says so, whether the page's `ResizeObserver`s
+      // watch them, which has a frame asked for after a paint that moved
+      // them (`renderingMoved`), the frame being where they are told
       case 'geometry': {
+        if (a !== undefined) this._resizeWatched = a === true;
         if (this._looked && this._viewportHeld()) return this._looked;
         this.flush();
         this._looked = this._handle.geometryKey?.() || `new ${++this._looks}`;

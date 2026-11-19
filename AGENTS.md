@@ -4821,14 +4821,27 @@ closes a way out a DOM binding opens by accident:
   whole, and joshwcomeau.com's header, which hears that it is stuck from
   an observer with `rootMargin: "-1px 0px 0px 0px"` and a threshold of 1,
   never put its glass on.
-- **A `ResizeObserver` measures only where the boxes moved.** Its look,
-  a tenth of a second after the last, first asks the host what the boxes
+- **A `ResizeObserver` is told in the frame, and measures only where the
+  boxes moved.** Its steps run after the animation frame callbacks and
+  before the intersection observers (`updateResizeObservers`, Resize
+  Observer 1, 3.4): a pass delivers only what is deeper in the flat tree
+  than the shallowest target the pass before told of, and what is left is
+  the loop error and the next frame's. It had been a timer of its own, a
+  tenth of a second, which WPT's helper reads as a notification late, and
+  a callback that resized what it watched was told again and again. The
+  host asks for a frame after a paint that moved the boxes, while an
+  observer watches (`renderingMoved`, the `geometry` op's second
+  argument) — but where a layout is still owed it asks 32 ms later
+  (`_resizeMoved`), since a frame then lays it out in the middle of a
+  drag's step, which the drag counts as a slow frame. A frame's later
+  passes measure every target but where the viewport is held
+  (`viewportHeld`): what a callback changed is no stale layout yet. A frame first asks the host what the boxes
   were laid out and scrolled as (`geometry`, `HtmlViewNode.geometryKey`):
   a key that moves with every invalidation, layout, restyle in place,
   frame and scroll of a box (`_geometry`), with the pane's scroll and the
   element's size, and is new at each ask while a change waits to be laid
-  out. A look that finds the key as the last left it measures nothing,
-  but for a target observed since. **Anything new that moves a box
+  out. A frame that finds the key as the last left it measures nothing,
+  but for a target observed since or one a depth skipped. **Anything new that moves a box
   without going through one of those bumps `_geometry`**, or an observer
   is not told the size its target came to. Measured at every look, a
   webmail page's observers were most of what it cost at rest: 6 to 8% of

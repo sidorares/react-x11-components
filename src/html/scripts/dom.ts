@@ -771,6 +771,30 @@ export function installDom(
     enumerable: true,
     configurable: false,
   };
+  /** Whether `event` is an `Event` of a linked same-origin realm, a
+   *  frame's that runs scripts of its own: no `instanceof` of this realm's
+   *  says so, and a frame's script dispatches its `CustomEvent` at its
+   *  parent's document. Told by what it holds, as the same facade made
+   *  it, under a prototype chain that reaches an `Event`. */
+  const eventOfAnotherRealm = (event: Any): boolean => {
+    if (event === null || typeof event !== 'object') return false;
+    if (typeof event._type !== 'string' || !Array.isArray(event._path)) {
+      return false;
+    }
+    for (
+      let at = Object.getPrototypeOf(event);
+      at && at !== Object.prototype;
+      at = Object.getPrototypeOf(at)
+    ) {
+      if (
+        Object.hasOwn(at, 'constructor') &&
+        at.constructor?.name === 'Event'
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
   class Event {
     /** Whether the user agent made it, which `isTrusted` reads: an
      *  accessor of the event's own, not the prototype's, one getter for
@@ -1501,7 +1525,7 @@ export function installDom(
     dispatchEvent(event: Any): boolean {
       const win = windowCalled(this);
       if (win) return win.dispatchEvent(event);
-      if (!(event instanceof Event)) {
+      if (!(event instanceof Event) && !eventOfAnotherRealm(event)) {
         throw new TypeError(
           "Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'.",
         );
@@ -6846,6 +6870,7 @@ export function installDom(
                 report(error);
               }
             }
+            updateResizeObservers();
             updateIntersections(time);
             runAfterFrame();
             nextFrame();
@@ -6858,6 +6883,7 @@ export function installDom(
       return;
     }
     frameTimer = 0;
+    updateResizeObservers();
     updateIntersections(time);
     runAfterFrame();
     nextFrame();
@@ -11186,6 +11212,11 @@ export function installDom(
     }
     hasPointerCapture(pointerId: Any): boolean {
       return Number(pointerId) === POINTERS.id && POINTERS.hasCapture(this);
+    }
+    // its effective zoom (CSS Viewport 1, 5.3): every zoom down the flat
+    // tree to it multiplied, or 1 for what is not rendered
+    get currentCSSZoom(): number {
+      return effectiveZoomOf(this);
     }
     // A scroll container's are its scrollport's and its content's
     // (`scrollState`); the viewport's are the document's scrolling
@@ -39234,6 +39265,15 @@ export function installDom(
    * its content box starts, and whether its writing mode is vertical, which
    * makes its inline size its height.
    */
+  /** An element's effective zoom (CSS Viewport 1, 5.3): its own and its
+   *  ancestors' zooms multiplied, as the host worked its style out, 1
+   *  where it has no box. */
+  const effectiveZoomOf = (el: Any): number => {
+    if (!offsetOf(el)) return 1;
+    const e = call('edges', el._id);
+    const zoom = typeof e === 'string' && e ? Number(e.split(',')[8]) : 1;
+    return zoom > 0 ? zoom : 1;
+  };
   const boxSizesOf = (el: Any): number[] | null => {
     // an HTML element's as layout sized it; what has no offset geometry,
     // an `<svg>` or what is in one, its box as drawn, as it was
@@ -39265,15 +39305,19 @@ export function installDom(
       el.namespaceURI === HTML_NS &&
       !REPLACED_TAGS.has(el.localName)
     ) {
-      return [0, 0, 0, 0, 0, 0, 0];
+      return [0, 0, 0, 0, 0, 0, 0, 1];
     }
     const e = call('edges', el._id);
-    const [pt, pr, pb, pl, bt, br, bb, bl] =
+    const [pt, pr, pb, pl, bt, br, bb, bl, edgeZoom] =
       typeof e === 'string' && e
         ? e.split(',').map(Number)
-        : [0, 0, 0, 0, 0, 0, 0, 0];
-    const w = o ? o[3] : r![2];
-    const h = o ? o[4] : r![3];
+        : [0, 0, 0, 0, 0, 0, 0, 0, 1];
+    // layout's box is zoomed and the edges a style reads are not: the
+    // sizes are the element's own CSS pixels, its zoom taken off
+    // (Resize Observer 1, 3.4.1), and the device pixels its zoom's
+    const zoom = html && edgeZoom > 0 ? edgeZoom : 1;
+    const w = (o ? o[3] : r![2]) / zoom;
+    const h = (o ? o[4] : r![3]) / zoom;
     const vertical = /^(vertical|sideways)/.test(str(style.writingMode));
     return [
       w,
@@ -39283,77 +39327,168 @@ export function installDom(
       pl,
       pt,
       vertical ? 1 : 0,
+      zoom,
     ];
   };
+  /** What makes a `ResizeObserverSize` or a `ResizeObserverEntry`, which
+   *  no page can (Resize Observer 1, 4.2 and 4.3: no constructor). */
+  const RESIZE_MADE = Symbol('resize');
   class ResizeObserverSize {
-    readonly inlineSize: number;
-    readonly blockSize: number;
-    constructor(inline: number, block: number) {
-      this.inlineSize = inline;
-      this.blockSize = block;
+    _inline: number;
+    _block: number;
+    constructor(...args: Any[]) {
+      if (args[0] !== RESIZE_MADE) throw new TypeError('Illegal constructor');
+      this._inline = args[1];
+      this._block = args[2];
+    }
+    get inlineSize(): number {
+      return this._inline;
+    }
+    get blockSize(): number {
+      return this._block;
     }
   }
+  idlAttributes(ResizeObserverSize);
   class ResizeObserverEntry {
-    readonly target: Any;
-    readonly contentRect: Any;
-    readonly contentBoxSize: Any;
-    readonly borderBoxSize: Any;
-    readonly devicePixelContentBoxSize: Any;
-    constructor(target: Any, sizes: number[]) {
+    _target: Any;
+    _contentRect: Any;
+    _contentBoxSize: Any;
+    _borderBoxSize: Any;
+    _devicePixelContentBoxSize: Any;
+    constructor(...args: Any[]) {
+      if (args[0] !== RESIZE_MADE) throw new TypeError('Illegal constructor');
+      const target = args[1];
+      const sizes: number[] = args[2];
       const [bw, bh, cw, ch, x, y, vertical] = sizes;
-      const dpr = viewport().dpr || 1;
+      const dpr = (viewport().dpr || 1) * (sizes[7] || 1);
       // its sizes along its own axes: inline across a horizontal one
       const size = (w: number, h: number): Any =>
-        vertical ? new ResizeObserverSize(h, w) : new ResizeObserverSize(w, h);
-      this.target = target;
-      this.contentRect = new DOMRect(x, y, cw, ch);
-      this.contentBoxSize = Object.freeze([size(cw, ch)]);
-      this.borderBoxSize = Object.freeze([size(bw, bh)]);
-      this.devicePixelContentBoxSize = Object.freeze([
+        vertical
+          ? new ResizeObserverSize(RESIZE_MADE, h, w)
+          : new ResizeObserverSize(RESIZE_MADE, w, h);
+      this._target = target;
+      this._contentRect = new DOMRectReadOnly(x, y, cw, ch);
+      this._contentBoxSize = Object.freeze([size(cw, ch)]);
+      this._borderBoxSize = Object.freeze([size(bw, bh)]);
+      this._devicePixelContentBoxSize = Object.freeze([
         size(Math.round(cw * dpr), Math.round(ch * dpr)),
       ]);
     }
+    get target(): Any {
+      return this._target;
+    }
+    get contentRect(): Any {
+      return this._contentRect;
+    }
+    get borderBoxSize(): Any {
+      return this._borderBoxSize;
+    }
+    get contentBoxSize(): Any {
+      return this._contentBoxSize;
+    }
+    get devicePixelContentBoxSize(): Any {
+      return this._devicePixelContentBoxSize;
+    }
   }
-  /** The observers observing something, and whether their sizes are to
-   *  be looked at again: a tenth of a second after the last look, while
-   *  any observes, as nothing tells this realm a layout came out
-   *  otherwise — but only where the host says the boxes were laid out or
-   *  scrolled since the last (`geometry`), or a target was observed: a
-   *  look that would find what the last found is skipped, and a page at
-   *  rest asks one question a tenth of a second, where it measured every
-   *  target. */
+  idlAttributes(ResizeObserverEntry);
+  /** The observers observing something, in the order each was made, which
+   *  each frame's resize steps go through (`updateResizeObservers`). */
   const resizing = new Set<Any>();
-  let resizeLook = false;
-  /** What the boxes were as the last look measured them, and whether a
-   *  target was observed since, which the next look measures whatever. */
+  /** What the boxes were as the last frame's steps measured them, and
+   *  whether anything waits to be measured whatever the host says: a
+   *  target observed since, or one a frame's depth limit skipped, which
+   *  the next frame delivers (Resize Observer 1, 3.4.6). A frame that
+   *  finds the boxes as the last left them measures nothing else: a page
+   *  at rest asks one question a frame, where it measured every target. */
   let resizeLooked = '';
   let resizeFresh = false;
-  const lookAgain = (ms: number): void => {
-    if (resizeLook || !resizing.size) return;
-    resizeLook = true;
-    setTimer(
-      () => {
-        resizeLook = false;
-        const geometry = String(call('geometry'));
-        const moved = geometry !== resizeLooked;
-        if (resizeFresh || moved) {
-          resizeFresh = false;
-          resizeLooked = geometry;
-          for (const observer of [...resizing]) observer._look(moved);
-        }
-        lookAgain(100);
-      },
-      ms,
-      [],
-      false,
-    );
+  let resizeAll = false;
+  /** How deep an element is in the flat tree (Resize Observer 1, 3.4.7,
+   *  "calculate depth for node"): what a frame's later passes go by, each
+   *  delivering only what is deeper than the shallowest target the pass
+   *  before told of. */
+  const flatDepthOf = (node: Any): number => {
+    let depth = 0;
+    for (let at = node; at; at = flatParentNode(at)) depth++;
+    return depth;
+  };
+  /**
+   * The resize steps of a frame (HTML 8.1.7.3, step 16; Resize Observer 1,
+   * 3.4): gather each observer's observations whose size moved, deliver
+   * them, and go round again with only what is deeper than the shallowest
+   * target just delivered, so a callback that resizes what it observes
+   * ends. What is left over is told as an error and delivered at the next
+   * frame. Each pass after the first asks the host again, since a callback
+   * is what moves the boxes.
+   */
+  const updateResizeObservers = (): void => {
+    if (!resizing.size) {
+      if (resizeLooked) {
+        resizeLooked = '';
+        call('geometry', false);
+      }
+      return;
+    }
+    const geometry = String(call('geometry', true));
+    const moved = geometry !== resizeLooked || resizeAll;
+    resizeLooked = geometry;
+    if (!moved && !resizeFresh) return;
+    resizeFresh = false;
+    resizeAll = false;
+    const observers = () => [...resizing];
+    let depth = 0;
+    let any = false;
+    for (const o of observers()) if (o._gather(depth, moved)) any = true;
+    while (any) {
+      let shallowest = Infinity;
+      for (const o of observers()) {
+        shallowest = Math.min(shallowest, o._broadcast());
+      }
+      depth = shallowest;
+      // whatever a callback moved, which the host has yet to lay out, but
+      // for a viewport the host holds (`viewportHeld`), whose observers
+      // find what they last found: a target observed in a callback is
+      // measured either way
+      const all = call('viewportHeld') !== true;
+      any = false;
+      for (const o of observers()) if (o._gather(depth, all)) any = true;
+    }
+    let skipped = false;
+    for (const o of observers()) {
+      if (o._skipped.length) skipped = true;
+    }
+    if (!skipped) return;
+    // the next frame delivers them, measuring whatever the host says
+    resizeAll = true;
+    wantFrame();
+    // "deliver resize loop error notification" (3.4.8): an error event
+    // with no error, at the window, and the console only where nothing
+    // cancelled it
+    const message =
+      'ResizeObserver loop completed with undelivered notifications.';
+    let handled = false;
+    if (!reporting) {
+      reporting = true;
+      try {
+        handled = !dispatch(
+          windowTarget,
+          new ErrorEvent('error', { message, cancelable: true }),
+        );
+      } catch {
+      } finally {
+        reporting = false;
+      }
+    }
+    if (!handled) bridge('log', 'error', message);
   };
   /**
    * Told each size its targets come to (Resize Observer 1): once as one is
    * observed, where it has a size, and again whenever its content box
    * changes — React components that size a canvas to its container, as
    * Rive's do, wait for a size their container has only once the
-   * stylesheet is in, and were told 0 by 0 for good.
+   * stylesheet is in, and were told 0 by 0 for good. In a frame, after
+   * its animation frame callbacks and before its intersection observers
+   * (`updateResizeObservers`).
    */
   /** The box a ResizeObserver can watch of a target. */
   const RESIZE_BOXES = new Set([
@@ -39367,9 +39502,13 @@ export function installDom(
      *  -1 by -1 to start with, so that the first look tells even a target
      *  that has no size (Resize Observer 1, 3.3, `lastReportedSizes`). */
     _told = new Map<Any, { box: string; size: number[] }>();
-    /** The targets observed since the last look, the only ones a look
+    /** The targets observed since the last frame, the only ones a frame
      *  that finds nothing moved measures. */
     _fresh = new Set<Any>();
+    /** What the last gather found, each with the sizes it came to
+     *  (3.1, `activeTargets` and `skippedTargets`). */
+    _active: { el: Any; sizes: number[]; now: number[] }[] = [];
+    _skipped: Any[] = [];
     constructor(fn: Any) {
       if (typeof fn !== 'function') {
         throw new TypeError(
@@ -39393,48 +39532,75 @@ export function installDom(
       // observed again with another box is observed afresh with it
       const was = this._told.get(el);
       if (!was || was.box !== box) {
+        this._told.delete(el);
         this._told.set(el, { box, size: [-1, -1] });
         this._fresh.add(el);
       }
       resizing.add(this);
       resizeFresh = true;
-      lookAgain(0);
+      wantFrame();
     }
     unobserve(el: Any): void {
       this._told.delete(el);
+      this._fresh.delete(el);
       if (!this._told.size) resizing.delete(this);
     }
     disconnect(): void {
       this._told.clear();
+      this._fresh.clear();
+      this._active = [];
+      this._skipped = [];
       resizing.delete(this);
     }
-    _look(moved: boolean): void {
-      const entries: Any[] = [];
+    /** "Gather active observations at depth" (3.4.2): whether any target
+     *  deeper than `depth` came to another size than it was last told. */
+    _gather(depth: number, all: boolean): boolean {
+      this._active = [];
+      this._skipped = [];
       const dpr = viewport().dpr || 1;
       for (const [el, told] of this._told) {
-        if (!moved && !this._fresh.has(el)) continue;
-        const sizes = boxSizesOf(el) ?? [0, 0, 0, 0, 0, 0, 0];
+        if (!all && !this._fresh.has(el)) continue;
+        const sizes = boxSizesOf(el) ?? [0, 0, 0, 0, 0, 0, 0, 1];
+        const px = dpr * (sizes[7] || 1);
         // the size of the box observed, in its own axes
         const [w, h] =
           told.box === 'border-box'
             ? [sizes[0], sizes[1]]
             : told.box === 'device-pixel-content-box'
-              ? [Math.round(sizes[2] * dpr), Math.round(sizes[3] * dpr)]
+              ? [Math.round(sizes[2] * px), Math.round(sizes[3] * px)]
               : [sizes[2], sizes[3]];
         const now = sizes[6] ? [h, w] : [w, h];
         if (now[0] === told.size[0] && now[1] === told.size[1]) continue;
-        told.size = now;
-        entries.push(new ResizeObserverEntry(el, sizes));
+        if (flatDepthOf(el) > depth) this._active.push({ el, sizes, now });
+        else this._skipped.push(el);
       }
       this._fresh.clear();
-      if (!entries.length) return;
+      return this._active.length > 0;
+    }
+    /** "Broadcast active observations" (3.4.4): the callback handed what
+     *  the gather found, and the depth of the shallowest of it, or
+     *  Infinity where it found nothing. */
+    _broadcast(): number {
+      const active = this._active;
+      this._active = [];
+      if (!active.length) return Infinity;
+      let shallowest = Infinity;
+      const entries: Any[] = [];
+      for (const { el, sizes, now } of active) {
+        const told = this._told.get(el);
+        if (told) told.size = now;
+        entries.push(new ResizeObserverEntry(RESIZE_MADE, el, sizes));
+        shallowest = Math.min(shallowest, flatDepthOf(el));
+      }
       try {
         this._fn.call(this, entries, this);
       } catch (e) {
         report(e);
       }
+      return shallowest;
     }
   }
+  idlOperations(ResizeObserver, { observe: 1, unobserve: 1 });
   /** What a `MutationObserver` is handed (DOM 4.3.4). */
   class MutationRecord {
     readonly type: string;

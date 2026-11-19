@@ -1849,6 +1849,9 @@ export function makeHtmlHandle(
     showStream: (element: Element, shown: StreamShown | null) =>
       nodeRef.current?.showStream(element, shown),
     geometryKey: () => nodeRef.current?.geometryKey() ?? '',
+    geometryOwed: () => nodeRef.current?.geometryOwed() ?? false,
+    effectiveZoom: (element: Element) =>
+      nodeRef.current?.effectiveZoomOf(element) ?? 1,
     pointerElement: () => nodeRef.current?.pointerElement() ?? null,
     pointerDrawn: () => nodeRef.current?.pointerDrawn() ?? null,
     embedRendered: (element) => nodeRef.current?.embedRendered(element) ?? null,
