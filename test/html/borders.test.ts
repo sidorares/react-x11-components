@@ -2495,3 +2495,43 @@ test('a border is as wide as the whole device pixels it covers', async () => {
   const b = boxOf(el, 'b') as unknown as Bordered & { style: ComputedStyle };
   assert.deepStrictEqual([b.borderLeft, b.style.outlineWidth], [1, 1]);
 });
+
+test('a border image runs a longhand at a time, and one whose sides are of other kinds goes over at the half-way point', () => {
+  // CSS Backgrounds 3, 6: `50%` to `100` slices are of two kinds, and went
+  // as though the number were pixels; a width of a length runs beside a
+  // percentage, and a multiple of the border only beside a multiple
+  const image = (over: Partial<BorderImage>): BorderImage => ({
+    ...NO_BORDER_IMAGE,
+    ...over,
+  });
+  const pct = { pct: 50 };
+  const slice = (s: BorderImage['slice'][number]) =>
+    [s, s, s, s] as BorderImage['slice'];
+  const a = image({ slice: slice(pct) });
+  const b = image({ slice: slice(100) });
+  assert.strictEqual(interpolateField('borderImage', a, b, 0.3), undefined);
+  const width = (w: BorderImage['width'][number]) =>
+    [w, w, w, w] as BorderImage['width'];
+  // the slice goes over while the width runs
+  const c = image({ slice: slice(pct), width: width(10) });
+  const d = image({ slice: slice(100), width: width(20) });
+  const mid = interpolateField('borderImage', c, d, 0.3) as BorderImage;
+  assert.deepStrictEqual(mid.slice, c.slice);
+  assert.strictEqual(mid.width[0], 13);
+  // a length beside a percentage runs, a multiple beside a length does not
+  const e = image({ width: width(10) });
+  const f = image({ width: width({ pct: 20 }) });
+  assert.deepStrictEqual(
+    (interpolateField('borderImage', e, f, 0.5) as BorderImage).width[0],
+    { pct: 10, px: 5 },
+  );
+  const g = image({ width: width({ times: 2 }) });
+  assert.strictEqual(interpolateField('borderImage', e, g, 0.5), undefined);
+  // and nothing runs below nought
+  const h = image({ slice: slice(0) });
+  const i = image({ slice: slice(20) });
+  assert.strictEqual(
+    (interpolateField('borderImage', h, i, -0.3) as BorderImage).slice[0],
+    0,
+  );
+});
