@@ -4820,7 +4820,21 @@ closes a way out a DOM binding opens by accident:
   a measurement. It had been a stand-in that reported each target once,
   whole, and joshwcomeau.com's header, which hears that it is stuck from
   an observer with `rootMargin: "-1px 0px 0px 0px"` and a threshold of 1,
-  never put its glass on.
+  never put its glass on. **A target in another document than the
+  realm's is measured in the view that draws it** (`_throughFrames`), with
+  the viewport for its root, and cut by each frame's content box and what
+  shows of the frame up to the realm's document; its box is told in its
+  own viewport, and the root and its margin are still the realm's to cut.
+  An element of the realm's document is no root of it. A frame's paint
+  tells the page's runner as well as its own (`_onPaint` in `frames.ts`),
+  or what it laid out after the page's last paint is never asked again: a
+  frame with no realm has no runner to ask. **A shape in an
+  inline `<svg>` is measured by its outermost `<svg>`**
+  (`intersectionStandIn`): it has no box of the document's, so its own
+  bounding box is cut by what shows of the drawing. And a target with no
+  box is told with no root bounds, as Chromium tells it. Anything new that
+  hands the host a target it has no box for goes through the stand-in, or
+  it is told 0 by 0 and never in view.
 - **A `ResizeObserver` is told in the frame, and measures only where the
   boxes moved.** Its steps run after the animation frame callbacks and
   before the intersection observers (`updateResizeObservers`, Resize

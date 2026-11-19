@@ -2090,6 +2090,19 @@ function withDeclaration(
   return serializeDeclarations(kept);
 }
 
+/** Where two rectangles meet, an edge that only touches counting, or null
+ *  where they do not (Intersection Observer, 3.2.8). */
+function meet(a: Rect | null, b: Rect): Rect | null {
+  if (!a) return null;
+  const x0 = Math.max(a.x, b.x);
+  const y0 = Math.max(a.y, b.y);
+  const x1 = Math.min(a.x + a.width, b.x + b.width);
+  const y1 = Math.min(a.y + a.height, b.y + b.height);
+  return x0 <= x1 && y0 <= y1
+    ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+    : null;
+}
+
 /** An observer's margin as it serializes — four lengths, `px` or `%`,
  *  which the facade checked — or null where it grows nothing. */
 function marginLengths(text: string): MarginLength[] | null {
@@ -3723,17 +3736,123 @@ export class DomHost {
           const el = this._nodes.get(id);
           return el instanceof Element ? el : null;
         });
+        const lengths = marginLengths(margin);
+        // a target in another document than this realm's is measured in
+        // the view that draws it and through the frames above it, with the
+        // viewport for its root (3.2.8, the implicit root); an element of
+        // this document is the root of no target of another
+        const own = elements.map((el) =>
+          el && this._ownerOf(el) !== this.document ? null : el,
+        );
         const found =
           root === null || root instanceof Element
-            ? handle.intersectionsOf?.(elements, root, marginLengths(margin))
+            ? handle.intersectionsOf?.(own, root, lengths)
             : null;
         if (!found) return ';'.repeat(ids.length);
-        const parts = found.targets.map((t) =>
-          !t ? '' : t.shown ? `${rect(t.rect)},${rect(t.shown)}` : rect(t.rect),
-        );
+        const parts = found.targets.map((t, i) => {
+          const el = elements[i];
+          if (el && own[i] === null) {
+            return root === null ? this._throughFrames(el, lengths) : '';
+          }
+          return !t
+            ? ''
+            : t.shown
+              ? `${rect(t.rect)},${rect(t.shown)}`
+              : rect(t.rect);
+        });
         return [found.root ? rect(found.root) : '', ...parts].join(';');
       })
       .join('\n');
+  }
+
+  /**
+   * A target in a frame's document, with the viewport for its root
+   * (Intersection Observer, 3.2.8): `F` and its bounding box in its own
+   * viewport's coordinates, then where that viewport's corner is in this
+   * realm's document, then what the frames above it and the boxes around
+   * them leave of it, in this realm's document's coordinates, as a target
+   * of this document's has it — for the root and its margin, which are
+   * the realm's, to cut. '' where no view draws it or a frame above it is
+   * in none, and no part shown where a frame above it shows none of it.
+   */
+  private _throughFrames(el: Element, margin: MarginLength[] | null): string {
+    const rect = (r: Rect) => `${r.x},${r.y},${r.width},${r.height}`;
+    let doc = this._ownerOf(el);
+    const view = this._s.drawn.get(doc) as
+      (HtmlHandle & Partial<HandleInternals>) | undefined;
+    const target = view?.intersectionsOf?.([el], null, margin)?.targets[0];
+    if (!view || !target) return '';
+    const scroll = view.viewportScroll?.() ?? { x: 0, y: 0 };
+    const box = {
+      x: target.rect.x - scroll.x,
+      y: target.rect.y - scroll.y,
+      width: target.rect.width,
+      height: target.rect.height,
+    };
+    // in the coordinates of the viewport of `doc`, as it goes up
+    let shown: Rect | null = target.shown
+      ? {
+          ...target.shown,
+          x: target.shown.x - scroll.x,
+          y: target.shown.y - scroll.y,
+        }
+      : null;
+    let ox = 0;
+    let oy = 0;
+    for (let depth = 0; depth < 16; depth++) {
+      const frame = this._s.frameOf.get(doc);
+      if (!frame) return '';
+      const parent = this._ownerOf(frame);
+      const top = parent === this.document;
+      const parentView = (
+        top ? this._seams.handle : this._s.drawn.get(parent)
+      ) as (HtmlHandle & Partial<HandleInternals>) | undefined;
+      const at = parentView?.intersectionsOf?.([frame], null, margin)
+        ?.targets[0];
+      const style = parentView?.computedStyle(frame, null);
+      if (!parentView || !at || !style) return '';
+      const px = (name: string): number => parseFloat(style[name] ?? '') || 0;
+      // its content box is the viewport the document below is drawn in
+      const left = px('border-left-width') + px('padding-left');
+      const topEdge = px('border-top-width') + px('padding-top');
+      const content = {
+        x: at.rect.x + left,
+        y: at.rect.y + topEdge,
+        width: Math.max(
+          0,
+          at.rect.width - left - px('border-right-width') - px('padding-right'),
+        ),
+        height: Math.max(
+          0,
+          at.rect.height -
+            topEdge -
+            px('border-bottom-width') -
+            px('padding-bottom'),
+        ),
+      };
+      shown =
+        shown && at.shown
+          ? meet(
+              meet(
+                { ...shown, x: shown.x + content.x, y: shown.y + content.y },
+                content,
+              ),
+              at.shown,
+            )
+          : null;
+      ox += content.x;
+      oy += content.y;
+      if (top) {
+        const head = `F${rect(box)},${ox},${oy}`;
+        return shown ? `${head},${rect(shown)}` : head;
+      }
+      const s = parentView.viewportScroll?.() ?? { x: 0, y: 0 };
+      if (shown) shown = { ...shown, x: shown.x - s.x, y: shown.y - s.y };
+      ox -= s.x;
+      oy -= s.y;
+      doc = parent;
+    }
+    return '';
   }
 
   /** Whether what the page hears of its viewport waits: its `resize`, its
