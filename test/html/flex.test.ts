@@ -579,6 +579,99 @@ metric(
   },
 );
 
+/** Inline blocks of a size, on lines of no height of their own, so a
+ *  line's baseline is its block's bottom whatever the fonts. */
+const SPANS =
+  '<style>body{margin:0} .r{display:flex;width:400px;line-height:0}' +
+  '.r span{display:inline-block;width:10px}</style>';
+const span = (id: string, height: number) =>
+  `<span id="${id}" style="height:${height}px"></span>`;
+const bottomOf = (el: ReturnType<typeof view>, id: string) => {
+  const box = boxOf(el, id);
+  return box.y + box.height;
+};
+
+metric(
+  "flex items aligned by their last baselines line up their last lines at the line's end",
+  async () => {
+    // CSS Box Alignment 3, 9.3: `last baseline` was taken for `flex-end`,
+    // its fallback, which sets the items at the end of the line by their
+    // margin boxes and their last lines wherever those fell: one with
+    // padding under its text stood its line that far above the other's
+    const { node } = await render(
+      SPANS +
+        '<div class="r" id="row" style="align-items:last baseline">' +
+        `<div id="a">${span('a1', 20)}<br>${span('a2', 20)}</div>` +
+        `<div id="b" style="padding-bottom:20px">${span('b1', 30)}</div></div>`,
+    );
+    const el = view(node);
+    assert.strictEqual(bottomOf(el, 'a2'), bottomOf(el, 'b1'), 'one baseline');
+    const row = boxOf(el, 'row');
+    assert.strictEqual(
+      bottomOf(el, 'b') - row.y,
+      row.height,
+      'the padded one at the end of the line',
+    );
+  },
+);
+
+metric(
+  "a flex box's baselines are taken from its first and last lines as they stand",
+  async () => {
+    // CSS Flexbox 8.5: where no item on a line is aligned by a baseline, a
+    // flex box's first baseline is the startmost item's and its last the
+    // endmost's, by where they stand: a reversed row's leftmost and
+    // rightmost, which Chromium takes them as, and the top line and the
+    // bottom one of a row that wraps in reverse. It took its first item in
+    // `order` for both, whichever way the row ran.
+    const inner = (id: string, style: string) =>
+      `<div id="${id}" style="display:flex;${style}">` +
+      `<div>${span(`${id}-1`, 10)}</div><div>${span(`${id}-2`, 30)}</div></div>`;
+    const { node } = await render(
+      SPANS +
+        `<div class="r" style="align-items:baseline">${span('p', 20)}` +
+        `${inner('rev', 'flex-direction:row-reverse')}</div>` +
+        `<div class="r" style="align-items:last baseline">${span('q', 20)}` +
+        `${inner('end', 'flex-direction:row-reverse')}</div>` +
+        `<div class="r" style="align-items:baseline">${span('w', 20)}` +
+        `${inner('wrap', 'flex-wrap:wrap-reverse;width:15px')}</div>`,
+    );
+    const el = view(node);
+    assert.strictEqual(
+      bottomOf(el, 'p'),
+      bottomOf(el, 'rev-2'),
+      'the leftmost',
+    );
+    assert.strictEqual(
+      bottomOf(el, 'q'),
+      bottomOf(el, 'end-1'),
+      'the rightmost',
+    );
+    assert.strictEqual(
+      bottomOf(el, 'w'),
+      bottomOf(el, 'wrap-2'),
+      'the top line, where the second item wrapped to',
+    );
+  },
+);
+
+metric(
+  "a table's first baseline is its first row's, under its caption",
+  async () => {
+    // CSS 2.1 17.5.3: a table item gave the baseline of the first line it
+    // held, its caption's
+    const { node } = await render(
+      SPANS +
+        `<div class="r" style="align-items:baseline">${span('p', 20)}` +
+        '<table style="border-spacing:0"><caption>' +
+        `${span('cap', 30)}</caption><tr><td>${span('cell', 15)}</td></tr>` +
+        '</table></div>',
+    );
+    const el = view(node);
+    assert.strictEqual(bottomOf(el, 'p'), bottomOf(el, 'cell'));
+  },
+);
+
 test('an item with an auto margin across a row aligned by baselines takes the room its line has past it', async () => {
   // An item with an `auto` margin across the line takes no part in
   // aligning it by baselines (CSS Flexbox 8.3, 9.4 step 8): the margin

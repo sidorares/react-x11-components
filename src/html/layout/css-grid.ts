@@ -79,11 +79,12 @@ import {
 } from './block.js';
 import type { LaidUnder, LayoutContext } from './block.js';
 import type { FontsLike } from './inline.js';
-import { firstBaselineIn } from './inline.js';
+import { firstBaselineIn, itemBaselineOf } from './inline.js';
 import {
   FRAMES,
   framed,
   frameTurn,
+  inFrame,
   pageRectOf,
   putBackAcross,
   quarterTurnsOf,
@@ -120,6 +121,10 @@ export interface Item {
    *  which the row is sized with (CSS Grid 1, 11.5); undefined for one
    *  that is not. */
   shim?: number;
+  /** For one aligned by its last baseline, how far up from its row's end
+   *  it is moved to meet the furthest of its row's from there, which the
+   *  row is sized with as well. */
+  shimEnd?: number;
   /** And across its column, for one aligned by its first baseline there
    *  (`alignColumnBaselines`), which the column is sized with. */
   shimX?: number;
@@ -155,13 +160,61 @@ export function firstItem(items: Item[]): Box | null {
   // which they share (10.6)
   if (first) {
     let shared: Item | null = null;
+    let byLast: Item | null = null;
     for (const item of items) {
-      if (item.row !== first.row || item.shim === undefined) continue;
-      if (shared === null || item.col < shared.col) shared = item;
+      if (item.row !== first.row) continue;
+      if (item.shim !== undefined && (!shared || item.col < shared.col)) {
+        shared = item;
+      }
+      // one aligned by its last baseline is in the group of the row it
+      // ends in
+      if (
+        item.shimEnd !== undefined &&
+        item.rows === 1 &&
+        (!byLast || item.col < byLast.col)
+      ) {
+        byLast = item;
+      }
     }
-    if (shared) return shared.box;
+    if (shared ?? byLast) return (shared ?? byLast)!.box;
   }
   return first?.box ?? null;
+}
+
+/**
+ * The last of a grid's items in row-major order, which the grid's last
+ * baseline is taken from (CSS Grid 1, 10.6): of those in its last row, the
+ * one furthest to its end — or where items in that row are aligned by
+ * their baselines, one of those, which share theirs, by its last baseline
+ * where some are and else by its first.
+ */
+export function lastItem(items: Item[]): Box | null {
+  let row = -1;
+  for (const item of items) row = Math.max(row, item.row + item.rows - 1);
+  let last: Item | null = null;
+  let byLast: Item | null = null;
+  let byFirst: Item | null = null;
+  for (const item of items) {
+    if (item.row + item.rows - 1 !== row) continue;
+    if (
+      last === null ||
+      item.row > last.row ||
+      (item.row === last.row && item.col > last.col)
+    ) {
+      last = item;
+    }
+    if (item.shimEnd !== undefined && (!byLast || item.col < byLast.col)) {
+      byLast = item;
+    }
+    if (
+      item.shim !== undefined &&
+      item.row === row &&
+      (!byFirst || item.col < byFirst.col)
+    ) {
+      byFirst = item;
+    }
+  }
+  return (byLast ?? byFirst ?? last)?.box ?? null;
 }
 
 /**
@@ -182,20 +235,40 @@ function alignBaselines(
    *  (`reflectFrame`), each whole: the baseline that meets the others' is
    *  then as far from its bottom as it is from its top here. */
   across = false,
+  /** Whether items aligned by their last baselines are lined up by them,
+   *  where they are not set at their rows' ends, their fallback. */
+  lastBaselines = true,
 ): void {
   const rows = new Map<number, { item: Item; offset: number }[]>();
+  // and those aligned by their last baselines, each group by the row it
+  // ends in, which it is set at the end of: how far each is from its
+  // margin box's bottom to its last baseline
+  const ends = new Map<number, { item: Item; offset: number }[]>();
   for (const item of items) {
     item.shim = undefined;
+    item.shimEnd = undefined;
     const child = item.box;
     const own = child.style;
     const text =
       own.alignSelf === AUTO ? style.alignItemsText : own.alignSelfText;
-    if (!/(^|\s)baseline$/.test(text) || text.startsWith('last')) continue;
+    if (!/(^|\s)baseline$/.test(text)) continue;
     if (
       SUBGRIDS.get(child)?.rows ||
       autoMargins(child, 'y').some(Boolean) ||
       cyclic(item)
     ) {
+      continue;
+    }
+    if (text.startsWith('last')) {
+      if (!lastBaselines) continue;
+      const at = itemBaselineOf(child, true);
+      const offset =
+        (across ? at - child.y : child.y + child.height - at) +
+        child.marginBottom;
+      const row = item.row + item.rows - 1;
+      const list = ends.get(row);
+      if (list) list.push({ item, offset });
+      else ends.set(row, [{ item, offset }]);
       continue;
     }
     const found = firstBaselineIn(child);
@@ -210,6 +283,11 @@ function alignBaselines(
     let lowest = -Infinity;
     for (const { offset } of list) lowest = Math.max(lowest, offset);
     for (const { item, offset } of list) item.shim = lowest - offset;
+  }
+  for (const list of ends.values()) {
+    let furthest = -Infinity;
+    for (const { offset } of list) furthest = Math.max(furthest, offset);
+    for (const { item, offset } of list) item.shimEnd = furthest - offset;
   }
 }
 
@@ -549,6 +627,11 @@ export function layoutGrid(
         return false;
       },
       putBackAcross(box),
+      // a grid laid out in a frame lines its items' last baselines up as
+      // it has them, at their rows' ends, its baselines across the page
+      // being no line's
+      box.style.writingMode === 'horizontal-tb' &&
+        !(framed.any && inFrame(box)),
     );
     // the rows against a height: percentages of it, or `auto` without one
     // — and those from the cut on the sizes they were, their items left
@@ -695,6 +778,7 @@ export function layoutGrid(
     colLines: plan.colLines,
     rowLines: plan.rowLines,
     first: firstItem(items),
+    last: lastItem(items),
     atNarrowest,
     mirror: rtl ? mirror : undefined,
     lanes: {
@@ -777,7 +861,11 @@ export function layoutGrid(
     } else if (top || bottom) {
       dy = (tall - outerHeight) * (top && bottom ? 0.5 : top ? 1 : 0);
     } else if (align === 'center') dy = (tall - outerHeight) / 2;
-    else if (align === 'flex-end') dy = tall - outerHeight;
+    else if (align === 'flex-end') {
+      // at the end, or for one aligned by its last baseline as far above
+      // it as meets its row's
+      dy = tall - outerHeight - (item.shimEnd ?? 0);
+    }
     // one aligned by its baseline meets its row's, and is not stretched
     else if (item.shim !== undefined) dy = item.shim;
     // and one that takes no part aligns to the start, its fallback, and
@@ -2540,7 +2628,8 @@ export function rowItem(
     box.marginBottom +
     item.before +
     item.after +
-    (item.shim ?? 0);
+    (item.shim ?? 0) +
+    (item.shimEnd ?? 0);
   const height = () => (Number.isNaN(item.height) ? box.height : item.height);
   const outer = () => height() + margins;
   return {
