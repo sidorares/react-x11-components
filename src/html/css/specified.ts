@@ -8,7 +8,7 @@
 import { PASSIVE } from './passive-properties.js';
 import { parseTransform } from './transform.js';
 import { parseFilter } from './filter.js';
-import { borderImageTakes, maskShorthandTakes } from './style.js';
+import { borderImageTakes, cascadeTakes, maskShorthandTakes } from './style.js';
 import {
   CORNER_SHAPE_SHORTHANDS,
   cornerShapeComposed,
@@ -45,7 +45,7 @@ import {
 } from './animation.js';
 import { parseAnimationRanges, parseEdges } from './triggers.js';
 import { parseShapeFunction } from './shape-function.js';
-import { specifiedColorText } from './color.js';
+import { SYSTEM_COLOR, specifiedColorText } from './color.js';
 import { parseObjectViewBox } from './object-view-box.js';
 import {
   basicShapeSpecified,
@@ -66,7 +66,13 @@ import {
   parseTextBoxTrim,
   textBoxText,
 } from './text-box.js';
-import { parseLength, parseZoom, splitCommas, splitValue } from './values.js';
+import {
+  parseColor,
+  parseLength,
+  parseZoom,
+  splitCommas,
+  splitValue,
+} from './values.js';
 import {
   GRID_SPECIFIED,
   gridLonghands,
@@ -189,6 +195,50 @@ function scaleSpecified(value: string): string | null | undefined {
   const [x, y = x, z = 1] = n;
   if (z !== 1) return `${text(x)} ${text(y)} ${text(z)}`;
   return y === x ? text(x) : `${text(x)} ${text(y)}`;
+}
+
+/**
+ * Whether a property takes a value, as a page's script is answered:
+ * `el.style`'s setter, `cssText`, a rule's `style` and `CSS.supports()`.
+ * A property whose grammar is read here answers by it; any other by what
+ * the cascade makes of the value (`cascadeTakes`), where it can say.
+ * Undefined where neither can, and the value is kept as written. Not what
+ * a sheet's `@supports` asks, which answers only what it must
+ * (`supportsCondition`).
+ */
+export function declarationTaken(
+  prop: string,
+  value: string,
+): boolean | undefined {
+  const specified = specifiedValue(prop, value);
+  if (specified !== undefined) return specified !== null;
+  if (notAColour(prop.toLowerCase(), value)) return false;
+  return cascadeTakes(prop, value);
+}
+
+/** The properties whose value is one colour: not `border-color`, which
+ *  takes up to four. */
+const PLAIN_COLOR =
+  /^(?:-webkit-text-(?:fill|stroke)-|text-emphasis-|text-decoration-|outline-|column-rule-|caret-|accent-|background-|flood-|lighting-|stop-|border-(?:top|right|bottom|left|block-start|block-end|inline-start|inline-end)-)?color$/;
+
+/**
+ * A colour property's value that is one word and no colour: no named or
+ * system colour, no keyword every property takes, `currentcolor`, nor the
+ * `auto` of a caret's, an accent's or an outline's. Anything else — a function, an
+ * escape, more than one word — is no business of this.
+ */
+function notAColour(prop: string, value: string): boolean {
+  const word = value.trim();
+  return (
+    /^[a-z][a-z-]*$/i.test(word) &&
+    PLAIN_COLOR.test(prop) &&
+    !/^(?:inherit|initial|unset|revert|revert-layer|revert-rule|currentcolor)$/i.test(
+      word,
+    ) &&
+    !(/^(?:caret|accent|outline)-color$/.test(prop) && /^auto$/i.test(word)) &&
+    !SYSTEM_COLOR.test(word) &&
+    parseColor(word) === null
+  );
 }
 
 export function specifiedValue(
