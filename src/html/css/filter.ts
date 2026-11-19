@@ -214,6 +214,38 @@ export function interpolateFilters(
   return out;
 }
 
+/**
+ * Two lists accumulated (Filter Effects 1, 15.4): function by function where
+ * they are alike in the order written, the shorter filled out with the
+ * longer's functions at nothing, each amount added onto the other's less
+ * the function's value at nothing — `brightness(0.5)` onto
+ * `brightness(0.25)` is `brightness(-0.25)`, which the interpolation after
+ * it brings back into range. Undefined where they are not alike, or a
+ * function is a shadow or a `<filter>`, and the value replaces what is
+ * under it.
+ */
+export function accumulateFilters(
+  under: readonly FilterFunction[],
+  value: readonly FilterFunction[],
+): FilterFunction[] | undefined {
+  const n = Math.max(under.length, value.length);
+  const out: FilterFunction[] = [];
+  for (let i = 0; i < n; i += 1) {
+    const x = under[i] ?? atNothing(value[i]);
+    const y = value[i] ?? atNothing(under[i]);
+    if (x.fn !== y.fn) return undefined;
+    if (x.fn === 'hue-rotate' && y.fn === 'hue-rotate') {
+      out.push({ fn: 'hue-rotate', angle: x.angle + y.angle });
+    } else if (x.fn === 'blur' && y.fn === 'blur') {
+      out.push({ fn: 'blur', radius: x.radius + y.radius });
+    } else if ('amount' in x && 'amount' in y) {
+      const zero = (atNothing(x) as { amount: number }).amount;
+      out.push({ fn: x.fn, amount: x.amount + y.amount - zero });
+    } else return undefined;
+  }
+  return out;
+}
+
 /** A colour function as a matrix over straight RGB in 0–255: three rows,
  *  each the weights of red, green and blue and an offset. Alpha is left
  *  as it is. */

@@ -19,7 +19,7 @@
 // value go.
 
 import { blend, rgbaOf, rgbaUnclipped } from './color.js';
-import { interpolateFilters } from './filter.js';
+import { accumulateFilters, interpolateFilters } from './filter.js';
 import { isAutoInset } from './decoration-inset.js';
 import type { AutoInset } from './decoration-inset.js';
 import type { FilterFunction } from './filter.js';
@@ -1395,13 +1395,26 @@ export function addField(
         value as GridTemplate | null,
       );
     case 'boxShadow':
-    case 'filter': {
+    case 'filter':
+    case 'backdropFilter': {
       const u = (under as unknown[] | null) ?? [];
       const v = (value as unknown[] | null) ?? [];
+      // filter lists accumulate function by function, and where they do not
+      // the value's alone is the result (Filter Effects 1, 15.4)
+      if (accumulate && key !== 'boxShadow') {
+        if (!u.length) return v.length ? v : null;
+        const out = accumulateFilters(
+          u as FilterFunction[],
+          v as FilterFunction[],
+        );
+        if (out) return out;
+      }
+      // shadows add field by field, a filter's `drop-shadow()` as well
       if (accumulate && u.length === v.length && u.length) {
         const out = sum(u, v);
         if (out !== undefined) return out;
       }
+      if (accumulate && key !== 'boxShadow') return v.length ? v : null;
       const list = [...u, ...v];
       return list.length ? list : null;
     }
