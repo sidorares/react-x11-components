@@ -39066,15 +39066,13 @@ export function installDom(
    * makes its inline size its height.
    */
   /** An element's effective zoom (CSS Viewport 1, 5.3): its own and its
-   *  flat ancestors' zooms multiplied, 1 where it has no box. */
+   *  ancestors' zooms multiplied, as the host worked its style out, 1
+   *  where it has no box. */
   const effectiveZoomOf = (el: Any): number => {
-    if (!el.isConnected || !el.getClientRects().length) return 1;
-    let zoom = 1;
-    for (let at = el; at && at.nodeType === 1; at = flatParentNode(at)) {
-      const own = parseFloat(getComputedStyle(at).zoom);
-      if (own > 0) zoom *= own;
-    }
-    return zoom;
+    if (!offsetOf(el)) return 1;
+    const e = call('edges', el._id);
+    const zoom = typeof e === 'string' && e ? Number(e.split(',')[8]) : 1;
+    return zoom > 0 ? zoom : 1;
   };
   const boxSizesOf = (el: Any): number[] | null => {
     // an HTML element's as layout sized it; what has no offset geometry,
@@ -39092,14 +39090,14 @@ export function installDom(
       return [0, 0, 0, 0, 0, 0, 0, 1];
     }
     const e = call('edges', el._id);
-    const [pt, pr, pb, pl, bt, br, bb, bl] =
+    const [pt, pr, pb, pl, bt, br, bb, bl, edgeZoom] =
       typeof e === 'string' && e
         ? e.split(',').map(Number)
-        : [0, 0, 0, 0, 0, 0, 0, 0];
+        : [0, 0, 0, 0, 0, 0, 0, 0, 1];
     // layout's box is zoomed and the edges a style reads are not: the
     // sizes are the element's own CSS pixels, its zoom taken off
     // (Resize Observer 1, 3.4.1), and the device pixels its zoom's
-    const zoom = html ? effectiveZoomOf(el) : 1;
+    const zoom = html && edgeZoom > 0 ? edgeZoom : 1;
     const w = (o ? o[3] : r![2]) / zoom;
     const h = (o ? o[4] : r![3]) / zoom;
     const vertical = /^(vertical|sideways)/.test(str(style.writingMode));
@@ -39202,8 +39200,8 @@ export function installDom(
    * them, and go round again with only what is deeper than the shallowest
    * target just delivered, so a callback that resizes what it observes
    * ends. What is left over is told as an error and delivered at the next
-   * frame. Each pass after the first measures whatever the host says,
-   * since a callback is what moved the boxes.
+   * frame. Each pass after the first asks the host again, since a callback
+   * is what moves the boxes.
    */
   const updateResizeObservers = (): void => {
     if (!resizing.size) {
@@ -39229,8 +39227,14 @@ export function installDom(
         shallowest = Math.min(shallowest, o._broadcast());
       }
       depth = shallowest;
+      // what the callbacks moved, as the host says: a viewport it holds
+      // (`viewportHeld`) answers what it answered, and a target observed
+      // in a callback is measured whatever it says
+      const after = String(call('geometry', true));
+      const all = after !== resizeLooked;
+      resizeLooked = after;
       any = false;
-      for (const o of observers()) if (o._gather(depth, true)) any = true;
+      for (const o of observers()) if (o._gather(depth, all)) any = true;
     }
     let skipped = false;
     for (const o of observers()) {
