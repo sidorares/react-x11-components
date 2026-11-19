@@ -4843,7 +4843,13 @@ closes a way out a DOM binding opens by accident:
   the viewport for its root, and cut by each frame's content box and what
   shows of the frame up to the realm's document; its box is told in its
   own viewport, and the root and its margin are still the realm's to cut.
-  An element of the realm's document is no root of it. A frame's paint
+  An element of the realm's document is no root of it. A table whose
+  `overflow` would scroll is no content clip, since overflow applies to no
+  table (`scrollingTable`); a clip path that encloses no area hides all
+  of what it clips, an edge that only meets the root counting for nothing
+  there; and the scroll margin grows a scroller's clip path as it grows its
+  overflow clip, and the viewport's, past the root margin, for the implicit
+  root. A frame's paint
   tells the page's runner as well as its own (`_onPaint` in `frames.ts`),
   or what it laid out after the page's last paint is never asked again: a
   frame with no realm has no runner to ask. **A shape in an

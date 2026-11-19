@@ -19430,6 +19430,36 @@ test('an IntersectionObserver measures a target in a same-origin frame through t
   );
 });
 
+test("an IntersectionObserver measures a table root by its border box, a clip path of no area as hiding all, and a scroller's clip path grown by the scroll margin", async () => {
+  // overflow applies to no table, so a table that would scroll is no
+  // content clip (WPT's root-is-table-with-overflow-scroll); `inset(1000px)`
+  // is a point, which an edge-inclusive test took for a box in view
+  // (clip-path); and the scroll margin grows a scroller's clip path as it
+  // grows its overflow clip (scroll-margin-clip-path)
+  const doc = await hosted(
+    '<style>body{margin:0} #root{border-collapse:separate;overflow:scroll;border:20px solid}' +
+      '#sc{width:100px;height:100px;overflow:hidden;clip-path:inset(10%)}</style>' +
+      '<table id="root"><tr><td><div id="t" style="width:10px;height:10px"></div></td></tr></table>' +
+      '<div style="clip-path:inset(1000px);padding:8px"><div id="c" style="width:20px;height:20px"></div></div>' +
+      '<div id="sc"><div style="height:100px"></div><div id="m" style="width:50px;height:50px"></div></div>' +
+      '<p id="out"></p><script>' +
+      'var seen = [];' +
+      'function tell(what) { seen.push(what); document.getElementById("out").textContent = seen.sort().join("|"); }' +
+      'var root = document.getElementById("root"), b = root.getBoundingClientRect();' +
+      'new IntersectionObserver(function (es) { var r = es[0].rootBounds; tell("table " + (r.x === b.x && r.width === b.width)); }, { root: root }).observe(document.getElementById("t"));' +
+      'new IntersectionObserver(function (es) { tell("clip " + es[0].isIntersecting); }).observe(document.getElementById("c"));' +
+      'new IntersectionObserver(function (es) { tell("margin " + es[0].isIntersecting + " " + es[0].intersectionRatio.toFixed(2)); }, { scrollMargin: "20px" }).observe(document.getElementById("m"));' +
+      'var g = Object.getOwnPropertyDescriptor(IntersectionObserverEntry.prototype, "time").get;' +
+      'tell("idl " + g.name + " " + Object.getOwnPropertyDescriptor(IntersectionObserver.prototype, "observe").enumerable);' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t.split('|').length === 4);
+  assert.equal(
+    text,
+    'clip false|idl get time true|margin true 0.20|table true',
+  );
+});
+
 test('an IntersectionObserver reports what it was asked to observe in one callback, once', async () => {
   // Wikipedia's contents observe every heading and mark the one closest
   // above the top from all their entries; a callback a heading marked each
