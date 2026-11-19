@@ -3695,6 +3695,18 @@ export class DomHost {
     this._resizeMoved(false);
   }
 
+  /** Another window of the group painted, a popup or its opener: what this
+   *  realm's intersection observers measure in it may have moved
+   *  (`ScriptRunner.painted`). Nothing where none watches anything. */
+  intersectionsMoved(): void {
+    if (this._disposed || !this.entries || this._viewportsWoken) return;
+    const seen = this._intersecting;
+    if (seen && this._intersections(seen.query) !== seen.answer) {
+      this._viewportsWoken = true;
+      this.entries.call('__rendering', null);
+    }
+  }
+
   /** Whether the boxes the page's resize observers measure were laid out
    *  or scrolled since their last frame, which a frame is asked for;
    *  `late` where a layout owed has been waited for already. */
@@ -3833,6 +3845,12 @@ export class DomHost {
     let oy = 0;
     for (let depth = 0; depth < 16; depth++) {
       const frame = this._s.frameOf.get(doc);
+      // a window's own document, a popup's, has its own viewport for the
+      // implicit root, as Chromium measures it (WPT's
+      // target-in-different-window)
+      if (!frame && depth === 0) {
+        return shown ? `F${rect(box)},0,0,${rect(shown)}` : `F${rect(box)},0,0`;
+      }
       if (!frame) return '';
       const parent = this._ownerOf(frame);
       const top = parent === this.document;
