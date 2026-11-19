@@ -871,6 +871,16 @@ export function layoutGridLanes(
     }
     if (top) firsts.add(top.item.box);
   }
+  // and the items of the last lane that holds any, from its end back,
+  // which the container's last baseline is taken from: the first of them
+  // with a line, or the last one's edge
+  let lasts: Box[] = [];
+  for (let t = n - 1; t >= 0 && !lasts.length; t -= 1) {
+    lasts = placed
+      .filter((p) => t >= p.start && t < p.start + p.span)
+      .sort((a, b) => b.pos - a.pos)
+      .map((p) => p.item.box);
+  }
   GRID_TRACKS.set(box, {
     cols: rows ? stacking : laneTracks,
     rows: rows ? laneTracks : stacking,
@@ -878,6 +888,7 @@ export function layoutGridLanes(
     rowLines: rows ? lines : gridLines(1, [[], []], null, 'rows'),
     first,
     firsts: [...firsts],
+    lasts,
     atNarrowest: 0,
     mirror: rtl ? mirror : undefined,
     lanes: {

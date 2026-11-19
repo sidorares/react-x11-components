@@ -39183,21 +39183,6 @@ export function installDom(
           n[4] -= v.scrollX;
           n[5] -= v.scrollY;
         }
-        // a stand-in's part shown cuts the target's own bounding box
-        if (n.length >= 4 && intersectionStandIn(target) !== target) {
-          const own = target.getBoundingClientRect();
-          const bx = own.x + ox;
-          const by = own.y + oy;
-          const seen = n.length >= 8 ? n.slice(4, 8) : null;
-          n = [bx, by, own.width, own.height];
-          if (seen) {
-            const x0 = Math.max(bx, seen[0]);
-            const y0 = Math.max(by, seen[1]);
-            const x1 = Math.min(bx + own.width, seen[0] + seen[2]);
-            const y1 = Math.min(by + own.height, seen[1] + seen[3]);
-            if (x0 <= x1 && y0 <= y1) n.push(x0, y0, x1 - x0, y1 - y0);
-          }
-        }
         let box = new DOMRectReadOnly();
         let shown = new DOMRectReadOnly();
         let isIntersecting = false;
@@ -39271,16 +39256,6 @@ export function installDom(
    * The host asks the same again after each paint and wakes a frame where
    * the answer moved (`DomHost.renderingMoved`).
    */
-  /** What the host measures for a target: the target, or for a shape in
-   *  an inline `<svg>`, which has no box of the document's, the outermost
-   *  `<svg>`, whose part shown cuts the shape's own bounding box
-   *  (`_measure`). */
-  const intersectionStandIn = (target: Any): Any => {
-    if (target.namespaceURI !== SVG_NS) return target;
-    let svg = target.ownerSVGElement;
-    while (svg?.ownerSVGElement) svg = svg.ownerSVGElement;
-    return svg ?? target;
-  };
   const updateIntersections = (time: number): void => {
     if (!intersecting.size) {
       if (intersectionsAsked) {
@@ -39294,10 +39269,7 @@ export function installDom(
       observers.map((o) => [
         o._root instanceof Element ? o._root._id : 0,
         o.scrollMargin,
-        [...o._targets].map(([t, w]) => {
-          const stand = intersectionStandIn(t);
-          return stand === t ? w.id : idOf(stand);
-        }),
+        [...o._targets.values()].map((t) => t.id),
       ]),
     );
     intersectionsAsked = true;

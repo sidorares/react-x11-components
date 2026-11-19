@@ -74,7 +74,7 @@ import {
 import { layoutGrid } from './css-grid.js';
 import { layoutGridLanes } from './grid-lanes.js';
 import { LineNode, onOneLine } from './flex-line.js';
-import { firstBaselineIn } from './inline.js';
+import { baselineKind, firstBaselineIn, itemBaselineOf } from './inline.js';
 import { TABLE_CONTENT } from './table.js';
 import type { LaidUnder, LayoutContext } from './block.js';
 import type { FlexNode } from './flex-line.js';
@@ -323,6 +323,15 @@ export function layoutFlex(
     row &&
     (box.style.alignItems === 'baseline' ||
       items.some(({ box: child }) => child.style.alignSelf === 'baseline'));
+  // and items aligned by their last baselines, which Yoga sets at their
+  // lines' ends, where that falls back to, and which are set together
+  // there once their baselines are known (`lastBaselineLines`)
+  const lastBaselines =
+    row &&
+    box.style.writingMode === 'horizontal-tb' &&
+    items.some(
+      ({ box: child }) => baselineKind(box.style, child.style) === 'last',
+    );
   // An `auto` margin across a row that wraps takes the room its line has
   // past the item (CSS Flexbox 8.1, 9.6), where Yoga's pass that sets the
   // items across their lines reads an item's alignment and not its
@@ -591,12 +600,20 @@ export function layoutFlex(
   // makes each line as tall as that does: their top margins, or where the
   // lines start at the bottom, their bottom ones
   const lines = started.size > 1 ? baselineLines(box.style, items) : null;
-  if (lines) {
-    const edge =
-      box.style.flexWrap === 'wrap-reverse' ? Y.EDGE_BOTTOM : Y.EDGE_TOP;
-    for (const line of lines) {
+  const ends = lastBaselines ? lastBaselineLines(box.style, items) : null;
+  if (lines || ends) {
+    const reverse = box.style.flexWrap === 'wrap-reverse';
+    const edge = reverse ? Y.EDGE_BOTTOM : Y.EDGE_TOP;
+    for (const line of lines ?? []) {
       line.forEach(({ node }, i) => {
         node.setMargin(edge, line.margins[i]);
+      });
+    }
+    // those aligned by their last baselines on the side their lines end
+    const end = reverse ? Y.EDGE_TOP : Y.EDGE_BOTTOM;
+    for (const line of ends ?? []) {
+      line.forEach(({ node }, i) => {
+        node.setMargin(end, line.margins[i]);
       });
     }
     ctx.flexDepth = depth + 1;
@@ -3654,6 +3671,45 @@ function baselineLines<T extends { box: Box; node: FlexNode }>(
     out.push(Object.assign(line, { margins }));
   }
   // one alone on its line is at its start already
+  return several ? out : null;
+}
+
+/**
+ * A row's items aligned by their last baselines (CSS Box Alignment 3, 9.3),
+ * which Yoga sets at their lines' ends: for each line with two or more,
+ * the margin at that end that puts each item's last baseline where the one
+ * reaching furthest from its own to its margin edge there has it — its
+ * bottom margin, or where the lines wrap in reverse and end at the top,
+ * its top one. Null where no line has two to align.
+ */
+function lastBaselineLines<T extends { box: Box; node: FlexNode }>(
+  style: ComputedStyle,
+  items: readonly T[],
+): (T[] & { margins: number[] })[] | null {
+  const reverse = style.flexWrap === 'wrap-reverse';
+  const out: (T[] & { margins: number[] })[] = [];
+  let several = false;
+  for (const all of itemLines(style, items, true)) {
+    const line = all.filter(
+      ({ box }) => baselineKind(style, box.style) === 'last',
+    );
+    if (!line.length) continue;
+    if (line.length > 1) several = true;
+    let reach = -Infinity;
+    const lengths = line.map(({ box }) => {
+      const at = itemBaselineOf(box, true) - box.y;
+      const length = reverse
+        ? box.marginTop + at
+        : box.height + box.marginBottom - at;
+      reach = Math.max(reach, length);
+      return length;
+    });
+    const margins = line.map(
+      ({ box }, i) =>
+        (reverse ? box.marginTop : box.marginBottom) + reach - lengths[i],
+    );
+    out.push(Object.assign(line, { margins }));
+  }
   return several ? out : null;
 }
 

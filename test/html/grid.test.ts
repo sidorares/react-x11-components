@@ -2349,3 +2349,34 @@ metric(
     assert.deepStrictEqual(at('y'), [0, 40], "the grid's first, as wide as y");
   },
 );
+
+metric(
+  "grid items aligned by their last baselines line them up at their row's end, and give the grid its last baseline",
+  async () => {
+    // CSS Box Alignment 3, 9.3, and CSS Grid 1, 10.6: `last baseline` took
+    // its fallback, the end, and a grid's last baseline was its first
+    // item's, so a grid in a row aligned by last baselines stood on its
+    // first row
+    const span = (id: string, height: number) =>
+      `<span id="${id}" style="display:inline-block;width:10px;height:${height}px"></span>`;
+    const { node } = await render(
+      '<style>body{margin:0} div{line-height:0}</style>' +
+        '<div id="g" style="display:grid;grid-template-rows:80px;' +
+        'grid-template-columns:50px 50px;align-items:last baseline">' +
+        `<div id="a">${span('a1', 20)}<br>${span('a2', 20)}</div>` +
+        `<div id="b" style="padding-bottom:20px">${span('b1', 10)}</div></div>` +
+        '<div style="display:flex;align-items:last baseline">' +
+        `${span('p', 20)}<div style="display:grid;grid-template-rows:40px 40px">` +
+        `<div>${span('r1', 10)}</div><div>${span('r2', 30)}</div></div></div>`,
+    );
+    const el = view(node);
+    const bottomOf = (id: string) => {
+      const box = boxOf(el, id);
+      return box.y + box.height;
+    };
+    assert.strictEqual(bottomOf('a2'), bottomOf('b1'), 'one baseline');
+    const g = boxOf(el, 'g');
+    assert.strictEqual(bottomOf('b'), g.y + 80, 'the padded one at the end');
+    assert.strictEqual(bottomOf('p'), bottomOf('r2'), "the last row's item");
+  },
+);

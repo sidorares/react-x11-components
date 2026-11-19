@@ -3820,6 +3820,24 @@ but the one test that asks V8. The facade reads a property of the parsed
 record, and makes its lists only where a page asks for them: built at every
 read, they were most of what a read cost a page.
 
+**A box's baseline as a flex or grid item is one answer, its first or its
+last** (`itemBaselineOf`, `alignmentLast`, `flexBaseline`, `baselineKind`
+in `layout/inline.ts`). A flex box's are its first line's and its last
+line's, a grid's its first row's and its last row's (`firstItem`,
+`lastItem`), a table's its first row's and its last row's, and a block's
+its first line's and its last line's — not an inline block's last, which
+`lastBaselineIn` takes Blink's way. Three things are load-bearing. **The
+layout keyword for `last baseline` is `flex-end`**, its fallback, so
+anything that aligns by a last baseline asks `baselineKind`, which reads
+the text, and never `alignSelf` alone. **A flex box's first and last lines,
+and its startmost and endmost items, are where they stand**: the top line
+and the bottom one wherever `wrap-reverse` stacks them, the leftmost item in
+a reversed row, as Chromium takes them, and not the first in `order`. And
+**an item aligned by its last baseline is in the group of the row it ends
+in**, which a grid's first baseline does not read and its last does. In a
+vertical writing mode a `last baseline` keeps its fallback, the end: its
+baselines across the page are no line's yet.
+
 **A computed colour is sRGB, and keeps what it was written as beside
 it.** Every drawing context reads a colour field as `#rrggbb` or `rgba()`,
 and the field holds that, whatever it was written in. Where its computed
@@ -4834,11 +4852,14 @@ closes a way out a DOM binding opens by accident:
   or what it laid out after the page's last paint is never asked again: a
   frame with no realm has no runner to ask. **A shape in an
   inline `<svg>` is measured by its outermost `<svg>`**
-  (`intersectionStandIn`): it has no box of the document's, so its own
-  bounding box is cut by what shows of the drawing. And a target with no
-  box is told with no root bounds, as Chromium tells it. Anything new that
-  hands the host a target it has no box for goes through the stand-in, or
-  it is told 0 by 0 and never in view.
+  on the host (`svgStandIn` in `scripts/host.ts`): it has no box of the
+  document's, so its drawn box (`svgAnswer('drawn')`, its lengths, its
+  `transform` and its style's) is cut by what shows of the drawing, and by
+  nothing where the drawing is the observer's root. The facade hands over
+  the targets as they are, so a page's realm decides nothing of it. And a
+  target with no box is told with no root bounds, as Chromium tells it.
+  Anything new that hands the host a target it has no box for goes through
+  the stand-in, or it is told 0 by 0 and never in view.
 - **A `ResizeObserver` is told in the frame, and measures only where the
   boxes moved.** Its steps run after the animation frame callbacks and
   before the intersection observers (`updateResizeObservers`, Resize

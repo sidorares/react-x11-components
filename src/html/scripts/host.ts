@@ -2090,6 +2090,20 @@ function withDeclaration(
   return serializeDeclarations(kept);
 }
 
+const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
+
+/** What an `IntersectionObserver` measures for an element: the element, or
+ *  for what is inside an inline `<svg>`, the outermost `<svg>`, whose box
+ *  is the one the document has. */
+function svgStandIn(el: Element): Element {
+  if (namespaceOf(el) !== SVG_NAMESPACE) return el;
+  let outer: Element | null = null;
+  for (let at = el.parent; at instanceof Element; at = at.parent) {
+    if (tagOf(at) === 'svg' && namespaceOf(at) === SVG_NAMESPACE) outer = at;
+  }
+  return outer ?? el;
+}
+
 /** Where two rectangles meet, an edge that only touches counting, or null
  *  where they do not (Intersection Observer, 3.2.8). */
 function meet(a: Rect | null, b: Rect): Rect | null {
@@ -3756,21 +3770,39 @@ export class DomHost {
         const own = elements.map((el) =>
           el && this._ownerOf(el) !== this.document ? null : el,
         );
+        // a shape in an inline `<svg>` has no box of the document's, so the
+        // outermost `<svg>` is measured, and what it shows cuts the shape
+        // where its matrices draw it
+        const measured = own.map((el) => el && svgStandIn(el));
         const found =
           root === null || root instanceof Element
-            ? handle.intersectionsOf?.(own, root, lengths)
+            ? handle.intersectionsOf?.(measured, root, lengths)
             : null;
         if (!found) return ';'.repeat(ids.length);
+        const measure = measured.some((m, i) => m !== own[i])
+          ? (handle as Partial<HandleInternals>).svgMeasure?.()
+          : undefined;
         const parts = found.targets.map((t, i) => {
           const el = elements[i];
           if (el && own[i] === null) {
             return root === null ? this._throughFrames(el, lengths) : '';
           }
-          return !t
-            ? ''
-            : t.shown
-              ? `${rect(t.rect)},${rect(t.shown)}`
-              : rect(t.rect);
+          // a shape in the `<svg>` that is the root has nothing around it
+          // to cut it before the root's rectangle, which the facade cuts
+          const inRoot = !!el && measured[i] === root && root !== el;
+          if (!t && !inRoot) return '';
+          let box: Rect | null = t?.rect ?? null;
+          let shown = t?.shown ?? null;
+          if (el && measured[i] !== el) {
+            const drawn = measure ? svgAnswer('drawn', el, measure, 0) : null;
+            box = drawn
+              ? { x: drawn[0], y: drawn[1], width: drawn[2], height: drawn[3] }
+              : null;
+            shown =
+              box && inRoot ? box : box && shown ? meet(box, shown) : null;
+          }
+          if (!box) return '';
+          return shown ? `${rect(box)},${rect(shown)}` : rect(box);
         });
         return [found.root ? rect(found.root) : '', ...parts].join(';');
       })
