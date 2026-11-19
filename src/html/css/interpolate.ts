@@ -19,7 +19,7 @@
 // value go.
 
 import { blend, rgbaOf, rgbaUnclipped } from './color.js';
-import { interpolateFilters } from './filter.js';
+import { accumulateFilters, interpolateFilters } from './filter.js';
 import { isAutoInset } from './decoration-inset.js';
 import type { AutoInset } from './decoration-inset.js';
 import type { FilterFunction } from './filter.js';
@@ -110,6 +110,10 @@ export function interpolateField(
       );
       return list ? list.map(inRange) : list;
     }
+    case 'mask':
+      return maskPositions(a, b, (x, y) => mix(x, y, q));
+    case 'borderImage':
+      return interpolateBorderImage(a, b, q);
     case 'columnRule':
     case 'rowRule': {
       // and a rule is no thinner than nothing
@@ -775,6 +779,111 @@ function mix(a: unknown, b: unknown, q: number): unknown {
   return undefined;
 }
 
+/**
+ * A mask's layers with their positions run between two (CSS Masking 1,
+ * 7.4: `mask-position` is a repeatable list), the lists repeated to the
+ * least length both divide; undefined where anything else in them differs,
+ * and the property goes over at the half-way point as before.
+ */
+function maskPositions(
+  a: unknown,
+  b: unknown,
+  run: (x: unknown, y: unknown) => unknown,
+): unknown {
+  if (!isRecord(a) || !isRecord(b)) return undefined;
+  for (const k of Object.keys(a)) {
+    if (k !== 'positions' && !same(a[k], b[k])) return undefined;
+  }
+  const x = a.positions as unknown[];
+  const y = b.positions as unknown[];
+  if (!Array.isArray(x) || !Array.isArray(y) || !x.length || !y.length) {
+    return undefined;
+  }
+  const gcd = (m: number, n: number): number => (n ? gcd(n, m % n) : m);
+  const n = (x.length * y.length) / gcd(x.length, y.length);
+  if (n > 64) return undefined;
+  const positions: unknown[] = [];
+  for (let i = 0; i < n; i += 1) {
+    const v = run(x[i % x.length], y[i % y.length]);
+    if (v === undefined) return undefined;
+    positions.push(v);
+  }
+  return { ...a, positions };
+}
+
+/**
+ * A border image `q` of the way between two, a longhand at a time (CSS
+ * Backgrounds 3, 6): each of `border-image-slice`, `-width` and `-outset`
+ * runs where its sides are of one type each — a number beside a number, a
+ * percentage beside a percentage, a length or a percentage beside a length
+ * or a percentage — and `fill` matches, and goes over at the half-way point
+ * otherwise, that longhand alone. Taken as one record, `50%` to `100` ran
+ * as though the number were pixels.
+ */
+function interpolateBorderImage(a: unknown, b: unknown, q: number): unknown {
+  if (!isRecord(a) || !isRecord(b)) return undefined;
+  const out: Record<string, unknown> = {};
+  let discrete = false;
+  let runs = false;
+  const kind = (v: unknown): string =>
+    typeof v === 'number'
+      ? 'n'
+      : isRecord(v) && typeof v.times === 'number'
+        ? 't'
+        : isRecord(v) && typeof v.pct === 'number' && !('px' in v)
+          ? 'p'
+          : 'l';
+  for (const k of Object.keys(a)) {
+    if (!(k in b)) return undefined;
+    const x = a[k];
+    const y = b[k];
+    if (k === 'fill') continue;
+    if (k === 'slice' || k === 'width' || k === 'outset') {
+      const xs = x as unknown[];
+      const ys = y as unknown[];
+      // a slice's sides are numbers or percentages, and match by kind
+      const matches = xs.every((v, i) => {
+        const p = kind(v);
+        const r = kind(ys[i]);
+        if (k === 'slice') return p === r;
+        // a multiple of the border's width beside a multiple, and a length
+        // or a percentage beside either
+        return (p === 't') === (r === 't');
+      });
+      const filled = k !== 'slice' || a.fill === b.fill;
+      const v = matches && filled ? mix(x, y, q) : undefined;
+      if (v === undefined) discrete = true;
+      else if (!same(x, y)) runs = true;
+      out[k] = v === undefined ? (q < 0.5 ? x : y) : clampSides(k, v);
+      if (k === 'slice')
+        out.fill = v === undefined && q >= 0.5 ? b.fill : a.fill;
+      continue;
+    }
+    const v = mix(x, y, q);
+    if (v === undefined) return undefined;
+    if (!same(x, y)) runs = true;
+    out[k] = v;
+  }
+  // where nothing that differs runs, the property goes over whole, as one
+  // a transition does not run on
+  return discrete && !runs ? undefined : out;
+}
+
+/** No side of a border image's slice, width or outset is below nought. */
+function clampSides(key: string, sides: unknown): unknown {
+  if (!Array.isArray(sides)) return sides;
+  return sides.map((v) => {
+    if (typeof v === 'number') return Math.max(0, v);
+    if (isRecord(v) && typeof v.times === 'number') {
+      return { ...v, times: Math.max(0, v.times) };
+    }
+    if (isRecord(v) && typeof v.pct === 'number' && !('px' in v)) {
+      return { ...v, pct: Math.max(0, v.pct) };
+    }
+    return v;
+  });
+}
+
 /** A length as a percentage and pixels: a number is pixels, a `Pct` with
  *  no `min()` or `max()` in it is its sum; null for anything else. */
 function linear(v: unknown): { pct: number; px: number } | null {
@@ -1372,14 +1481,29 @@ export function addField(
         under as GridTemplate | null,
         value as GridTemplate | null,
       );
+    case 'mask':
+      return maskPositions(under, value, sum);
     case 'boxShadow':
-    case 'filter': {
+    case 'filter':
+    case 'backdropFilter': {
       const u = (under as unknown[] | null) ?? [];
       const v = (value as unknown[] | null) ?? [];
+      // filter lists accumulate function by function, and where they do not
+      // the value's alone is the result (Filter Effects 1, 15.4)
+      if (accumulate && key !== 'boxShadow') {
+        if (!u.length) return v.length ? v : null;
+        const out = accumulateFilters(
+          u as FilterFunction[],
+          v as FilterFunction[],
+        );
+        if (out) return out;
+      }
+      // shadows add field by field, a filter's `drop-shadow()` as well
       if (accumulate && u.length === v.length && u.length) {
         const out = sum(u, v);
         if (out !== undefined) return out;
       }
+      if (accumulate && key !== 'boxShadow') return v.length ? v : null;
       const list = [...u, ...v];
       return list.length ? list : null;
     }
