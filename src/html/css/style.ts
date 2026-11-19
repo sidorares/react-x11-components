@@ -4616,6 +4616,14 @@ export function applyDeclaration(
       return;
     }
     case 'font-weight': {
+      // a keyword, or a number from 1 to 1000; anything else is dropped,
+      // and leaves the weight an earlier declaration gave (CSS Fonts 4,
+      // 2.2), where it had been the parent's
+      const v = value.trim().toLowerCase();
+      if (!/^(?:normal|bold|bolder|lighter)$/.test(v)) {
+        const n = parseNumber(v);
+        if (n === null || n < 1 || n > 1000) return;
+      }
       style.fontWeight = parseWeight(value, parent.fontWeight);
       return;
     }
@@ -7956,6 +7964,27 @@ const VARIANTS: Record<string, [VariantKind, string]> = {
   super: ['position', 'sups=1'],
 };
 
+/** The group each `font-variant` keyword excludes the rest of, where it
+ *  is not its longhand's whole: caps and position have one each. */
+const VARIANT_GROUPS: Readonly<Record<string, string>> = {
+  'lining-nums': 'figures',
+  'oldstyle-nums': 'figures',
+  'proportional-nums': 'spacing',
+  'tabular-nums': 'spacing',
+  'diagonal-fractions': 'fractions',
+  'stacked-fractions': 'fractions',
+  ordinal: 'ordinal',
+  'slashed-zero': 'zero',
+  'common-ligatures': 'common',
+  'no-common-ligatures': 'common',
+  'discretionary-ligatures': 'discretionary',
+  'no-discretionary-ligatures': 'discretionary',
+  'historical-ligatures': 'historical',
+  'no-historical-ligatures': 'historical',
+  contextual: 'contextual',
+  'no-contextual': 'contextual',
+};
+
 const VARIANT_FIELDS = {
   numeric: 'fontVariantNumeric',
   caps: 'fontVariantCaps',
@@ -8050,9 +8079,16 @@ function parseFontVariant(
   ) {
     named.ligatures = [NO_LIGATURES];
   } else {
+    // each of a longhand's exclusive groups at most once (CSS Fonts 4,
+    // 6.4-6.7): a caps value and a position are one keyword, and a
+    // ligature, figure, spacing or fraction value one of each pair
+    const groups = new Set<string>();
     for (const word of words) {
       const known = VARIANTS[word];
       if (!known || !kinds.includes(known[0])) return null;
+      const group = VARIANT_GROUPS[word] ?? known[0];
+      if (groups.has(group)) return null;
+      groups.add(group);
       (named[known[0]] ??= []).push(known[1]);
     }
   }
@@ -11069,9 +11105,23 @@ export function cascadeTakes(name: string, value: string): boolean | undefined {
 
 const TAKES = new Map<string, boolean | undefined>();
 
+const CSS_WIDE_KEYWORD =
+  /^(?:inherit|initial|unset|revert|revert-layer|revert-rule)$/;
+
 function cascadeTakesNow(name: string, value: string): boolean | undefined {
   const prop = name.toLowerCase();
   if (UNASKED.has(prop)) return undefined;
+  // a font property kept as a bit of `fontUnsaid`, which another sets as
+  // well, answers by its own grammar
+  const unsaid = UNSAID_FONT[prop];
+  if (unsaid) {
+    const v = value.trim().toLowerCase();
+    if (!v || CSS_WIDE_KEYWORD.test(v) || /\b(?:var|env|attr)\(/.test(v)) {
+      return undefined;
+    }
+    if (unreadValue(prop, v)) return undefined;
+    return v === unsaid.initial || unsaid.takes(v);
+  }
   const fields = INHERIT_TARGETS[PREFIXED_ALIASES[prop] ?? prop];
   if (!fields?.length) return undefined;
   const v = value.trim();

@@ -54,6 +54,13 @@ const INVALID: [string, string][] = [
   ['z-index', '1.5'],
   ['letter-spacing', '1'],
   ['font-family', 'a, , b'],
+  ['font-size-adjust', 'auto'],
+  ['font-size-adjust', '0.5 ex-height'],
+  ['font-variation-settings', '700'],
+  ['font-weight', '1623'],
+  ['font-weight', 'bold 900'],
+  ['font-variant', 'small-caps all-small-caps'],
+  ['font-variant-numeric', 'lining-nums oldstyle-nums'],
 ];
 
 const VALID: [string, string][] = [
@@ -68,6 +75,10 @@ const VALID: [string, string][] = [
   ['letter-spacing', 'normal'],
   ['font-family', 'Arial, sans-serif'],
   ['display', 'inline-block'],
+  ['font-size-adjust', 'cap-height 0.5'],
+  ['font-variation-settings', '"wght" 700'],
+  ['font-weight', '650'],
+  ['font-variant', 'small-caps lining-nums common-ligatures'],
   ['width', 'calc(1px + 2%)'],
   ['color', 'var(--x)'],
   ['box-shadow', 'inherit'],
