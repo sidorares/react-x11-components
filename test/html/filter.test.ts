@@ -28,7 +28,7 @@ import {
   interpolateFilters,
   runSteps,
 } from '../../src/html/css/filter.js';
-import { interpolateField } from '../../src/html/css/interpolate.js';
+import { addField, interpolateField } from '../../src/html/css/interpolate.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { holdClock } from '../held-clock.js';
 import {
@@ -1170,4 +1170,33 @@ test('none run to a filter list is that list at nothing at either end', () => {
     [{ fn: 'grayscale', amount: 0 }],
   );
   assert.strictEqual(interpolateField('filter', null, null, 1), null);
+});
+
+test('a filter list adds onto what is under it, a backdrop as much as a filter, and accumulates function by function', () => {
+  // Filter Effects 1, 15.4: `add` appends, and `accumulate` adds each
+  // amount less its value at nothing, the shorter list filled out; lists
+  // that are not alike leave the value alone
+  const blur = (radius: number) => ({ fn: 'blur' as const, radius });
+  const bright = (amount: number) => ({ fn: 'brightness' as const, amount });
+  assert.deepStrictEqual(
+    addField('backdropFilter', [blur(10)], [blur(40)], false),
+    [blur(10), blur(40)],
+  );
+  assert.deepStrictEqual(
+    addField('backdropFilter', [bright(0.25)], [bright(0.5)], true),
+    [bright(-0.25)],
+  );
+  assert.deepStrictEqual(
+    addField('filter', [blur(10), bright(0.75)], [blur(40)], true),
+    [blur(50), bright(0.75)],
+  );
+  assert.deepStrictEqual(
+    addField(
+      'backdropFilter',
+      [{ fn: 'contrast', amount: 0.75 }],
+      [blur(40)],
+      true,
+    ),
+    [blur(40)],
+  );
 });
