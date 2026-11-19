@@ -823,8 +823,17 @@ export interface ElementIntersections {
   root: Rect | null;
   /** Each target's bounding box, and what of that the boxes around it
    *  leave to be seen as far as the root, null for none; null where it
-   *  has no box, or is not in the root by containing blocks. */
-  targets: ({ rect: Rect; shown: Rect | null } | null)[];
+   *  has no box, or is not in the root by containing blocks. `laid` is
+   *  where a box drawn through a matrix of its own was laid out, through
+   *  the matrices around it alone: where a frame's content is placed from,
+   *  since a projection's bounds can reach far past the viewer; `flat`
+   *  where that matrix cannot be undone, which shows nothing it holds. */
+  targets: ({
+    rect: Rect;
+    shown: Rect | null;
+    laid?: Rect;
+    flat?: boolean;
+  } | null)[];
 }
 
 /** The text a URL's text directives name, as they were sought
@@ -8317,7 +8326,19 @@ export class HtmlViewNode extends Node {
         box && drawn && intersectionClips(box, rootBox, this._scale, margin);
       if (!box || !drawn || !clips) return null;
       const rect = this._moveToViewport(box, drawn, shift);
-      return { rect, shown: this._cutBy(rect, clips, shift) };
+      const shown = this._cutBy(rect, clips, shift);
+      const placed = placedMatrix(box);
+      const fragments = placed && this._fragmentsOf(tree, box);
+      if (!fragments) return { rect, shown };
+      // a matrix that cannot be undone flattens it, which shows nothing it
+      // holds: a frame turned edge-on (WPT's transformed-iframe-003)
+      if (!invert(placed)) return { rect, shown, laid: rect, flat: true };
+      const laid = this._moveToViewport(
+        box,
+        throughTransforms(fragments.all, box.parent),
+        shift,
+      );
+      return { rect, shown, laid };
     });
     return { root: rootRect, targets };
   }

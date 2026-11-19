@@ -2512,6 +2512,10 @@ export class DomShared {
   /** The `<Html>` each frame's document is drawn by, where one is: what a
    *  change to it is told to, whichever realm made it. */
   readonly drawn = new WeakMap<Document, HtmlHandle>();
+  /** The hosts of the tree whose intersection observers watch something:
+   *  a paint of any realm's view may move what they measure through the
+   *  frames, so each other is asked to look again (`othersPainted`). */
+  readonly observing = new Set<DomHost>();
   /** The changes made to each drawn frame's document since its `<Html>`
    *  was last told. */
   readonly changes = new Map<Document, HtmlChange[]>();
@@ -3695,9 +3699,16 @@ export class DomHost {
     this._resizeMoved(false);
   }
 
-  /** Another window of the group painted, a popup or its opener: what this
-   *  realm's intersection observers measure in it may have moved
-   *  (`ScriptRunner.painted`). Nothing where none watches anything. */
+  /** This realm's view painted: what another realm of the tree measures
+   *  through it, a frame's observers the top viewport, may have moved. */
+  othersPainted(): void {
+    for (const host of this._s.observing) {
+      if (host !== this) host.intersectionsMoved();
+    }
+  }
+
+  /** Whether what this realm's intersection observers measure moved, which
+   *  wakes a frame. */
   intersectionsMoved(): void {
     if (this._disposed || !this.entries || this._viewportsWoken) return;
     const seen = this._intersecting;
@@ -3752,10 +3763,43 @@ export class DomHost {
    */
   private _intersections(query: string): string {
     const handle = this._seams.handle;
-    const observers = JSON.parse(query) as [number, string, number[]][];
+    const observers = JSON.parse(query) as [
+      number,
+      string,
+      number[],
+      number?,
+    ][];
     const rect = (r: Rect) => `${r.x},${r.y},${r.width},${r.height}`;
     return observers
-      .map(([rootId, margin, ids]) => {
+      .map(([rootId, margin, ids, docId]) => {
+        const rootDoc = docId ? this._nodes.get(docId) : null;
+        if (rootDoc instanceof Document && rootDoc !== this.document) {
+          return this._inFrameDocument(rootDoc, ids, marginLengths(margin));
+        }
+        // the implicit root of a frame's realm is the top-level document's
+        // viewport (3.2.8): every target is measured through the frames to
+        // it, and its root told as its size and scroll, `T`, or `X` where
+        // this realm is no origin-domain of the top's, whose root bounds
+        // are null — numbers, either way, and nothing of its document
+        if (
+          !rootId &&
+          !rootDoc &&
+          this.frameParent &&
+          this._s.frameOf.has(this.document)
+        ) {
+          let top: DomHost = this;
+          while (top.frameParent) top = top.frameParent;
+          const v = top._seams.viewport();
+          const head = `${this.sameOriginDomainWith(top) ? 'T' : 'X'}${v.width},${v.height},${v.scrollX},${v.scrollY}`;
+          const lengths = marginLengths(margin);
+          const parts = ids.map((id) => {
+            const el = this._nodes.get(id);
+            return el instanceof Element
+              ? this._throughFrames(el, lengths)
+              : '';
+          });
+          return [head, ...parts].join(';');
+        }
         // the viewport for 0; a root no longer here measures nothing
         const root = rootId ? this._nodes.get(rootId) : null;
         const elements = ids.map((id) => {
@@ -3784,8 +3828,12 @@ export class DomHost {
           : undefined;
         const parts = found.targets.map((t, i) => {
           const el = elements[i];
+          // with the document for the root, a frame's target is in none
+          // (WPT's cross-document-root)
           if (el && own[i] === null) {
-            return root === null ? this._throughFrames(el, lengths) : '';
+            return root === null && !rootDoc
+              ? this._throughFrames(el, lengths)
+              : '';
           }
           // a shape in the `<svg>` that is the root has nothing around it
           // to cut it before the root's rectangle, which the facade cuts
@@ -3810,6 +3858,44 @@ export class DomHost {
   }
 
   /**
+   * An observer whose root is a frame's document (Intersection Observer,
+   * 3.2.8): its viewport, the frame's content box, is the root, `D` and its
+   * size; each target is measured in the view that draws it, in that
+   * viewport's coordinates, and one in another document is in none.
+   */
+  private _inFrameDocument(
+    doc: Document,
+    ids: number[],
+    margin: MarginLength[] | null,
+  ): string {
+    const rect = (r: Rect) => `${r.x},${r.y},${r.width},${r.height}`;
+    const view = this._s.drawn.get(doc) as
+      (HtmlHandle & Partial<HandleInternals>) | undefined;
+    const elements = ids.map((id) => {
+      const el = this._nodes.get(id);
+      return el instanceof Element && this._ownerOf(el) === doc ? el : null;
+    });
+    const found = view?.intersectionsOf?.(elements, null, margin);
+    const size = this._frameSize(doc);
+    const head = `D${size.width},${size.height}`;
+    if (!view || !found) return [head, ...ids.map(() => '')].join(';');
+    const scroll = view.viewportScroll?.() ?? { x: 0, y: 0 };
+    const moved = (r: Rect): Rect => ({
+      ...r,
+      x: r.x - scroll.x,
+      y: r.y - scroll.y,
+    });
+    const parts = found.targets.map((t, i) =>
+      !elements[i] || !t
+        ? ''
+        : t.shown
+          ? `${rect(moved(t.rect))},${rect(moved(t.shown))}`
+          : rect(moved(t.rect)),
+    );
+    return [head, ...parts].join(';');
+  }
+
+  /**
    * A target in a frame's document, with the viewport for its root
    * (Intersection Observer, 3.2.8): `F` and its bounding box in its own
    * viewport's coordinates, then where that viewport's corner is in this
@@ -3822,8 +3908,9 @@ export class DomHost {
   private _throughFrames(el: Element, margin: MarginLength[] | null): string {
     const rect = (r: Rect) => `${r.x},${r.y},${r.width},${r.height}`;
     let doc = this._ownerOf(el);
-    const view = this._s.drawn.get(doc) as
-      (HtmlHandle & Partial<HandleInternals>) | undefined;
+    const view = (
+      doc === this.document ? this._seams.handle : this._s.drawn.get(doc)
+    ) as (HtmlHandle & Partial<HandleInternals>) | undefined;
     const target = view?.intersectionsOf?.([el], null, margin)?.targets[0];
     if (!view || !target) return '';
     const scroll = view.viewportScroll?.() ?? { x: 0, y: 0 };
@@ -3852,10 +3939,26 @@ export class DomHost {
         return shown ? `F${rect(box)},0,0,${rect(shown)}` : `F${rect(box)},0,0`;
       }
       if (!frame) return '';
-      const parent = this._ownerOf(frame);
-      const top = parent === this.document;
+      // the document it is in, which from a frame's realm may be no
+      // document this realm knows: the page's, at the top of the tree
+      let parent = this._ownerOf(frame);
+      if (parent === this.document) {
+        let at: AnyNode = frame;
+        while (at.parent) at = at.parent;
+        if (at instanceof Document) parent = at;
+      }
+      // to the top-level document, which is this realm's own but where the
+      // realm is a frame's: its view is the top realm's
+      const top = !this._s.frameOf.has(parent);
+      let topHost: DomHost = this;
+      while (top && topHost.frameParent) topHost = topHost.frameParent;
       const parentView = (
-        top ? this._seams.handle : this._s.drawn.get(parent)
+        parent === this.document
+          ? this._seams.handle
+          : (this._s.drawn.get(parent) ??
+            (top && topHost.document === parent
+              ? topHost._seams.handle
+              : undefined))
       ) as (HtmlHandle & Partial<HandleInternals>) | undefined;
       const at = parentView?.intersectionsOf?.([frame], null, margin)
         ?.targets[0];
@@ -3865,23 +3968,30 @@ export class DomHost {
       // its content box is the viewport the document below is drawn in
       const left = px('border-left-width') + px('padding-left');
       const topEdge = px('border-top-width') + px('padding-top');
+      // where it was laid out, where a transform draws it elsewhere: its
+      // drawn bounds through a perspective can reach far past the viewer,
+      // and what shows of it is cut by `at.shown` all the same
+      const base = at.laid ?? at.rect;
+      // and a matrix that flattens it to no area shows nothing of it, a
+      // turn edge-on (WPT's transformed-iframe-003)
+      const flat = !!at.flat;
       const content = {
-        x: at.rect.x + left,
-        y: at.rect.y + topEdge,
+        x: base.x + left,
+        y: base.y + topEdge,
         width: Math.max(
           0,
-          at.rect.width - left - px('border-right-width') - px('padding-right'),
+          base.width - left - px('border-right-width') - px('padding-right'),
         ),
         height: Math.max(
           0,
-          at.rect.height -
+          base.height -
             topEdge -
             px('border-bottom-width') -
             px('padding-bottom'),
         ),
       };
       shown =
-        shown && at.shown
+        shown && at.shown && !flat
           ? meet(
               meet(
                 { ...shown, x: shown.x + content.x, y: shown.y + content.y },
@@ -4146,6 +4256,7 @@ export class DomHost {
 
   dispose(): void {
     this._disposed = true;
+    this._s.observing.delete(this);
     // a page's own notifications go with it (Notifications API, 2.4)
     for (const shown of this._shown.values()) closeShown(shown);
     this._shown.clear();
@@ -6883,10 +6994,12 @@ export class DomHost {
         const query = text(a);
         if (!query) {
           this._intersecting = null;
+          this._s.observing.delete(this);
           return '';
         }
         const answer = this._intersections(query);
         this._intersecting = { query, answer };
+        this._s.observing.add(this);
         return answer;
       }
       // `offsetParent` and the offsets from it, in one walk up the boxes:

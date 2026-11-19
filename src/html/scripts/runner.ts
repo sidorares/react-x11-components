@@ -1295,6 +1295,7 @@ export class ScriptRunner {
       if (this._disposed) return;
       this.host.embedsPainted();
       this.host.renderingMoved();
+      this.host.othersPainted();
       // and the other windows of its group, whose observers may watch what
       // it draws (WPT's target-in-different-window)
       for (const slot of this.slot?.group.slots ?? []) {

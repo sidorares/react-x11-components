@@ -4860,9 +4860,19 @@ closes a way out a DOM binding opens by accident:
   another realm of the page's is handed over for this realm's id
   (`observedId`), the entries naming the element the page passed, and a
   popup's is measured in its own viewport, which its paint asks the other
-  windows of its group to look at again (`intersectionsMoved`).
-  A table whose
-  `overflow` would scroll is no content clip, since overflow applies to no
+  windows of its group to look at again (`intersectionsMoved`). An observer in a
+  frame's realm with the implicit root measures against the top-level
+  viewport, through every frame up to it (`_throughFrames`, which finds the
+  page's document from the top of the tree, since a frame's realm knows no
+  document above its own), its root told as numbers, `T`, or `X` with no
+  root bounds across origin-domains; a document for the root is that
+  document's own viewport (`_inFrameDocument`, `D`). A paint of any realm's
+  view asks every other realm of the tree that observes something to look
+  again (`othersPainted`, over `DomShared.observing`). A frame drawn through
+  a transform places its content where it was laid out (`laid`), since a
+  projection's bounds reach far past the viewer, and one its matrix
+  flattens shows nothing (`flat`).
+  A table whose `overflow` would scroll is no content clip, since overflow applies to no
   table (`scrollingTable`); a clip path that encloses no area hides all
   of what it clips, an edge that only meets the root counting for nothing
   there; and the scroll margin grows a scroller's clip path as it grows its
