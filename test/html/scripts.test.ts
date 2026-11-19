@@ -22093,3 +22093,29 @@ test('animate() reads every easing it is handed, and a calculation of numbers is
   assert.ok(text, doc.logs.join('\n'));
   assert.deepEqual(JSON.parse(text), ['TypeError', 'TypeError', '0.5']);
 });
+
+test("a <style>'s disabled is its sheet's, so a page turns the style off through the element", async () => {
+  // WPT css-align's align-content-block-006 to -010 scramble their boxes with
+  // a `<style>` they then turn off this way: with no `disabled` on the
+  // element, the scramble stayed and every box was checked under it
+  const doc = await hosted(
+    '<style id="s">#b{padding-left:30px}</style><p id="out">-</p>' +
+      '<div id="b"><span id="i">x</span></div><script>' +
+      'var s = document.getElementById("s"), i = document.getElementById("i"), r = [];' +
+      'r.push(s.disabled, i.offsetLeft);' +
+      's.disabled = true; r.push(s.disabled, s.sheet.disabled, i.offsetLeft);' +
+      's.sheet.disabled = false; r.push(s.disabled, i.offsetLeft);' +
+      'var loose = document.createElement("style"); loose.disabled = true;' +
+      'r.push(loose.disabled);' +
+      'document.getElementById("out").textContent = JSON.stringify(r);</script>',
+  );
+  const [off, at, on, sheet, after, back, again, loose] = JSON.parse(
+    doc.text('out'),
+  );
+  assert.deepEqual(
+    [off, on, sheet, back, loose],
+    [false, true, true, false, false],
+  );
+  assert.equal(at - after, 30, `${at} then ${after}`);
+  assert.equal(again, at);
+});

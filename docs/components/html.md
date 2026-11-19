@@ -6516,6 +6516,17 @@ element before and after the block are on lines of their own, without an
 edge where the block cut them, and the block stands between them as a
 block, so `<font>` around paragraphs, or a link around a card, keeps its
 blocks stacked.
+A block in a block's flow is aligned across it by its `justify-self`, or its
+parent's `justify-items` through `auto` (CSS Box Alignment 3, 6.1): any value
+but `normal`, `stretch` and `legacy` shrinks a block of `width: auto` to fit and
+sets it at the start, the centre or the end of the room its margins leave, an
+`auto` margin taking it over. A block container's `align-content` other than
+`normal` makes it a formatting context of its own, its first and last
+children's margins held in, and sets what it holds down the height it has (5.1):
+`space-between` and `stretch` at the start and `space-around` and `space-evenly`
+in the middle, and only an `unsafe` alignment past the top where the content
+overflows. Neither applies in a vertical writing mode yet, where the block
+fills its line and its content starts at the top as before.
 A block that makes a formatting context of its own — an `overflow` that
 scrolls (any but `visible` and `clip`), a table, `display: flow-root` —
 holds its floats and sits beside
