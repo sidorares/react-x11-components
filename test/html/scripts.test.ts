@@ -19245,6 +19245,61 @@ test('an IntersectionObserver hands entries of the interface a page asks for, so
   assert.equal(text, 'true|true|true|t|true|1');
 });
 
+test('an IntersectionObserver measures a shape in a drawing through the drawing, and tells what has no box with no root bounds', async () => {
+  // Intersection Observer, 3.2.8: a shape in an inline <svg> has no box of
+  // the document's, and was told 0 by 0 and never in view; its own
+  // bounding box is cut by what shows of the drawing. What has no box is
+  // told with no root bounds, as Chromium tells it
+  const doc = await hosted(
+    '<style>body{margin:0}</style>' +
+      '<div style="height:60px"></div>' +
+      '<svg width="100" height="50" style="display:block"><rect id="r" x="10" y="40" width="20" height="20"/></svg>' +
+      '<div id="gone" style="display:none"></div><p id="out"></p><script>' +
+      'var seen = [];' +
+      'var io = new IntersectionObserver(function (entries) {' +
+      '  entries.forEach(function (e) {' +
+      '    var b = e.boundingClientRect, i = e.intersectionRect;' +
+      '    seen.push([e.target.id, e.isIntersecting, b.y, b.height, i.y, i.height, e.rootBounds.width > 0].join(" "));' +
+      '  });' +
+      '  document.getElementById("out").textContent = seen.join("|");' +
+      '});' +
+      'io.observe(document.getElementById("r")); io.observe(document.getElementById("gone"));' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t.includes('|'));
+  // the drawing is 50 tall from y 60, so 10 of the rect's 20 shows
+  assert.equal(text, 'r true 100 20 100 10 true|gone false 0 0 0 0 false');
+});
+
+test('an IntersectionObserver measures a target in a same-origin frame through the frame, its boxes told in the frame’s own viewport', async () => {
+  // Intersection Observer, 3.2.8: with the viewport for its root, a
+  // target in a frame's document is cut by the frame's content box. It
+  // had no box, and was told 0 by 0 and never in view
+  const { text } = await hostedFrames(
+    '<style>body{margin:0} iframe{display:block;border:5px solid;padding:0;margin:0 0 0 20px;width:100px;height:50px}</style>' +
+      '<iframe id="f" srcdoc="<style>body{margin:0}</style><div style=&quot;height:30px&quot;></div><div id=&quot;t&quot; style=&quot;width:40px;height:40px&quot;></div>"></iframe>' +
+      '<p id="out"></p><script>' +
+      'document.getElementById("f").onload = function () {' +
+      '  var t = document.getElementById("f").contentDocument.getElementById("t");' +
+      '  new IntersectionObserver(function (entries) {' +
+      '    var e = entries[0], b = e.boundingClientRect, i = e.intersectionRect;' +
+      '    document.getElementById("out").textContent = [e.isIntersecting, b.x, b.y, b.width, i.x, i.y, i.width, i.height, e.rootBounds.width].join(" ");' +
+      '  }).observe(t);' +
+      '};' +
+      '</script>',
+    {},
+  );
+  // the target is at 0,30 in the frame's viewport, 40 by 40, and the
+  // frame's 50 tall viewport shows 20 of it
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    'true 0 30 40 0 30 40 20 400',
+  );
+});
+
 test('an IntersectionObserver reports what it was asked to observe in one callback, once', async () => {
   // Wikipedia's contents observe every heading and mark the one closest
   // above the top from all their entries; a callback a heading marked each
