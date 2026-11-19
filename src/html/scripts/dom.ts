@@ -27967,6 +27967,15 @@ export function installDom(
     const frame = wrap(Number(call('frameElement', doc._id)));
     return !!frame && frame.isConnected && frameDocumentOf(frame) === doc;
   };
+  /** Whether a document is one its frame has gone from: unloaded, or
+   *  another document shown in its place. A frame whose document this realm
+   *  cannot reach, a sandbox's, is not taken to have left it. */
+  const leftByFrame = (doc: Any): boolean => {
+    if (doc._unloaded) return true;
+    const frame = wrap(Number(call('frameElement', doc._id)));
+    const shown = frame ? frameDocumentOf(frame) : null;
+    return !!shown && shown !== doc;
+  };
   /** `document.startViewTransition()` (7.2), of the document asked. */
   const startViewTransition = (
     options: Any,
@@ -41904,7 +41913,7 @@ export function installDom(
     // navigated away from, goes nowhere (HTML 7.4.2.2, "follow the
     // hyperlink", step 1): clicked from the page, it sent the frame there
     const owner = anchor.ownerDocument;
-    if (owner && owner !== document && !frameFullyActive(owner)) return false;
+    if (owner && owner !== document && leftByFrame(owner)) return false;
     // an `<a>` in a drawing has its `href` as an animated string
     const address = (): string =>
       anchor instanceof SVGAElement
