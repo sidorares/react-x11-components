@@ -1131,10 +1131,12 @@ function planGrid(
   const cols: GridTrack[] = [];
   for (let c = 0; c < leadCols; c += 1) cols.push(style.gridAutoColumns);
   cols.push(...template.tracks);
-  // an item placed past the explicit grid makes tracks of its own
+  // an item placed past the explicit grid makes tracks of its own, and a
+  // grid with no explicit columns and no item has none (CSS Grid 1, 7.1):
+  // given one of `grid-auto-columns`, an empty grid was that wide
   const widest = items.reduce(
     (n, item) => Math.max(n, item.col + item.cols),
-    Math.max(1, leadCols + explicitCols),
+    leadCols + explicitCols,
   );
   while (cols.length < widest) cols.push(style.gridAutoColumns);
   const allRowDefs: GridTrack[] = [];

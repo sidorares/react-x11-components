@@ -6237,7 +6237,23 @@ takes the grid area its lines name for its containing block, and a grid's
 or a flex box's child is where it would be as the box's one item: in a
 grid, the sole item of an area whose edges are the grid's content edges
 (CSS Grid 2, 10.1), aligned by its `justify-self` and `align-self`, a
-baseline falling back to the start and a last baseline to the end.
+baseline falling back to the start and a last baseline to the end. In a
+flex box it is along the main axis by `justify-content` and across it by
+its `align-self`, where `flex-start` and `flex-end` are the axes' ends that
+`-reverse` and `wrap-reverse` turn round, and `start`, `end`, `left`,
+`right` and `self-start` stay the container's sides, or the box's own (CSS
+Flexbox 4.1); a flex box in a vertical writing mode places it by its keywords
+alone. Its grid lines are read before they are bounded: a name the grid has
+not is one of the implicit lines past its end, a start after the end swaps
+with it, and only then is a line outside the grid `auto`, its padding edge
+(CSS Grid 1, 9.1). A grid with no explicit track and no item has no track,
+however wide `grid-auto-columns` would make one.
+A block-level absolute box with no inset across is set in its static-position
+rectangle, its parent's content box, by its `justify-self` (CSS Box
+Alignment 3, 6.1), and one between two insets aligned by a `baseline`
+is at the start of what they leave rather than stretched across it, and by
+`self-start` or `self-end` at its own start or end, by its direction, or in
+a vertical writing mode its block start.
 A grid sits on the baseline of its first item in row-major order — the
 first in its first row that holds one, by where it was placed — and an
 item with no line of its own gives the bottom edge of its border box (CSS

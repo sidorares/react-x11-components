@@ -3820,6 +3820,24 @@ but the one test that asks V8. The facade reads a property of the parsed
 record, and makes its lists only where a page asks for them: built at every
 read, they were most of what a read cost a page.
 
+**Where an absolutely positioned box is aligned is read from what its
+alignment was written as** (`flexStaticAlignment`, `rectAlignment`,
+`selfAligned`). The keywords layout keeps take `start` and `flex-start` for
+one, and a `last baseline` for `flex-end`, so a flex box's child at its
+static position reads `justify-content`'s and `align-self`'s texts: a
+flex-relative end is turned round by `-reverse` and `wrap-reverse`, and
+`start`, `end`, `left`, `right` and `self-*` are not. Three things are
+load-bearing. **A static position says whether it is a rectangle**
+(`StaticPosition.rect`): a block-level box's is its parent's content box,
+which `justify-self` aligns it in, and a box among a line's content has a
+point there, so anything new that sets a static position says which.
+**A grid's lines for a positioned box are bounded after they are put in
+order** (`areaSpan`): a name the grid has not is a line past its end, and
+taken for `auto` before the swap it ended the area where it should start
+it. And **a vertical writing mode keeps the keywords as they were**: a flex
+box in one makes no frame, and a frame turns the axes `self-*` and a
+baseline's fallback are read on, so both wait for the vertical work.
+
 **A computed colour is sRGB, and keeps what it was written as beside
 it.** Every drawing context reads a colour field as `#rrggbb` or `rgba()`,
 and the field holds that, whatever it was written in. Where its computed

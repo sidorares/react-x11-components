@@ -4309,3 +4309,36 @@ test("a line of a row that wraps is justified though another line's item has an 
   assert.strictEqual(boxOf(el, 'e').x, 120);
   assert.strictEqual(boxOf(el, 'f').x, 170);
 });
+
+test('an absolutely positioned child of a flex box is where its one item would be, by flex-relative ends', async () => {
+  // CSS Flexbox 4.1: \`flex-start\` and \`normal\` across a row that wraps
+  // in reverse are its bottom, and \`flex-end\` its top, where \`start\` and
+  // \`end\` stay the writing mode's; along a row-reverse, \`start\` is its
+  // left. Both ends were the same keyword, turned round together
+  const item = (id: string, style: string, self: string) =>
+    `<div class="c" style="${style}"><div id="${id}" style="align-self:${self}"></div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0} .c{display:flex;position:relative;width:40px;' +
+      'height:40px} .c>div{position:absolute;width:10px;height:10px}</style>' +
+      item('fs', 'flex-wrap:wrap-reverse', 'flex-start') +
+      item('fe', 'flex-wrap:wrap-reverse', 'flex-end') +
+      item('st', 'flex-wrap:wrap-reverse', 'start') +
+      item('rs', 'flex-direction:row-reverse;justify-content:start', 'start') +
+      item(
+        'rf',
+        'flex-direction:row-reverse;justify-content:flex-start',
+        'start',
+      ),
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const box = boxOf(el, id);
+    const c = box.parent!;
+    return [box.x - c.x, box.y - c.y];
+  };
+  assert.deepStrictEqual(at('fs'), [0, 30], 'flex-start at the bottom');
+  assert.deepStrictEqual(at('fe'), [0, 0], 'flex-end at the top');
+  assert.deepStrictEqual(at('st'), [0, 0], 'start at the top');
+  assert.deepStrictEqual(at('rs'), [0, 0], 'start along a reversed row');
+  assert.deepStrictEqual(at('rf'), [30, 0], 'flex-start at its right');
+});

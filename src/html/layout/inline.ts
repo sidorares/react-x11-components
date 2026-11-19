@@ -4399,6 +4399,8 @@ function staticPositions(
       x: options.originX + x - block.x,
       right: options.originX + right - block.x,
       y: options.startY + top - block.y,
+      // a block-level one's rectangle is the line's whole width
+      rect: !inline,
     };
   }
 }

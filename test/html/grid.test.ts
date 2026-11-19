@@ -2349,3 +2349,30 @@ metric(
     assert.deepStrictEqual(at('y'), [0, 40], "the grid's first, as wide as y");
   },
 );
+
+test("a grid's positioned box takes a line it lacks as the padding edge once its lines are in order, and an empty grid has no track", async () => {
+  // CSS Grid 1, 9.1 and 8.3: a name the grid has not is one of the
+  // implicit lines past its end, the lines are swapped where the start is
+  // after the end, and only then is a line the grid has not \`auto\`, its
+  // padding edge. Taken for \`auto\` first, \`foo / 1\` ran from the start
+  // padding edge to line 1. And a grid with no track and no item was as
+  // wide as one of \`grid-auto-columns\`
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="g" style="display:grid;position:relative;width:200px;' +
+      'height:100px;padding:10px;grid-template-columns:50px 50px">' +
+      '<div id="a" style="position:absolute;grid-column:foo / 1;width:100%;height:5px"></div>' +
+      '</div>' +
+      '<div style="display:flex"><div id="e" style="display:grid;' +
+      'grid-auto-columns:200px;grid-auto-rows:20px"></div></div>',
+  );
+  const el = view(node);
+  const g = boxOf(el, 'g');
+  const a = boxOf(el, 'a');
+  assert.deepStrictEqual(
+    [a.x - g.x, a.width],
+    [10, 210],
+    'from line 1 to the end padding edge',
+  );
+  assert.strictEqual(boxOf(el, 'e').width, 0, 'no track');
+});

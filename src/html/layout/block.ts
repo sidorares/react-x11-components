@@ -232,6 +232,7 @@ import {
   frameTurn,
   framed,
   frameOf,
+  inFrame,
   offPage,
   onPage,
   quarterTurnsOf,
@@ -3025,7 +3026,10 @@ function layoutChildren(
         );
         const at = emptyLinePoint(box.style, band.left, band.right);
         placeStatic(child, box, at, 0, top);
-      } else placeStatic(child, box, contentLeft, contentWidth, top);
+      } else {
+        placeStatic(child, box, contentLeft, contentWidth, top);
+        child.staticPosition!.rect = true;
+      }
       ctx.positioned.push({
         box: child,
         containing: containingBlockFor(child) ?? box,
@@ -10153,6 +10157,13 @@ function positionedIn(
         }
       : flowAt;
   const rtl = (at?.from ?? containing).style.direction === 'rtl';
+  // a block-level box with no inset across aligned in its static-position
+  // rectangle by its `justify-self`, where it says one (CSS Box Alignment
+  // 3, 6.1): how far along the rectangle's free room from its start
+  const rectAcross =
+    at?.rect && !at.inside && !(framed.any && inFrame(box))
+      ? rectAlignment(box.style, rtl)
+      : null;
   // where the box is as a flex box's or a grid's one item, aligned in it —
   // or in its grid area
   const room = inArea
@@ -10368,11 +10379,19 @@ function positionedIn(
                 box.width + box.marginLeft + box.marginRight,
                 rtl,
               ) + box.marginLeft
-            : rtl
-              ? (at ? at.from.x + at.right : cbX + cbWidth) -
-                box.width -
-                box.marginRight
-              : (at ? at.from.x + at.x : cbX) + box.marginLeft;
+            : at && rectAcross !== null
+              ? alignedIn(
+                  at.from.x + at.x,
+                  at.right - at.x,
+                  rectAcross,
+                  box.width + box.marginLeft + box.marginRight,
+                  rtl,
+                ) + box.marginLeft
+              : rtl
+                ? (at ? at.from.x + at.right : cbX + cbWidth) -
+                  box.width -
+                  box.marginRight
+                : (at ? at.from.x + at.x : cbX) + box.marginLeft;
   }
   let y: number;
   if (alignY) {
@@ -10551,6 +10570,15 @@ function selfAligned(
             : rtl
               ? 1
               : 0;
+  // `self-start` and `self-end` across are the box's own start and end, by
+  // its direction and not its containing block's (4.1) — outside a frame,
+  // which turns the axes they are read on
+  if (
+    (word === 'self-start' || word === 'self-end') &&
+    !(framed.any && inFrame(box))
+  ) {
+    along = (word === 'self-end') !== selfStartsRight(style) ? 1 : 0;
+  }
   let centre: number | null = null;
   let stretch = false;
   // an overflow position that says so aligns as it says, overflow or not
@@ -10578,7 +10606,19 @@ function selfAligned(
       }
     }
   } else {
-    if (normal || value === 'stretch' || start === null || end === null) {
+    // a first baseline falls back to the start here, which `along` has
+    // for it, an absolutely positioned box sharing a baseline with nothing
+    // (CSS Box Alignment 3, 4.2 and 9.1): taken for `normal`, a box between
+    // two insets aligned by its baseline was stretched between them
+    if (
+      value === 'auto' ||
+      value === 'normal' ||
+      value === 'stretch' ||
+      // in a frame, which turns its axes, as it always was
+      (value === 'baseline' && framed.any && inFrame(box)) ||
+      start === null ||
+      end === null
+    ) {
       return null;
     }
     const [ma, mb] = down
@@ -10801,13 +10841,10 @@ function areaSpan(
   rtl = false,
 ): [number, number] {
   const count = tracks.length;
-  // a line the grid has, or null for auto, a span and one it has not
-  const at = (line: GridLine, side: 'start' | 'end'): number | null => {
-    const index = lineOf(lines, line, side);
-    return index !== null && count > 0 && index >= 0 && index <= count
-      ? index
-      : null;
-  };
+  // a line by its number, past the grid's ends where a name the grid has
+  // not takes one of the implicit lines there, or null for auto and a span
+  const at = (line: GridLine, side: 'start' | 'end'): number | null =>
+    lineOf(lines, line, side);
   const spanOf = (line: GridLine) => (line && 'span' in line ? line : null);
   let from = at(start, 'start');
   let to = at(end, 'end');
@@ -10818,16 +10855,24 @@ function areaSpan(
       startSpan.name !== undefined
         ? spanToName(lines, startSpan.name, startSpan.span, to, false)
         : to - startSpan.span;
-    from = f >= 0 ? f : null;
+    from = f;
   }
   if (to === null && from !== null && endSpan) {
     const t =
       endSpan.name !== undefined
         ? spanToName(lines, endSpan.name, endSpan.span, from, true)
         : from + endSpan.span;
-    to = t <= count ? t : null;
+    to = t;
   }
   if (from !== null && to !== null && to < from) [from, to] = [to, from];
+  // and once they are in order, a line the grid has not is the padding
+  // edge, as `auto` is (CSS Grid 1, 9.1): taken for `auto` before the swap,
+  // `foo / 1` with no line `foo` ran from the grid's start padding edge to
+  // line 1, where it runs from line 1 to the end padding edge
+  const inGrid = (index: number | null): number | null =>
+    index !== null && count > 0 && index >= 0 && index <= count ? index : null;
+  from = inGrid(from);
+  to = inGrid(to);
   const startOf = (t: number) => (rtl ? tracks[t][1] : tracks[t][0]);
   const endOf = (t: number) => (rtl ? tracks[t][0] : tracks[t][1]);
   const a =
@@ -11206,6 +11251,7 @@ function placeOutOfLine(
   for (const child of parent.children) {
     if (child.outOfFlow) {
       placeStatic(child, block, contentLeft, contentWidth, contentTop);
+      child.staticPosition!.rect = true;
       ctx.positioned.push({
         box: child,
         containing: containingBlockFor(child) ?? block,
@@ -11332,19 +11378,146 @@ function staticAlignment(
     if (framed.any && ROWS_MIRRORED.has(container)) down = 1 - down;
     return { across, down };
   }
-  const justify = style.justifyContent;
-  let main =
-    justify === 'flex-end' || justify === 'end' || justify === 'right'
-      ? 1
-      : justify === 'center' ||
-          justify === 'space-around' ||
-          justify === 'space-evenly'
-        ? 0.5
-        : 0;
-  if (style.flexDirection.endsWith('-reverse')) main = 1 - main;
-  return style.flexDirection.startsWith('row')
-    ? { across: main, down: cross }
-    : { across: cross, down: main };
+  // a flex box in a vertical writing mode makes no frame, and is placed
+  // by its keywords as it always was
+  if (style.writingMode !== 'horizontal-tb') {
+    const justify = style.justifyContent;
+    let main =
+      justify === 'flex-end' || justify === 'end' || justify === 'right'
+        ? 1
+        : justify === 'center' ||
+            justify === 'space-around' ||
+            justify === 'space-evenly'
+          ? 0.5
+          : 0;
+    if (style.flexDirection.endsWith('-reverse')) main = 1 - main;
+    return style.flexDirection.startsWith('row')
+      ? { across: main, down: cross }
+      : { across: cross, down: main };
+  }
+  return flexStaticAlignment(child, container);
+}
+
+/**
+ * Where a flex box's absolutely positioned child is as its one item (CSS
+ * Flexbox 4.1), as fractions of the free room from the container's inline
+ * start across and its block start down: along the main axis by
+ * `justify-content`, across it by the child's `align-self`. Read from
+ * what each was written as, since the keywords the layout keeps do not
+ * tell a `start` from a `flex-start`: `flex-start` and `flex-end` are the
+ * main axis's ends, which `-reverse` turns round, and the cross axis's,
+ * which `wrap-reverse` does, where `start`, `end`, `left`, `right` and
+ * `self-start` and `self-end` are the container's sides, or the child's.
+ * `normal` and `stretch` are `flex-start`, `space-between` too, and
+ * `space-around` and `space-evenly` the centre; a first baseline is the
+ * start and a last baseline the end, an absolutely positioned box sharing
+ * a baseline with nothing (CSS Box Alignment 3, 4.2 and 9.1).
+ */
+function flexStaticAlignment(
+  child: Box,
+  container: Box,
+): { across: number; down: number } {
+  const style = container.style;
+  const own = child.style;
+  const row = style.flexDirection.startsWith('row');
+  const rtl = style.direction === 'rtl';
+  const word = (text: string | undefined): string =>
+    (text ?? '').replace(/^(?:safe|unsafe) /, '');
+  // the fraction a keyword comes to along an axis: `flipped` where its
+  // flex start is the axis's end, `inline` for the inline axis
+  const along = (text: string, flipped: boolean, inline: boolean): number => {
+    switch (text) {
+      case 'center':
+      case 'space-around':
+      case 'space-evenly':
+        return 0.5;
+      case 'flex-end':
+        return flipped ? 0 : 1;
+      case 'start':
+      case 'baseline':
+      case 'first baseline':
+        return 0;
+      case 'end':
+      case 'last baseline':
+        return 1;
+      case 'self-start':
+      case 'self-end': {
+        // the child's own start, which its direction turns on the inline
+        // axis — outside a frame, which turns the axes it reads, where it
+        // is the container's start as it always was
+        const against =
+          inline &&
+          !(framed.any && inFrame(child)) &&
+          (own.direction === 'rtl') !== rtl;
+        return (text === 'self-end') !== against ? 1 : 0;
+      }
+      case 'left':
+        return inline && rtl ? 1 : 0;
+      case 'right':
+        // on an axis that is not the inline one, the start
+        return inline ? (rtl ? 0 : 1) : 0;
+      default:
+        // `flex-start`, `normal`, `stretch`, `space-between`
+        return flipped ? 1 : 0;
+    }
+  };
+  const main = along(
+    word(style.justifyContentText) || 'normal',
+    style.flexDirection.endsWith('-reverse'),
+    row,
+  );
+  const selfText = word(
+    own.alignSelf === AUTO ? style.alignItemsText : own.alignSelfText,
+  );
+  const cross = along(
+    selfText === 'auto' ? 'normal' : selfText || 'normal',
+    style.flexWrap === 'wrap-reverse',
+    !row,
+  );
+  return row ? { across: main, down: cross } : { across: cross, down: main };
+}
+
+/** Whether a box's own start across the page is its right: its direction
+ *  in a horizontal writing mode, and in a vertical one its block start,
+ *  which `vertical-rl` and `sideways-rl` have at the right. */
+function selfStartsRight(own: ComputedStyle): boolean {
+  const mode = own.writingMode;
+  if (mode === 'horizontal-tb') return own.direction === 'rtl';
+  return mode === 'vertical-rl' || mode === 'sideways-rl';
+}
+
+/**
+ * How far along its static-position rectangle's free room an absolutely
+ * positioned box's `justify-self` sets it, from the rectangle's inline
+ * start, or null for `auto`, `normal` and `stretch`, which leave it at its
+ * static position as before. A baseline falls back to the start and a last
+ * baseline to the end (CSS Box Alignment 3, 4.2); `left` and `right` are
+ * the page's sides, and `self-start` and `self-end` the box's own.
+ */
+function rectAlignment(own: ComputedStyle, rtl: boolean): number | null {
+  const word = (own.justifySelfText ?? '').replace(/^(?:safe|unsafe) /, '');
+  switch (word) {
+    case 'start':
+    case 'flex-start':
+    case 'baseline':
+    case 'first baseline':
+      return 0;
+    case 'end':
+    case 'flex-end':
+    case 'last baseline':
+      return 1;
+    case 'center':
+      return 0.5;
+    case 'left':
+      return rtl ? 1 : 0;
+    case 'right':
+      return rtl ? 0 : 1;
+    case 'self-start':
+    case 'self-end':
+      return (word === 'self-end') !== (selfStartsRight(own) !== rtl) ? 1 : 0;
+    default:
+      return null;
+  }
 }
 
 /** The nearest positioned ancestor, or null for the initial containing

@@ -167,6 +167,13 @@ export interface StaticPosition {
    */
   mirror?: number;
   /**
+   * Whether `x` to `right` is the box's static-position rectangle across,
+   * which `justify-self` aligns it in where it has no inset across (CSS Box
+   * Alignment 3, 6.1): a block-level box's, whose hypothetical box is its
+   * parent's content box. A box among a line's content has a point there.
+   */
+  rect?: boolean;
+  /**
    * For a flex box's or a grid's child, the box it is where it would be as
    * the one item in — `from`'s content box or its padding box, whose size
    * is read once its layout is done — and how far along the free room in

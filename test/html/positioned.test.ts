@@ -4192,3 +4192,53 @@ test('a positioned box too big for all it can be in starts at the inline start, 
   };
   assert.deepStrictEqual([await at('ltr'), await at('rtl')], [50, 40]);
 });
+
+test('an absolutely positioned box with no inset across is set in its static-position rectangle by its justify-self', async () => {
+  // CSS Box Alignment 3, 6.1: a block-level box's static-position
+  // rectangle is its parent's content box, and \`justify-self\` aligns it
+  // there. It was left at the rectangle's start, whatever it said
+  const item = (id: string, justify: string, more = '') =>
+    `<div class="c"><div id="${id}" style="justify-self:${justify};${more}"></div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0} .c{position:relative;width:40px;height:40px}' +
+      '.c>div{position:absolute;width:20px;height:20px}</style>' +
+      item('start', 'start') +
+      item('center', 'center') +
+      item('end', 'end') +
+      item('right', 'right') +
+      item('self', 'self-end', 'direction:rtl') +
+      item('normal', 'normal'),
+  );
+  const el = view(node);
+  const left = (id: string) => boxOf(el, id).x - boxOf(el, 'start').x;
+  assert.deepStrictEqual(
+    ['center', 'end', 'right', 'self', 'normal'].map(left),
+    [10, 20, 20, 0, 0],
+    'its own end for an item that runs right to left is the left',
+  );
+});
+
+test('an absolutely positioned box aligned by its baseline between two insets is at the start, and not stretched', async () => {
+  // CSS Box Alignment 3, 4.2 and 9.1: an absolutely positioned box shares
+  // a baseline with nothing, so a first baseline falls back to the start;
+  // taken for \`normal\`, it was stretched between its insets
+  const { node } = await render(
+    '<style>body{margin:0} .c{position:relative;width:40px;height:40px}' +
+      '.c>div{position:absolute;inset:0;width:20px}' +
+      '.c>div::before{content:"";display:block;height:20px}</style>' +
+      '<div class="c"><div id="b" style="align-self:baseline"></div></div>' +
+      '<div class="c"><div id="l" style="align-self:last baseline"></div></div>' +
+      '<div class="c"><div id="s" style="justify-self:self-start;direction:rtl"></div></div>',
+  );
+  const el = view(node);
+  const b = boxOf(el, 'b');
+  assert.deepStrictEqual([b.height, b.y], [20, 0], 'at the start');
+  const l = boxOf(el, 'l');
+  assert.strictEqual(l.y - b.y - 40, 20, 'and a last baseline at the end');
+  const s = boxOf(el, 's');
+  assert.strictEqual(
+    s.x,
+    20,
+    'and its own start the right where it runs right to left',
+  );
+});
