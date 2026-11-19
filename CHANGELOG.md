@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.47.1](https://github.com/sidorares/react-x11-components/compare/v0.47.0...v0.47.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* **html:** a backdrop-filter adds onto what is under it, and a filter list accumulates function by function ([#1685](https://github.com/sidorares/react-x11-components/issues/1685)) ([bb0c7fc](https://github.com/sidorares/react-x11-components/commit/bb0c7fc888faf144ca0849edd838cefdf1c13f38))
+* **html:** a block is set across its container by its justify-self, and its content down it by its align-content ([#1701](https://github.com/sidorares/react-x11-components/issues/1701)) ([882f7b8](https://github.com/sidorares/react-x11-components/commit/882f7b88ed28aa4832f279a36c88d3d4b8d6e354))
+* **html:** a border image runs a longhand at a time, and a slice of a number beside a percentage goes over ([#1684](https://github.com/sidorares/react-x11-components/issues/1684)) ([4f50fc8](https://github.com/sidorares/react-x11-components/commit/4f50fc8e0b4325ee79384d1f9590d4f3bf94407d))
+* **html:** a border-image-slice takes a math function in its units, progress() is worked out, a socket's close tells what left first, and an SVG element is measured by its bounding box ([#1689](https://github.com/sidorares/react-x11-components/issues/1689)) ([3f7856e](https://github.com/sidorares/react-x11-components/commit/3f7856e348631874f40d10c1aef09da69c4e8810))
+* **html:** a clip-path adds onto one of its kind, length by length ([#1687](https://github.com/sidorares/react-x11-components/issues/1687)) ([9ac7f0c](https://github.com/sidorares/react-x11-components/commit/9ac7f0c48a5d1e60924ecfacc6d453ed1825cda9))
+* **html:** a gradient written as no gradient is no image ([#1696](https://github.com/sidorares/react-x11-components/issues/1696)) ([adb3bec](https://github.com/sidorares/react-x11-components/commit/adb3bec317c9cfa193ea8693c756223cf0f6c775))
+* **html:** a page's request is timed from when it is sent, not while it waits for a slot ([#1690](https://github.com/sidorares/react-x11-components/issues/1690)) ([7bb076e](https://github.com/sidorares/react-x11-components/commit/7bb076e5fdf711b242f7cdcd88c3372d5210bb63))
+* **html:** a size that is none of a size's sets nothing ([#1695](https://github.com/sidorares/react-x11-components/issues/1695)) ([d243242](https://github.com/sidorares/react-x11-components/commit/d243242b94a0c387c92633298fe7d4d17750c4cb))
+* **html:** an IndexedDB blob is kept apart from its record and read a range at a time, where ut2004.dev's tab ran out of heap at every visit ([#1692](https://github.com/sidorares/react-x11-components/issues/1692)) ([656ed59](https://github.com/sidorares/react-x11-components/commit/656ed59e99e2a65fbade404533926a528e4a4f38))
+* **html:** an inline style refuses a value its property does not take ([#1694](https://github.com/sidorares/react-x11-components/issues/1694)) ([c61a3b6](https://github.com/sidorares/react-x11-components/commit/c61a3b6a96595a9ee5e329097433d3f803798891))
+* **html:** an intersection observer in a frame measures against the top-level viewport, and a document for its root against that document ([#1703](https://github.com/sidorares/react-x11-components/issues/1703)) ([098f40f](https://github.com/sidorares/react-x11-components/commit/098f40fd1402889b575dfccdeb0c9212584b47a6))
+* **html:** an intersection observer measures a shape by its lengths and transform, in its own drawing as root, and a break where its line has it ([#1699](https://github.com/sidorares/react-x11-components/issues/1699)) ([3f6cdf9](https://github.com/sidorares/react-x11-components/commit/3f6cdf9525a95a2521d8b1ee322872e48d0760ec))
+* **html:** an intersection observer measures a target in a frame through the frame, and a shape in a drawing through the drawing ([#1693](https://github.com/sidorares/react-x11-components/issues/1693)) ([16ecac8](https://github.com/sidorares/react-x11-components/commit/16ecac88524f15059717631e19f0b6365b0c5d4e))
+* **html:** an intersection observer takes another realm's element, and a target in a document of no window waits for an element root or its adoption ([#1700](https://github.com/sidorares/react-x11-components/issues/1700)) ([299beef](https://github.com/sidorares/react-x11-components/commit/299beef250b4583fc9b26d93794759a4819c11fc))
+* **html:** an intersection observer's root clip, clip paths and scroll margin as Chrome measures them, and its interfaces as Web IDL has them ([#1702](https://github.com/sidorares/react-x11-components/issues/1702)) ([d6699f1](https://github.com/sidorares/react-x11-components/commit/d6699f1bd484d5dc3d5cd1cd52bda449c7b2bb0c))
+* **html:** CSS.supports() takes every property a browser knows, selector() what a browser has, and five other things the last day's changes lost ([#1682](https://github.com/sidorares/react-x11-components/issues/1682)) ([c1833da](https://github.com/sidorares/react-x11-components/commit/c1833da85c06c495780a78c732b36197ba2b7bd9))
+* **html:** flex and grid items aligned by their last baselines, and a container's first and last baselines as they stand ([#1698](https://github.com/sidorares/react-x11-components/issues/1698)) ([9cbd63a](https://github.com/sidorares/react-x11-components/commit/9cbd63a88866a7adeb02f57202365c8cdc3eba5d))
+* **html:** mask-position runs in an animation and a transition, a list repeated to the length both divide ([#1686](https://github.com/sidorares/react-x11-components/issues/1686)) ([0857a5c](https://github.com/sidorares/react-x11-components/commit/0857a5c724fa6ba566fc054d0cce8112b5007a1a))
+* **html:** none run to a filter list is that list's functions at nothing at either end ([#1688](https://github.com/sidorares/react-x11-components/issues/1688)) ([538f6e7](https://github.com/sidorares/react-x11-components/commit/538f6e7c7ceab603c75c621476fe6dd342ec38f3))
+* **html:** resize observers are told in the frame, a depth at a time, with the loop error ([#1691](https://github.com/sidorares/react-x11-components/issues/1691)) ([f5e74b1](https://github.com/sidorares/react-x11-components/commit/f5e74b1e42373a735f8730d2a54c2c07fb65849e))
+* **html:** the font longhands refuse what is none of theirs ([#1697](https://github.com/sidorares/react-x11-components/issues/1697)) ([b36b319](https://github.com/sidorares/react-x11-components/commit/b36b3197c9da6b0dbeecdf8b314cdcd5752c53e6))
+
 ## [0.47.0](https://github.com/sidorares/react-x11-components/compare/v0.46.0...v0.47.0) (2026-11-18)
 
 
