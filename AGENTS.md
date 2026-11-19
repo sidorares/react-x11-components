@@ -4860,7 +4860,14 @@ closes a way out a DOM binding opens by accident:
   another realm of the page's is handed over for this realm's id
   (`observedId`), the entries naming the element the page passed, and a
   popup's is measured in its own viewport, which its paint asks the other
-  windows of its group to look at again (`intersectionsMoved`). A frame's paint
+  windows of its group to look at again (`intersectionsMoved`).
+  A table whose
+  `overflow` would scroll is no content clip, since overflow applies to no
+  table (`scrollingTable`); a clip path that encloses no area hides all
+  of what it clips, an edge that only meets the root counting for nothing
+  there; and the scroll margin grows a scroller's clip path as it grows its
+  overflow clip, and the viewport's, past the root margin, for the implicit
+  root. A frame's paint
   tells the page's runner as well as its own (`_onPaint` in `frames.ts`),
   or what it laid out after the page's last paint is never asked again: a
   frame with no realm has no runner to ask. **A shape in an
