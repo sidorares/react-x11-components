@@ -39227,12 +39227,11 @@ export function installDom(
         shallowest = Math.min(shallowest, o._broadcast());
       }
       depth = shallowest;
-      // what the callbacks moved, as the host says: a viewport it holds
-      // (`viewportHeld`) answers what it answered, and a target observed
-      // in a callback is measured whatever it says
-      const after = String(call('geometry', true));
-      const all = after !== resizeLooked;
-      resizeLooked = after;
+      // whatever a callback moved, which the host has yet to lay out, but
+      // for a viewport the host holds (`viewportHeld`), whose observers
+      // find what they last found: a target observed in a callback is
+      // measured either way
+      const all = call('viewportHeld') !== true;
       any = false;
       for (const o of observers()) if (o._gather(depth, all)) any = true;
     }

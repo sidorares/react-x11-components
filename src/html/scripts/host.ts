@@ -3654,19 +3654,32 @@ export class DomHost {
     }
     // the boxes the page's resize observers measure, laid out or scrolled
     // since their last frame
-    // — once what is owed is laid out: the paint after it asks again, and
-    // a frame now would lay it out, in the middle of a drag's step
-    if (
-      this._resizeWatched &&
-      this._looked &&
-      !this._handle.geometryOwed?.() &&
-      !this._viewportHeld() &&
-      (this._handle.geometryKey?.() || '') !== this._looked
-    ) {
-      this._viewportsWoken = true;
-      this.entries.call('__rendering', null);
-    }
+    // — once what is owed is laid out, where it can be: a frame now would
+    // lay it out, in the middle of a drag's step, so it is asked again a
+    // little later, when the layout has most likely come, and woken then
+    // whatever is owed, since a layout that paints nothing asks nothing
+    this._resizeMoved(false);
   }
+
+  /** Whether the boxes the page's resize observers measure were laid out
+   *  or scrolled since their last frame, which a frame is asked for;
+   *  `late` where a layout owed has been waited for already. */
+  private _resizeMoved(late: boolean): void {
+    if (this._disposed || !this.entries || this._viewportsWoken) return;
+    if (!this._resizeWatched || !this._looked || this._viewportHeld()) return;
+    if (!late && this._handle.geometryOwed?.()) {
+      if (this._resizeLater) return;
+      this._resizeLater = setTimeout(() => {
+        this._resizeLater = null;
+        this._resizeMoved(true);
+      }, 32);
+      return;
+    }
+    if ((this._handle.geometryKey?.() || '') === this._looked) return;
+    this._viewportsWoken = true;
+    this.entries.call('__rendering', null);
+  }
+  private _resizeLater: ReturnType<typeof setTimeout> | null = null;
 
   /** Whether the page's `ResizeObserver`s watch anything, as their last
    *  frame said (`geometry`). */
@@ -6630,6 +6643,10 @@ export class DomHost {
       // an element's padding and border widths, top, right, bottom, left
       // each, in CSS pixels: what its content box is less than its border
       // box (`ResizeObserver`)
+      // whether what the page hears of its viewport waits, which a resize
+      // observer's later passes in a frame go by (`_viewportHeld`)
+      case 'viewportHeld':
+        return this._viewportHeld();
       // and its effective zoom, which its sizes are taken off by
       // (`ResizeObserver`, `currentCSSZoom`)
       case 'edges': {
