@@ -27967,6 +27967,15 @@ export function installDom(
     const frame = wrap(Number(call('frameElement', doc._id)));
     return !!frame && frame.isConnected && frameDocumentOf(frame) === doc;
   };
+  /** Whether a document is one its frame has gone from: unloaded, or
+   *  another document shown in its place. A frame whose document this realm
+   *  cannot reach, a sandbox's, is not taken to have left it. */
+  const leftByFrame = (doc: Any): boolean => {
+    if (doc._unloaded) return true;
+    const frame = wrap(Number(call('frameElement', doc._id)));
+    const shown = frame ? frameDocumentOf(frame) : null;
+    return !!shown && shown !== doc;
+  };
   /** `document.startViewTransition()` (7.2), of the document asked. */
   const startViewTransition = (
     options: Any,
@@ -34323,6 +34332,8 @@ export function installDom(
     'PopStateEvent',
     'HashChangeEvent',
     'PageTransitionEvent',
+    // and a form's, which a worker has none of
+    'FormDataEvent',
     'Location',
     'Navigator',
     'Audio',
@@ -39024,8 +39035,12 @@ export function installDom(
    * makes its inline size its height.
    */
   const boxSizesOf = (el: Any): number[] | null => {
-    const o = offsetOf(el);
-    if (!o) return null;
+    // an HTML element's as layout sized it; what has no offset geometry,
+    // an `<svg>` or what is in one, its box as drawn, as it was
+    const html = el.namespaceURI === HTML_NS;
+    const o = html ? offsetOf(el) : null;
+    const r = html ? null : docRect(el);
+    if (!o && !r) return null;
     const style = getComputedStyle(el);
     if (
       style.display === 'inline' &&
@@ -39039,8 +39054,8 @@ export function installDom(
       typeof e === 'string' && e
         ? e.split(',').map(Number)
         : [0, 0, 0, 0, 0, 0, 0, 0];
-    const w = o[3];
-    const h = o[4];
+    const w = o ? o[3] : r![2];
+    const h = o ? o[4] : r![3];
     const vertical = /^(vertical|sideways)/.test(str(style.writingMode));
     return [
       w,
@@ -41894,6 +41909,11 @@ export function installDom(
 
   const followLink = (anchor: Any, userInitiated: boolean): boolean => {
     if (!anchor.hasAttribute('href')) return true;
+    // a link in a document no longer fully active, one its frame has
+    // navigated away from, goes nowhere (HTML 7.4.2.2, "follow the
+    // hyperlink", step 1): clicked from the page, it sent the frame there
+    const owner = anchor.ownerDocument;
+    if (owner && owner !== document && leftByFrame(owner)) return false;
     // an `<a>` in a drawing has its `href` as an animated string
     const address = (): string =>
       anchor instanceof SVGAElement
