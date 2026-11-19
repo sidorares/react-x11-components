@@ -4,7 +4,9 @@
 // their `CSSStyleDeclaration` and computed styles), but what only Firefox
 // prefixes with `-moz-`, which is no attribute of a style here, and
 // `-webkit-user-modify`, which a page is to find unsupported (WPT's
-// webkit-user-modify-03); and two that CSS has and no engine yet,
+// webkit-user-modify-03), and `-webkit-box-reflect`, which nothing here
+// draws and a page that finds it draws no fallback for (WPT's
+// intersection-observer/v2/box-reflect); and two that CSS has and no engine yet,
 // `hyphenate-limit-lines` and `scroll-axis-lock`. A page feature-detects
 // with these, and a WPT interpolation test asks `CSS.supports()` before
 // anything else. Written once from the three engines (Playwright's builds
@@ -62,7 +64,6 @@ export const BROWSER_PROPERTIES: readonly string[] = [
   '-webkit-box-ordinal-group',
   '-webkit-box-orient',
   '-webkit-box-pack',
-  '-webkit-box-reflect',
   '-webkit-box-shadow',
   '-webkit-box-sizing',
   '-webkit-clip-path',

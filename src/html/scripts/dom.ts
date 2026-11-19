@@ -39038,6 +39038,24 @@ export function installDom(
     // an HTML element's as layout sized it; what has no offset geometry,
     // an `<svg>` or what is in one, its box as drawn, as it was
     const html = el.namespaceURI === HTML_NS;
+    // an SVG element with no CSS box is its bounding box, all of it content
+    // (Resize Observer 1, 3.1), whatever the box drawn around it
+    if (
+      !html &&
+      el.namespaceURI === SVG_NS &&
+      el.localName !== 'svg' &&
+      typeof el.getBBox === 'function'
+    ) {
+      let b: Any = null;
+      try {
+        b = el.getBBox();
+      } catch {
+        return null;
+      }
+      const w = Number(b?.width) || 0;
+      const h = Number(b?.height) || 0;
+      return [w, h, w, h, 0, 0, 0];
+    }
     const o = html ? offsetOf(el) : null;
     const r = html ? null : docRect(el);
     if (!o && !r) return null;

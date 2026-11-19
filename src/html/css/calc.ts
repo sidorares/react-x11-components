@@ -419,6 +419,15 @@ class Parser {
         if (!a) return null;
         return like(a, stepped(fn, strategy, a.px, b.px));
       }
+      case 'progress': {
+        // where the first is between the other two (CSS Values 5, 10.1),
+        // held to that span; a span of nothing comes to 0
+        const [v, from, to] = args.length === 3 ? (resolved(args) ?? []) : [];
+        if (!v) return null;
+        const span = to.px - from.px;
+        const at = span === 0 ? 0 : (v.px - from.px) / span;
+        return number(Number.isNaN(at) ? 0 : Math.max(0, Math.min(1, at)));
+      }
       default:
         return null;
     }
