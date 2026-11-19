@@ -232,6 +232,7 @@ import {
   frameTurn,
   framed,
   frameOf,
+  inFrame,
   offPage,
   onPage,
   quarterTurnsOf,
@@ -4356,10 +4357,41 @@ function layoutBoxAt(
     box.marginBottom = marginOf(bottom);
   } else box.bottomStrut = null;
   if (box.marker) layoutMarker(box, box.marker, ctx);
-  if (isButtonBlock(box)) {
+  if (isButtonBlock(box) || contentAlignment(box)) {
     BUTTON_CONTENT.set(box, { height: withFloats, down: 0 });
     centreButton(box);
   }
+}
+
+/**
+ * How a block container's `align-content` sets its content down it (CSS
+ * Box Alignment 3, 5.1): a fraction of the room its height leaves, and
+ * whether it may go past the start where the content overflows — or null
+ * for `normal`, which leaves it at the top in the flow it shares with its
+ * parent. Any other value makes the container an independent formatting
+ * context (`establishesBFC`), its margins held in. `space-between` and
+ * `stretch` fall back to the start and `space-around` and `space-evenly`
+ * to a safe centre, one box of content being one thing to distribute. Not
+ * a flex box's or a grid's, which align their lines and tracks, nor a
+ * table's, nor in a vertical writing mode, whose frame turns the axis.
+ */
+export function contentAlignment(
+  box: Box,
+): { along: number; unsafe: boolean } | null {
+  const text = box.style.alignContentText;
+  if (text === 'normal' || !text) return null;
+  if (box.kind !== 'block' || box.style.grid) return null;
+  if (box.style.writingMode !== 'horizontal-tb') return null;
+  if (framed.any && (FRAMES.has(box) || FRAME_ROOTS.has(box))) return null;
+  const unsafe = text.startsWith('unsafe ');
+  const word = text.replace(/^(?:safe|unsafe) /, '');
+  const along =
+    word === 'center' || word === 'space-around' || word === 'space-evenly'
+      ? 0.5
+      : word === 'end' || word === 'flex-end' || word === 'last baseline'
+        ? 1
+        : 0;
+  return { along, unsafe };
 }
 
 /**
@@ -6008,9 +6040,14 @@ function placeBlock(
     return;
   }
   if (leftAuto || rightAuto) AUTO_ROOM.set(box, slack);
+  // aligned by its `justify-self` where no margin is `auto`, which takes it
+  // over (CSS Box Alignment 3, 6.1)
+  const justified = leftAuto || rightAuto ? null : blockJustify(box);
   if (slack > 0) {
     if (leftAuto && rightAuto) left = contentLeft + slack / 2 + box.marginLeft;
-    else if (aligned) {
+    else if (justified !== null) {
+      left += (rtl ? 1 - justified : justified) * slack;
+    } else if (aligned) {
       if (aligned === 'center') left += slack / 2;
       else if (aligned === 'right') left += slack;
     } else if (leftAuto || (rtl && !rightAuto)) {
@@ -6123,9 +6160,73 @@ export function sizedWidth(box: Box, width: number, base: number): number {
  * name.
  */
 function fitsContent(box: Box): boolean {
+  if (blockJustify(box) !== null) return true;
   if (box.el === null) return false;
   const n = box.el.name.length;
   return (n === 6 || n === 5) && isButton(box);
+}
+
+/**
+ * How far along the room its margins leave a block-level box in a block's
+ * flow is set by its `justify-self`, or its parent's `justify-items`
+ * through `auto` (CSS Box Alignment 3, 6.1), from the containing block's
+ * inline start: null for `normal`, `stretch` and `legacy`, which leave it
+ * filling the line as CSS 2.1 has it, and otherwise a fraction, the box
+ * shrinking to fit. A baseline falls back to the start and a last baseline
+ * to the end (4.2); `left` and `right` are the page's sides, and
+ * `self-start` and `self-end` the box's own. Not in a vertical writing
+ * mode, whose frame turns the axis it is read on, and not for a box whose
+ * parent is no block container: a flex or grid item is aligned by its own
+ * layout.
+ */
+function blockJustify(box: Box): number | null {
+  const parent = box.parent;
+  if (!parent || box.outOfFlow || box.isFloat) return null;
+  if (parent.kind !== 'block' || parent.style.grid) return null;
+  if (box.style.writingMode !== 'horizontal-tb') return null;
+  if (parent.style.writingMode !== 'horizontal-tb') return null;
+  if (framed.any && inFrame(box)) return null;
+  const own = box.style.justifySelfText ?? 'auto';
+  const text = (own === 'auto' ? parent.style.justifyItemsText : own) ?? '';
+  if (text === 'normal' || text === 'legacy' || text === '') return null;
+  // the parent whose `justify-items` an `auto` takes is the parent box of
+  // the box's own element (CSS Box Alignment 3, csswg-drafts#11461 and
+  // #11462): an anonymous block takes none, and nor does a block in an
+  // inline element, whose parent box is the block the inline is in
+  if (own === 'auto') {
+    const el = box.pseudo ? GENERATED_FROM.get(box) : box.el;
+    if (!el || !parent.el) return null;
+    if ((box.pseudo ? el : flatParentOf(el)) !== parent.el) return null;
+  }
+  const word = text
+    .replace(/^legacy(?:\s+|$)/, '')
+    .replace(/\s+legacy$/, '')
+    .replace(/^(?:safe|unsafe) /, '');
+  const rtl = parent.style.direction === 'rtl';
+  switch (word) {
+    case 'start':
+    case 'flex-start':
+    case 'baseline':
+    case 'first baseline':
+      return 0;
+    case 'end':
+    case 'flex-end':
+    case 'last baseline':
+      return 1;
+    case 'center':
+      return 0.5;
+    case 'left':
+      return rtl ? 1 : 0;
+    case 'right':
+      return rtl ? 0 : 1;
+    case 'self-start':
+    case 'self-end':
+      return (word === 'self-end') !== ((box.style.direction === 'rtl') !== rtl)
+        ? 1
+        : 0;
+    default:
+      return null;
+  }
 }
 
 /**
@@ -11499,10 +11600,15 @@ const BUTTON_CONTENT = new WeakMap<Box, { height: number; down: number }>();
  * content is where its own alignment puts it.
  */
 export function centreButton(box: Box): void {
-  if (!isButtonBlock(box)) return;
+  // a block container its `align-content` aligns the same way, by that
+  const aligned = isButtonBlock(box)
+    ? { along: 0.5, unsafe: false }
+    : contentAlignment(box);
+  if (!aligned) return;
   const content = BUTTON_CONTENT.get(box);
   if (content === undefined) return;
-  const down = Math.max(0, (box.contentHeight - content.height) / 2);
+  const room = (box.contentHeight - content.height) * aligned.along;
+  const down = aligned.unsafe ? room : Math.max(0, room);
   const by = down - content.down;
   if (by === 0 || !Number.isFinite(by)) return;
   content.down = down;
@@ -11730,6 +11836,9 @@ export function establishesBFC(box: Box): boolean {
   // a button's content is in a formatting context of its own, the
   // anonymous button content box's (HTML 15.5.5), whatever its `display`
   if (isButtonBlock(box)) return true;
+  // and so is a block container's that `align-content` aligns (CSS Box
+  // Alignment 3, 5.1)
+  if (contentAlignment(box)) return true;
   // and the initial containing block, the root box — but not where it
   // stands in for a fragment's body, which is a block in the `<html>`
   // implied around it (`layoutDocument`)

@@ -24152,6 +24152,15 @@ export function installDom(
       }
       return sheetOf(this);
     }
+    // the sheet's disabled flag, and false where it has none (HTML 4.2.6):
+    // a page turns a `<style>` off through either
+    get disabled(): boolean {
+      return !!this.sheet?.disabled;
+    }
+    set disabled(v: Any) {
+      const sheet = this.sheet;
+      if (sheet) sheet.disabled = !!v;
+    }
   }
   Object.defineProperty(
     SVGStyleElement.prototype,
