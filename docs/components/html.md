@@ -1078,7 +1078,9 @@ type="importmap">`) names what a bare specifier, `react`, resolves to, by
   is no secure context — is let go the same way; a secure page's `no-cors`
   answer is held for it a while, unread, since `caches` and a service
   worker can hand it on. `HtmlNetwork` answers so, and bounds only the
-  wait for the headers. A page's request is asked for a hop at a time
+  wait for the headers, from when the request is sent: one that waits for
+  a slot behind the six its host has on their way is not timed out while
+  it waits. A page's request is asked for a hop at a time
   (`redirect: 'manual'`), since CORS, a preflight, its cookies and its
   `Origin` are all asked again at a redirect; a host that follows it all the
   same says `redirected`, and what it answers is held to where it landed, but

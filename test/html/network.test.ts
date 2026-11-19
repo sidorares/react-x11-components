@@ -760,6 +760,61 @@ test('a response a host holds does not stall while nobody reads it, and may once
   await refused;
 });
 
+test("a page's request waits for its answer from when it is sent, and not while it waits for a slot", async (t) => {
+  // vscode.dev's service worker caches its workbench in one `addAll`, 2,194
+  // files from one host. On a cold network the 620th or so was given up as
+  // timed out while it still waited behind the six that host had on their
+  // way, never sent. Twelve requests here: each six answered two frames
+  // after they arrive, under a limit of three, so the second six, sent two
+  // frames in, are answered four frames after they were asked for.
+  const limit = holdClock(t, stallClock);
+  const arrived: ServerResponse[] = [];
+  const arrivals = new EventEmitter();
+  const server = createServer((_req, res) => {
+    arrived.push(res);
+    arrivals.emit('request');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const network = new HtmlNetwork({
+    connectTimeout: null,
+    timeout: 3 * FRAME_MS,
+  });
+  const signal = new AbortController().signal;
+  // what came of a request, its status or the name of what it threw
+  const ask = (path: string): Promise<number | string> =>
+    network
+      .request(
+        { url: `${origin}${path}`, method: 'GET', headers: [], body: null },
+        `${origin}/`,
+        signal,
+      )
+      .then(
+        (answer) => answer.status,
+        (error: Error) => error.name,
+      );
+  const asked = Array.from({ length: 12 }, (_, i) => ask(`/${i}.js`));
+  for (let batch = 0; batch < 2; batch += 1) {
+    while (arrived.length < 6) await once(arrivals, 'request');
+    for (let frame = 0; frame < 2; frame += 1) await limit.frame();
+    for (const res of arrived.splice(0)) {
+      res.writeHead(200, { 'content-type': 'text/javascript' });
+      res.end('x');
+    }
+  }
+  assert.deepEqual(await Promise.all(asked), Array(12).fill(200));
+  // and one that was sent and is never answered is still given up at it
+  const unanswered = ask('/never.js');
+  await once(arrivals, 'request');
+  assert.ok(limit.pending, 'its limit is running');
+  for (let frame = 0; frame < 3; frame += 1) await limit.frame();
+  assert.equal(await unanswered, 'TimeoutError');
+});
+
 test('a local file says what it is, and is read only as it is asked for', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'network-files-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
