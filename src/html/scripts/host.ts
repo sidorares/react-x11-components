@@ -48,7 +48,6 @@ import {
   Text,
 } from 'domhandler';
 import { isTag } from 'domhandler';
-import { parseColor } from '../css/values.js';
 import type { AnyNode, ChildNode, ParentNode } from 'domhandler';
 import type { Rect } from 'react-x11';
 
@@ -136,6 +135,7 @@ import {
   composeShorthand,
   expandShorthand,
   highlightSelectorValid,
+  declarationTaken,
   specifiedValue,
   transitionSelectorValid,
   withoutHighlights,
@@ -1850,6 +1850,14 @@ function declarationsIn(block: string | null | undefined) {
       return border.map(([prop, v]) => ({ ...d, prop, value: v }));
     }
     const decl = value === d.value ? d : { ...d, value };
+    // a value its property does not take is no declaration of the block's
+    // (CSS Syntax 3, 5.4.6; CSSOM 6.7.1, "parse a CSS declaration block")
+    if (
+      !ALIGN_SPECIFIED.has(decl.prop) &&
+      declarationTaken(decl.prop, value) === false
+    ) {
+      return [];
+    }
     // what a block says of box alignment, the gaps and flex layout is
     // held to their grammars and its shorthands read as their longhands,
     // as `el.style` sets them (`align-specified.ts`)
@@ -2040,11 +2048,6 @@ function declarationText(block: string | null | undefined): string {
  * a property it did not declare goes at the end. An empty value removes
  * the property.
  */
-/** The properties whose value is one colour, which `CSS.supports()` holds
- *  to one: not `border-color`, which takes up to four. */
-const PLAIN_COLOR =
-  /^(?:-webkit-text-(?:fill|stroke)-|text-emphasis-|text-decoration-|outline-|column-rule-|caret-|accent-|background-|flood-|lighting-|stop-|border-(?:top|right|bottom|left|block-start|block-end|inline-start|inline-end)-)?color$/;
-
 /** The names a style has beside its computed longhands: its shorthands,
  *  the properties kept as declared, SVG's and `marker`, and every other a
  *  browser knows, drawn here or not (`BROWSER_PROPERTIES`). */
@@ -2065,6 +2068,10 @@ function withDeclaration(
   const raw = closeBrackets(value);
   const specified = raw && specifiedValue(name, raw);
   if (specified === null) return null;
+  // and where no grammar is read, what the cascade makes of it
+  if (raw && specified === undefined && declarationTaken(name, raw) === false) {
+    return null;
+  }
   const longhands = raw && specified ? expandShorthand(name, specified) : null;
   const names = new Set([
     name,
@@ -4042,23 +4049,8 @@ export class DomHost {
       ]);
     }
     if (!this._styleNames.has(property)) return false;
-    // and a colour that is none, where the grammar is a colour's alone: a
-    // word that no colour, system colour or keyword is. Anything else —
-    // a function, an escape, a comment, more than one word, as
-    // `border-color` takes — is the cascade's to read, and stands
-    const word = value.trim();
-    if (
-      /^[a-z][a-z-]*$/i.test(word) &&
-      PLAIN_COLOR.test(property) &&
-      !/^(?:inherit|initial|unset|revert|revert-layer|revert-rule|currentcolor)$/i.test(
-        word,
-      ) &&
-      !(/^(?:caret|accent)-color$/.test(property) && /^auto$/i.test(word)) &&
-      !SYSTEM_COLOR.test(word) &&
-      parseColor(word) === null
-    ) {
-      return false;
-    }
+    // a value the property does not take, as its setter has it
+    if (declarationTaken(property, value) === false) return false;
     return true;
   }
   private _styleNames: Set<string> | null = null;

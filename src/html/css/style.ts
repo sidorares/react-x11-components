@@ -11041,6 +11041,252 @@ export function fieldsOfProperty(name: string): readonly string[] {
   return INHERIT_TARGETS[name.toLowerCase()] ?? [];
 }
 
+/** What a style holds before a declaration is tried on it, a field at a
+ *  time: no value a parse makes is one of these. */
+const UNTOUCHED = Object.freeze({});
+
+let probeStyle: ComputedStyle | null = null;
+
+/**
+ * Whether the cascade takes a declaration of a property, read from what it
+ * makes of it rather than from a grammar written beside it: the value is
+ * applied to a style whose fields the property sets hold `UNTOUCHED`, and
+ * one that leaves every one of them as it was is no value of the
+ * property's, since an unparseable value is dropped by changing nothing
+ * (`applyDeclaration`). Undefined where this cannot say: a name with no
+ * fields, a value read only as it is substituted, a CSS-wide keyword, or a
+ * parse that fails on a field it did not expect.
+ */
+export function cascadeTakes(name: string, value: string): boolean | undefined {
+  const key = `${name}:${value}`;
+  if (TAKES.has(key)) return TAKES.get(key);
+  const taken = cascadeTakesNow(name, value);
+  // a page writes the same few values over and over
+  if (TAKES.size >= 4096) TAKES.clear();
+  TAKES.set(key, taken);
+  return taken;
+}
+
+const TAKES = new Map<string, boolean | undefined>();
+
+function cascadeTakesNow(name: string, value: string): boolean | undefined {
+  const prop = name.toLowerCase();
+  if (UNASKED.has(prop)) return undefined;
+  const fields = INHERIT_TARGETS[PREFIXED_ALIASES[prop] ?? prop];
+  if (!fields?.length) return undefined;
+  const v = value.trim();
+  if (!v || /\b(?:var|env|attr|ident|sibling-index|sibling-count)\(/i.test(v)) {
+    return undefined;
+  }
+  if (/^(?:inherit|initial|unset|revert|revert-layer|revert-rule)$/i.test(v)) {
+    return undefined;
+  }
+  if (unreadValue(prop, v)) return undefined;
+  probeStyle ??= initialStyle(PROBE_LOOK);
+  const style = copyStyle(probeStyle) as unknown as Record<string, unknown>;
+  for (const f of fields) style[f] = UNTOUCHED;
+  try {
+    applyDeclaration(
+      style as unknown as ComputedStyle,
+      probeStyle,
+      prop,
+      v,
+      PROBE_UNITS,
+    );
+  } catch {
+    return undefined;
+  }
+  return fields.some((f) => style[f] !== UNTOUCHED);
+}
+
+/**
+ * The properties the cascade is not asked about, since what it drops of
+ * theirs includes values each takes: their newer keywords and forms
+ * (`vertical-align: central`, `font-style: oblique 10deg`, a gap rule's
+ * `repeat()` lists, `content`'s alternative text), or every value, where a
+ * field is kept with no parse of its own yet (`box-shadow-color`). Each was
+ * found by WPT's `css/*\/parsing/*-valid` tests, which a value refused here
+ * fails; one that comes to read them is taken off the list.
+ */
+const UNASKED = new Set([
+  'block-ellipsis',
+  'block-step',
+  'block-step-align',
+  'block-step-insert',
+  'block-step-round',
+  'block-step-size',
+  'border-clip',
+  'border-shape',
+  'box-shadow-blur',
+  'box-shadow-color',
+  'box-shadow-offset',
+  'box-shadow-position',
+  'box-shadow-spread',
+  'caret-color',
+  'column-rule',
+  'column-rule-color',
+  'column-rule-inset',
+  'column-rule-style',
+  'column-rule-width',
+  'column-span',
+  'columns',
+  'content',
+  'continue',
+  'counter-increment',
+  'counter-reset',
+  'counter-set',
+  'font-style',
+  'frame-sizing',
+  'image-resolution',
+  'list-style',
+  'list-style-image',
+  'max-lines',
+  'object-fit',
+  'outline-color',
+  'outline-offset',
+  'quotes',
+  'row-rule',
+  'row-rule-color',
+  'row-rule-inset',
+  'row-rule-style',
+  'row-rule-width',
+  'ruby-merge',
+  'rule',
+  'rule-color',
+  'rule-inset',
+  'rule-style',
+  'rule-width',
+  'text-align',
+  'text-align-all',
+  'text-decoration',
+  'text-decoration-line',
+  'text-decoration-skip-spaces',
+  'text-group-align',
+  'text-overflow',
+  'text-spacing',
+  'vertical-align',
+  'word-break',
+]);
+
+/**
+ * Whether a value holds what the cascade does not read yet, though a
+ * property takes it, so that its dropping it says nothing: an escape or a
+ * comment, a math function
+ * (whose ranges a property clamps at computed-value time, and which
+ * `specifiedMath` answers for where it is the whole value), CSS Color 5's
+ * `alpha()` and `color-layers()`, a `color-mix()` of other than two colours
+ * or with a calculation in it, the `display` values no box here is, and
+ * `font`'s system fonts.
+ */
+function unreadValue(prop: string, value: string): boolean {
+  const v = value.toLowerCase();
+  // an escape or a comment, which CSS reads past and the parsers here do
+  // not
+  if (v.includes('\\') || v.includes('/*')) return true;
+  if (
+    /(?<![\w-])(?:calc|min|max|clamp|sign|abs|round|mod|rem|progress)\(/.test(v)
+  ) {
+    return true;
+  }
+  if (/(?<![\w-])(?:alpha|color-layers)\(/.test(v)) return true;
+  if (v.includes('color-mix(') && !plainMixes(v)) return true;
+  if (prop === 'display') {
+    const words = v.split(/\s+/);
+    if (words.some((w) => UNREAD_DISPLAYS.has(w))) {
+      return (
+        !words.some((w) => w === 'none' || w === 'contents') ||
+        words.length === 1
+      );
+    }
+    if (words.length > 1 && words.includes('list-item')) {
+      return (
+        words.every((w) => LIST_ITEM_WITH.has(w)) &&
+        new Set(words).size === words.length
+      );
+    }
+  }
+  // a system font, which no face here is yet
+  if (prop === 'font' && SYSTEM_FONTS.test(v)) return true;
+  return prop === 'opacity' && v === 'auto';
+}
+
+const SYSTEM_FONTS =
+  /^(?:caption|icon|menu|message-box|small-caption|status-bar)$/;
+
+const UNREAD_DISPLAYS = new Set([
+  'ruby',
+  'ruby-base',
+  'ruby-text',
+  'ruby-base-container',
+  'ruby-text-container',
+  'run-in',
+  'math',
+]);
+
+const LIST_ITEM_WITH = new Set([
+  'list-item',
+  'block',
+  'inline',
+  'flow',
+  'flow-root',
+  'run-in',
+]);
+
+/** Whether every `color-mix()` in a value mixes two colours, with no
+ *  calculation, and percentages that come to more than nothing. */
+function plainMixes(value: string): boolean {
+  let at = value.indexOf('color-mix(');
+  while (at >= 0) {
+    let depth = 1;
+    let i = at + 'color-mix('.length;
+    const start = i;
+    const parts: string[] = [];
+    let from = start;
+    for (; i < value.length && depth; i += 1) {
+      const c = value[i];
+      if (c === '(') depth += 1;
+      else if (c === ')') depth -= 1;
+      else if (c === ',' && depth === 1) {
+        parts.push(value.slice(from, i).trim());
+        from = i + 1;
+      }
+    }
+    parts.push(value.slice(from, i - 1).trim());
+    const colours = parts[0]?.startsWith('in ') ? parts.slice(1) : parts;
+    if (colours.length !== 2) return false;
+    const shares = colours.map((p) => /(-?[\d.]+)%$/.exec(p));
+    if (shares.every(Boolean) && shares.every((m) => Number(m![1]) === 0)) {
+      return false;
+    }
+    at = value.indexOf('color-mix(', i);
+  }
+  return true;
+}
+
+const PROBE_LOOK: RootLook = {
+  color: '#000000',
+  fontFamily: 'sans-serif',
+  fontSize: 16,
+  monoFamily: 'monospace',
+  linkColor: '#0000ee',
+  borderColor: '#000000',
+  mutedColor: '#808080',
+  background: '#ffffff',
+  colorScheme: 'light',
+  surface: '#ffffff',
+  controlPadY: 1,
+  controlBorder: 1,
+  controlRadius: 0,
+};
+
+const PROBE_UNITS: UnitContext = {
+  em: 16,
+  rem: 16,
+  vw: 800,
+  vh: 600,
+  scale: 1,
+};
+
 /**
  * A decoration's thickness or an underline's offset: a length, a
  * percentage of the font size, or null for `auto` (and `alsoAuto`, which is
