@@ -4825,7 +4825,10 @@ closes a way out a DOM binding opens by accident:
   the viewport for its root, and cut by each frame's content box and what
   shows of the frame up to the realm's document; its box is told in its
   own viewport, and the root and its margin are still the realm's to cut.
-  An element of the realm's document is no root of it. **A shape in an
+  An element of the realm's document is no root of it. A frame's paint
+  tells the page's runner as well as its own (`_onPaint` in `frames.ts`),
+  or what it laid out after the page's last paint is never asked again: a
+  frame with no realm has no runner to ask. **A shape in an
   inline `<svg>` is measured by its outermost `<svg>`**
   (`intersectionStandIn`): it has no box of the document's, so its own
   bounding box is cut by what shows of the drawing. And a target with no
