@@ -9468,7 +9468,8 @@ export class HtmlViewNode extends Node {
     tree: BoxTree,
     box: Box,
   ): { first: Rect; all: Rect } | null {
-    if (box.kind !== 'inline' && box.kind !== 'text') {
+    // a `<br>` is a break on a line, and no block: where the line has it
+    if (box.kind !== 'inline' && box.kind !== 'text' && box.kind !== 'break') {
       const rect = { x: box.x, y: box.y, width: box.width, height: box.height };
       // a block broken across columns: its first piece is its first
       // fragment, which Blink measures its offsets from
@@ -9508,6 +9509,34 @@ export class HtmlViewNode extends Node {
         width: around.contentWidth,
         height: block.y + block.height - top,
       });
+    }
+    if (box.kind === 'break' && bands.length) {
+      // of no width, where the line's text before it ends, as Chrome has a
+      // `<br>`: its line feed is set as a glyph at the line's start
+      const band = bands[0];
+      const before: Rect[] = [];
+      if (box.subtreeTextStart > 0) {
+        collectBands(
+          tree.root,
+          box.subtreeTextStart - 1,
+          box.subtreeTextStart,
+          0,
+          0,
+          before,
+        );
+      }
+      const prior = before[before.length - 1];
+      const onLine =
+        prior &&
+        prior.y < band.y + band.height &&
+        band.y < prior.y + prior.height;
+      const rect = {
+        x: onLine ? prior.x + prior.width : band.x,
+        y: band.y,
+        width: 0,
+        height: band.height,
+      };
+      return { first: rect, all: rect };
     }
     if (bands.length) {
       let all = bands[0];
