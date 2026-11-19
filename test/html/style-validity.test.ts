@@ -54,6 +54,11 @@ const INVALID: [string, string][] = [
   ['z-index', '1.5'],
   ['letter-spacing', '1'],
   ['font-family', 'a, , b'],
+  ['width', 'none'],
+  ['height', '-10px'],
+  ['min-width', 'none'],
+  ['max-width', 'auto'],
+  ['max-height', 'max-content 10px'],
 ];
 
 const VALID: [string, string][] = [
@@ -69,6 +74,10 @@ const VALID: [string, string][] = [
   ['font-family', 'Arial, sans-serif'],
   ['display', 'inline-block'],
   ['width', 'calc(1px + 2%)'],
+  ['width', 'fit-content(10px)'],
+  ['min-width', 'auto'],
+  ['max-width', 'none'],
+  ['height', 'stretch'],
   ['color', 'var(--x)'],
   ['box-shadow', 'inherit'],
 ];
