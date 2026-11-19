@@ -134,8 +134,20 @@ function float6(n: number): string {
 /** `letter-spacing` or `word-spacing` as its computed value keeps it (CSS
  *  Text 4, 7.2 and 7.3): a length, a percentage of the font's size, or
  *  both as a `calc()`. */
-function spacingText(pct: number, fixed: number, scale: number): string {
-  if (!pct) return px(fixed, scale);
+function spacingText(
+  pct: number,
+  fixed: number,
+  used: number,
+  fontSize: number,
+  scale: number,
+): string {
+  // a length alone is the length it came to, which a transition runs on
+  if (!pct) return px(used, scale);
+  // and a percentage alone the share of the font its length is, where a
+  // transition has moved the length from what the percentage comes to
+  if (!fixed && fontSize > 0 && Math.abs(used - pct * fontSize) > 1e-6) {
+    pct = used / fontSize;
+  }
   const percent = `${num(pct * 100)}%`;
   if (!fixed) return percent;
   return `calc(${percent} ${fixed < 0 ? '-' : '+'} ${px(Math.abs(fixed), scale)})`;
@@ -1349,11 +1361,19 @@ function cssomAt(
           : num(style.lineHeight),
     'letter-spacing':
       style.letterSpacing || style.letterSpacingPct
-        ? spacingText(style.letterSpacingPct, style.letterSpacingFixed, scale)
+        ? spacingText(
+            style.letterSpacingPct,
+            style.letterSpacingFixed,
+            style.letterSpacing,
+            style.fontSize,
+            scale,
+          )
         : 'normal',
     'word-spacing': spacingText(
       style.wordSpacingPct,
       style.wordSpacingFixed,
+      style.wordSpacing,
+      style.fontSize,
       scale,
     ),
     'text-align': style.textAlign,

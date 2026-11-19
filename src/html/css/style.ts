@@ -10004,7 +10004,7 @@ export function propertyOfField(field: string, named: string): string {
       ...Object.keys(COLOR_PROPS),
     ]) {
       if (name.startsWith('-')) continue;
-      const fields = animatedFields(name);
+      const fields = animatedFields(name)?.filter((f) => !SPACING_PARTS.has(f));
       if (fields?.length === 1 && !FIELD_PROPERTIES.has(fields[0])) {
         FIELD_PROPERTIES.set(fields[0], name);
       }
@@ -10014,6 +10014,18 @@ export function propertyOfField(field: string, named: string): string {
 }
 
 let FIELD_PROPERTIES: Map<string, string> | null = null;
+
+/** What `letter-spacing` and `word-spacing` keep beside the length they
+ *  come to (`settleSpacing`), which a transition does not run on: their
+ *  length does, and is told as the property's. Run on as well, a
+ *  transition of `all` told two `transitionend`s of `all` for a change of
+ *  `letter-spacing`. */
+export const SPACING_PARTS: ReadonlySet<string> = new Set([
+  'letterSpacingPct',
+  'letterSpacingFixed',
+  'wordSpacingPct',
+  'wordSpacingFixed',
+]);
 
 /**
  * The fields a transition of `all` may run on (CSS Transitions 1, 2.1):
@@ -10033,6 +10045,9 @@ export function transitionableFields(): ReadonlySet<keyof ComputedStyle> {
     for (const field of animatedFields(name) ?? []) fields.add(field);
   }
   for (const field of NOT_TRANSITIONABLE) fields.delete(field);
+  for (const field of SPACING_PARTS) {
+    fields.delete(field as keyof ComputedStyle);
+  }
   return (TRANSITIONABLE = fields);
 }
 

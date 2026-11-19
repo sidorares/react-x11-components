@@ -235,6 +235,29 @@ test('CSS.supports() is false for a property a style has not got, a value that i
   ]);
 });
 
+test('CSS.supports() takes every property a browser knows and every colour a colour property takes', async () => {
+  // a property nothing here draws is still one a page sets, and a WPT
+  // interpolation test asks before anything else; a colour is held to a
+  // colour only where it is one word, and `border-color` takes four
+  const out = await inPage(
+    '<div></div>',
+    `return [CSS.supports('font-size-adjust', 'none'),
+       CSS.supports('font-variation-settings', 'normal'),
+       CSS.supports('initial-letter', 'normal'),
+       CSS.supports('caret-color', 'auto'), CSS.supports('accent-color', 'auto'),
+       CSS.supports('border-color', 'red yellow'), CSS.supports('color', 'Field'),
+       CSS.supports('color', 'revert-rule'), CSS.supports('color:revert-rule'),
+       CSS.supports('color', 'r\\gb(0, 51, 102)'),
+       CSS.supports('color', '/**/transparent'),
+       CSS.supports('background-color', 'contrast-color(buttonface)'),
+       CSS.supports('selector(::details-content:hover'),
+       'fontSizeAdjust' in document.body.style,
+       CSS.supports('not-a-real-property', 'red'),
+       CSS.supports('color', 'rainbow'), CSS.supports('caret-color', 'rainbow')];`,
+  );
+  assert.deepEqual(out, [...Array(14).fill(true), false, false, false]);
+});
+
 test('a grouping rule takes rules in and gives them up, and the page is styled by them', async () => {
   // CSSOM 6.4.2: `insertRule` and `deleteRule` on `@media` and on a style
   // rule that nests, where both threw (WPT's CSSGroupingRule-insertRule)

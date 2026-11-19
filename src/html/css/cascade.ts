@@ -9220,6 +9220,15 @@ export class Cascade {
     customUnder: ReadonlyMap<string, string>,
     lastFrame: Keyframe | null,
   ): string | null {
+    // what an `attr()` made stays tainted, which a value mixed from it
+    // here would not say (CSS Values 5, 8.7.2): such a property goes over
+    // as an unregistered one does, its frames substituted where they apply
+    if (!customUnder.has(prop) && styleAt(null).custom?.tainted(prop)) {
+      return null;
+    }
+    for (const at of [span.from, span.to]) {
+      if (at?.frame && styleAt(at.frame).custom?.tainted(prop)) return null;
+    }
     const underValue =
       customUnder.get(prop) ?? styleAt(null).custom?.read(prop) ?? null;
     const end = (

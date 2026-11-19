@@ -43,6 +43,7 @@ import {
   INHERITED,
   animatedFields,
   propertyOfField,
+  SPACING_PARTS,
   copyStyle,
   isInherited,
   transitionableFields,
@@ -2035,7 +2036,9 @@ function transitionFields(list: Transitions): ReadonlyMap<string, number> {
     const length =
       Math.max(0, item(list.durations, index)) + item(list.delays, index);
     const names =
-      name === 'all' ? transitionableFields() : (animatedFields(name) ?? []);
+      name === 'all'
+        ? transitionableFields()
+        : (animatedFields(name) ?? []).filter((f) => !SPACING_PARTS.has(f));
     for (const field of names) {
       if (length > 0) out.set(field, index);
       else out.delete(field);

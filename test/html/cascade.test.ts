@@ -1860,6 +1860,34 @@ test('a @supports test of the mask is answered, and every other is entered', () 
   assert.strictEqual(supportsCondition('selector(:focus-visible)'), true);
   assert.strictEqual(supportsCondition('selector(&)'), true);
   assert.strictEqual(supportsCondition('not selector(> .a)'), true);
+  // and by what a browser has of pseudo-elements, which a rule does not
+  // take: the form controls' and scrolling's, a `::marker` of a
+  // `::before`, what a `::details-content` holds, a vendor's only where a
+  // browser has it, and a class prefix (CSS Conditional 4, 3.1)
+  for (const [selector, answer] of [
+    ['select::picker(select)', true],
+    ['::picker-icon', true],
+    ['select::picker', false],
+    ['select::picker()', false],
+    ['::scroll-button(inline-start):focus', true],
+    ['::before::marker', true],
+    ['::part(a)::spelling-error', true],
+    ['::details-content::before', true],
+    ['::details-content:lang(en)', true],
+    ['::details-content:nth-of-type(2)', false],
+    ['::details-content:has(a)', false],
+    ['::details-content::part(a)', false],
+    ['::-webkit-unknown-pseudo', false],
+    ['::-webkit-scrollbar', true],
+    ['.foo-*', true],
+    ['.foo-*:has(.a)', true],
+  ] as const) {
+    assert.strictEqual(
+      supportsCondition(`selector(${selector})`),
+      answer,
+      selector,
+    );
+  }
   // `font-synthesis` by its grammar: a test page keeps a red rule under
   // `not (font-synthesis: none)`
   assert.strictEqual(supportsCondition('not (font-synthesis: none)'), false);

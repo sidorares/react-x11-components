@@ -167,6 +167,7 @@ import {
   SYSTEM_COLOR,
   systemColors,
 } from '../css/color.js';
+import { BROWSER_PROPERTIES } from '../css/property-names.js';
 import {
   SHORTHAND_NAMES,
   COMPOSED_NAMES,
@@ -2033,10 +2034,17 @@ function declarationText(block: string | null | undefined): string {
  * a property it did not declare goes at the end. An empty value removes
  * the property.
  */
+/** The properties whose value is one colour, which `CSS.supports()` holds
+ *  to one: not `border-color`, which takes up to four. */
+const PLAIN_COLOR =
+  /^(?:-webkit-text-(?:fill|stroke)-|text-emphasis-|text-decoration-|outline-|column-rule-|caret-|accent-|background-|flood-|lighting-|stop-|border-(?:top|right|bottom|left|block-start|block-end|inline-start|inline-end)-)?color$/;
+
 /** The names a style has beside its computed longhands: its shorthands,
- *  the properties kept as declared, SVG's and `marker`. */
+ *  the properties kept as declared, SVG's and `marker`, and every other a
+ *  browser knows, drawn here or not (`BROWSER_PROPERTIES`). */
 const STYLE_NAMES_BESIDE: readonly string[] = [
   ...SHORTHAND_NAMES,
+  ...BROWSER_PROPERTIES,
   ...declaredProperties(),
   ...Object.keys(SVG_PROPERTIES),
   'marker',
@@ -3996,14 +4004,20 @@ export class DomHost {
       ]);
     }
     if (!this._styleNames.has(property)) return false;
-    // and a colour that is none, where the grammar is a colour's alone
+    // and a colour that is none, where the grammar is a colour's alone: a
+    // word that no colour, system colour or keyword is. Anything else —
+    // a function, an escape, a comment, more than one word, as
+    // `border-color` takes — is the cascade's to read, and stands
+    const word = value.trim();
     if (
-      /(?:^|-)color$/.test(property) &&
-      !/^(?:inherit|initial|unset|revert|revert-layer|currentcolor)$/i.test(
-        value,
+      /^[a-z][a-z-]*$/i.test(word) &&
+      PLAIN_COLOR.test(property) &&
+      !/^(?:inherit|initial|unset|revert|revert-layer|revert-rule|currentcolor)$/i.test(
+        word,
       ) &&
-      !/\b(?:var|env|attr)\(/i.test(value) &&
-      parseColor(value) === null
+      !(/^(?:caret|accent)-color$/.test(property) && /^auto$/i.test(word)) &&
+      !SYSTEM_COLOR.test(word) &&
+      parseColor(word) === null
     ) {
       return false;
     }
@@ -5922,7 +5936,10 @@ export class DomHost {
       }
 
       case 'supports': {
-        const condition = text(a);
+        // what a page's text leaves open ends where it ends, as a sheet's
+        // does (CSS Syntax 3, 5.4.8): `selector(::details-content:hover` is
+        // the selector
+        const condition = b === true ? closeBrackets(text(a)) : text(a);
         // a page's `CSS.supports()` asks of a declaration this cannot
         // answer whether the property is one a style has and the value
         // one it takes, as setting it would (`supportsDeclaration`)
@@ -10150,7 +10167,13 @@ export class DomHost {
         // attributes" with initialInsertion), before the script that put it
         // in goes on: a page that sets `onload` after it hears the next
         // document's, a form's submission into the frame among them
-        if (inserted && !src && frame.name === 'iframe') loaded();
+        if (
+          inserted &&
+          !src &&
+          frame.name === 'iframe' &&
+          frame.attribs.src === undefined
+        )
+          loaded();
         else setTimeout(loaded, 0);
         return;
       }

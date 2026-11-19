@@ -15,7 +15,12 @@ import {
 } from '../../src/html/css/timeline.js';
 import { interpolateField } from '../../src/html/css/interpolate.js';
 import { parseStylesheet } from '../../src/html/css/parse.js';
-import { copyStyle, initialStyle } from '../../src/html/css/style.js';
+import {
+  copyStyle,
+  initialStyle,
+  propertyOfField,
+  transitionableFields,
+} from '../../src/html/css/style.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { animationClock } from '../../src/html/node.js';
 import { stacksLayers } from '../../src/html/paint.js';
@@ -129,6 +134,31 @@ test('a hover that changes a property a transition names runs it, from the value
   await doc.at(176);
   assert.ok(near(doc.style('a').opacity, 0.2));
   assert.strictEqual(doc.clock.pending, false, 'over');
+});
+
+test('letter-spacing runs as its length, one transition told as letter-spacing, whatever a style keeps beside it', async (t) => {
+  // a style keeps its percentage and its length apart for its children
+  // (`settleSpacing`), which a transition of `all` ran on as well and told
+  // as `all`: two `transitionend`s for one change
+  assert.strictEqual(propertyOfField('letterSpacing', 'all'), 'letter-spacing');
+  assert.strictEqual(propertyOfField('wordSpacing', 'all'), 'word-spacing');
+  const fields = transitionableFields();
+  assert.ok(fields.has('letterSpacing'));
+  assert.ok(!fields.has('letterSpacingFixed' as keyof ComputedStyle));
+  const doc = await holding(
+    t,
+    '<style>#a { width: 40px; height: 20px; transition: all 160ms linear }' +
+      '#a:hover { letter-spacing: 10px }</style><div id="a">ab</div>',
+  );
+  doc.hover('a');
+  await act();
+  await doc.at(80);
+  assert.ok(
+    near(doc.style('a').letterSpacing, 5),
+    `${doc.style('a').letterSpacing}`,
+  );
+  await doc.at(176);
+  assert.ok(near(doc.style('a').letterSpacing, 10));
 });
 
 test('a transition a change starts runs where its element comes out as it was beside what is built', async (t) => {

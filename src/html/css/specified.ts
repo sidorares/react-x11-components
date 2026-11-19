@@ -250,10 +250,7 @@ export function specifiedValue(
   if (transitionKey || transitionShorthand) {
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
-    if (
-      transitionKey !== 'properties' &&
-      /(?:calc|min|max|clamp|sign|abs|round|mod|rem)\(/i.test(word)
-    ) {
+    if (transitionKey !== 'properties' && MATH_IN.test(word)) {
       return undefined;
     }
     if (!transitionKey) {
@@ -292,7 +289,7 @@ export function specifiedValue(
   if (name === 'transform' || name === '-webkit-transform') {
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
-    if (/(?:calc|min|max|clamp|sign|abs|round|mod|rem)\(/i.test(word)) {
+    if (MATH_IN.test(word)) {
       return undefined;
     }
     if (parseTransform(word, CHECK) === undefined) return null;
@@ -317,7 +314,7 @@ export function specifiedValue(
     // a math function is valid where its type is, and clamped at computed
     // value time (`calc(-10%)`), or reads a unit no check here resolves
     // (`cqw`): the cascade's to judge
-    if (/(?:calc|min|max|clamp|sign|abs|round|mod|rem)\(/i.test(word)) {
+    if (MATH_IN.test(word)) {
       return undefined;
     }
     return parseFilter(word, CHECK) === undefined ? null : undefined;
@@ -350,7 +347,7 @@ export function specifiedValue(
   if (name === 'border-image') {
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
-    if (/(?:calc|min|max|clamp|sign|abs|round|mod|rem)\(/i.test(word)) {
+    if (MATH_IN.test(word)) {
       return undefined;
     }
     return borderImageTakes(word, CHECK) ? undefined : null;
@@ -360,7 +357,7 @@ export function specifiedValue(
   if (name === 'mask' || name === '-webkit-mask') {
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
-    if (/(?:calc|min|max|clamp|sign|abs|round|mod|rem)\(/i.test(word)) {
+    if (MATH_IN.test(word)) {
       return undefined;
     }
     return maskShorthandTakes(word, CHECK) ? undefined : null;
@@ -1493,6 +1490,12 @@ const ANCHOR_SIDE =
   /^(?:inside|outside|top|left|right|bottom|start|end|self-start|self-end|center)$/i;
 const ANCHOR_SIZE = /^(?:width|height|block|inline|self-block|self-inline)$/i;
 const MATH = /^(?:calc|min|max|clamp)\(/i;
+
+/** A value with a math function anywhere in it, which the rules above
+ *  leave to the cascade to read: CSS Values 4's and 5's, `progress()` and
+ *  the tree-counting ones among them. */
+const MATH_IN =
+  /(?:calc|min|max|clamp|sign|abs|round|mod|rem|sin|cos|tan|asin|acos|atan|atan2|pow|sqrt|hypot|log|exp|progress|random|sibling-index|sibling-count)\(/i;
 
 /**
  * A value with `anchor()` or `anchor-size()` in it, each call's name put

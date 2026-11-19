@@ -1689,10 +1689,13 @@ function forMatcher(selector: string): string {
  * combinators. What a selector *means* — which pseudo-classes exist — is
  * the matcher's to decide; this only refuses what no grammar would read.
  */
-function isSelector(s: string): boolean {
+function isSelector(s: string, supports = false): boolean {
   const n = s.length;
   let i = 0;
   let expectCompound = true;
+  // which pseudo-element ended the compound, for what `supports` lets
+  // follow it
+  let endedBy = '';
   // a pseudo-element ends its selector (CSS 2.1 5.10): `p:first-line p`
   // is none, and neither is `p:first-line[id]` — but for the user action
   // pseudo-classes Selectors 4 lets follow one, as in `a::before:hover`
@@ -1731,8 +1734,14 @@ function isSelector(s: string): boolean {
               (shadowed === 'part' &&
                 !STRUCTURAL.test(readIdent(s, i + 1).value)) ||
               (transition &&
-                asciiLower(readIdent(s, i + 1).value) === 'only-child')
-            : shadowed !== null && TREE_ABIDING.test(readIdent(s, i + 2).value))
+                asciiLower(readIdent(s, i + 1).value) === 'only-child') ||
+              (supports &&
+                endedBy === 'details-content' &&
+                !STRUCTURAL.test(readIdent(s, i + 1).value))
+            : (shadowed !== null &&
+                (TREE_ABIDING.test(readIdent(s, i + 2).value) ||
+                  (supports && HIGHLIGHTS.test(readIdent(s, i + 2).value)))) ||
+              (supports && followsElement(endedBy, readIdent(s, i + 2).value)))
         )
       ) {
         return false;
@@ -1743,6 +1752,9 @@ function isSelector(s: string): boolean {
       } else if (d === '.' || d === '#') {
         if (!startsIdent(s, i + 1)) return false;
         i = identEnd(s, i + 1);
+        // a class prefix, `.foo-*`, which `selector()` reads as written
+        // (CSS Selectors 5, tentative)
+        if (supports && d === '.' && s[i - 1] === '-' && s[i] === '*') i += 1;
       } else if (d === '[') {
         let j = i + 1;
         while (j < n && isSpace(s[j])) j += 1;
@@ -1775,8 +1787,15 @@ function isSelector(s: string): boolean {
         // ASCII's case only (CSS 2.1 4.1.3): Unicode's makes `:lin\u212A`,
         // with a Kelvin sign, `:link`
         const lower = asciiLower(name.value);
-        if (!knownPseudo(lower, element)) return false;
+        if (
+          supports && element
+            ? !supportedElement(lower)
+            : !knownPseudo(lower, element)
+        ) {
+          return false;
+        }
         if (element || LEGACY_PSEUDO_ELEMENTS.test(lower)) {
+          endedBy = ended ? endedBy : lower;
           // a pseudo-element of a part or a slotted element is the last
           shadowed =
             element && !ended && (lower === 'part' || lower === 'slotted')
@@ -1793,8 +1812,32 @@ function isSelector(s: string): boolean {
           if (!element && !argumentFits(lower, s.slice(i + 1, end - 1))) {
             return false;
           }
+          // a pseudo-element in a selector list a pseudo-class takes is no
+          // selector there (Selectors 4, 3.6.1)
+          if (
+            supports &&
+            !element &&
+            /^(?:is|where|has|not)$/.test(lower) &&
+            /::|:(?:before|after|first-line|first-letter)(?![\w-])/i.test(
+              s.slice(i + 1, end - 1),
+            )
+          ) {
+            return false;
+          }
+          // `::picker()` and `::scroll-button()` name what they are of
+          if (
+            supports &&
+            element &&
+            ELEMENT_ARGUMENT.has(lower) &&
+            !/\S/.test(s.slice(i + 1, end - 1))
+          ) {
+            return false;
+          }
           i = end;
         } else if (!element && NEEDS_ARGUMENT.has(lower)) return false;
+        else if (supports && element && ELEMENT_ARGUMENT.has(lower)) {
+          return false;
+        }
       } else {
         return false;
       }
@@ -2013,6 +2056,79 @@ const PSEUDO_CLASSES = new Set([
  * `.prose :where(p)` beat a page's own `.intro p`.
  */
 const LEGACY_PSEUDO_ELEMENTS = /^(?:before|after|first-line|first-letter)$/i;
+
+/**
+ * Whether `selector()` takes a pseudo-element (CSS Conditional 4, 3.1):
+ * every one a rule takes, the form controls' and scrolling's that browsers
+ * have and nothing here draws, and of a vendor's only those a browser has —
+ * an unknown `::-webkit-…` is no selector there, where a rule keeps it.
+ */
+function supportedElement(name: string): boolean {
+  if (name.startsWith('-')) return VENDOR_ELEMENTS.has(name);
+  return PSEUDO_ELEMENTS.has(name) || SUPPORTED_ELEMENTS.has(name);
+}
+
+const SUPPORTED_ELEMENTS = new Set([
+  'picker',
+  'picker-icon',
+  'checkmark',
+  'scroll-button',
+  'scroll-marker',
+  'scroll-marker-group',
+  'search-text',
+]);
+
+/** The pseudo-elements that name what they are of, and are nothing
+ *  without it. */
+const ELEMENT_ARGUMENT = new Set(['picker', 'scroll-button']);
+
+const VENDOR_ELEMENTS = new Set([
+  '-webkit-scrollbar',
+  '-webkit-scrollbar-button',
+  '-webkit-scrollbar-corner',
+  '-webkit-scrollbar-thumb',
+  '-webkit-scrollbar-track',
+  '-webkit-scrollbar-track-piece',
+  '-webkit-resizer',
+  '-webkit-input-placeholder',
+  '-webkit-file-upload-button',
+  '-webkit-search-cancel-button',
+  '-webkit-search-decoration',
+  '-webkit-inner-spin-button',
+  '-webkit-outer-spin-button',
+  '-webkit-details-marker',
+  '-webkit-calendar-picker-indicator',
+  '-webkit-slider-thumb',
+  '-webkit-slider-runnable-track',
+  '-webkit-progress-bar',
+  '-webkit-progress-value',
+  '-webkit-meter-bar',
+  '-webkit-color-swatch',
+  '-webkit-color-swatch-wrapper',
+  '-moz-selection',
+  '-moz-placeholder',
+  '-moz-range-thumb',
+  '-moz-range-track',
+  '-moz-focus-inner',
+]);
+
+/** The highlights, which follow `::part()` as its tree-abiding ones do. */
+const HIGHLIGHTS =
+  /^(?:selection|target-text|spelling-error|grammar-error|highlight)$/i;
+
+/** What `selector()` lets follow a pseudo-element: a `::marker` of a
+ *  `::before` or an `::after`, and what is in the box of a
+ *  `::details-content` (CSS Pseudo 4, 4.2). */
+function followsElement(by: string, next: string): boolean {
+  const name = asciiLower(next);
+  if (by === 'before' || by === 'after') return name === 'marker';
+  if (by === 'details-content') {
+    return /^(?:before|after|marker|first-line|first-letter|placeholder|selection)$/.test(
+      name,
+    );
+  }
+  return false;
+}
 
 /** The pseudo-classes that may follow a pseudo-element. */
 const USER_ACTIONS = /^(?:hover|active|focus|focus-visible|focus-within)$/i;
@@ -4054,7 +4170,7 @@ export function supportsCondition(
   const selector = /^selector\(([\s\S]*)\)$/i.exec(text);
   if (selector) {
     const written = trimSelector(selector[1]);
-    return !!written && isSelector(replaceNesting(written, ':scope'));
+    return !!written && isSelector(replaceNesting(written, ':scope'), true);
   }
   // one term: a condition in parentheses, or a declaration in them
   if (!(text.startsWith('(') && text.endsWith(')'))) {
@@ -4080,6 +4196,15 @@ export function supportsCondition(
   const specified = specifiedValue(property, declaration[2].trim());
   if (specified !== undefined) return specified !== null;
   const shorthand = SHORTHAND_GRAMMARS[property];
+  // a CSS-wide keyword is every property's (CSS Cascade 4, 7.3)
+  if (
+    Object.hasOwn(SHORTHAND_GRAMMARS, property) &&
+    /^(?:inherit|initial|unset|revert|revert-layer)$/i.test(
+      declaration[2].trim(),
+    )
+  ) {
+    return true;
+  }
   if (shorthand) return shorthand(declaration[2].trim().toLowerCase());
   // a name the caller knows, with a value this cannot read, is taken
   return ANSWERED.has(property) || declare ? true : null;
