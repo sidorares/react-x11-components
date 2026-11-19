@@ -35,7 +35,8 @@ import {
   rotate4,
   translate4,
 } from '../../src/html/css/transform3d.js';
-import type { ComputedStyle } from '../../src/html/css/style.js';
+import { NO_MASK, animatedFields } from '../../src/html/css/style.js';
+import type { ComputedStyle, MaskLayers } from '../../src/html/css/style.js';
 import { animationClock } from '../../src/html/node.js';
 import {
   timelineTriggersOf,
@@ -4597,3 +4598,27 @@ metric(
     assert.deepStrictEqual(await pixelAt(doc, 26, 16), [255, 0, 0]);
   },
 );
+
+test('a mask runs its positions, a list repeated to the length both divide, and goes over where anything else in it differs', () => {
+  // CSS Masking 1, 7.4: mask-position is a repeatable list, where every
+  // mask longhand went over at the half-way point
+  assert.deepStrictEqual(animatedFields('mask-position'), ['mask']);
+  const mask = (over: Partial<MaskLayers>): MaskLayers => ({
+    ...NO_MASK,
+    ...over,
+  });
+  const a = mask({ positions: [[0, 0]] });
+  const b = mask({
+    positions: [
+      [20, 40],
+      [40, 20],
+    ],
+  });
+  const mid = interpolateField('mask', a, b, 0.5) as MaskLayers;
+  assert.deepStrictEqual(mid.positions, [
+    [10, 20],
+    [20, 10],
+  ]);
+  const c = mask({ positions: [[20, 40]], composites: ['exclude'] });
+  assert.strictEqual(interpolateField('mask', a, c, 0.5), undefined);
+});

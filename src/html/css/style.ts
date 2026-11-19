@@ -9983,6 +9983,9 @@ export function animatedFields(
   name: string,
 ): readonly (keyof ComputedStyle)[] | null {
   const prop = PREFIXED_ALIASES[name] ?? name;
+  // a mask's positions run, in the one field the layers are (`mask` in
+  // `interpolateField`); its other lists go over as they did
+  if (prop === 'mask-position') return ['mask'];
   if (MASK_LISTS[prop] || ANIMATION_LONGHANDS[prop]) return null;
   if (TRANSITION_LONGHANDS[prop] || prop === 'transition') return null;
   const color = COLOR_PROPS[prop];
@@ -10070,7 +10073,6 @@ const NOT_TRANSITIONABLE: readonly (keyof ComputedStyle)[] = [
   'viewTransitionGroup',
   'animations',
   'transitions',
-  'mask',
   'custom',
 ];
 
