@@ -393,6 +393,7 @@ export {
   memoryStorage,
 } from './storage.js';
 export type {
+  HtmlIdbBlobs,
   HtmlIdbCommit,
   HtmlIdbSnapshot,
   HtmlIdbStoreSchema,
@@ -403,6 +404,7 @@ export type {
 } from './storage.js';
 export {
   CACHE_FILE,
+  IDB_BLOBS_FILE,
   HtmlProfile,
   PROFILE_FILE,
   PROFILE_VERSION,
@@ -1847,6 +1849,9 @@ export function makeHtmlHandle(
     showStream: (element: Element, shown: StreamShown | null) =>
       nodeRef.current?.showStream(element, shown),
     geometryKey: () => nodeRef.current?.geometryKey() ?? '',
+    geometryOwed: () => nodeRef.current?.geometryOwed() ?? false,
+    effectiveZoom: (element: Element) =>
+      nodeRef.current?.effectiveZoomOf(element) ?? 1,
     pointerElement: () => nodeRef.current?.pointerElement() ?? null,
     pointerDrawn: () => nodeRef.current?.pointerDrawn() ?? null,
     embedRendered: (element) => nodeRef.current?.embedRendered(element) ?? null,

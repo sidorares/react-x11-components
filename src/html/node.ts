@@ -15110,6 +15110,19 @@ export class HtmlViewNode extends Node {
     return `${this._geometry} ${at.x},${at.y} ${this.abs.width}x${this.abs.height} ${this._viewportHeight()}`;
   }
 
+  /** An element's effective zoom (CSS Viewport 1, 5.3), as its style was
+   *  worked out: its own and its ancestors' zooms multiplied, 1 where it
+   *  has no style. */
+  effectiveZoomOf(element: Element): number {
+    return this._styleOf(element)?.effectiveZoom ?? 1;
+  }
+
+  /** Whether a change waits to be laid out, which `geometryKey` answers
+   *  with a new key each time it is asked. */
+  geometryOwed(): boolean {
+    return this._stale !== Stale.Nothing;
+  }
+
   /** Moved by everything `geometryKey` follows. */
   private _geometry = 0;
 

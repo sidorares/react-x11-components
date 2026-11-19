@@ -771,6 +771,30 @@ export function installDom(
     enumerable: true,
     configurable: false,
   };
+  /** Whether `event` is an `Event` of a linked same-origin realm, a
+   *  frame's that runs scripts of its own: no `instanceof` of this realm's
+   *  says so, and a frame's script dispatches its `CustomEvent` at its
+   *  parent's document. Told by what it holds, as the same facade made
+   *  it, under a prototype chain that reaches an `Event`. */
+  const eventOfAnotherRealm = (event: Any): boolean => {
+    if (event === null || typeof event !== 'object') return false;
+    if (typeof event._type !== 'string' || !Array.isArray(event._path)) {
+      return false;
+    }
+    for (
+      let at = Object.getPrototypeOf(event);
+      at && at !== Object.prototype;
+      at = Object.getPrototypeOf(at)
+    ) {
+      if (
+        Object.hasOwn(at, 'constructor') &&
+        at.constructor?.name === 'Event'
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
   class Event {
     /** Whether the user agent made it, which `isTrusted` reads: an
      *  accessor of the event's own, not the prototype's, one getter for
@@ -1501,7 +1525,7 @@ export function installDom(
     dispatchEvent(event: Any): boolean {
       const win = windowCalled(this);
       if (win) return win.dispatchEvent(event);
-      if (!(event instanceof Event)) {
+      if (!(event instanceof Event) && !eventOfAnotherRealm(event)) {
         throw new TypeError(
           "Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'.",
         );
@@ -6846,6 +6870,7 @@ export function installDom(
                 report(error);
               }
             }
+            updateResizeObservers();
             updateIntersections(time);
             runAfterFrame();
             nextFrame();
@@ -6858,6 +6883,7 @@ export function installDom(
       return;
     }
     frameTimer = 0;
+    updateResizeObservers();
     updateIntersections(time);
     runAfterFrame();
     nextFrame();
@@ -11186,6 +11212,11 @@ export function installDom(
     }
     hasPointerCapture(pointerId: Any): boolean {
       return Number(pointerId) === POINTERS.id && POINTERS.hasCapture(this);
+    }
+    // its effective zoom (CSS Viewport 1, 5.3): every zoom down the flat
+    // tree to it multiplied, or 1 for what is not rendered
+    get currentCSSZoom(): number {
+      return effectiveZoomOf(this);
     }
     // A scroll container's are its scrollport's and its content's
     // (`scrollState`); the viewport's are the document's scrolling
@@ -33536,6 +33567,9 @@ export function installDom(
     value: Any,
     moved?: Set<Any>,
     transfer?: { across: Across; moving: Any[]; later: Array<() => void> },
+    /** Where a blob's bytes go instead of into the text: the id of a blob
+     *  the host keeps (`idbBlobAside`), or null to write them in. */
+    blobAside?: (blob: Any) => string | null,
   ): string => {
     const seen = new Map<Any, number>();
     const wireOf = new Map<Any, string>();
@@ -33581,6 +33615,17 @@ export function installDom(
       seen.set(v, index);
       const tag = Object.prototype.toString.call(v).slice(8, -1);
       if (v instanceof Blob) {
+        const kept = blobAside?.(v);
+        if (kept) {
+          return {
+            i: index,
+            t: 'L',
+            h: kept,
+            s: v.size,
+            y: v.type,
+            ...(v instanceof File && { fn: v.name, fm: v.lastModified }),
+          };
+        }
         return {
           i: index,
           t: 'L',
@@ -33837,6 +33882,16 @@ export function installDom(
           out = byWire.get(str(v.w)) ?? null;
           break;
         case 'L':
+          // a blob the host keeps, read from there as it is asked for
+          if (typeof v.h === 'string') {
+            out = sourcedBlob(
+              v.fn === undefined
+                ? new Blob([], { type: v.y })
+                : new File([], str(v.fn), { type: v.y, lastModified: v.fm }),
+              idbBlobSource(v.h, Number(v.s) || 0),
+            );
+            break;
+          }
           out =
             v.fn === undefined
               ? new Blob([bytesOfBase64(v.b)], { type: v.y })
@@ -34197,9 +34252,78 @@ export function installDom(
       type: options?.type === undefined ? '' : str(options.type),
     };
   };
+  /** Where a blob's bytes are read from as they are asked for, a range at
+   *  a time, where it does not hold them: a blob an IndexedDB record holds,
+   *  kept by the host (`idbBlobSource`). `id` is the host's name for the
+   *  blob it reads all of, which a record that keeps it again names. */
+  interface BlobSource {
+    size: number;
+    read(from: number, to: number): Uint8Array;
+    id?: string;
+  }
+  /** A blob made to read its bytes from `src` each time they are asked
+   *  for, and to hold none: a page that keeps gigabytes of files in a
+   *  database holds none of them until it reads one. */
+  const sourcedBlob = (blob: Any, src: BlobSource): Any => {
+    blob._size = src.size;
+    blob._src = src;
+    Object.defineProperty(blob, '_bytes', {
+      get: (): Uint8Array => src.read(0, src.size),
+      set(value: Uint8Array) {
+        Object.defineProperty(blob, '_bytes', {
+          value,
+          writable: true,
+          configurable: true,
+        });
+        blob._src = undefined;
+        blob._size = undefined;
+      },
+      configurable: true,
+    });
+    return blob;
+  };
+  /** The source a blob made of `parts` reads from, where one of them reads
+   *  from one: each part a range of it, in order. Null where every part
+   *  holds its bytes. */
+  const sourceOfParts = (parts: Any[], endings: string): BlobSource | null => {
+    if (!parts.some((part) => part instanceof Blob && part._src)) return null;
+    // a copy of one such blob, as a clone makes, reads what it reads
+    if (parts.length === 1) return parts[0]._src;
+    const pieces = parts.map((part) =>
+      part instanceof Blob && part._src
+        ? part._src
+        : { bytes: blobBytes([part], endings) },
+    );
+    const sizes = pieces.map((p: Any) => (p.bytes ? p.bytes.length : p.size));
+    const size = sizes.reduce((n: number, k: number) => n + k, 0);
+    return {
+      size,
+      read(from: number, to: number): Uint8Array {
+        const out = new Uint8Array(Math.max(0, to - from));
+        let start = 0;
+        pieces.forEach((piece: Any, i: number) => {
+          const end = start + sizes[i];
+          const a = Math.max(from, start);
+          const b = Math.min(to, end);
+          if (b > a) {
+            out.set(
+              piece.bytes
+                ? piece.bytes.subarray(a - start, b - start)
+                : piece.read(a - start, b - start),
+              a - from,
+            );
+          }
+          start = end;
+        });
+        return out;
+      },
+    };
+  };
   class Blob {
-    _bytes: Uint8Array;
+    _bytes!: Uint8Array;
     _type: string;
+    /** What its bytes are read from, where it holds none. */
+    _src?: BlobSource;
     // a rest, since the interface's `length` is what it requires
     constructor(...given: Any[]) {
       const init = blobInit(
@@ -34207,7 +34331,9 @@ export function installDom(
         given[0],
         given[1],
       );
-      this._bytes = blobBytes(init.list, init.endings);
+      const src = sourceOfParts(init.list, init.endings);
+      if (src) sourcedBlob(this, src);
+      else this._bytes = blobBytes(init.list, init.endings);
       this._type = blobType(init.type);
     }
     get type(): string {
@@ -34228,6 +34354,14 @@ export function installDom(
       const from = edge(start, 0);
       const to = Math.max(edge(end, size), from);
       const blob = new Blob([], { type: type === undefined ? '' : str(type) });
+      const src = this._src;
+      if (src) {
+        return sourcedBlob(blob, {
+          size: to - from,
+          read: (a: number, b: number) => src.read(from + a, from + b),
+          ...(from === 0 && to === size && src.id && { id: src.id }),
+        });
+      }
       if (this._size === undefined) {
         blob._bytes = this._bytes.slice(from, to);
         return blob;
@@ -34253,6 +34387,25 @@ export function installDom(
       return new ReadableStream({
         type: 'bytes',
         pull(controller: Any): void {
+          // a blob read from a source is read a chunk at a time
+          const src = blob._src;
+          if (src) {
+            let piece: Uint8Array;
+            try {
+              piece = src.read(at, Math.min(at + BLOB_CHUNK, src.size));
+            } catch (error) {
+              controller.error(error);
+              return;
+            }
+            if (!piece.length) {
+              controller.close();
+              controller.byobRequest?.respond(0);
+              return;
+            }
+            at += piece.length;
+            controller.enqueue(piece);
+            return;
+          }
           try {
             bytes ??= blob._bytes;
           } catch (error) {
@@ -36034,6 +36187,60 @@ export function installDom(
       return undefined;
     }
   };
+  /** Whether the host keeps the blobs records hold apart from them
+   *  (`HtmlIdbBlobs`), asked once. */
+  let idbApart: boolean | undefined;
+  const idbBlobsApart = (): boolean =>
+    (idbApart ??= call('idb', 'blobs') === true);
+  /** The blobs a commit wrote to the host, each with the id it has there,
+   *  to be read from there once the commit is in. */
+  type IdbAside = [blob: Any, id: string][];
+  /** How many bytes of a blob cross to the host in one op, as base64. */
+  const IDB_BLOB_PIECE = 1 << 20;
+  /** A blob the host keeps, by its id there: read a range at a time, each
+   *  a few ops at most (the host answers up to its chunk). */
+  const idbBlobSource = (id: string, size: number): BlobSource => ({
+    id,
+    size,
+    read(from: number, to: number): Uint8Array {
+      from = Math.max(0, from);
+      to = Math.min(size, to);
+      const out = new Uint8Array(Math.max(0, to - from));
+      for (let at = from; at < to;) {
+        const piece = bytesOfBase64(
+          str(call('idb', 'blobRead', id, String(at), String(to - at))),
+        );
+        if (!piece.length) {
+          throw new DOMException(
+            'The blob could not be read from IndexedDB.',
+            'NotReadableError',
+          );
+        }
+        out.set(piece, at - from);
+        at += piece.length;
+      }
+      return out;
+    },
+  });
+  /** The id a record names a blob by: one the host has already, or a new
+   *  one its bytes are written to now, a piece at a time. Null where the
+   *  host would not make one, and the bytes go in the record. */
+  const idbBlobAside = (blob: Any, aside: IdbAside): string | null => {
+    const kept = blob._src?.id;
+    if (typeof kept === 'string') return kept;
+    const size = blob.size;
+    const id = call('idb', 'blobNew', String(size));
+    if (typeof id !== 'string') return null;
+    const src: BlobSource | undefined = blob._src;
+    const whole: Uint8Array | null = src ? null : blob._bytes;
+    for (let at = 0; at < size; at += IDB_BLOB_PIECE) {
+      const end = Math.min(size, at + IDB_BLOB_PIECE);
+      const piece = whole ? whole.subarray(at, end) : src!.read(at, end);
+      call('idb', 'blobWrite', id, String(at), base64OfBytes(piece));
+    }
+    aside.push([blob, id]);
+    return id;
+  };
   /** What changed between a store's records before a transaction and
    *  after, both in key order: the records to write, and the keys gone. */
   const idbDiff = (
@@ -36042,11 +36249,27 @@ export function installDom(
     after: { key: Any; value: Any }[],
     put: Any[],
     gone: Any[],
+    aside?: IdbAside,
   ): void => {
     let i = 0;
     let j = 0;
     const write = (record: { key: Any; value: Any }) => {
       try {
+        if (aside) {
+          const ids: string[] = [];
+          const value = serializeClone(
+            record.value,
+            undefined,
+            undefined,
+            (blob) => {
+              const id = idbBlobAside(blob, aside);
+              if (id) ids.push(id);
+              return id;
+            },
+          );
+          put.push([store, encodeKey(record.key), value, ids]);
+          return;
+        }
         put.push([store, encodeKey(record.key), serializeClone(record.value)]);
       } catch (error) {
         call(
@@ -36531,6 +36754,10 @@ export function installDom(
       const data: IdbData = this._db._data;
       const put: Any[] = [];
       const gone: Any[] = [];
+      // the blobs the records written hold go to the host apart, where it
+      // keeps them so, and those this realm held the bytes of read from
+      // there once the commit names them
+      const aside: IdbAside | undefined = idbBlobsApart() ? [] : undefined;
       const names =
         this.mode === 'versionchange'
           ? new Set([...this._before.keys(), ...data.stores.keys()])
@@ -36545,6 +36772,7 @@ export function installDom(
           after.records,
           put,
           gone,
+          aside,
         );
       }
       const stores = schemaOf(data);
@@ -36562,6 +36790,9 @@ export function installDom(
           if (stamp !== (data.stamp ?? 0) + 1) data.stale = true;
           data.stamp = stamp;
           data.schema = schema;
+          for (const [blob, id] of aside ?? []) {
+            sourcedBlob(blob, idbBlobSource(id, blob.size));
+          }
         }
       } catch (error) {
         call(
@@ -39078,6 +39309,15 @@ export function installDom(
    * its content box starts, and whether its writing mode is vertical, which
    * makes its inline size its height.
    */
+  /** An element's effective zoom (CSS Viewport 1, 5.3): its own and its
+   *  ancestors' zooms multiplied, as the host worked its style out, 1
+   *  where it has no box. */
+  const effectiveZoomOf = (el: Any): number => {
+    if (!offsetOf(el)) return 1;
+    const e = call('edges', el._id);
+    const zoom = typeof e === 'string' && e ? Number(e.split(',')[8]) : 1;
+    return zoom > 0 ? zoom : 1;
+  };
   const boxSizesOf = (el: Any): number[] | null => {
     // an HTML element's as layout sized it; what has no offset geometry,
     // an `<svg>` or what is in one, its box as drawn, as it was
@@ -39109,15 +39349,19 @@ export function installDom(
       el.namespaceURI === HTML_NS &&
       !REPLACED_TAGS.has(el.localName)
     ) {
-      return [0, 0, 0, 0, 0, 0, 0];
+      return [0, 0, 0, 0, 0, 0, 0, 1];
     }
     const e = call('edges', el._id);
-    const [pt, pr, pb, pl, bt, br, bb, bl] =
+    const [pt, pr, pb, pl, bt, br, bb, bl, edgeZoom] =
       typeof e === 'string' && e
         ? e.split(',').map(Number)
-        : [0, 0, 0, 0, 0, 0, 0, 0];
-    const w = o ? o[3] : r![2];
-    const h = o ? o[4] : r![3];
+        : [0, 0, 0, 0, 0, 0, 0, 0, 1];
+    // layout's box is zoomed and the edges a style reads are not: the
+    // sizes are the element's own CSS pixels, its zoom taken off
+    // (Resize Observer 1, 3.4.1), and the device pixels its zoom's
+    const zoom = html && edgeZoom > 0 ? edgeZoom : 1;
+    const w = (o ? o[3] : r![2]) / zoom;
+    const h = (o ? o[4] : r![3]) / zoom;
     const vertical = /^(vertical|sideways)/.test(str(style.writingMode));
     return [
       w,
@@ -39127,77 +39371,168 @@ export function installDom(
       pl,
       pt,
       vertical ? 1 : 0,
+      zoom,
     ];
   };
+  /** What makes a `ResizeObserverSize` or a `ResizeObserverEntry`, which
+   *  no page can (Resize Observer 1, 4.2 and 4.3: no constructor). */
+  const RESIZE_MADE = Symbol('resize');
   class ResizeObserverSize {
-    readonly inlineSize: number;
-    readonly blockSize: number;
-    constructor(inline: number, block: number) {
-      this.inlineSize = inline;
-      this.blockSize = block;
+    _inline: number;
+    _block: number;
+    constructor(...args: Any[]) {
+      if (args[0] !== RESIZE_MADE) throw new TypeError('Illegal constructor');
+      this._inline = args[1];
+      this._block = args[2];
+    }
+    get inlineSize(): number {
+      return this._inline;
+    }
+    get blockSize(): number {
+      return this._block;
     }
   }
+  idlAttributes(ResizeObserverSize);
   class ResizeObserverEntry {
-    readonly target: Any;
-    readonly contentRect: Any;
-    readonly contentBoxSize: Any;
-    readonly borderBoxSize: Any;
-    readonly devicePixelContentBoxSize: Any;
-    constructor(target: Any, sizes: number[]) {
+    _target: Any;
+    _contentRect: Any;
+    _contentBoxSize: Any;
+    _borderBoxSize: Any;
+    _devicePixelContentBoxSize: Any;
+    constructor(...args: Any[]) {
+      if (args[0] !== RESIZE_MADE) throw new TypeError('Illegal constructor');
+      const target = args[1];
+      const sizes: number[] = args[2];
       const [bw, bh, cw, ch, x, y, vertical] = sizes;
-      const dpr = viewport().dpr || 1;
+      const dpr = (viewport().dpr || 1) * (sizes[7] || 1);
       // its sizes along its own axes: inline across a horizontal one
       const size = (w: number, h: number): Any =>
-        vertical ? new ResizeObserverSize(h, w) : new ResizeObserverSize(w, h);
-      this.target = target;
-      this.contentRect = new DOMRect(x, y, cw, ch);
-      this.contentBoxSize = Object.freeze([size(cw, ch)]);
-      this.borderBoxSize = Object.freeze([size(bw, bh)]);
-      this.devicePixelContentBoxSize = Object.freeze([
+        vertical
+          ? new ResizeObserverSize(RESIZE_MADE, h, w)
+          : new ResizeObserverSize(RESIZE_MADE, w, h);
+      this._target = target;
+      this._contentRect = new DOMRectReadOnly(x, y, cw, ch);
+      this._contentBoxSize = Object.freeze([size(cw, ch)]);
+      this._borderBoxSize = Object.freeze([size(bw, bh)]);
+      this._devicePixelContentBoxSize = Object.freeze([
         size(Math.round(cw * dpr), Math.round(ch * dpr)),
       ]);
     }
+    get target(): Any {
+      return this._target;
+    }
+    get contentRect(): Any {
+      return this._contentRect;
+    }
+    get borderBoxSize(): Any {
+      return this._borderBoxSize;
+    }
+    get contentBoxSize(): Any {
+      return this._contentBoxSize;
+    }
+    get devicePixelContentBoxSize(): Any {
+      return this._devicePixelContentBoxSize;
+    }
   }
-  /** The observers observing something, and whether their sizes are to
-   *  be looked at again: a tenth of a second after the last look, while
-   *  any observes, as nothing tells this realm a layout came out
-   *  otherwise — but only where the host says the boxes were laid out or
-   *  scrolled since the last (`geometry`), or a target was observed: a
-   *  look that would find what the last found is skipped, and a page at
-   *  rest asks one question a tenth of a second, where it measured every
-   *  target. */
+  idlAttributes(ResizeObserverEntry);
+  /** The observers observing something, in the order each was made, which
+   *  each frame's resize steps go through (`updateResizeObservers`). */
   const resizing = new Set<Any>();
-  let resizeLook = false;
-  /** What the boxes were as the last look measured them, and whether a
-   *  target was observed since, which the next look measures whatever. */
+  /** What the boxes were as the last frame's steps measured them, and
+   *  whether anything waits to be measured whatever the host says: a
+   *  target observed since, or one a frame's depth limit skipped, which
+   *  the next frame delivers (Resize Observer 1, 3.4.6). A frame that
+   *  finds the boxes as the last left them measures nothing else: a page
+   *  at rest asks one question a frame, where it measured every target. */
   let resizeLooked = '';
   let resizeFresh = false;
-  const lookAgain = (ms: number): void => {
-    if (resizeLook || !resizing.size) return;
-    resizeLook = true;
-    setTimer(
-      () => {
-        resizeLook = false;
-        const geometry = String(call('geometry'));
-        const moved = geometry !== resizeLooked;
-        if (resizeFresh || moved) {
-          resizeFresh = false;
-          resizeLooked = geometry;
-          for (const observer of [...resizing]) observer._look(moved);
-        }
-        lookAgain(100);
-      },
-      ms,
-      [],
-      false,
-    );
+  let resizeAll = false;
+  /** How deep an element is in the flat tree (Resize Observer 1, 3.4.7,
+   *  "calculate depth for node"): what a frame's later passes go by, each
+   *  delivering only what is deeper than the shallowest target the pass
+   *  before told of. */
+  const flatDepthOf = (node: Any): number => {
+    let depth = 0;
+    for (let at = node; at; at = flatParentNode(at)) depth++;
+    return depth;
+  };
+  /**
+   * The resize steps of a frame (HTML 8.1.7.3, step 16; Resize Observer 1,
+   * 3.4): gather each observer's observations whose size moved, deliver
+   * them, and go round again with only what is deeper than the shallowest
+   * target just delivered, so a callback that resizes what it observes
+   * ends. What is left over is told as an error and delivered at the next
+   * frame. Each pass after the first asks the host again, since a callback
+   * is what moves the boxes.
+   */
+  const updateResizeObservers = (): void => {
+    if (!resizing.size) {
+      if (resizeLooked) {
+        resizeLooked = '';
+        call('geometry', false);
+      }
+      return;
+    }
+    const geometry = String(call('geometry', true));
+    const moved = geometry !== resizeLooked || resizeAll;
+    resizeLooked = geometry;
+    if (!moved && !resizeFresh) return;
+    resizeFresh = false;
+    resizeAll = false;
+    const observers = () => [...resizing];
+    let depth = 0;
+    let any = false;
+    for (const o of observers()) if (o._gather(depth, moved)) any = true;
+    while (any) {
+      let shallowest = Infinity;
+      for (const o of observers()) {
+        shallowest = Math.min(shallowest, o._broadcast());
+      }
+      depth = shallowest;
+      // whatever a callback moved, which the host has yet to lay out, but
+      // for a viewport the host holds (`viewportHeld`), whose observers
+      // find what they last found: a target observed in a callback is
+      // measured either way
+      const all = call('viewportHeld') !== true;
+      any = false;
+      for (const o of observers()) if (o._gather(depth, all)) any = true;
+    }
+    let skipped = false;
+    for (const o of observers()) {
+      if (o._skipped.length) skipped = true;
+    }
+    if (!skipped) return;
+    // the next frame delivers them, measuring whatever the host says
+    resizeAll = true;
+    wantFrame();
+    // "deliver resize loop error notification" (3.4.8): an error event
+    // with no error, at the window, and the console only where nothing
+    // cancelled it
+    const message =
+      'ResizeObserver loop completed with undelivered notifications.';
+    let handled = false;
+    if (!reporting) {
+      reporting = true;
+      try {
+        handled = !dispatch(
+          windowTarget,
+          new ErrorEvent('error', { message, cancelable: true }),
+        );
+      } catch {
+      } finally {
+        reporting = false;
+      }
+    }
+    if (!handled) bridge('log', 'error', message);
   };
   /**
    * Told each size its targets come to (Resize Observer 1): once as one is
    * observed, where it has a size, and again whenever its content box
    * changes — React components that size a canvas to its container, as
    * Rive's do, wait for a size their container has only once the
-   * stylesheet is in, and were told 0 by 0 for good.
+   * stylesheet is in, and were told 0 by 0 for good. In a frame, after
+   * its animation frame callbacks and before its intersection observers
+   * (`updateResizeObservers`).
    */
   /** The box a ResizeObserver can watch of a target. */
   const RESIZE_BOXES = new Set([
@@ -39211,9 +39546,13 @@ export function installDom(
      *  -1 by -1 to start with, so that the first look tells even a target
      *  that has no size (Resize Observer 1, 3.3, `lastReportedSizes`). */
     _told = new Map<Any, { box: string; size: number[] }>();
-    /** The targets observed since the last look, the only ones a look
+    /** The targets observed since the last frame, the only ones a frame
      *  that finds nothing moved measures. */
     _fresh = new Set<Any>();
+    /** What the last gather found, each with the sizes it came to
+     *  (3.1, `activeTargets` and `skippedTargets`). */
+    _active: { el: Any; sizes: number[]; now: number[] }[] = [];
+    _skipped: Any[] = [];
     constructor(fn: Any) {
       if (typeof fn !== 'function') {
         throw new TypeError(
@@ -39237,48 +39576,75 @@ export function installDom(
       // observed again with another box is observed afresh with it
       const was = this._told.get(el);
       if (!was || was.box !== box) {
+        this._told.delete(el);
         this._told.set(el, { box, size: [-1, -1] });
         this._fresh.add(el);
       }
       resizing.add(this);
       resizeFresh = true;
-      lookAgain(0);
+      wantFrame();
     }
     unobserve(el: Any): void {
       this._told.delete(el);
+      this._fresh.delete(el);
       if (!this._told.size) resizing.delete(this);
     }
     disconnect(): void {
       this._told.clear();
+      this._fresh.clear();
+      this._active = [];
+      this._skipped = [];
       resizing.delete(this);
     }
-    _look(moved: boolean): void {
-      const entries: Any[] = [];
+    /** "Gather active observations at depth" (3.4.2): whether any target
+     *  deeper than `depth` came to another size than it was last told. */
+    _gather(depth: number, all: boolean): boolean {
+      this._active = [];
+      this._skipped = [];
       const dpr = viewport().dpr || 1;
       for (const [el, told] of this._told) {
-        if (!moved && !this._fresh.has(el)) continue;
-        const sizes = boxSizesOf(el) ?? [0, 0, 0, 0, 0, 0, 0];
+        if (!all && !this._fresh.has(el)) continue;
+        const sizes = boxSizesOf(el) ?? [0, 0, 0, 0, 0, 0, 0, 1];
+        const px = dpr * (sizes[7] || 1);
         // the size of the box observed, in its own axes
         const [w, h] =
           told.box === 'border-box'
             ? [sizes[0], sizes[1]]
             : told.box === 'device-pixel-content-box'
-              ? [Math.round(sizes[2] * dpr), Math.round(sizes[3] * dpr)]
+              ? [Math.round(sizes[2] * px), Math.round(sizes[3] * px)]
               : [sizes[2], sizes[3]];
         const now = sizes[6] ? [h, w] : [w, h];
         if (now[0] === told.size[0] && now[1] === told.size[1]) continue;
-        told.size = now;
-        entries.push(new ResizeObserverEntry(el, sizes));
+        if (flatDepthOf(el) > depth) this._active.push({ el, sizes, now });
+        else this._skipped.push(el);
       }
       this._fresh.clear();
-      if (!entries.length) return;
+      return this._active.length > 0;
+    }
+    /** "Broadcast active observations" (3.4.4): the callback handed what
+     *  the gather found, and the depth of the shallowest of it, or
+     *  Infinity where it found nothing. */
+    _broadcast(): number {
+      const active = this._active;
+      this._active = [];
+      if (!active.length) return Infinity;
+      let shallowest = Infinity;
+      const entries: Any[] = [];
+      for (const { el, sizes, now } of active) {
+        const told = this._told.get(el);
+        if (told) told.size = now;
+        entries.push(new ResizeObserverEntry(RESIZE_MADE, el, sizes));
+        shallowest = Math.min(shallowest, flatDepthOf(el));
+      }
       try {
         this._fn.call(this, entries, this);
       } catch (e) {
         report(e);
       }
+      return shallowest;
     }
   }
+  idlOperations(ResizeObserver, { observe: 1, unobserve: 1 });
   /** What a `MutationObserver` is handed (DOM 4.3.4). */
   class MutationRecord {
     readonly type: string;

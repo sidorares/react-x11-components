@@ -4832,14 +4832,27 @@ closes a way out a DOM binding opens by accident:
   box is told with no root bounds, as Chromium tells it. Anything new that
   hands the host a target it has no box for goes through the stand-in, or
   it is told 0 by 0 and never in view.
-- **A `ResizeObserver` measures only where the boxes moved.** Its look,
-  a tenth of a second after the last, first asks the host what the boxes
+- **A `ResizeObserver` is told in the frame, and measures only where the
+  boxes moved.** Its steps run after the animation frame callbacks and
+  before the intersection observers (`updateResizeObservers`, Resize
+  Observer 1, 3.4): a pass delivers only what is deeper in the flat tree
+  than the shallowest target the pass before told of, and what is left is
+  the loop error and the next frame's. It had been a timer of its own, a
+  tenth of a second, which WPT's helper reads as a notification late, and
+  a callback that resized what it watched was told again and again. The
+  host asks for a frame after a paint that moved the boxes, while an
+  observer watches (`renderingMoved`, the `geometry` op's second
+  argument) — but where a layout is still owed it asks 32 ms later
+  (`_resizeMoved`), since a frame then lays it out in the middle of a
+  drag's step, which the drag counts as a slow frame. A frame's later
+  passes measure every target but where the viewport is held
+  (`viewportHeld`): what a callback changed is no stale layout yet. A frame first asks the host what the boxes
   were laid out and scrolled as (`geometry`, `HtmlViewNode.geometryKey`):
   a key that moves with every invalidation, layout, restyle in place,
   frame and scroll of a box (`_geometry`), with the pane's scroll and the
   element's size, and is new at each ask while a change waits to be laid
-  out. A look that finds the key as the last left it measures nothing,
-  but for a target observed since. **Anything new that moves a box
+  out. A frame that finds the key as the last left it measures nothing,
+  but for a target observed since or one a depth skipped. **Anything new that moves a box
   without going through one of those bumps `_geometry`**, or an observer
   is not told the size its target came to. Measured at every look, a
   webmail page's observers were most of what it cost at rest: 6 to 8% of
@@ -4942,7 +4955,14 @@ closes a way out a DOM binding opens by accident:
   differs goes in `GpuContext._command`, with a test in
   `test/html/webgl-gpu.test.ts` that reads it from pixels.** A page's GL
   reaches the driver with none of ANGLE's validation, which `src/html/webgl.ts`
-  says at its top, and is why this is the host's to hand in.
+  says at its top, and is why this is the host's to hand in. **A call with
+  WebGL 2's `srcOffset` and `srcLength` crosses as the range they name**
+  (`windowed` in `scripts/webgl.ts`), the host taking WebGL 1's form:
+  Emscripten hands every uniform, buffer and texture its whole heap and an
+  offset, and sent whole, ut2004.dev's first `clearBufferfv` was 512 MB of
+  base64. Anything new with a view and an offset joins `windowed`, and an
+  upload whose length WebGL 2 leaves to the image's size works it out there
+  (`imageCount`).
 - **A synchronous request sleeps, and something else has to be awake.** The
   page's thread cannot wait for its own network, since nothing in JavaScript
   waits for a promise, and it cannot run the request while it sleeps either, so
@@ -5786,7 +5806,17 @@ list.
   lost at the next restart. A database another document committed to is
   read again as a transaction starts (`idbRefresh`), never while one of the
   realm's is under way (`active`), and nothing of it runs where the host
-  keeps none, which is what holds the Interop area where it was.
+  keeps none, which is what holds the Interop area where it was. **A blob
+  a record holds is kept apart from it, where the host has blobs**
+  (`HtmlIndexedDB.blobs`, `idbBlobAside`): its bytes go to the host a piece
+  at a time at the commit, the record names it by id (`h`), and the realm's
+  blob becomes one that reads a range from the host as it is asked
+  (`sourcedBlob`, `idbBlobSource`) and holds none. Written into the record,
+  ut2004.dev's 2 GB of game content was read back as one string when the
+  page opened its database, and the tab ran out of heap at every visit.
+  **Anything new that makes a blob of a blob keeps a `_src` lazy**
+  (`sourceOfParts`, `slice`, `stream`): `getAll()` clones every record, and
+  a clone that read `_bytes` read every file in the database.
 - **The origin private file system is the process's, and a worker asks for
   it** (`storage-manager.ts` in the realm, `opfs.ts` on the host, the `opfs`
   op). The tree and its locks are by origin at `opfs.ts`'s module scope, so a

@@ -6081,6 +6081,65 @@ test("a context's calls reach the host's GL as a page made them, at the end of t
   assert.ok(!names.includes('uniform1f'), names.join(' '));
 });
 
+test("WebGL 2's offsets into a view cross as the range they name, as Emscripten's heap does", async () => {
+  const gl = fakeGL({ getUniformLocation: 7 });
+  const doc = await hosted(
+    '<canvas id="c"></canvas><p id="out"></p><script>' +
+      'var gl = document.getElementById("c").getContext("webgl2");' +
+      // a heap, as Emscripten hands every call one, and an offset into it
+      'var heap = new Float32Array(1 << 22); for (var i = 0; i < 64; i++) heap[i] = i;' +
+      'var bytes = new Uint8Array(heap.buffer);' +
+      'var p = gl.createProgram(); var l = gl.getUniformLocation(p, "u");' +
+      'gl.uniform4fv(l, heap, 8, 4);' +
+      'gl.uniformMatrix2fv(l, false, heap, 12, 4);' +
+      'gl.clearBufferfv(gl.COLOR, 0, heap, 20);' +
+      'var b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);' +
+      'gl.bufferData(gl.ARRAY_BUFFER, bytes, gl.STATIC_DRAW, 16, 8);' +
+      'gl.bufferSubData(gl.ARRAY_BUFFER, 0, heap, 30, 2);' +
+      'var t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);' +
+      // a 3 by 2 RGBA image of bytes: rows of 12, padded to 16 but the last
+      'gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 3, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, bytes, 4);' +
+      'gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, bytes, 8);' +
+      'document.getElementById("out").textContent = "done";' +
+      '</script>',
+    { webgl: gl.webgl },
+  );
+  assert.equal(await settled(doc, 'out', (t) => t !== ''), 'done');
+  await settle(20);
+  /** The call's arguments, its views made numbers again. */
+  const call = (name: string): unknown[] => {
+    const found = gl.calls.find(([n]) => n === name);
+    assert.ok(found, `no ${name}`);
+    return found.slice(1).map((arg) => {
+      if (!Array.isArray(arg) || arg[0] !== 'b') return arg;
+      const raw = Uint8Array.from(Buffer.from(arg[2] as string, 'base64'));
+      return arg[1] === 'Float32Array'
+        ? [...new Float32Array(raw.buffer)]
+        : [...raw];
+    });
+  };
+  assert.deepEqual(call('uniform4fv'), [7, [8, 9, 10, 11]]);
+  assert.deepEqual(call('uniformMatrix2fv'), [7, false, [12, 13, 14, 15]]);
+  assert.deepEqual(call('clearBufferfv'), [0x1800, 0, [20, 21, 22, 23]]);
+  // the bytes of heap[4] and heap[5]
+  const floatBytes = [...new Uint8Array(new Float32Array([4, 5]).buffer)];
+  assert.deepEqual(call('bufferData'), [0x8892, floatBytes, 0x88e4]);
+  assert.deepEqual(call('bufferSubData'), [0x8892, 0, [30, 31]]);
+  const image = call('texImage2D');
+  assert.equal(image.length, 9);
+  assert.equal((image[8] as number[]).length, 16 + 12);
+  assert.equal((call('texSubImage2D')[8] as number[]).length, 4);
+  // nothing crossed as the whole heap
+  const longest = Math.max(
+    ...gl.calls.flatMap((c) =>
+      c.map((a) =>
+        Array.isArray(a) && a[0] === 'b' ? (a[2] as string).length : 0,
+      ),
+    ),
+  );
+  assert.ok(longest < 100, `a view of ${longest} characters`);
+});
+
 test("a uniform location is the driver's, and none is null", async () => {
   const gl = fakeGL({ getUniformLocation: 7 });
   const doc = await hosted(
@@ -7035,6 +7094,45 @@ test('a resize observer measures nothing while the page is at rest, and is told 
   });
   const text = await settled(doc, 'out', (text) => text.includes(','));
   assert.equal(text, 'box:20,box:40');
+});
+
+test('a resize observer is told in the frame, after its animation frame callbacks, and a callback that resizes what it watches ends in an error', async () => {
+  // Resize Observer 1, 3.4: each pass of a frame delivers only what is
+  // deeper than the shallowest target the pass before told of, and what is
+  // left over is the loop error, delivered at the next frame. A timer of
+  // its own had told the observers between frames, a callback that grew
+  // its target was told again and again, and nothing was an error.
+  const doc = await hosted(
+    '<div id="a" style="width:10px"><div id="b" style="width:10px"></div></div><p id="out"></p><script>' +
+      'var seen = [], a = document.getElementById("a"), b = document.getElementById("b"), rafs = 0;' +
+      'window.onerror = function (m) { seen.push("error:" + m); };' +
+      'var ro = new ResizeObserver(function (entries) {' +
+      '  seen.push(rafs + ":" + entries.map(function (e) { return e.target.id; }).join(""));' +
+      '  if (seen.length < 6) entries.forEach(function (e) { e.target.style.width = (e.target.offsetWidth + 1) + "px"; });' +
+      '});' +
+      'requestAnimationFrame(function () { ro.observe(a); ro.observe(b); });' +
+      '(function tick() { rafs++; if (rafs < 30) requestAnimationFrame(tick); })();' +
+      'setTimeout(function () { document.getElementById("out").textContent = seen.join(","); }, 500);' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  // the first frame tells both, a pass later only b, deeper than a, then
+  // nothing is deeper than b and both are left over: the error, and the
+  // next frame tells them
+  const error =
+    'error:ResizeObserver loop completed with undelivered notifications.';
+  const frames = text
+    .split(',')
+    .filter((s) => s !== error)
+    .map((s) => Number(s.split(':')[0]));
+  assert.equal(
+    text.replace(/\d+:/g, ''),
+    ['ab', 'b', error, 'ab', 'b', error, 'ab'].join(','),
+  );
+  assert.equal(frames[0], frames[1], 'one frame');
+  assert.ok(frames[2] > frames[1], `a frame later: ${text}`);
+  assert.equal(frames[2], frames[3], 'one frame');
+  assert.ok(frames[4] > frames[3], `a frame later: ${text}`);
 });
 
 test('what a script builds apart from the document is no change to it, and putting it in is one change', async (t) => {
@@ -19282,7 +19380,7 @@ test('an IntersectionObserver measures a target in a same-origin frame through t
       'document.getElementById("f").onload = function () {' +
       '  var t = document.getElementById("f").contentDocument.getElementById("t");' +
       '  new IntersectionObserver(function (entries) {' +
-      '    var e = entries[0], b = e.boundingClientRect, i = e.intersectionRect;' +
+      '    var e = entries[entries.length - 1], b = e.boundingClientRect, i = e.intersectionRect;' +
       '    document.getElementById("out").textContent = [e.isIntersecting, b.x, b.y, b.width, i.x, i.y, i.width, i.height, e.rootBounds.width].join(" ");' +
       '  }).observe(t);' +
       '};' +
@@ -19290,11 +19388,13 @@ test('an IntersectionObserver measures a target in a same-origin frame through t
     {},
   );
   // the target is at 0,30 in the frame's viewport, 40 by 40, and the
-  // frame's 50 tall viewport shows 20 of it
+  // frame's 50 tall viewport shows 20 of it — told once the frame's view
+  // has laid it out, which a slow runner reaches a frame or two after the
+  // first, which tells a target with no box yet
   assert.equal(
     await until(
       () => text('page', 'out'),
-      (t) => t !== '',
+      (t) => t.startsWith('true'),
     ),
     'true 0 30 40 0 30 40 20 400',
   );

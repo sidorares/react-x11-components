@@ -519,6 +519,201 @@ scripted('setItem past the quota throws QuotaExceededError', async () => {
   );
 });
 
+/** The page's script that makes `n` bytes, each its place times 7. */
+const MADE_BYTES =
+  'function made(n) { var b = new Uint8Array(n); for (var i = 0; i < n; i++) b[i] = (i * 7) & 255; return b; }';
+
+both(
+  'a blob kept in IndexedDB is kept apart from its record, and read a range at a time',
+  async (t) => {
+    const dir = profileDir(t);
+    const first = (await HtmlProfile.open(dir))!;
+    t.after(() => first.close());
+    const url = `${ORIGIN}/files.html`;
+    // two and a half parts, a file among them
+    const SIZE = 2.5 * 1024 * 1024;
+    const [writer] = await pages({
+      url,
+      scripts: { storage: first.storage },
+      source:
+        '<p id="out"></p><script>' +
+        MADE_BYTES +
+        "var open = indexedDB.open('content', 1);" +
+        "open.onupgradeneeded = function () { open.result.createObjectStore('files'); };" +
+        'open.onsuccess = function () { var db = open.result;' +
+        "  var tx = db.transaction('files', 'readwrite');" +
+        `  tx.objectStore('files').put({ hash: 'h', blob: new Blob([made(${SIZE})], { type: 'application/x-game' }) }, 'big');` +
+        "  tx.objectStore('files').put(new File(['hello'], 'a.txt', { type: 'text/plain', lastModified: 7 }), 'small');" +
+        "  tx.oncomplete = function () { var r = db.transaction('files').objectStore('files').get('big');" +
+        '    r.onsuccess = function () { var b = r.result.blob;' +
+        "      b.slice(1048570, 1048580).arrayBuffer().then(function (a) { document.getElementById('out').textContent = 'written ' + b.size + ' ' + Array.from(new Uint8Array(a)).join(','); }); }; }; };" +
+        '</script>',
+    });
+    const expect = Array.from(
+      { length: 10 },
+      (_, i) => ((1048570 + i) * 7) & 255,
+    );
+    assert.equal(
+      await until(writer, 'out', (t) => t.length > 0),
+      `written ${SIZE} ${expect.join(',')}`,
+    );
+    cleanup();
+
+    // the record holds the blob's id, and not its bytes
+    const idb = first.storage.indexedDB!;
+    const snapshot = idb.load(ORIGIN, 'content')!;
+    const big = snapshot.records.find(([, key]) => key.includes('big'))!;
+    assert.ok(big[2].length < 1000, `a record of ${big[2].length}`);
+    const id = /"h":"([0-9a-f]+)"/.exec(big[2])![1];
+    assert.equal(idb.blobs!.read(ORIGIN, id, 0, 3).join(','), '0,7,14');
+    assert.equal(idb.blobs!.read('https://other.test', id, 0, 3).length, 0);
+
+    // a restart: what is read is the range asked for
+    const second = (await HtmlProfile.open(dir))!;
+    t.after(() => second.close());
+    const reads: number[] = [];
+    const blobs = second.storage.indexedDB!.blobs!;
+    const read = blobs.read.bind(blobs);
+    blobs.read = (origin, blob, at, length) => {
+      const out = read(origin, blob, at, length);
+      reads.push(out.length);
+      return out;
+    };
+    const [reader] = await pages({
+      url,
+      scripts: { storage: second.storage },
+      source:
+        '<p id="out"></p><script>' +
+        MADE_BYTES +
+        "var open = indexedDB.open('content');" +
+        'open.onsuccess = function () { var db = open.result;' +
+        "  var all = db.transaction('files').objectStore('files').getAll();" +
+        '  all.onsuccess = function () { var big = all.result[0].blob, small = all.result[1];' +
+        '    var r = [big.size, big.type, small instanceof File, small.name, small.lastModified, small.type];' +
+        "    big.slice(2621430).arrayBuffer().then(function (a) { r.push(Array.from(new Uint8Array(a)).join(','));" +
+        '      return small.text(); }).then(function (text) { r.push(text);' +
+        '      return big.arrayBuffer(); }).then(function (a) { var want = made(a.byteLength), b = new Uint8Array(a), same = true;' +
+        '        for (var i = 0; i < b.length; i++) if (b[i] !== want[i]) { same = false; break; }' +
+        "        r.push(same); document.getElementById('out').textContent = r.join(' | '); }); }; };" +
+        '</script>',
+    });
+    const tail = Array.from(
+      { length: 10 },
+      (_, i) => ((2621430 + i) * 7) & 255,
+    );
+    const out = await until(reader, 'out', (t) => t.length > 0);
+    assert.equal(
+      out,
+      `${SIZE} | application/x-game | true | a.txt | 7 | text/plain | ${tail.join(',')} | hello | true`,
+    );
+    // getAll read no bytes; the slice read ten, the file five, and the
+    // whole blob its size
+    assert.deepEqual(reads.slice(0, 2), [10, 5]);
+    assert.equal(
+      reads.slice(2).reduce((n, k) => n + k, 0),
+      SIZE,
+    );
+  },
+);
+
+both(
+  'a blob no record names is let go of as the next session starts',
+  async (t) => {
+    const dir = profileDir(t);
+    const profile = (await HtmlProfile.open(dir))!;
+    t.after(() => profile.close());
+    const [page] = await pages({
+      url: `${ORIGIN}/`,
+      scripts: { storage: profile.storage },
+      source:
+        '<p id="out"></p><script>' +
+        "var open = indexedDB.open('d', 1);" +
+        "open.onupgradeneeded = function () { open.result.createObjectStore('s'); };" +
+        'open.onsuccess = function () { var db = open.result;' +
+        "  var tx = db.transaction('s', 'readwrite'); tx.objectStore('s').put(new Blob(['one']), 'k');" +
+        "  tx.oncomplete = function () { var b = db.transaction('s', 'readwrite'); b.objectStore('s').put(new Blob(['two']), 'k');" +
+        "    b.oncomplete = function () { document.getElementById('out').textContent = 'done'; }; }; };" +
+        '</script>',
+    });
+    assert.equal(await until(page, 'out', (t) => t.length > 0), 'done');
+    cleanup();
+    const ids = (): string[] =>
+      profile.storage
+        .indexedDB!.load(ORIGIN, 'd')!
+        .records.map(([, , value]) => /"h":"([0-9a-f]+)"/.exec(value)![1]);
+    const [now] = ids();
+    const blobs = profile.storage.indexedDB!.blobs!;
+    profile.endSession();
+    assert.equal(
+      new TextDecoder().decode(blobs.read(ORIGIN, now, 0, 9)),
+      'two',
+    );
+    assert.deepEqual(ids(), [now]);
+    // the first is gone: only the second's id has bytes
+    const dbPath = join(dir, 'indexeddb-blobs.sqlite');
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(dbPath);
+    t.after(() => db.close());
+    assert.deepEqual(
+      db
+        .prepare('SELECT id FROM blobs')
+        .all()
+        .map((row) => row.id),
+      [now],
+    );
+  },
+);
+
+both(
+  'a profile of before the blob store has its blobs taken out of their records',
+  async (t) => {
+    const dir = profileDir(t);
+    const old = (await HtmlProfile.open(dir))!;
+    // a record as such a profile wrote it: the blob's bytes in its value
+    const bytes = new Uint8Array(200_000).map((_, i) => i & 255);
+    const b64 = Buffer.from(bytes).toString('base64');
+    const value = JSON.stringify({
+      i: 0,
+      t: 'O',
+      e: [['blob', { i: 1, t: 'L', b: b64, y: 'x/y' }]],
+    });
+    old.storage.indexedDB!.commit(ORIGIN, 'd', {
+      version: 1,
+      stores: [
+        {
+          name: 's',
+          keyPath: null,
+          autoIncrement: false,
+          current: 1,
+          indexes: [],
+        },
+      ],
+      put: [['s', '["s","k"]', value]],
+      delete: [],
+    });
+    old.close();
+    const { DatabaseSync } = await import('node:sqlite');
+    const raw = new DatabaseSync(join(dir, 'profile.sqlite'));
+    raw.exec('PRAGMA user_version = 3');
+    raw.close();
+
+    const profile = (await HtmlProfile.open(dir))!;
+    t.after(() => profile.close());
+    const [, , kept] = profile.storage.indexedDB!.load(ORIGIN, 'd')!.records[0];
+    assert.ok(kept.length < 200, kept);
+    const id = /"h":"([0-9a-f]+)"/.exec(kept)![1];
+    assert.match(kept, /"s":200000/);
+    const back = profile.storage.indexedDB!.blobs!.read(ORIGIN, id, 0, 200_000);
+    assert.deepEqual(back, bytes);
+    // and the record names it, so the next session keeps it
+    profile.endSession();
+    assert.equal(
+      profile.storage.indexedDB!.blobs!.read(ORIGIN, id, 0, 4).length,
+      4,
+    );
+  },
+);
+
 both(
   'IndexedDB kept in a profile is there for the next document, and another tab’s commits are read',
   async (t) => {
