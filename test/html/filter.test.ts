@@ -1153,6 +1153,25 @@ test('a share of the effect is no more than all of it, and a math function below
   assert.strictEqual(parseFilter('contrast(-10)', ctx), undefined);
 });
 
+test('none run to a filter list is that list at nothing at either end', () => {
+  // Filter Effects 1, 10.4: `contrast(0)` to `none` is `contrast(1)` at its
+  // end, where the end was taken as written, `none`
+  assert.deepStrictEqual(
+    interpolateField('filter', [{ fn: 'contrast', amount: 0 }], null, 1),
+    [{ fn: 'contrast', amount: 1 }],
+  );
+  assert.deepStrictEqual(
+    interpolateField(
+      'backdropFilter',
+      null,
+      [{ fn: 'grayscale', amount: 1 }],
+      0,
+    ),
+    [{ fn: 'grayscale', amount: 0 }],
+  );
+  assert.strictEqual(interpolateField('filter', null, null, 1), null);
+});
+
 test('a filter list adds onto what is under it, a backdrop as much as a filter, and accumulates function by function', () => {
   // Filter Effects 1, 15.4: `add` appends, and `accumulate` adds each
   // amount less its value at nothing, the shorter list filled out; lists

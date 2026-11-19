@@ -76,6 +76,22 @@ export function interpolateField(
 ): unknown {
   // `auto` runs as its length beside a length, at either end as well
   if (key === 'textDecorationInset') return interpolateInsets(a, b, q);
+  // `none` beside a list is that list's functions at nothing, at either end
+  // as well, so `contrast(0)` run to `none` is `contrast(1)` at its end
+  // (Filter Effects 1, 10.4)
+  if (
+    (key === 'filter' || key === 'backdropFilter') &&
+    (q === 0 || q === 1) &&
+    !a !== !b
+  ) {
+    const list = interpolateFilters(
+      a as FilterFunction[] | null,
+      b as FilterFunction[] | null,
+      q,
+      mix,
+    );
+    if (list !== undefined) return list;
+  }
   if (q === 0 || same(a, b)) return a;
   if (q === 1) return b;
   if (DISCRETE_RECORDS.has(key)) return undefined;
