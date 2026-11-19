@@ -4831,7 +4831,11 @@ closes a way out a DOM binding opens by accident:
   a callback that resized what it watched was told again and again. The
   host asks for a frame after a paint that moved the boxes, while an
   observer watches (`renderingMoved`, the `geometry` op's second
-  argument). A frame first asks the host what the boxes
+  argument) — but where a layout is still owed it asks 32 ms later
+  (`_resizeMoved`), since a frame then lays it out in the middle of a
+  drag's step, which the drag counts as a slow frame. A frame's later
+  passes measure every target but where the viewport is held
+  (`viewportHeld`): what a callback changed is no stale layout yet. A frame first asks the host what the boxes
   were laid out and scrolled as (`geometry`, `HtmlViewNode.geometryKey`):
   a key that moves with every invalidation, layout, restyle in place,
   frame and scroll of a box (`_geometry`), with the pane's scroll and the
