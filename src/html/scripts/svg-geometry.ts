@@ -78,6 +78,9 @@ function length(
   raw: string | undefined,
   fontSize: number,
   percent: number,
+  /** What one of a unit relative to something else comes to — `vh`,
+   *  `vw`, `ch` and their kin — in user units, null where nothing says. */
+  relative?: (unit: string) => number | null,
 ): number {
   if (raw === undefined) return 0;
   const m =
@@ -88,13 +91,41 @@ function length(
   if (unit === '%') return (n / 100) * percent;
   if (unit === 'em') return n * fontSize;
   if (unit === 'ex') return n * fontSize * 0.5;
-  if (unit === 'rem') return n * 16;
-  return n * (UNITS[unit] ?? 1);
+  if (unit === 'rem') return n * (relative?.('rem') ?? 16);
+  if (unit in UNITS) return n * UNITS[unit];
+  return n * (relative?.(unit) ?? 1);
 }
+
+/** What `length` asks of an element's style for a relative unit: the
+ *  nearest style up from the element, since a shape has none of its own,
+ *  or the initial style's. */
+const relativeTo =
+  (el: Element, measure: SvgMeasure) =>
+  (unit: string): number | null => {
+    for (let at: Element | null = el; at;) {
+      const px = measure.unit(at, unit);
+      if (px !== null) return px;
+      at = at.parent instanceof Element ? at.parent : null;
+    }
+    return measure.unit(null, unit);
+  };
+
+/** A `transform` in a `style` attribute: its value, up to the next
+ *  declaration. */
+const STYLE_TRANSFORM = /(?:^|;)\s*transform\s*:\s*([^;]*)/i;
 
 /** A `transform` attribute's matrix (SVG 2's transform list). */
 export function ownTransform(el: Element): Matrix {
-  const text = attr(el, 'transform');
+  // the `transform` property its `style` sets, which is over the attribute
+  // (CSS Transforms 1, 12; SVG 2, 6.2), about the origin a drawing's
+  // element starts with; what a sheet's rules give it is not read here
+  const inline = STYLE_TRANSFORM.exec(el.attribs.style ?? '')?.[1]?.trim();
+  const text =
+    inline !== undefined
+      ? /^none$/i.test(inline)
+        ? undefined
+        : inline
+      : attr(el, 'transform');
   const motion = ANIMATED.get(el)?.get('\u0000motion');
   if (!text && !motion) return IDENTITY;
   let out = IDENTITY;
@@ -167,10 +198,11 @@ function viewportMatrix(svg: Element, measure: SvgMeasure): Matrix {
     return viewBoxFit(svg, box?.width ?? 0, box?.height ?? 0);
   }
   const [pw, ph] = viewportSize(outer, measure);
-  const width = length(attr(svg, 'width') ?? '100%', em, pw);
-  const height = length(attr(svg, 'height') ?? '100%', em, ph);
-  const x = length(attr(svg, 'x'), em, pw);
-  const y = length(attr(svg, 'y'), em, ph);
+  const rel = relativeTo(svg, measure);
+  const width = length(attr(svg, 'width') ?? '100%', em, pw, rel);
+  const height = length(attr(svg, 'height') ?? '100%', em, ph, rel);
+  const x = length(attr(svg, 'x'), em, pw, rel);
+  const y = length(attr(svg, 'y'), em, ph, rel);
   return multiply([1, 0, 0, 1, x, y], viewBoxFit(svg, width, height));
 }
 /** An `<svg>`'s size in the units of what it holds. */
@@ -184,9 +216,10 @@ function viewportSize(svg: Element, measure: SvgMeasure): [number, number] {
   }
   const [pw, ph] = viewportSize(outer, measure);
   const em = measure.fontSize(svg);
+  const rel = relativeTo(svg, measure);
   return [
-    length(attr(svg, 'width') ?? '100%', em, pw),
-    length(attr(svg, 'height') ?? '100%', em, ph),
+    length(attr(svg, 'width') ?? '100%', em, pw, rel),
+    length(attr(svg, 'height') ?? '100%', em, ph, rel),
   ];
 }
 
@@ -454,8 +487,9 @@ export function shapeLines(el: Element, measure: SvgMeasure): number[][] {
   const em = measure.fontSize(el);
   const svg = viewportOf(el);
   const [pw, ph] = svg ? viewportSize(svg, measure) : [0, 0];
-  const across = (name: string): number => length(attr(el, name), em, pw);
-  const down = (name: string): number => length(attr(el, name), em, ph);
+  const rel = relativeTo(el, measure);
+  const across = (name: string): number => length(attr(el, name), em, pw, rel);
+  const down = (name: string): number => length(attr(el, name), em, ph, rel);
   const ring = (cx: number, cy: number, rx: number, ry: number): number[] => {
     const out: number[] = [];
     for (let s = 0; s <= 96; s += 1) {
@@ -477,7 +511,7 @@ export function shapeLines(el: Element, measure: SvgMeasure): number[][] {
       return [[x, y, x + w, y, x + w, y + h, x, y + h, x, y]];
     }
     case 'circle': {
-      const r = length(attr(el, 'r'), em, Math.hypot(pw, ph) / Math.SQRT2);
+      const r = length(attr(el, 'r'), em, Math.hypot(pw, ph) / Math.SQRT2, rel);
       return [ring(across('cx'), down('cy'), r, r)];
     }
     case 'ellipse':
@@ -1124,11 +1158,14 @@ export function bboxOf(el: Element, measure: SvgMeasure): Box | null {
     }
     case 'image':
     case 'foreignobject': {
+      const svg = viewportOf(el);
+      const [pw, ph] = svg ? viewportSize(svg, measure) : [0, 0];
+      const rel = relativeTo(el, measure);
       return {
-        x: length(attr(el, 'x'), em, 0),
-        y: length(attr(el, 'y'), em, 0),
-        width: length(attr(el, 'width'), em, 0),
-        height: length(attr(el, 'height'), em, 0),
+        x: length(attr(el, 'x'), em, pw, rel),
+        y: length(attr(el, 'y'), em, ph, rel),
+        width: length(attr(el, 'width'), em, pw, rel),
+        height: length(attr(el, 'height'), em, ph, rel),
       };
     }
     default: {
