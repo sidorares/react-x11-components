@@ -237,6 +237,9 @@ export class SocketRelay {
         this._tell({ kind: 'ws', ev: 'failed', s, message: String(message) });
       },
       closed: (code, reason, wasClean) => {
+        // what left before the close is told ahead of it, as `sockets.ts`
+        // tells it in a window
+        if (made && !made.done) made.watch.flush();
         finish(made);
         this._tell({
           kind: 'ws',

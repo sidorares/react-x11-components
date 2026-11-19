@@ -6964,6 +6964,21 @@ test('a resize observer is told a size as its target is observed and again each 
   assert.equal(text, 'box:100:20:5:114,none:0:0:0:0,box:100:40:5:114|function');
 });
 
+test('a resize observer measures an SVG element by its bounding box, and again when an attribute moves it', async () => {
+  // Resize Observer 1, 3.1: no CSS box, so its box is its bounding box,
+  // all of it content
+  const doc = await hosted(
+    '<svg width="200" height="100"><circle id="c" cx="20" cy="20" r="5"/></svg><p id="out"></p><script>' +
+      'var seen = [], c = document.getElementById("c");' +
+      'new ResizeObserver(function (entries) { entries.forEach(function (e) {' +
+      '  seen.push(e.contentRect.width + "x" + e.contentRect.height + "/" + e.borderBoxSize[0].inlineSize); }); }).observe(c);' +
+      'setTimeout(function () { c.setAttribute("r", 10); }, 150);' +
+      'setTimeout(function () { document.getElementById("out").textContent = seen.join(","); }, 600);' +
+      '</script>',
+  );
+  assert.equal(await settled(doc, 'out', (t) => t !== ''), '10x10/10,20x20/20');
+});
+
 test("a resize observer watches the box it is asked for, in the target's own axes, and no transform", async () => {
   // Resize Observer 1: `box` picks what is compared, a vertical writing
   // mode makes the inline size the height, and a transform resizes nothing

@@ -103,3 +103,22 @@ test("a transform's function takes a math function in an argument, typed as the 
   assert.equal(specifiedMath('transform', 'rotate(45deg)'), undefined);
   assert.equal(specifiedMath('transform', 'foo(calc(1px))'), undefined);
 });
+
+test('progress() is where a value is between two, held to them, and a border-image-slice takes a math function in its units', async (t) => {
+  if (!SCRIPTS_CONTAINED)
+    return t.skip('scripts need --experimental-vm-modules');
+  const page = await scriptedPage(
+    `<style>:root { font-size: 10px }</style><div id="e"></div><script>
+    var e = document.getElementById('e');
+    var out = [];
+    for (var v of ['calc(sign(20rem - 20px) * 180)', 'calc(progress(10rem, 20px, 100px) * 180%)',
+                   'calc(progress(60px, 20px, 100px) * 100)', 'calc(progress(1px, 1px, 1px) * 4) fill']) {
+      e.style.borderImageSlice = v;
+      out.push(getComputedStyle(e).borderImageSlice);
+    }
+    console.log('out ' + JSON.stringify(out));</script>`,
+  );
+  const out = JSON.parse(await page.until('out'));
+  page.result.unmount();
+  assert.deepEqual(out, ['180', '180%', '50', '0 fill']);
+});

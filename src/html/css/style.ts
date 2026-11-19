@@ -43,6 +43,7 @@ import type { FontSizeBasis, Len, Pct, UnitContext } from './values.js';
 import { cornerShapeOf } from './corner-shape.js';
 import { textIndentParts } from './text-indent.js';
 import { CALC_SIZE, calcSizeOf } from './calc-size.js';
+import { parseMath, parseMathNumberWith } from './calc.js';
 import { joinFamilies, parseUrl, readFamilies } from './parse.js';
 import type { FamilyName } from './parse.js';
 import { decodesImageType } from '../image-types.js';
@@ -4363,7 +4364,7 @@ export function applyDeclaration(
       return;
     }
     case 'border-image-slice': {
-      const slice = borderImageSlice(splitValue(value));
+      const slice = borderImageSlice(splitValue(value), ctx);
       if (slice) style.borderImage = { ...style.borderImage, ...slice };
       return;
     }
@@ -6908,19 +6909,33 @@ function sidesOf<T>(
 
 /** A slice's depth: a number, image pixels, or a percentage; neither may
  *  be negative. */
-function sliceOf(part: string): Slice | null {
+function sliceOf(part: string, ctx: UnitContext): Slice | null {
   if (part.endsWith('%')) {
     const n = parseNumber(part.slice(0, -1));
     return n !== null && n >= 0 ? { pct: n } : null;
   }
   const n = parseNumber(part);
-  return n !== null && n >= 0 ? n : null;
+  if (n !== null) return n >= 0 ? n : null;
+  if (!isMathFunction(part)) return null;
+  // a math function a length is worked out in, `calc(sign(20rem - 20px) *
+  // 180)`, or one that comes to a percentage alone
+  const unit = (token: string) => {
+    const len = parseLength(token, ctx);
+    return typeof len === 'number' ? len : null;
+  };
+  const number = parseMathNumberWith(part, unit);
+  if (number !== null) return Math.max(0, number);
+  const len = parseMath(part, unit);
+  if (len === null || typeof len !== 'object' || 'of' in len) return null;
+  if (!('pct' in len) || (len.px ?? 0) !== 0) return null;
+  return { pct: Math.max(0, len.pct) };
 }
 
 /** `border-image-slice`: one to four depths and `fill`, before them or
  *  after them. */
 function borderImageSlice(
   parts: string[],
+  ctx: UnitContext,
 ): Pick<BorderImage, 'slice' | 'fill'> | null {
   const words = parts.map((p) => p.toLowerCase());
   const at = words.indexOf('fill');
@@ -6930,7 +6945,7 @@ function borderImageSlice(
     fill = true;
     words.splice(at, 1);
   }
-  const slice = sidesOf(words, sliceOf);
+  const slice = sidesOf(words, (p) => sliceOf(p, ctx));
   return slice ? { slice, fill } : null;
 }
 
@@ -6989,7 +7004,7 @@ function readBorderImage(value: string, ctx: UnitContext): BorderImage | null {
     return true;
   };
   const isSlice = (p: string) =>
-    p.toLowerCase() === 'fill' || sliceOf(p) !== null;
+    p.toLowerCase() === 'fill' || sliceOf(p, ctx) !== null;
   for (let i = 0; i < parts.length;) {
     const part = parts[i];
     const v = part.toLowerCase();
@@ -7012,7 +7027,7 @@ function readBorderImage(value: string, ctx: UnitContext): BorderImage | null {
     } else if (isSlice(part)) {
       let end = i;
       while (end < parts.length && isSlice(parts[end])) end += 1;
-      const slice = borderImageSlice(parts.slice(i, end));
+      const slice = borderImageSlice(parts.slice(i, end), ctx);
       if (!slice || !once(4)) return null;
       image.slice = slice.slice;
       image.fill = slice.fill;
