@@ -6085,9 +6085,15 @@ whether or not it is positioned, a grid's item too. Items aligned by their `base
 their line's start, its bottom in a row that wraps in reverse, their
 line as tall as that makes it — an item shorter than its first line, or
 whose padding puts the line under it, on that line all the same, and only
-one that is a scroll container on its border edge — `last baseline` is taken as the end of the
-line, which is what it falls back to — and a flex box sits on the baseline of its
-first line's item aligned so, or of its first item. An inline-block whose
+one that is a scroll container on its border edge — and those aligned by their `last baseline`
+line up their last lines at the line's end, in a horizontal writing mode (in a vertical one
+they are set at the end, which is what it falls back to). A flex box's first baseline is
+its first line's, the top one wherever `wrap-reverse` puts it: the baseline of the items
+on it aligned by a baseline, or where none is, of its startmost item, the leftmost in a
+row running left to right whichever way `flex-direction` turns it, as Chromium takes it.
+Its last baseline is its last line's, by its endmost item. A column's are its first
+column's topmost item's first and its last column's bottommost item's last. A table's
+baselines are its first row's and its last row's, past a caption. An inline-block whose
 last block is a flex box or a grid sits on that baseline too, the one the
 box has on a line of its own, and a table in one gives it none, as Blink
 and Gecko both have it. Items meet where
@@ -6236,7 +6242,10 @@ A grid sits on the baseline of its first item in row-major order — the
 first in its first row that holds one, by where it was placed — and an
 item with no line of its own gives the bottom edge of its border box (CSS
 Grid 1, 10.6): a grid of icons sits on the first icon's bottom edge, and a
-grid with no item has no baseline.
+grid with no item has no baseline. Its last baseline is its last row's: of the items
+there aligned by a baseline, or else of the last item in row-major order. Items aligned
+by their `last baseline` line up their last lines at the end of the row they end in, in
+a horizontal writing mode.
 A subgrid (CSS Grid 2, 9) — a grid item with `subgrid` for its rows, its
 columns or both — has its parent grid's tracks over the ones it spans,
 and its items size them with the parent's own: a row of cards, each a
