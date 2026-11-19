@@ -4843,7 +4843,18 @@ closes a way out a DOM binding opens by accident:
   the viewport for its root, and cut by each frame's content box and what
   shows of the frame up to the realm's document; its box is told in its
   own viewport, and the root and its margin are still the realm's to cut.
-  An element of the realm's document is no root of it. A frame's paint
+  An element of the realm's document is no root of it. An observer in a
+  frame's realm with the implicit root measures against the top-level
+  viewport, through every frame up to it (`_throughFrames`, which finds the
+  page's document from the top of the tree, since a frame's realm knows no
+  document above its own), its root told as numbers, `T`, or `X` with no
+  root bounds across origin-domains; a document for the root is that
+  document's own viewport (`_inFrameDocument`, `D`). A paint of any realm's
+  view asks every other realm of the tree that observes something to look
+  again (`othersPainted`, over `DomShared.observing`). A frame drawn through
+  a transform places its content where it was laid out (`laid`), since a
+  projection's bounds reach far past the viewer, and one its matrix
+  flattens shows nothing (`flat`). A frame's paint
   tells the page's runner as well as its own (`_onPaint` in `frames.ts`),
   or what it laid out after the page's last paint is never asked again: a
   frame with no realm has no runner to ask. **A shape in an
