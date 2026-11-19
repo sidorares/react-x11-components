@@ -81,8 +81,32 @@ export interface HtmlIdbCommit {
   /** Every store the database has after it: a store no longer named here
    *  is gone with its records. */
   stores: HtmlIdbStoreSchema[];
-  put: [store: string, key: string, value: string][];
+  /** Each record written: its store, its key, its value, and the blobs
+   *  of `HtmlIndexedDB.blobs` its value names, which it holds from then on
+   *  in place of whatever the record held before. */
+  put: [store: string, key: string, value: string, blobs?: string[]][];
   delete: [store: string, key: string][];
+}
+
+/**
+ * Where the bytes of the blobs a database's records hold are kept, apart
+ * from the records (`HtmlIndexedDB.blobs`). A record's value names a blob
+ * by its id, and a page reads it a range at a time as it asks, so a page
+ * that keeps gigabytes of files opens its database with none of them read.
+ * A blob's bytes are written before the commit whose record names it, and
+ * never change: what a page still holds of a record it overwrote reads as
+ * it did. One no record names any more is the host's to let go of
+ * (`HtmlProfile.endSession` does), at a time no document can hold it.
+ */
+export interface HtmlIdbBlobs {
+  /** A new blob of the origin's, of `size` bytes, to write before a
+   *  commit names it. */
+  create(origin: string, size: number): string;
+  /** Its bytes from `at`, written in order from the start. */
+  write(origin: string, id: string, at: number, bytes: Uint8Array): void;
+  /** Up to `length` of its bytes from `at`: fewer at its end, and none for
+   *  a blob that is not the origin's, or is gone. */
+  read(origin: string, id: string, at: number, length: number): Uint8Array;
 }
 
 /**
@@ -103,6 +127,9 @@ export interface HtmlIndexedDB {
   /** A transaction's changes: the stamp the database has after them. */
   commit(origin: string, name: string, commit: HtmlIdbCommit): number;
   delete(origin: string, name: string): void;
+  /** Where the blobs records hold are kept. Absent, a blob is written into
+   *  its record's value, all its bytes, and read back with it. */
+  blobs?: HtmlIdbBlobs;
   /**
    * What a `CryptoKey` kept in a database is sealed with: 32 random bytes,
    * made once and kept with the databases, and the same for every process

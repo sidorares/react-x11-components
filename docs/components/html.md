@@ -4232,7 +4232,13 @@ transaction that starts after another document committed reads the database
 again. Transactions in two tabs are not held back for one another, as a
 browser holds them: the later commit wins, record by record, and an upgrade
 in one tab is seen by the next `open` in another. A worker's IndexedDB is
-the worker's alone.
+the worker's alone. A `Blob` or `File` in a record is kept apart from it, in
+`indexeddb-blobs.sqlite` beside the profile, and read back a range at a time
+as the page reads it: a database that holds gigabytes of files opens with
+none of them read, and a page holds only what it asks for. A blob no record
+names any more is let go of as the next session starts (`endSession`). A
+profile from before this has its blobs taken out of its records as it is
+first opened, once, which takes some 25 seconds a gigabyte.
 
 ### `navigator.storage` and the origin private file system
 

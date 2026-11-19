@@ -393,6 +393,7 @@ export {
   memoryStorage,
 } from './storage.js';
 export type {
+  HtmlIdbBlobs,
   HtmlIdbCommit,
   HtmlIdbSnapshot,
   HtmlIdbStoreSchema,
@@ -403,6 +404,7 @@ export type {
 } from './storage.js';
 export {
   CACHE_FILE,
+  IDB_BLOBS_FILE,
   HtmlProfile,
   PROFILE_FILE,
   PROFILE_VERSION,

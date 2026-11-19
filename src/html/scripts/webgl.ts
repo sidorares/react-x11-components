@@ -1306,6 +1306,201 @@ export function installWebGL(Event: unknown, host: WebGLHost): WebGLInstall {
       typeof args[8] === 'object' &&
       !isView(args[8]));
 
+  // --- WebGL 2's offsets into a view ----------------------------------------------
+  //
+  // WebGL 2 lets a call name a range of a view, `srcOffset` and `srcLength`
+  // in its elements, and Emscripten passes its whole heap so — HEAPF32 and
+  // an offset, for every uniform, buffer and texture. The host takes a call
+  // as WebGL 1 has it, a view and nothing more, so the range is cut out
+  // here and the offsets left off: sent whole, every `uniform4fv` of a game
+  // was its 512 MB of memory as base64, which no string holds.
+  const VIEW_OF: Record<string, Any> = {
+    Int8Array,
+    Uint8Array,
+    Uint8ClampedArray,
+    Int16Array,
+    Uint16Array,
+    Int32Array,
+    Uint32Array,
+    Float32Array,
+    Float64Array,
+  };
+  /** `view`'s elements from `from`, `count` of them or to its end, as a
+   *  view of the same kind over the same bytes. */
+  const range = (view: Any, from: number, count?: number): Any => {
+    const make = VIEW_OF[apply(tagOf, view, []) ?? ''];
+    if (!make) return view;
+    const length = view.length;
+    const start = Math.min(Math.max(0, Math.trunc(from) || 0), length);
+    const end =
+      count === undefined || !(count > 0)
+        ? length
+        : Math.min(length, start + Math.trunc(count));
+    return new make(
+      view.buffer,
+      view.byteOffset + start * view.BYTES_PER_ELEMENT,
+      end - start,
+    );
+  };
+  /** How many bytes a pixel of `format` and `type` is, or 0 for one not
+   *  known: an upload's size, where WebGL 2 names no length. */
+  const pixelBytes = (format: number, type: number): number => {
+    switch (type) {
+      case K.UNSIGNED_SHORT_5_6_5:
+      case K.UNSIGNED_SHORT_4_4_4_4:
+      case K.UNSIGNED_SHORT_5_5_5_1:
+        return 2;
+      case K.UNSIGNED_INT_2_10_10_10_REV:
+      case K.UNSIGNED_INT_10F_11F_11F_REV:
+      case K.UNSIGNED_INT_5_9_9_9_REV:
+      case K.UNSIGNED_INT_24_8:
+        return 4;
+      case K.FLOAT_32_UNSIGNED_INT_24_8_REV:
+        return 8;
+    }
+    const size =
+      type === K.UNSIGNED_BYTE || type === K.BYTE
+        ? 1
+        : type === K.UNSIGNED_SHORT ||
+            type === K.SHORT ||
+            type === K.HALF_FLOAT ||
+            type === 0x8d61
+          ? 2
+          : type === K.UNSIGNED_INT || type === K.INT || type === K.FLOAT
+            ? 4
+            : 0;
+    const parts =
+      format === K.RGBA || format === K.RGBA_INTEGER
+        ? 4
+        : format === K.RGB || format === K.RGB_INTEGER
+          ? 3
+          : format === K.RG ||
+              format === K.RG_INTEGER ||
+              format === K.LUMINANCE_ALPHA
+            ? 2
+            : format === K.RED ||
+                format === K.RED_INTEGER ||
+                format === K.ALPHA ||
+                format === K.LUMINANCE ||
+                format === K.DEPTH_COMPONENT
+              ? 1
+              : 0;
+    return size * parts;
+  };
+  /** The elements of `view` an upload of `width` by `height` by `depth`
+   *  reads, past its offset: rows padded to the most `UNPACK_ALIGNMENT`
+   *  can ask, so never fewer. Undefined, to its end, for a layout not
+   *  known, or one `pixelStorei` cut otherwise than whole rows. */
+  const imageCount = (
+    s: Any,
+    view: Any,
+    width: number,
+    height: number,
+    depth: number,
+    format: number,
+    type: number,
+  ): number | undefined => {
+    const p = s.params;
+    if (
+      p.UNPACK_ROW_LENGTH ||
+      p.UNPACK_IMAGE_HEIGHT ||
+      p.UNPACK_SKIP_ROWS ||
+      p.UNPACK_SKIP_PIXELS ||
+      p.UNPACK_SKIP_IMAGES
+    ) {
+      return undefined;
+    }
+    const bytes = pixelBytes(format, type);
+    if (!bytes || !(width > 0) || !(height > 0) || !(depth > 0)) {
+      return undefined;
+    }
+    const row = width * bytes;
+    const padded = Math.ceil(row / 8) * 8;
+    const total = padded * (height * depth - 1) + row;
+    return Math.ceil(total / view.BYTES_PER_ELEMENT);
+  };
+  /** A call with a range of a view, as WebGL 1 has it: the view cut to the
+   *  range, and the offset and length left off. */
+  const windowed = (s: Any, name: string, args: Any[]): Any[] => {
+    /** The view at `at`, cut from the offset at `at + 1` for `count`. */
+    const cut = (at: number, count?: number): Any[] => {
+      const view = args[at];
+      if (!isView(view)) return args;
+      const offset = args[at + 1];
+      if (offset === undefined && count === undefined) return args;
+      return [...args.slice(0, at), range(view, offset ?? 0, count)];
+    };
+    if (/^uniform[1-4](?:f|i|ui)v$/.test(name)) return cut(1, args[3]);
+    if (/^uniformMatrix[2-4](?:x[2-4])?fv$/.test(name)) return cut(2, args[4]);
+    switch (name) {
+      case 'clearBufferfv':
+      case 'clearBufferiv':
+      case 'clearBufferuiv':
+        // a colour is four, a depth or a stencil one: four is all it reads
+        return cut(2, 4);
+      case 'bufferData':
+        return isView(args[1]) && args.length > 3
+          ? [args[0], range(args[1], args[3], args[4]), args[2]]
+          : args;
+      case 'bufferSubData':
+        return cut(2, args[4]);
+      case 'texImage2D':
+        // the long form with a view: (…, format, type, view, srcOffset)
+        return args.length >= 9 && isView(args[8])
+          ? cut(
+              8,
+              imageCount(s, args[8], args[3], args[4], 1, args[6], args[7]),
+            )
+          : args;
+      case 'texSubImage2D':
+        return args.length >= 9 && isView(args[8])
+          ? cut(
+              8,
+              imageCount(s, args[8], args[4], args[5], 1, args[6], args[7]),
+            )
+          : args;
+      case 'texImage3D':
+        return isView(args[9])
+          ? cut(
+              9,
+              imageCount(
+                s,
+                args[9],
+                args[3],
+                args[4],
+                args[5],
+                args[7],
+                args[8],
+              ),
+            )
+          : args;
+      case 'texSubImage3D':
+        return isView(args[10])
+          ? cut(
+              10,
+              imageCount(
+                s,
+                args[10],
+                args[5],
+                args[6],
+                args[7],
+                args[8],
+                args[9],
+              ),
+            )
+          : args;
+      case 'compressedTexImage2D':
+        return cut(6, args[8]);
+      case 'compressedTexSubImage2D':
+        return cut(7, args[9]);
+      case 'compressedTexImage3D':
+        return cut(7, args[9]);
+      case 'compressedTexSubImage3D':
+        return cut(9, args[11]);
+    }
+    return args;
+  };
+
   const liveCall = (
     gl: Any,
     s: Any,
@@ -1313,6 +1508,7 @@ export function installWebGL(Event: unknown, host: WebGLHost): WebGLInstall {
     fn: Any,
     args: Any[],
   ): Any => {
+    args = windowed(s, name, args);
     switch (name) {
       case 'getSupportedExtensions':
         return [...s.extensions];

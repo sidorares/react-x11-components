@@ -7912,7 +7912,7 @@ export class DomHost {
       case 'cookie':
         return this._cookie(text(a), text(b), text(c));
       case 'idb':
-        return this._idb(text(a), text(b), text(c));
+        return this._idb(text(a), text(b), text(c), text(d));
       case 'opfs':
         return this._opfs(text(a), text(b), text(c), text(d));
       case 'cacheUsage':
@@ -12642,12 +12642,27 @@ export class DomHost {
    * transaction to, as text it encoded. `on` answers whether there is such
    * a store; with none, a database is the realm's alone, as it always was.
    */
-  private _idb(op: string, name: string, json: string): Primitive {
+  private _idb(op: string, name: string, json: string, d = ''): Primitive {
     const idb = this._storageOf().indexedDB;
     const origin = this._origin();
     if (op === 'on') return !!idb && origin !== 'null';
     if (!idb || origin === 'null') return null;
     switch (op) {
+      // a blob a record holds, kept apart from it (`HtmlIdbBlobs`): `name`
+      // is the blob's id, and its bytes cross as base64 a piece at a time
+      case 'blobs':
+        return !!idb.blobs;
+      case 'blobNew':
+        return idb.blobs ? idb.blobs.create(origin, Number(name) || 0) : null;
+      case 'blobWrite':
+        idb.blobs?.write(origin, name, Number(json) || 0, bytesOf(d));
+        return null;
+      case 'blobRead': {
+        const length = Math.min(Number(d) || 0, FILE_CHUNK);
+        return idb.blobs
+          ? base64Of(idb.blobs.read(origin, name, Number(json) || 0, length))
+          : '';
+      }
       case 'list':
         return JSON.stringify(idb.list(origin));
       case 'load': {
