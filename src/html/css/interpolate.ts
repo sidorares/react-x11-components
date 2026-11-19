@@ -110,6 +110,8 @@ export function interpolateField(
       );
       return list ? list.map(inRange) : list;
     }
+    case 'mask':
+      return maskPositions(a, b, (x, y) => mix(x, y, q));
     case 'columnRule':
     case 'rowRule': {
       // and a rule is no thinner than nothing
@@ -723,6 +725,38 @@ function mix(a: unknown, b: unknown, q: number): unknown {
   return undefined;
 }
 
+/**
+ * A mask's layers with their positions run between two (CSS Masking 1,
+ * 7.4: `mask-position` is a repeatable list), the lists repeated to the
+ * least length both divide; undefined where anything else in them differs,
+ * and the property goes over at the half-way point as before.
+ */
+function maskPositions(
+  a: unknown,
+  b: unknown,
+  run: (x: unknown, y: unknown) => unknown,
+): unknown {
+  if (!isRecord(a) || !isRecord(b)) return undefined;
+  for (const k of Object.keys(a)) {
+    if (k !== 'positions' && !same(a[k], b[k])) return undefined;
+  }
+  const x = a.positions as unknown[];
+  const y = b.positions as unknown[];
+  if (!Array.isArray(x) || !Array.isArray(y) || !x.length || !y.length) {
+    return undefined;
+  }
+  const gcd = (m: number, n: number): number => (n ? gcd(n, m % n) : m);
+  const n = (x.length * y.length) / gcd(x.length, y.length);
+  if (n > 64) return undefined;
+  const positions: unknown[] = [];
+  for (let i = 0; i < n; i += 1) {
+    const v = run(x[i % x.length], y[i % y.length]);
+    if (v === undefined) return undefined;
+    positions.push(v);
+  }
+  return { ...a, positions };
+}
+
 /** A length as a percentage and pixels: a number is pixels, a `Pct` with
  *  no `min()` or `max()` in it is its sum; null for anything else. */
 function linear(v: unknown): { pct: number; px: number } | null {
@@ -1319,6 +1353,8 @@ export function addField(
         under as GridTemplate | null,
         value as GridTemplate | null,
       );
+    case 'mask':
+      return maskPositions(under, value, sum);
     case 'boxShadow':
     case 'filter': {
       const u = (under as unknown[] | null) ?? [];
