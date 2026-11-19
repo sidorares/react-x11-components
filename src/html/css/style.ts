@@ -44,6 +44,7 @@ import { cornerShapeOf } from './corner-shape.js';
 import { textIndentParts } from './text-indent.js';
 import { CALC_SIZE, calcSizeOf } from './calc-size.js';
 import { parseMath, parseMathNumberWith } from './calc.js';
+import { crossFadeSyntax, gradientSyntax } from './gradient-syntax.js';
 import { joinFamilies, parseUrl, readFamilies } from './parse.js';
 import type { FamilyName } from './parse.js';
 import { decodesImageType } from '../image-types.js';
@@ -7288,7 +7289,13 @@ function backgroundImageOf(
   const v = text.trim();
   if (IMAGE_SET.test(v)) return imageSetOf(v, ctx);
   const lower = v.toLowerCase();
-  if (IMAGE_FUNCTION.test(lower)) return parseGradient(v, ctx);
+  if (IMAGE_FUNCTION.test(lower)) {
+    // a gradient written as none is no image, and the declaration goes
+    if (gradientSyntax(v) === false || crossFadeSyntax(lower) === false) {
+      return undefined;
+    }
+    return parseGradient(v, ctx);
+  }
   if (lower.startsWith('src(')) return srcUrl(v);
   if (lower.startsWith('image(')) return imageFunctionOf(v);
   if (lower !== 'none' && !lower.startsWith('url(')) return undefined;

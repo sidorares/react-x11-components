@@ -517,7 +517,13 @@ function FrameDocument({
         _sandbox: sandbox,
         _embedderScheme: scheme,
         _frameElement: frame,
-        _onPaint: scripts.painted,
+        // and what the page's observers measure through the frame may
+        // have moved with its paint, which the page's runner is told of
+        // too: one with no realm has no runner of its own
+        _onPaint: () => {
+          scripts.painted?.();
+          context.parent.painted();
+        },
         _onCssEventsOwed: realm
           ? scripts.cssEventsOwed
           : () => context.parent.cssEventsOwed(document),
