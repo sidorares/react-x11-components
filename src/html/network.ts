@@ -256,7 +256,9 @@ export interface HtmlNetworkOptions {
    * How long a request waits with nothing arriving, in milliseconds: no
    * answer yet, or no more of a document's or a resource's body. A body
    * that keeps arriving is read to its end however long that takes, as a
-   * browser reads it. Default 30 000.
+   * browser reads it. It is counted from when the request is sent, so one
+   * waiting for a slot behind the six its host has on their way is not
+   * waiting on the server. Default 30 000.
    */
   timeout?: number;
   /** Where each request and what came of it is told: a line of words a
@@ -2141,16 +2143,7 @@ export class HtmlNetwork {
     // the wait for an answer is bounded, and its body is not: a page reads
     // a stream of events, or a model's reply, for as long as it goes on
     const timer = new AbortController();
-    const timeout = setTimeout(
-      () =>
-        timer.abort(
-          new DOMException(
-            'The operation was aborted due to timeout',
-            'TimeoutError',
-          ),
-        ),
-      this._timeout,
-    );
+    let timeout: unknown = null;
     this._log('fetch', method, request.url);
     // text goes as its bytes: handed to the runtime as a string, it would
     // be sent with a `Content-Type: text/plain` the page never asked for
@@ -2189,18 +2182,15 @@ export class HtmlNetwork {
         cache === 'only-if-cached' ||
         (cache === 'default' && freshFor(kept, now, headers)))
     ) {
-      clearTimeout(timeout);
       return this._fromCache(id, request, kept, 'disk');
     }
     if (caching && cache === 'only-if-cached') {
-      clearTimeout(timeout);
       this._failed(id, 'only-if-cached');
       throw new TypeError('Failed to fetch: nothing kept for only-if-cached.');
     }
     if (caching && asked.has('only-if-cached')) {
       // a request that says it takes only what is kept, and nothing is
       // (RFC 9111, 5.2.1.7)
-      clearTimeout(timeout);
       return this._fromCache(
         id,
         request,
@@ -2224,6 +2214,20 @@ export class HtmlNetwork {
     try {
       response = await this._paced(request.url, signal, () => {
         this._sent(id);
+        // counted from here, as it goes: one waiting for a slot behind the
+        // six its host has on their way is waiting on no server, and
+        // vscode.dev's service worker, caching 2,194 files from one host in
+        // one `addAll`, had its 620th given up before it was ever sent
+        timeout = stallClock.arm(
+          () =>
+            timer.abort(
+              new DOMException(
+                'The operation was aborted due to timeout',
+                'TimeoutError',
+              ),
+            ),
+          this._timeout,
+        );
         return this._exchange(
           request.url,
           {
@@ -2263,7 +2267,7 @@ export class HtmlNetwork {
       this._failed(id, error);
       throw error;
     } finally {
-      clearTimeout(timeout);
+      if (timeout !== null) stallClock.disarm(timeout);
     }
     const responseTime = Date.now();
     const entries = [...response.headers.entries()];
