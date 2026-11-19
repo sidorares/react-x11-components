@@ -4859,8 +4859,8 @@ closes a way out a DOM binding opens by accident:
   An element of the realm's document is no root of it. A target of
   another realm of the page's is handed over for this realm's id
   (`observedId`), the entries naming the element the page passed, and a
-  popup's is measured in its own viewport, a popup's document being in its
-  opener's tree. An observer in a
+  popup's is measured in its own viewport, which its paint asks the other
+  windows of its group to look at again (`intersectionsMoved`). An observer in a
   frame's realm with the implicit root measures against the top-level
   viewport, through every frame up to it (`_throughFrames`, which finds the
   page's document from the top of the tree, since a frame's realm knows no
