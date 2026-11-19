@@ -19369,6 +19369,36 @@ test('an IntersectionObserver measures a shape in a drawing through the drawing,
   assert.equal(text, 'r true 100 20 100 10 true|gone false 0 0 0 0 false');
 });
 
+test('an IntersectionObserver measures a shape by its lengths and its transform, inside its own drawing as root, and a break on its line', async () => {
+  // a shape's `em` is its font's, and a `transform` in its style moves it as
+  // the attribute would; a shape observed with its <svg> for the root is
+  // measured in the drawing, which it was not; and a <br> has the place its
+  // line gives it, where it was 0 by 0 at the document's corner
+  const doc = await hosted(
+    '<style>body{margin:0;font:16px/20px sans-serif}</style>' +
+      '<svg id="s" width="100" height="100" style="display:block">' +
+      '<rect id="r" x="1em" y="0" width="2em" height="10" style="transform: translate(0px, 30px)"/></svg>' +
+      '<div>text<br id="b">more</div><p id="out"></p><script>' +
+      'var seen = [];' +
+      'function tell(e) {' +
+      '  var b = e.boundingClientRect;' +
+      '  seen.push([e.target.id, e.isIntersecting, b.x, b.y, b.width, b.height].join(" "));' +
+      '  document.getElementById("out").textContent = seen.join("|");' +
+      '}' +
+      'new IntersectionObserver(function (es) { es.forEach(tell); }).observe(document.getElementById("r"));' +
+      'new IntersectionObserver(function (es) { es.forEach(tell); }, { root: document.getElementById("s") }).observe(document.getElementById("r"));' +
+      'new IntersectionObserver(function (es) { es.forEach(tell); }).observe(document.getElementById("b"));' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t.split('|').length === 3);
+  const parts = text.split('|').sort();
+  // after the word, of no width, on the line under the drawing
+  const [, x, y, w, h] = parts[0].split(' ').slice(1).map(Number);
+  assert.ok(x > 20 && y === 100 && w === 0 && h === 20, text);
+  assert.equal(parts[1], 'r true 16 30 32 10', text);
+  assert.equal(parts[2], 'r true 16 30 32 10', text);
+});
+
 test('an IntersectionObserver measures a target in a same-origin frame through the frame, its boxes told in the frame’s own viewport', async () => {
   // Intersection Observer, 3.2.8: with the viewport for its root, a
   // target in a frame's document is cut by the frame's content box. It
