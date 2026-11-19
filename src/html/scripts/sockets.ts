@@ -88,6 +88,17 @@ export class SendWatch {
     this._timer = null;
   }
 
+  /** The connection is closing: what left before it did is told now,
+   *  ahead of the close, and nothing after it. */
+  flush(): void {
+    this.stop();
+    const gone = this._queued - Math.max(0, this._waiting()) - this._told;
+    if (gone > 0) {
+      this._told += gone;
+      this._sent(gone);
+    }
+  }
+
   private _schedule(ms: number): void {
     if (this._timer !== null) return;
     this._timer = setTimeout(() => {
@@ -396,8 +407,10 @@ export class PageSockets {
           failed: (message) => this._fail(s, String(message)),
           closed: (code, reason, wasClean) => {
             if (s.state === 'closed') return;
+            // what the server had before it closed was sent: a write it
+            // answered with its close is no write the close cut short
+            s.watch?.flush();
             s.state = 'closed';
-            s.watch?.stop();
             this._sockets.delete(id);
             this._tell('__wsClosed', [
               id,

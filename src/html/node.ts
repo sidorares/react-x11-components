@@ -14941,6 +14941,9 @@ export class HtmlViewNode extends Node {
   private _drawAgain(drawings: ReadonlySet<Element>): void {
     const tree = this._tree;
     if (!tree) return;
+    // a shape's box is its attributes', which a `ResizeObserver` measures:
+    // a drawing drawn again may have moved one
+    this._geometry += 1;
     const boxes = this._firstBoxesOf(tree);
     const inks: Rect[] = [];
     const reaching: Box[] = [];

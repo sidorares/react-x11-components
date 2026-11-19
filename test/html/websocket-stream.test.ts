@@ -140,3 +140,36 @@ test("a stream aborted before it is made makes no connection, and one closed unc
   assert.equal(sockets.connections.length, 1);
   assert.equal(sockets.connections[0].request.url, 'wss://ws.test/b');
 });
+
+test('a write the server had before it closed resolves, and one after it rejects with InvalidStateError', async () => {
+  // the server reads the goodbye and closes a task later, before the host
+  // has looked at what left: the close must not take the goodbye with
+  // it (WPT's write.any.js, "a write that was incomplete at close time")
+  const sockets = new FakeSockets((c) => {
+    const send = c.send.bind(c);
+    c.send = (data) => {
+      send(data);
+      if (data === 'Goodbye') {
+        setTimeout(() => {
+          c.drain();
+          c.events.closed(1000, '', true);
+        }, 0);
+      }
+    };
+    setTimeout(() => c.open(), 0);
+  });
+  const out = await outOf(
+    `(async function () {
+       var wss = new WebSocketStream('wss://ws.test/a');
+       var info = await wss.opened;
+       var writer = info.writable.getWriter();
+       var goodbye = writer.write('Goodbye');
+       var big = writer.write(new Uint8Array(64));
+       var said = await goodbye.then(function () { return 'sent'; }, function (e) { return e.name; });
+       var after = await big.then(function () { return 'sent'; }, function (e) { return e.name; });
+       console.log('out ' + JSON.stringify([said, after]));
+     })();`,
+    sockets,
+  );
+  assert.deepEqual(out, ['sent', 'InvalidStateError']);
+});
