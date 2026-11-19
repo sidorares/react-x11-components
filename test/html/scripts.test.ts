@@ -19400,6 +19400,45 @@ test('an IntersectionObserver measures a target in a same-origin frame through t
   );
 });
 
+test('an IntersectionObserver observes an element of another realm of the page, and a target in a document of no window only against an element root', async () => {
+  // a frame with a script runs in a realm of its own, whose elements are
+  // no `Element` of the page's: `observe` refused them, where Chrome
+  // measures them (WPT's target-in-different-window). A target in a
+  // document made by `createHTMLDocument` is measured against the implicit
+  // root by nothing until it is adopted (target-in-detached-document), and
+  // against an element root it is told it is in none
+  // (explicit-root-different-document)
+  const { text } = await hostedFrames(
+    '<style>body{margin:0} iframe{display:block;border:0;width:100px;height:50px}</style>' +
+      '<div id="root" style="height:10px"></div>' +
+      '<iframe id="f" srcdoc="<style>body{margin:0}</style><div id=&quot;t&quot; style=&quot;width:40px;height:40px&quot;></div><script>var own = 1;</script>"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var seen = [];' +
+      'function tell(what) { seen.push(what); document.getElementById("out").textContent = seen.sort().join("|"); }' +
+      'var lone = document.implementation.createHTMLDocument("").createElement("div");' +
+      'new IntersectionObserver(function (es) { tell("lone " + es.length); }).observe(lone);' +
+      'new IntersectionObserver(function (es) { tell("rooted " + es[0].isIntersecting); }, { root: document.getElementById("root") }).observe(lone);' +
+      'document.getElementById("f").onload = function () {' +
+      '  var t = document.getElementById("f").contentDocument.getElementById("t");' +
+      '  try {' +
+      '    new IntersectionObserver(function (es) {' +
+      '      var e = es[es.length - 1];' +
+      '      if (e.isIntersecting) tell(["framed", e.target === t, e.boundingClientRect.width].join(" "));' +
+      '    }).observe(t);' +
+      '  } catch (e) { tell("threw " + e.name); }' +
+      '};' +
+      '</script>',
+    {},
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t.includes('framed') || t.includes('threw'),
+    ),
+    'framed true 40|rooted false',
+  );
+});
+
 test('an IntersectionObserver reports what it was asked to observe in one callback, once', async () => {
   // Wikipedia's contents observe every heading and mark the one closest
   // above the top from all their entries; a callback a heading marked each
