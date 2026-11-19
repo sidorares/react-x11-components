@@ -7022,6 +7022,45 @@ test('a resize observer measures nothing while the page is at rest, and is told 
   assert.equal(text, 'box:20,box:40');
 });
 
+test('a resize observer is told in the frame, after its animation frame callbacks, and a callback that resizes what it watches ends in an error', async () => {
+  // Resize Observer 1, 3.4: each pass of a frame delivers only what is
+  // deeper than the shallowest target the pass before told of, and what is
+  // left over is the loop error, delivered at the next frame. A timer of
+  // its own had told the observers between frames, a callback that grew
+  // its target was told again and again, and nothing was an error.
+  const doc = await hosted(
+    '<div id="a" style="width:10px"><div id="b" style="width:10px"></div></div><p id="out"></p><script>' +
+      'var seen = [], a = document.getElementById("a"), b = document.getElementById("b"), rafs = 0;' +
+      'window.onerror = function (m) { seen.push("error:" + m); };' +
+      'var ro = new ResizeObserver(function (entries) {' +
+      '  seen.push(rafs + ":" + entries.map(function (e) { return e.target.id; }).join(""));' +
+      '  if (seen.length < 6) entries.forEach(function (e) { e.target.style.width = (e.target.offsetWidth + 1) + "px"; });' +
+      '});' +
+      'requestAnimationFrame(function () { ro.observe(a); ro.observe(b); });' +
+      '(function tick() { rafs++; if (rafs < 30) requestAnimationFrame(tick); })();' +
+      'setTimeout(function () { document.getElementById("out").textContent = seen.join(","); }, 500);' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  // the first frame tells both, a pass later only b, deeper than a, then
+  // nothing is deeper than b and both are left over: the error, and the
+  // next frame tells them
+  const error =
+    'error:ResizeObserver loop completed with undelivered notifications.';
+  const frames = text
+    .split(',')
+    .filter((s) => s !== error)
+    .map((s) => Number(s.split(':')[0]));
+  assert.equal(
+    text.replace(/\d+:/g, ''),
+    ['ab', 'b', error, 'ab', 'b', error, 'ab'].join(','),
+  );
+  assert.equal(frames[0], frames[1], 'one frame');
+  assert.ok(frames[2] > frames[1], `a frame later: ${text}`);
+  assert.equal(frames[2], frames[3], 'one frame');
+  assert.ok(frames[4] > frames[3], `a frame later: ${text}`);
+});
+
 test('what a script builds apart from the document is no change to it, and putting it in is one change', async (t) => {
   // A webmail page's list builds each page of messages, a thousand
   // elements, apart and then puts it in. Every record of the building was

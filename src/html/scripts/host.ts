@@ -3644,8 +3644,24 @@ export class DomHost {
     if (seen && this._intersections(seen.query) !== seen.answer) {
       this._viewportsWoken = true;
       this.entries.call('__rendering', null);
+      return;
+    }
+    // the boxes the page's resize observers measure, laid out or scrolled
+    // since their last frame
+    if (
+      this._resizeWatched &&
+      this._looked &&
+      !this._viewportHeld() &&
+      (this._handle.geometryKey?.() || '') !== this._looked
+    ) {
+      this._viewportsWoken = true;
+      this.entries.call('__rendering', null);
     }
   }
+
+  /** Whether the page's `ResizeObserver`s watch anything, as their last
+   *  frame said (`geometry`). */
+  private _resizeWatched = false;
 
   /**
    * What the page's intersection observers asked at their last frame, and
@@ -6624,7 +6640,11 @@ export class DomHost {
       // what the boxes were laid out and scrolled as: a look of the page's
       // observers that finds the same skips what it would find again, and
       // one with no such key asks for it each time
+      // — and, where `a` says so, whether the page's `ResizeObserver`s
+      // watch them, which has a frame asked for after a paint that moved
+      // them (`renderingMoved`), the frame being where they are told
       case 'geometry': {
+        if (a !== undefined) this._resizeWatched = a === true;
         if (this._looked && this._viewportHeld()) return this._looked;
         this.flush();
         this._looked = this._handle.geometryKey?.() || `new ${++this._looks}`;
