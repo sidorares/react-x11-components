@@ -1524,6 +1524,10 @@ export function layoutColumns(
   if (!rows) COLUMN_BOXES.set(box, (rows = []));
   if (rowOf) {
     const last = rowOf(Math.max(1, used) - 1);
+    // rows `column-wrap` sets, a row gap apart, which a row rule is drawn in
+    // (CSS Gap Decorations 1, 3.1.3); not those the columns about a nested
+    // container cut short
+    const wrap = grid ? {} : undefined;
     for (let j = 0; j <= last; j += 1) {
       const first = j * count;
       const holding = Math.max(0, Math.min(count, used - first));
@@ -1533,6 +1537,7 @@ export function layoutColumns(
         lefts: Array.from({ length: holding }, (_, k) => left(first + k)),
         width: columns.width,
         every: Array.from({ length: count }, (_, k) => left(first + k)),
+        wrap,
       });
     }
   } else {
