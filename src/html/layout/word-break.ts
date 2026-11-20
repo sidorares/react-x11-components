@@ -21,6 +21,9 @@ export interface BreakRule {
   keepsSpaces?: boolean;
   /** `line-break`'s strictness (CSS Text 3, 5.3). */
   lineBreak?: 'auto' | 'loose' | 'normal' | 'strict';
+  /** Whether its content language is Chinese or Japanese, which
+   *  `normal` and `auto` break before U+301C and U+30A0 in. */
+  cjk?: boolean;
   /** Whether it keeps them as `break-spaces` does, a place to break after
    *  each (CSS Text 3, 4.1.3). */
   breakSpaces?: boolean;
@@ -113,13 +116,17 @@ export function movesBreaks(
 
 /**
  * UAX #14's CJ: small kana and the prolonged sound marks, which `linebreak`
- * resolves as NS, the strict reading; and the CJK hyphens U+301C and U+30A0.
- * CSS lets a line break before each in `normal` and `loose` (CSS Text 3,
- * 5.3), as every browser does by default, which is reading it as an
- * ideograph.
+ * resolves as NS, the strict reading; and the CJK hyphens U+301C and U+30A0,
+ * which are NS. CSS lets a line break before each in `normal` and `loose`
+ * (CSS Text 3, 5.3), as every browser does by default, which is reading it
+ * as an ideograph: before a hyphen only where the text is Chinese or
+ * Japanese (`CJK_HYPHENS`), and in `loose` wherever it is.
  */
 export const SMALL_KANA =
   /[\u301C\u30A0\u3041\u3043\u3045\u3047\u3049\u3063\u3083\u3085\u3087\u308E\u3095\u3096\u30A1\u30A3\u30A5\u30A7\u30A9\u30C3\u30E3\u30E5\u30E7\u30EE\u30F5\u30F6\u30FC\u31F0-\u31FF\uFF67-\uFF70]/;
+
+/** The two of `SMALL_KANA` that break before only in Chinese or Japanese. */
+export const CJK_HYPHENS = /[\u301C\u30A0]/;
 
 /**
  * What `line-break: loose` breaks before besides (CSS Text 3, 5.3): the
@@ -183,6 +190,9 @@ export function breakOpportunities(
     if (!r || !r.wraps || at < r.start) return cls;
     if (r.lineBreak !== 'strict') {
       const ch = text[at];
+      if (CJK_HYPHENS.test(ch) && !r.cjk && r.lineBreak !== 'loose') {
+        return cls;
+      }
       if (SMALL_KANA.test(ch)) {
         return r.wordBreak === 'keep-all' ? c.AL : c.ID;
       }

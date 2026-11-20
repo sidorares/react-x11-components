@@ -81,7 +81,13 @@ import {
 } from './writing.js';
 import { tableGrid } from './grid.js';
 import { endsShort, prettyBreaks, shortLine, spacedWords } from './pretty.js';
-import { SMALL_KANA, breakOpportunities, movesBreaks } from './word-break.js';
+import {
+  CJK_HYPHENS,
+  SMALL_KANA,
+  breakOpportunities,
+  movesBreaks,
+} from './word-break.js';
+import { languageOf } from '../css/cascade.js';
 import type { BreakAt, BreakRule } from './word-break.js';
 import type { PrettySetting } from './pretty.js';
 
@@ -2686,6 +2692,14 @@ function breaksOwnWay(items: readonly Item[]): boolean {
   return false;
 }
 
+/** Whether a box's text is Chinese or Japanese by its content language. */
+function writtenInCjk(box: Box): boolean {
+  for (let at: Box | null = box; at; at = at.parent) {
+    if (at.el) return /^(ja|zh)(-|$)/i.test(languageOf(at.el));
+  }
+  return false;
+}
+
 /** The joined text of a paragraph's text items. */
 function textOfItems(items: readonly Item[]): string {
   let text = '';
@@ -2709,6 +2723,7 @@ function breakRulesOf(
       anywhere: style.lineBreakAnywhere,
       wraps: !item.control && wraps(style),
       lineBreak: style.lineBreak,
+      cjk: CJK_HYPHENS.test(item.run.text) && writtenInCjk(item.box),
       keepsSpaces: style.whiteSpace === 'pre-wrap',
       breakSpaces: keepsBreakSpaces(item),
     });
@@ -2752,6 +2767,7 @@ function layoutOwnBreaks(
   const rules = breakRulesOf(items);
   const breaks = breakOpportunities(text, rules);
   const forced = new Set(breaks.filter((k) => k.required).map((k) => k.at));
+  const keepsSpaces = rules.some((r) => r.keepsSpaces && !r.breakSpaces);
   const breakSpacesAt = (at: number): boolean =>
     !!rules[runIndexAt(starts, at)].breakSpaces;
   const options = {
@@ -2819,6 +2835,26 @@ function layoutOwnBreaks(
     }
     return end;
   };
+  // A word wider than the room, which `overflow-wrap` cuts at the last
+  // cluster that fits, one at least (CSS Text 3, 5.5), and leaves whole
+  // where it does not say to.
+  const cuts = overflowWrapOf(style, items) === 'break-word';
+  const cutInside = (from: number, word: number, x0: number): number => {
+    if (!cuts) return word;
+    graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    let last = -1;
+    for (const { index } of graphemes.segment(text.slice(from, word))) {
+      if (index === 0) continue;
+      if (xAt(from + index) - x0 > width + FIT_SLACK) break;
+      last = from + index;
+    }
+    if (last > from) return last;
+    // a line holds one cluster at least
+    for (const { index } of graphemes.segment(text.slice(from, word))) {
+      if (index > 0) return from + index;
+    }
+    return word;
+  };
   // where a line ends: the last place that fits from `from`, the first past
   // the room where none does, and a forced break wherever it comes
   let b = 0;
@@ -2832,7 +2868,7 @@ function layoutOwnBreaks(
     const x0 = lineOf.has(from) ? 0 : xAt(from);
     const fits = (k: number): boolean =>
       xAt(inkEnd(breaks[k].at, from)) - x0 <= width + FIT_SLACK;
-    if (!fits(b)) return breaks[b].at;
+    if (!fits(b)) return cutInside(from, breaks[b].at, x0);
     let lo = b;
     let hi = last;
     while (lo < hi) {
@@ -2882,7 +2918,10 @@ function layoutOwnBreaks(
       layout = fonts.layout(own, base, { ...options, maxWidth: undefined });
     }
     LAYOUT_RUNS.set(layout, own);
+    const first = lines.length;
     widest = Math.max(widest, emitLayout(layout, spans, 0, y, lines));
+    // the spaces `pre-wrap` keeps that the line hangs, drawn past its end
+    if (keepsSpaces) hangLines(lines, first, own, fonts, false);
     y += layout.height;
     from = to;
   }
