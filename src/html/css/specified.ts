@@ -1807,7 +1807,7 @@ function zeroLength(word: string): boolean {
  * depth, a length. Written across first, a lone value with `center` after
  * it, as Chromium writes it.
  */
-function transformOriginSpecified(word: string): string | null {
+export function transformOriginSpecified(word: string): string | null {
   const parts = splitValue(word).filter(Boolean);
   if (!parts.length || parts.length > 3) return null;
   const kind = (part: string): 'x' | 'y' | 'c' | 'l' | null => {

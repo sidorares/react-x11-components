@@ -37,6 +37,7 @@ import { isShapeProp, shapeInitial, shapeValue } from './shapes.js';
 import type { ShapeContext } from './shapes.js';
 import { IDENTITY, multiply, parseTransform } from './transform.js';
 import type { Matrix, TransformFunction } from './transform.js';
+import { transformOriginSpecified } from './specified.js';
 import { parseLength, splitValue } from './values.js';
 import type { Len } from './values.js';
 
@@ -56,6 +57,11 @@ const MOTION = new Set([
   'transform',
   'transform-origin',
   'transform-box',
+  // the individual transforms, which go before `transform` (CSS
+  // Transforms 2, 6)
+  'translate',
+  'rotate',
+  'scale',
 ]);
 
 /** Whether a declaration says how a drawing's element animates or moves. */
@@ -71,6 +77,10 @@ export interface ShapeMotion {
   transform: string | null;
   origin: string | null;
   box: string | null;
+  /** `translate`, `rotate` and `scale` as written, where a rule set them. */
+  translate?: string | null;
+  rotate?: string | null;
+  scale?: string | null;
 }
 
 /** One declaration of how an element moves, over what came before it in
@@ -99,6 +109,9 @@ export function addMotion(
   if (prop === 'transform') return { ...was, transform: v };
   if (prop === 'transform-origin') return { ...was, origin: v };
   if (prop === 'transform-box') return { ...was, box: v.toLowerCase() };
+  if (prop === 'translate' || prop === 'rotate' || prop === 'scale') {
+    return { ...was, [prop]: v };
+  }
   return motion;
 }
 
@@ -245,15 +258,16 @@ export class ShapeAnimations {
     else if (starts) this._starts.delete(el);
     if (next < Infinity) this._note(root, next);
     // a transform the rules give it, where no animation set one
-    if (transform === undefined && motion.transform !== null) {
-      transform = this._transformOf(motion.transform, ctx);
+    const fixed = staticTransform(motion);
+    if (transform === undefined && fixed !== null) {
+      transform = this._transformOf(fixed, ctx);
       if (transform === undefined) return out;
     }
     if (transform !== undefined) {
       (out ??= {}).transform =
         transform === null
           ? 'none'
-          : matrixText(this._placed(el, root, transform, motion, ctx));
+          : matrixText(this._placed(el, root, transform, motion, ctx, own));
     }
     return out;
   }
@@ -274,8 +288,9 @@ export class ShapeAnimations {
     list: readonly TransformFunction[],
     motion: ShapeMotion,
     ctx: ShapeContext,
+    own: Record<string, string> | null,
   ): Matrix {
-    const box = this._referenceBox(el, root, motion.box);
+    const box = this._referenceBox(el, root, motion.box, own);
     // lengths were read in device pixels, which a drawing's user units are
     // not: what scales them is the scale it is drawn at
     const scale = ctx.units.scale || 1;
@@ -309,11 +324,33 @@ export class ShapeAnimations {
     el: Element,
     root: Element,
     which: string | null,
+    own: Record<string, string> | null,
   ): ShapeBox {
     if (which === 'fill-box' || which === 'stroke-box') {
       const box = this.bbox?.(el) ?? null;
+      // the stroke's box is the fill's grown by half the stroke's width
+      // all round, where it is stroked (SVG 2, 8.10)
+      if (box && which === 'stroke-box') {
+        const half = strokeWidthOf(el, own) / 2;
+        return {
+          x: box.x - half,
+          y: box.y - half,
+          width: box.width + 2 * half,
+          height: box.height + 2 * half,
+        };
+      }
       if (box) return box;
     }
+    // the nearest viewport the element is in, which may be an `<svg>`
+    // inside the drawing (CSS Transforms 1, 4: `view-box`)
+    let viewport = root;
+    for (let at = el.parent; at && at !== root; at = at.parent) {
+      if (at.type === 'tag' && (at as Element).name.toLowerCase() === 'svg') {
+        viewport = at as Element;
+        break;
+      }
+    }
+    root = viewport;
     const view = (root.attribs.viewBox ?? root.attribs.viewbox ?? '')
       .trim()
       .split(/[\s,]+/)
@@ -373,7 +410,9 @@ function originIn(
     } else if (x === null) x = at(part, box.width);
     else if (y === null) y = at(part, box.height);
   }
+  // one value: the other is `center` (CSS Transforms 1, 6)
   if (parts.length === 1 && y === null) y = box.height / 2;
+  if (parts.length === 1 && x === null) x = box.width / 2;
   return [box.x + (x ?? 0), box.y + (y ?? 0)];
 }
 
@@ -425,4 +464,261 @@ function mix(prop: string, a: string, b: string, q: number): string {
 /** A matrix as an SVG transform attribute has it. */
 function matrixText(m: Matrix): string {
   return `matrix(${m.map((n) => +n.toFixed(6)).join(' ')})`;
+}
+
+/** A number as SVG's transform list writes one: a sign, digits with a
+ *  point or none, and an exponent (SVG 1.1, 7.6). */
+const SVG_NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/;
+
+/** How many numbers each function of a transform list takes. */
+const SVG_ARITY: Record<string, readonly number[]> = {
+  matrix: [6],
+  translate: [1, 2],
+  scale: [1, 2],
+  rotate: [1, 3],
+  skewX: [1],
+  skewY: [1],
+};
+
+/**
+ * A `transform` attribute as the `transform` property's value, in CSS's
+ * syntax: lengths in user units and angles in degrees, a `rotate()` about a
+ * point as the moves around it. `none` for a list that is none of SVG's —
+ * a unit, a `rotate()` of two numbers, a name in the wrong case — which
+ * leaves the element untransformed in all three browsers, as an invalid
+ * attribute does, where `SvgView` reads the numbers out of it and moves the
+ * element by them.
+ */
+export function svgTransformCss(text: string): string {
+  let at = 0;
+  const out: string[] = [];
+  const space = (): void => {
+    while (at < text.length && /[\s]/.test(text[at])) at += 1;
+  };
+  const separator = (): boolean => {
+    const from = at;
+    space();
+    if (text[at] === ',') {
+      at += 1;
+      space();
+    }
+    return at > from;
+  };
+  space();
+  while (at < text.length) {
+    // functions may stand with nothing between them (SVG 1.1, 7.6)
+    if (out.length) separator();
+    if (at >= text.length) break;
+    const name = /^[a-zA-Z]+/.exec(text.slice(at))?.[0];
+    const arity = name !== undefined ? SVG_ARITY[name] : undefined;
+    if (!name || !arity) return 'none';
+    at += name.length;
+    space();
+    if (text[at] !== '(') return 'none';
+    at += 1;
+    space();
+    const n: number[] = [];
+    while (text[at] !== ')') {
+      if (n.length) {
+        separator();
+        if (text[at] === ')') return 'none';
+      }
+      const number = SVG_NUMBER.exec(text.slice(at))?.[0];
+      if (number === undefined) return 'none';
+      at += number.length;
+      n.push(Number(number));
+      space();
+      if (at >= text.length) return 'none';
+    }
+    at += 1;
+    if (!arity.includes(n.length)) return 'none';
+    const px = (v: number): string => `${v}px`;
+    switch (name) {
+      case 'matrix':
+        out.push(`matrix(${n.join(',')})`);
+        break;
+      case 'translate':
+        out.push(`translate(${px(n[0])},${px(n[1] ?? 0)})`);
+        break;
+      case 'scale':
+        out.push(`scale(${n[0]},${n[1] ?? n[0]})`);
+        break;
+      case 'rotate':
+        if (n.length === 3) {
+          out.push(
+            `translate(${px(n[1])},${px(n[2])}) rotate(${n[0]}deg) ` +
+              `translate(${px(-n[1])},${px(-n[2])})`,
+          );
+        } else out.push(`rotate(${n[0]}deg)`);
+        break;
+      case 'skewX':
+        out.push(`skewX(${n[0]}deg)`);
+        break;
+      case 'skewY':
+        out.push(`skewY(${n[0]}deg)`);
+        break;
+    }
+    space();
+  }
+  return out.length ? out.join(' ') : 'none';
+}
+
+/** Lists read, by their text: a drawing has the same few many times. */
+let SVG_LISTS = new Map<string, string>();
+
+/** A `transform` attribute as `svgTransformCss` reads it, kept. */
+function svgListOf(text: string): string {
+  let css = SVG_LISTS.get(text);
+  if (css === undefined) {
+    if (SVG_LISTS.size > 4096) SVG_LISTS = new Map();
+    css = svgTransformCss(text);
+    SVG_LISTS.set(text, css);
+  }
+  return css;
+}
+
+/** A `transform-origin` attribute as the property's value: its numbers are
+ *  user units, which CSS writes as pixels (SVG 2, 6.2). */
+function svgOriginCss(text: string): string | null {
+  const css = text
+    .trim()
+    .split(/[\s,]+/)
+    .map((part) =>
+      /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(part)
+        ? `${part}px`
+        : part,
+    )
+    .join(' ');
+  // one that is no value of the property is as though it were not there
+  // (`top 100%`, `left right`): the origin an SVG element starts with
+  return transformOriginSpecified(css) === null ? null : css;
+}
+
+/**
+ * What an element's presentation attributes say of how it moves, where
+ * `SvgView` would draw it otherwise: a `transform-origin`, which it does not
+ * read, and a `transform` that is no list of SVG's, which it reads the
+ * numbers out of. Null where the attributes are `SvgView`'s to draw.
+ */
+export function presentedMotion(el: Element): ShapeMotion | null {
+  const attribs = el.attribs;
+  const written = attribs['transform-origin'];
+  const origin = written === undefined ? null : svgOriginCss(written);
+  const list = attribs.transform;
+  const transform = list === undefined ? null : svgListOf(list);
+  const invalid =
+    transform === 'none' && list !== undefined && list.trim() !== '';
+  if (origin === null && !invalid) return null;
+  return {
+    animations: NO_ANIMATIONS,
+    transform,
+    origin,
+    box: null,
+  };
+}
+
+/** What the rules say of how an element moves, over what its attributes
+ *  say: a declaration's value for each of them it sets, and the
+ *  attribute's for the rest, as a presentation attribute is under every
+ *  rule (SVG 2, 6.2). The attribute's `transform` counts only where the
+ *  rules set an origin or a box it is placed by, or the attributes call for
+ *  it (`presentedMotion`). */
+export function underAttributes(
+  el: Element,
+  motion: ShapeMotion | null,
+): ShapeMotion | null {
+  const presented = presentedMotion(el);
+  if (!presented) {
+    if (!motion || motion.transform !== null) return motion;
+    if (
+      motion.origin === null &&
+      motion.box === null &&
+      !setsIndividual(motion)
+    )
+      return motion;
+    const list = el.attribs.transform;
+    return list === undefined
+      ? motion
+      : { ...motion, transform: svgListOf(list) };
+  }
+  if (!motion) return presented;
+  return {
+    ...motion,
+    animations: motion.animations,
+    transform: motion.transform ?? presented.transform,
+    origin: motion.origin ?? presented.origin,
+    box: motion.box,
+  };
+}
+
+/** A shape's stroke width in user units, where it is stroked at all: what
+ *  the rules give it over its attributes, and 1 where nothing says. */
+function strokeWidthOf(
+  el: Element,
+  own: Record<string, string> | null,
+): number {
+  const stroke = own?.stroke ?? el.attribs.stroke;
+  if (stroke === undefined || stroke.trim().toLowerCase() === 'none') return 0;
+  const width = parseFloat(
+    own?.['stroke-width'] ?? el.attribs['stroke-width'] ?? '1',
+  );
+  return Number.isFinite(width) && width > 0 ? width : 0;
+}
+
+/** Whether a rule set any of `translate`, `rotate` and `scale`. */
+function setsIndividual(motion: ShapeMotion): boolean {
+  return (
+    (motion.translate ?? null) !== null ||
+    (motion.rotate ?? null) !== null ||
+    (motion.scale ?? null) !== null
+  );
+}
+
+/** A length or a number written alone, as a transform function takes it. */
+const ANGLE = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:deg|rad|grad|turn)$/i;
+
+/**
+ * The transform an element is drawn with where no animation sets one: its
+ * `translate`, `rotate` and `scale`, then its `transform`, about one origin
+ * (CSS Transforms 2, 6), as one list. Null where it has none of them.
+ */
+function staticTransform(motion: ShapeMotion): string | null {
+  if (!setsIndividual(motion)) return motion.transform;
+  const parts: string[] = [];
+  const translate = motion.translate?.trim();
+  if (translate && translate.toLowerCase() !== 'none') {
+    const v = splitValue(translate);
+    if (v.length === 1) parts.push(`translate(${v[0]})`);
+    else if (v.length === 2) parts.push(`translate(${v[0]},${v[1]})`);
+    else if (v.length === 3) parts.push(`translate3d(${v[0]},${v[1]},${v[2]})`);
+  }
+  const rotate = motion.rotate?.trim();
+  if (rotate && rotate.toLowerCase() !== 'none') {
+    const v = splitValue(rotate);
+    const angle = v.find((part) => ANGLE.test(part) || part === '0');
+    const axis = v.filter((part) => part !== angle).map((p) => p.toLowerCase());
+    if (angle !== undefined) {
+      if (!axis.length || (axis.length === 1 && axis[0] === 'z')) {
+        parts.push(`rotate(${angle})`);
+      } else if (axis.length === 1 && axis[0] === 'x') {
+        parts.push(`rotateX(${angle})`);
+      } else if (axis.length === 1 && axis[0] === 'y') {
+        parts.push(`rotateY(${angle})`);
+      } else if (axis.length === 3) {
+        parts.push(`rotate3d(${axis.join(',')},${angle})`);
+      }
+    }
+  }
+  const scale = motion.scale?.trim();
+  if (scale && scale.toLowerCase() !== 'none') {
+    const v = splitValue(scale).map((part) =>
+      part.endsWith('%') ? String(parseFloat(part) / 100) : part,
+    );
+    if (v.length === 1) parts.push(`scale(${v[0]})`);
+    else if (v.length === 2) parts.push(`scale(${v[0]},${v[1]})`);
+    else if (v.length === 3) parts.push(`scale3d(${v[0]},${v[1]},${v[2]})`);
+  }
+  const transform = motion.transform?.trim();
+  if (transform && transform.toLowerCase() !== 'none') parts.push(transform);
+  return parts.length ? parts.join(' ') : 'none';
 }

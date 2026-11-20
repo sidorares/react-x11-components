@@ -128,7 +128,12 @@ import {
   visibleSpan,
 } from './interpolate.js';
 import type { AnimationTimeline, Sample } from './timeline.js';
-import { addMotion, isShapeMotion } from './shape-animations.js';
+import {
+  addMotion,
+  isShapeMotion,
+  presentedMotion,
+  underAttributes,
+} from './shape-animations.js';
 import type { ShapeAnimations, ShapeMotion } from './shape-animations.js';
 import {
   animatedWillChange,
@@ -10225,7 +10230,14 @@ export class Cascade {
         const presented = vars ? attributeVars(el) : null;
         const inline = attr(el, 'style');
         const inlineVars = !!inline && hasVar(inline);
-        if (!ruled && !presented && !inlineVars) {
+        // a `transform-origin` attribute, or a `transform` that is no list
+        // of SVG's, which `SvgView` would draw otherwise
+        const moves =
+          !inCopy &&
+          el !== root &&
+          (presentedMotion(el) !== null ||
+            (!!inline && INLINE_MOTION.test(inline)));
+        if (!ruled && !presented && !inlineVars && !moves) {
           each(el, null);
           continue;
         }
@@ -10254,13 +10266,13 @@ export class Cascade {
             only: -1,
           });
         }
-        if (candidates.length || inlineVars) {
+        if (candidates.length || inlineVars || moves) {
           if (inline) {
             pushInlineShapes(candidates, inline, tree.depth, tree.root);
           }
           candidates.sort(byCascade);
         }
-        each(el, candidates.length ? candidates : null);
+        each(el, candidates.length || moves ? candidates : null);
       }
     };
 
@@ -10344,6 +10356,7 @@ export class Cascade {
           if (value !== null) (own ??= {})[d.prop] = value;
         }
       }
+      if (el && !isRoot) motion = underAttributes(el, motion);
       const clock = this.shapeAnimations;
       if (motion && el && clock) {
         const moved = clock.sample(
@@ -11719,8 +11732,10 @@ export function drawingVars(
   let targets: Set<Element> | null = null;
   for (let el = stack.pop(); el; el = stack.pop()) {
     if (attributeVars(el)) return true;
+    if (el !== root && presentedMotion(el)) return true;
     // the root's own custom properties are its box's already
     const style = el.attribs.style;
+    if (el !== root && style && INLINE_MOTION.test(style)) return true;
     if (style && (hasVar(style) || (el !== root && style.includes('--')))) {
       return true;
     }
@@ -11741,6 +11756,11 @@ export function drawingVars(
   }
   return false;
 }
+
+/** A `style` attribute that says how a drawing's element moves: what
+ *  `SvgView` does not read, and `shapeStyles` does where it is set. */
+const INLINE_MOTION =
+  /(?:^|[;\s])(?:transform(?:-origin|-box)?|translate|rotate|scale)\s*:/i;
 
 /** An element's presentation attributes of a shape's properties that have
  *  a `var()` in them, as declarations to substitute, or null for none. One

@@ -6712,6 +6712,22 @@ of the document's reaches it. And **the root's animations are its box's**,
 which the document runs, so the root is never sampled here. Anything new a
 drawing's animation sets joins `mix`, or goes from frame to frame half way.
 
+**A `transform` attribute is the cascade's where `SvgView` would draw it
+otherwise** (`presentedMotion`, `underAttributes`). SvgView reads no
+`transform-origin`, and reads the numbers out of a list that is none of
+SVG's — `translate(10px 10px)`, `rotate(90 20)` — where the three browsers
+drop it. So an element with a `transform-origin` attribute, or a list
+`svgTransformCss` refuses, is resolved like one a rule reaches, and so is
+one with a `transform` in its `style`; the attribute's list is under every
+rule, as a presentation attribute is, and is read in SVG's own grammar,
+which has no units. One with a list SvgView reads right and nothing to
+place it by is left to SvgView, which keeps a page of icons as cheap as it
+was. **Anything new that places a drawing's element by its transform joins
+`presentedMotion` and `drawingVars`' check**, or a drawing no rule reaches
+draws it at its origin. Its `translate`, `rotate` and `scale` are written
+before its `transform` as one list (`staticTransform`), so anything new that
+moves a drawing's element without an animation goes through it.
+
 **A colour no context reads is worked out in the drawing's copy**
 (`coloursToWorkOut`, `workOutColours`). `SvgView` hands a paint to the context as
 it is written, and a context reads what `rgb()`, `hsl()` and a hex say, so

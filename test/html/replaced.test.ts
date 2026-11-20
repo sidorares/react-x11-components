@@ -1427,6 +1427,85 @@ metric(
 );
 
 metric(
+  "a shape's transform attribute turns about its transform-origin, in its transform-box, and one that is no list of SVG's moves nothing",
+  async () => {
+    // CSS Transforms 1, 6 and SVG 2, 6.2: `SvgView` read no
+    // `transform-origin`, and read the numbers out of `translate(10px
+    // 10px)`, which all three browsers drop for its units — 97 of WPT's
+    // css-transforms reftests on a drawing
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}svg{display:block}' +
+        '.box{transform-box:fill-box}</style>' +
+        // a quarter turn about (10, 0): the 20 by 10 bar hangs below it
+        '<svg width="40" height="30">' +
+        '<rect width="20" height="10" fill="#00ff00" transform="rotate(90)"' +
+        ' transform-origin="10 0"/></svg>' +
+        // and about its own box's centre, a keyword alone
+        '<svg width="40" height="30">' +
+        '<rect class="box" x="10" y="10" width="20" height="10" fill="#0000ff"' +
+        ' transform="rotate(90)translate(0,0)" transform-origin="center"/></svg>' +
+        // a unit, and a rotate() of two numbers: both draw it where it is
+        '<svg width="40" height="20">' +
+        '<rect width="10" height="10" fill="#ff0000" transform="translate(10px 10px)"/>' +
+        '<rect x="20" width="10" height="10" fill="#ff00ff" transform="rotate(90 20)"/></svg>' +
+        // and an inline style's transform about its own box
+        '<svg width="40" height="20">' +
+        '<rect x="10" width="20" height="10" fill="#00ffff"' +
+        ' style="transform:rotate(90deg);transform-box:fill-box;transform-origin:center"/></svg>',
+      {},
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 5, 5, '#00ff00', {
+      message: 'turned about (10, 0)',
+    });
+    await expectPixel(ctx, 15, 5, '#ffffff', { message: 'not where it was' });
+    await expectPixel(ctx, 20, 30 + 7, '#0000ff', { message: 'its centre' });
+    await expectPixel(ctx, 12, 30 + 15, '#ffffff', {
+      message: 'its ends turned',
+    });
+    await expectPixel(ctx, 20, 30 + 22, '#0000ff', {
+      message: 'down the turn',
+    });
+    await expectPixel(ctx, 5, 60 + 5, '#ff0000', { message: 'no unit' });
+    await expectPixel(ctx, 25, 60 + 5, '#ff00ff', { message: 'two numbers' });
+    await expectPixel(ctx, 20, 80 + 13, '#00ffff', { message: 'the style' });
+    await expectPixel(ctx, 12, 80 + 5, '#ffffff', { message: 'turned' });
+  },
+);
+
+metric(
+  "a shape's translate, rotate and scale go before its transform, a view-box is its nearest viewport's, and a stroke-box takes in its stroke",
+  async () => {
+    // CSS Transforms 2, 6 and CSS Transforms 1, 4
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}svg{display:block}' +
+        '.vb{transform-box:view-box;transform:translate(50%)}' +
+        '.sb{transform-box:stroke-box;transform-origin:0 0;rotate:90deg}</style>' +
+        // moved 20 across and 5 down by `translate` alone
+        '<svg width="40" height="20">' +
+        '<rect width="10" height="10" fill="#ff0000" style="translate:20px 5px"/></svg>' +
+        // half the width of the `<svg>` it is in, 20, and not the drawing's
+        '<svg width="40" height="20"><svg width="20" height="20">' +
+        '<rect class="vb" width="10" height="10" fill="#0000ff"/></svg></svg>' +
+        // turned about its stroke's corner (8, 3), not its fill's (10, 5)
+        '<svg width="40" height="20">' +
+        '<rect class="sb" x="10" y="5" width="10" height="10" fill="#00ff00"' +
+        ' stroke="#000000" stroke-width="4"/></svg>',
+      {},
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 25, 10, '#ff0000', { message: 'translated' });
+    await expectPixel(ctx, 5, 5, '#ffffff', { message: 'not at its start' });
+    await expectPixel(ctx, 15, 25, '#0000ff', { message: 'half its viewport' });
+    await expectPixel(ctx, 25, 25, '#ffffff', { message: "not the drawing's" });
+    await expectPixel(ctx, 3, 50, '#00ff00', { message: 'turned' });
+    await expectPixel(ctx, 9, 50, '#ffffff', {
+      message: "the stroke's corner",
+    });
+  },
+);
+
+metric(
   "an SVG's currentcolor and none are paint keywords in any case",
   async () => {
     // CSS Values 4, 2.5: Apple's tab strips draw their arrows with
