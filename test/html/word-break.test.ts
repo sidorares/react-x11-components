@@ -78,6 +78,17 @@ test('keep-all takes away the places between two letters', () => {
   );
 });
 
+test('keep-all keeps a closing bracket or quote with the letter after it', () => {
+  const ja = '彼は、「往復（普通席）は、1円」と';
+  assert.deepEqual(
+    places(ja, [rule(ja, { wordBreak: 'keep-all' })]),
+    [3, 13, 17],
+    'after each 、 and at the end',
+  );
+  const ko = '표(일반석)는 "말"라고';
+  assert.deepEqual(places(ko, [rule(ko, { wordBreak: 'keep-all' })]), [8, 13]);
+});
+
 test('line-break: anywhere breaks between any two clusters but before a space', () => {
   const text = 'a.b c';
   assert.deepEqual(

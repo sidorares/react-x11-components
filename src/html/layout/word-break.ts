@@ -129,6 +129,12 @@ export const SMALL_KANA =
 const LOOSE =
   /[\u3005\u303B\u309D\u309E\u30FD\u30FE\u2024-\u2026\u30FB\uFF1A\uFF1B\uFF65\u203C\u2047-\u2049\uFF01\uFF1F\u00B0\u2030\u2032\u2033\u2103\uFF05\uFFE0\u00A5\u20AC\u2116\uFF04\uFFE1\uFFE5]/;
 
+/** A letter, a number or a mark: what `keep-all` keeps together. */
+const WORD_LETTER = /[\p{L}\p{N}\p{M}]/u;
+/** A closing bracket or quote, which `keep-all` keeps with the letter
+ *  after it. */
+const CLOSES_WORD = /[\p{Pe}\p{Pf}"']/u;
+
 let graphemes: Intl.Segmenter | null = null;
 
 /** The code point that ends before `at`, and the one that starts there. */
@@ -197,6 +203,25 @@ export function breakOpportunities(
   }
   for (let bk = breaker.nextBreak(); bk; bk = breaker.nextBreak()) {
     out.set(bk.position, bk.required);
+  }
+  // keep-all keeps a word whole where a closing bracket or quote is inside
+  // it, which UAX #14 breaks after: Chromium, Firefox and WebKit set
+  // `（普通席）は` and `"라고` on one line, and still break after `、`
+  // (WPT's word-break-keep-all-001 and -002)
+  if (rules.some((r) => r.wordBreak === 'keep-all')) {
+    for (const [at, required] of out) {
+      if (required || at <= 0 || at >= text.length) continue;
+      const a = ruleAt(at - 1);
+      const b = ruleAt(at);
+      if (a?.wordBreak !== 'keep-all' || b?.wordBreak !== 'keep-all') continue;
+      if (
+        WORD_LETTER.test(after(text, at)) &&
+        (WORD_LETTER.test(before(text, at)) ||
+          CLOSES_WORD.test(before(text, at)))
+      ) {
+        out.delete(at);
+      }
+    }
   }
   // break-spaces: after each space it keeps, a run of them included
   for (const r of rules) {
