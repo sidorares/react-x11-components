@@ -1843,3 +1843,27 @@ test("a scroll container's ::scroll-marker-group is a box beside it, holding the
   );
   assert.strictEqual(scroller.y, group.y + group.height, 'the group above');
 });
+
+test('a ::scroll-marker-group no rule styles is made, a block, and holds its positioned markers', async () => {
+  // the group is made wherever `scroll-marker-group` asks for one, of the
+  // initial style blockified, and is the containing block of its markers
+  // positioned out of the flow, fixed ones too (CSS Overflow 5, 3.1; WPT's
+  // scroll-marker-group-015 and -017)
+  const { node } = await render(
+    '<style>body{margin:0}#s{overflow:hidden;scroll-marker-group:after;' +
+      'margin-top:30px}#s>div::scroll-marker{content:"";position:fixed;' +
+      'top:0;left:0;width:10px;height:10px}</style>' +
+      '<div id="s"><div></div></div>',
+  );
+  const scroller = boxOf(view(node), 's');
+  const siblings = scroller.parent!.children;
+  const group = siblings[siblings.indexOf(scroller) + 1];
+  assert.strictEqual(group?.pseudo, 'scroll-marker-group', 'after it');
+  assert.strictEqual(group.kind, 'block', 'blockified');
+  const marker = group.children[0];
+  assert.deepStrictEqual(
+    [marker.x - group.x, marker.y - group.y],
+    [0, 0],
+    'placed against the group, not the viewport',
+  );
+});

@@ -8366,8 +8366,9 @@ export class Cascade {
    * The style of a scroll container's `::scroll-marker-group`, or of an
    * element's `::scroll-marker` (CSS Overflow 5, 3): what the rules for it
    * make of it, inheriting from the element, blockified as a box beside the
-   * scroller is. Null where no rule reaches it, and for a marker where none
-   * gives it a `content`, which makes no box as a `::before` makes none.
+   * scroller is, and made whether or not a rule reaches it. Null for a
+   * marker no rule gives a `content`, which makes no box as a `::before`
+   * makes none.
    */
   scrollMarkerStyleFor(
     el: Element,
@@ -8382,8 +8383,12 @@ export class Cascade {
     if (this._scoped && this._scopedPseudos.has(which)) {
       this._scopedInto(el, which, candidates);
     }
-    if (!candidates.length) return null;
-    if (which === 'scroll-marker' && !candidates.some(setsContent)) return null;
+    // the group is made whether or not a rule styles it, of the initial
+    // style, blockified (WPT's scroll-marker-group-015); a marker only where
+    // a rule gives it a `content`
+    if (which === 'scroll-marker') {
+      if (!candidates.length || !candidates.some(setsContent)) return null;
+    }
     candidates.sort(byCascade);
     const style = this._computeStyle(
       el,
@@ -8397,7 +8402,7 @@ export class Cascade {
       if (style.content === 'normal' || style.content === 'none') return null;
       return style;
     }
-    if (style.display === 'inline') blockify(style, false);
+    blockify(style, true);
     return style;
   }
 

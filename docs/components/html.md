@@ -9829,15 +9829,16 @@ a pass of their own over the whole document, cut by the boxes that clip
 their container, so a box positioned over a container's edge is under its
 bar.
 
-**Scroll markers are built in phases, and phase 1 is their boxes** (CSS
+**Scroll markers are built in phases: so far their boxes and where they go** (CSS
 Overflow 5, 3). A scroll container whose `scroll-marker-group` says `before`
 or `after` has a `::scroll-marker-group` box, its sibling before or after it,
-styled by the rules for it and blockified; in it is the `::scroll-marker` of
+styled by the rules for it, made whether or not one reaches it, and
+blockified, and the containing block of its markers positioned out of the
+flow, `fixed` ones as well; in it is the `::scroll-marker` of
 each element the scroller holds, in the order of the tree, where a rule gives
 the marker a `content`, an item of the group where the group is a flex box
-or a grid. A marker draws its box and no text yet: `content: ""` is all phase
-1 reads. Placing the group as the specification places it, the
-`::scroll-button`s, `:target-current` on the marker of what is scrolled to,
+or a grid. A marker draws its box and no text yet: `content: ""` is all
+these read. The `::scroll-button`s, `:target-current` on the marker of what is scrolled to,
 and a marker's press scrolling to its element are later phases, as is text
 `content` (`counter()`, `attr()`).
 
