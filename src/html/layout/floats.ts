@@ -11,12 +11,18 @@
 // Coordinates are the BFC's own: `x` from its content-box left edge, `y`
 // growing down from its content-box top.
 
+import type { FloatShape } from './float-shape.js';
+
 export interface FloatBox {
   left: number;
   right: number;
   top: number;
   bottom: number;
   side: 'left' | 'right';
+  /** The float area `shape-outside` gives it, from its margin box's top
+   *  left, which lines go around in place of the margin box (CSS Shapes
+   *  1, 6); absent for the margin box. */
+  shape?: FloatShape | null;
 }
 
 /** The horizontal band available at a height. */
@@ -78,6 +84,10 @@ export class FloatContext {
    * `solid` leaves out a float of no width: a block with a formatting
    * context of its own may not overlap a float's margin box (CSS 2.1 9.5),
    * and one with no area has nothing to overlap, wherever it is.
+   *
+   * `lines` is a line box asking, which goes around a float's area where
+   * `shape-outside` gives it one (CSS Shapes 1, 6): by the area's extent
+   * over the band, and not at all where the area has nothing there.
    */
   bandAt(
     y: number,
@@ -85,13 +95,20 @@ export class FloatContext {
     left = this.left,
     right = this.right,
     solid = false,
+    lines = false,
   ): Band {
     const bottom = y + Math.max(1, height);
     for (const box of this._boxes) {
       if (box.bottom <= y || box.top >= bottom) continue;
       if (solid && box.right <= box.left) continue;
-      if (box.side === 'left') left = Math.max(left, box.right);
-      else right = Math.min(right, box.left);
+      let near = box.side === 'left' ? box.right : box.left;
+      if (lines && box.shape) {
+        const extent = box.shape.extent(y - box.top, bottom - box.top);
+        if (!extent) continue;
+        near = box.left + (box.side === 'left' ? extent[1] : extent[0]);
+      }
+      if (box.side === 'left') left = Math.max(left, near);
+      else right = Math.min(right, near);
     }
     return { left, right: Math.max(left, right) };
   }
@@ -110,12 +127,15 @@ export class FloatContext {
    * bottom edge of a float beside it. Null when no float is, so nothing
    * below can widen the line.
    */
-  nextEdgeBelow(y: number, height: number): number | null {
-    const bottom = y + Math.max(1, height);
+  nextEdgeBelow(y: number, height: number, lines = false): number | null {
+    const h = Math.max(1, height);
+    const bottom = y + h;
     let next: number | null = null;
     for (const box of this._boxes) {
       if (box.bottom <= y || box.top >= bottom) continue;
-      if (next === null || box.bottom < next) next = box.bottom;
+      let edge = box.bottom;
+      if (lines && box.shape) edge = shapeEdgeBelow(box, y, h);
+      if (next === null || edge < next) next = edge;
     }
     return next;
   }
@@ -260,4 +280,27 @@ export class FloatContext {
       ? near + width <= far + FIT_SLACK
       : near - width >= far - FIT_SLACK;
   }
+}
+
+/**
+ * Where a line `height` tall at `y` next has more room beside a float's
+ * area: the first whole pixel down at which the area's far side, over the
+ * line's band, gives back some of it — or where the area, or the float,
+ * ends. A shape's side moves at any height, so it is looked for a pixel at
+ * a time, which is arithmetic on the shape and lays nothing out.
+ */
+function shapeEdgeBelow(box: FloatBox, y: number, height: number): number {
+  const shape = box.shape!;
+  const ext = (at: number) => shape.extent(at - box.top, at + height - box.top);
+  const now = ext(y);
+  if (!now) return box.bottom;
+  const left = box.side === 'left';
+  const side = left ? now[1] : now[0];
+  const end = Math.min(box.bottom, box.top + shape.bottom);
+  for (let at = Math.floor(y) + 1; at < end; at += 1) {
+    const e = ext(at);
+    if (!e) return at;
+    if (left ? e[1] < side - 1e-9 : e[0] > side + 1e-9) return at;
+  }
+  return end > y ? end : box.bottom;
 }

@@ -193,6 +193,8 @@ import type {
   Marker,
 } from './boxes.js';
 import { FloatContext } from './floats.js';
+import { floatShapeOf, shapeImagesOf } from './float-shape.js';
+import type { ShapeImageSource } from './float-shape.js';
 import { drawingViewport, foreignRect } from '../svg.js';
 import {
   CUT_LINES,
@@ -266,6 +268,10 @@ import {
 
 export interface LayoutContext {
   fonts: FontsLike | null;
+  /** The alpha of an image or a gradient a float's `shape-outside` names,
+   *  which its lines go around (`float-shape.ts`); none where nothing
+   *  hands images in. */
+  shapeImages?: ShapeImageSource | null;
   /** The engine `fonts` lay text out by (`FontsLike.engine`), which what a
    *  layout keeps of a box was laid out by. */
   engine: FontsLike | null;
@@ -1896,6 +1902,7 @@ export function layoutDocument(
   const reusing = !cuts && !tree.anchors && !tree.firstLine && !tree.foreign;
   const ctx: LayoutContext = {
     fonts,
+    shapeImages: shapeImagesOf(tree),
     engine: fonts?.engine ?? fonts,
     scale,
     viewportWidth,
@@ -2281,6 +2288,7 @@ export function layoutApart(
   framed.any = false;
   const ctx: LayoutContext = {
     fonts,
+    shapeImages: shapeImagesOf(tree),
     engine: fonts?.engine ?? fonts,
     scale,
     viewportWidth,
@@ -3456,7 +3464,7 @@ function layoutInlineContent(
       ? {
           size: (child: Box) => sizeFloat(child, ctx, contentWidth),
           place: (child: Box, y: number) =>
-            placeFloat(child, floats, y, contentLeft, contentWidth),
+            placeFloat(child, floats, y, contentLeft, contentWidth, ctx),
         }
       : undefined,
     // the lines the clamp leaves, where it cuts rather than counts
@@ -8202,7 +8210,7 @@ function layoutFloat(
   containingWidth: number,
 ): void {
   sizeFloat(box, ctx, containingWidth);
-  placeFloat(box, floats, y, containingLeft, containingWidth);
+  placeFloat(box, floats, y, containingLeft, containingWidth, ctx);
 }
 
 /** Lay a float out at its own width, and answer its outer width. */
@@ -8225,6 +8233,7 @@ function placeFloat(
   y: number,
   containingLeft: number,
   containingWidth: number,
+  ctx: LayoutContext,
 ): void {
   const outerWidth = box.width + box.marginLeft + box.marginRight;
   const clearance = floats.clearance(box.style.clear);
@@ -8260,6 +8269,9 @@ function placeFloat(
     top,
     bottom: top + box.height + box.marginTop + box.marginBottom,
     side: box.style.float === 'right' ? 'right' : 'left',
+    shape: box.style.shapeOutside
+      ? floatShapeOf(box, containingWidth, ctx.shapeImages)
+      : null,
   });
 }
 

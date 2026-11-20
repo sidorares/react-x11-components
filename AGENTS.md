@@ -2294,6 +2294,44 @@ things are load-bearing:
   its greedy lines. An engine option for break positions would lift this,
   and `balance` could use it too.
 
+**A float's lines go around its `shape-outside`, and nothing else does**
+(`layout/float-shape.ts`, CSS Shapes 1, 6–7). The float area is polygons
+in the float's own space, from its margin box's corner — a shape, a box
+rounded by `border-radius`, an image's opaque runs, an SVG image's fills —
+and a line asks it for its extent across over the line's band
+(`FloatShape.extent`). Five things are load-bearing. **Only a line asks**:
+`bandAt` and `nextEdgeBelow` take the shape where `lines` is true, which
+inline layout's `bandAt` alone passes, so placing the next float and a box
+with a formatting context of its own keep to the margin box, as the spec
+has them; and `nextEdgeBelow` steps down a pixel at a time beside a shape,
+since its side moves at any height. **A band is open at both ends**: an
+area that starts where a line ends is not beside it. **Its curves are cut
+`FINE`**, a five-hundredth of a pixel, where a clip's are a tenth: a
+line's box lands on the pixel its extent rounds to, and a chord a tenth
+inside a circle moved some lines a pixel. **What is on an open line moves
+with the left it is placed against** (`leftTo` in `inline.ts`): each piece
+is placed in the room of its own height, and text after an inline-block
+that reached into a narrower band set the line's left back without moving
+the block, which the line's alignment then moved on by the difference —
+latent for margin boxes, whose band rarely changes with a line's height,
+and every line beside a curved shape. Its twin was a right-to-left line's
+hanging space (`finishLine`): it is at the line's visual left, so the
+alignment takes it back off, and the line box starts after it, or the
+document's reach past the left shifted everything over by a space. And **an area is kept by its box and
+its style** (`KEPT`): anything new it reads joins the key. An image's
+pixels come through `setShapeImages`, which `<Html>` hands the tree before
+each layout, and an image arriving lays the document out again for each
+float it shapes once (`_shapesIn`). An SVG image has no pixels, so it is
+drawn on a context that records what it fills (`recordFills`), which reads
+ntk's `Path2D` command list structurally, its only way to: ntk has no
+public read of a path, and one that has no `_cmds` fills nothing. A
+context `SvgView` throws on marks the drawing failed for good, painting
+included, so **anything new `SvgView` calls on a context joins
+`recordFills`**, as a method that draws nothing where it is no fill
+(`DRAWN_AS_NOTHING`): a property it does not know answers undefined, which
+`SvgView` reads as a context without it, and a method it does not know
+throws.
+
 **A justified paragraph is the text engine's to space, where it says it
 can.** An engine that takes `justify` (`fonts.justifies`: ntk's, and
 react-x11's macOS engine's over @windowkit/appkit) spaces the lines after
