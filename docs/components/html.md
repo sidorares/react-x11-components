@@ -6243,7 +6243,18 @@ takes the grid area its lines name for its containing block, and a grid's
 or a flex box's child is where it would be as the box's one item: in a
 grid, the sole item of an area whose edges are the grid's content edges
 (CSS Grid 2, 10.1), aligned by its `justify-self` and `align-self`, a
-baseline falling back to the start and a last baseline to the end.
+baseline falling back to the start and a last baseline to the end. In a
+flex box it is set along the main axis by `justify-content` and across by
+its `align-self` (CSS Flexbox 1, 4.1), as Chrome, Firefox and Safari set
+it: `flex-start` and `flex-end` are the lines' sides, which `-reverse` and
+`wrap-reverse` turn round, where `start`, `end` and a baseline are the
+writing mode's, which they do not; `space-between` is `flex-start`,
+`space-around` and `space-evenly` centre it; `left` and `right` are the
+page's sides across it, the top and the bottom along a row that runs
+down, and the start along a column that does; `flow-start` and `flow-end`
+are `flex-start` and `flex-end`; `self-start` is the child's own start; and
+a `safe` alignment sets it at the axis's start where it would overflow. A flex box in a vertical writing mode is laid out on
+the page, so this holds there too.
 A grid sits on the baseline of its first item in row-major order — the
 first in its first row that holds one, by where it was placed — and an
 item with no line of its own gives the bottom edge of its border box (CSS
