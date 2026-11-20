@@ -775,6 +775,9 @@ export function layoutGridLanes(
       );
     }
     let across = 0;
+    /** Whether it was stretched across its lanes, which a layout at the
+     *  width it is stretched to down them gives back (`stretchAlong`). */
+    let stretchedAcross = false;
     if (subgridded[index]) {
       // a subgrid fills the lanes it spans, whatever aligns it (CSS Grid 2,
       // 9)
@@ -805,6 +808,7 @@ export function layoutGridLanes(
           Number.isFinite(contentWidth) ? contentWidth : child.width,
           ctx,
         );
+        stretchedAcross = true;
       }
     }
     // down its lanes: in the hole after it, where its alignment puts it
@@ -824,6 +828,16 @@ export function layoutGridLanes(
         stretchAlong(item, hole, rows ? contentWidth : area, rows, ctx)
       ) {
         along = 0;
+        // laid out again at its new width, it is as tall as its lane again
+        // (WPT's row-justify-items-001)
+        if (stretchedAcross) {
+          stretchDown(
+            item,
+            area,
+            Number.isFinite(contentWidth) ? contentWidth : child.width,
+            ctx,
+          );
+        }
       } else along = stackingSelf(selfAlong, hole, fillReverse);
     }
     // from the fill start, its leading margin first: its far one where the

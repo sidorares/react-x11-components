@@ -573,3 +573,16 @@ test("a grid lanes container's rules: broken around a spanner across its lanes, 
     'none in the gap after the first spanner there',
   );
 });
+
+test('the last item of a row lane stretched along it is as tall as its lane', async () => {
+  // Rows 80px tall: `b` is the last item in its lane, `justify-items:
+  // stretch` makes it as wide as the hole after it, and laid out again at
+  // that width it stays stretched across the lane (WPT's grid-lanes
+  // row-justify-items-001).
+  const { items } = await lanes(
+    'display:grid-lanes;grid-template-rows:80px;gap:5px;width:200px;' +
+      'justify-items:stretch',
+    item('a', 'width:70px') + item('b', ''),
+  );
+  assert.deepStrictEqual(items.b, [75, 0, 125, 80]);
+});
