@@ -328,6 +328,8 @@ import {
 import { containingParent } from './layout/multicol.js';
 import { subgridAxisOf } from './layout/css-grid.js';
 import type { PlacedTransition } from './layout/block.js';
+import { setShapeImages } from './layout/float-shape.js';
+import type { ShapeImageSource } from './layout/float-shape.js';
 import {
   FRAME_ROOTS,
   frameTurn,
@@ -561,6 +563,7 @@ import {
   forgetDrawings,
   namedBy,
   namersOf,
+  SvgDrawing,
 } from './svg.js';
 import {
   around,
@@ -599,7 +602,7 @@ import type {
   ShownSource,
   StreamShown,
 } from './media-devices.js';
-import type { IntrinsicSize } from './svg.js';
+import type { ClipContext, IntrinsicSize } from './svg.js';
 import { CanvasText } from './canvas-text.js';
 import { WebFonts } from './fonts.js';
 import type { DeclaredFace, DocumentFontFace, FontMatch } from './fonts.js';
@@ -3259,6 +3262,37 @@ export class HtmlViewNode extends Node {
     return { width, height, data };
   }
 
+  /** The floats whose shape's image was in when they were last laid out
+   *  again for it (`_imageArrived`). */
+  private readonly _shapesIn = new WeakSet<Box>();
+
+  /** An image's pixels by its URL, RGBA, for the area of a float whose
+   *  `shape-outside` names it; null until it is in, and for a drawing,
+   *  which has no pixels of its own to read. */
+  private readonly _shapePixels: ShapeImageSource = (url) => {
+    if (this._resources.state(url) !== 'ready') return null;
+    const found = this._resources.image(url);
+    if (found instanceof SvgDrawing) {
+      const scale = this._scale;
+      return {
+        draw: (ctx, w, h) =>
+          found.drawImage(ctx as ClipContext, 0, 0, w, h, scale),
+      };
+    }
+    const image = found as {
+      width?: number;
+      height?: number;
+      data?: Uint8Array;
+    } | null;
+    const data = image?.data;
+    const width = image?.width ?? 0;
+    const height = image?.height ?? 0;
+    if (!data || !width || !height || data.length !== width * height * 4) {
+      return null;
+    }
+    return { width, height, data };
+  };
+
   /**
    * Ask for every `background-image` the styles name. Known only once the
    * cascade has run, where an `<img>` is known from the markup; the store
@@ -3292,6 +3326,12 @@ export class HtmlViewNode extends Node {
           },
           true,
         );
+      }
+      // and a float's shape's, which its lines are laid out around: its
+      // arrival lays the document out again (`_imageArrived`)
+      const shape = urlOf(box.style.shapeImage);
+      if (shape !== null) {
+        this._resources.request({ url: shape, kind: 'image', element });
       }
       // and each mask layer's, which is an image as a background's is
       for (const image of box.style.mask.images) {
@@ -3405,6 +3445,16 @@ export class HtmlViewNode extends Node {
         const box = boxes.get(el);
         if (box && !tree.awaiting.includes(box)) take(box);
       }
+    }
+    // and a float whose shape is an image's alpha, which the lines beside
+    // it go around once it is in
+    for (const box of tree.backgrounds) {
+      const url = urlOf(box.style.shapeImage);
+      if (url === null || !box.isFloat || this._shapesIn.has(box)) continue;
+      if (!this._shapePixels(url)) continue;
+      this._shapesIn.add(box);
+      forgetSizes(box);
+      moves = true;
     }
     if (painted) {
       if (lazily === undefined) this._imagePainted();
@@ -5344,6 +5394,9 @@ export class HtmlViewNode extends Node {
           this._scrollOffsetsOf = this._source.document;
         }
         setScrollOffsets(this._tree, this._scrollOffsets, this._scale);
+        // and the pixels of the images floats' shapes name, which their
+        // lines go around (`float-shape.ts`)
+        setShapeImages(this._tree, this._shapePixels);
         // and where the pane has the viewport, for what is anchored across
         // its scroll, and whether the layout is a question no frame draws
         if (this._tree.anchors) {

@@ -6995,6 +6995,7 @@ function namesImages(style: ComputedStyle): boolean {
     !!style.backgroundImage ||
     !!style.backgroundImages ||
     urlOf(style.borderImage.source) !== null ||
+    urlOf(style.shapeImage) !== null ||
     style.mask !== NO_MASK
   );
 }

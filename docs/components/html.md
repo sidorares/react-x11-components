@@ -6995,8 +6995,22 @@ short as it goes, `nonzero` dropped. `shape-outside`, `shape-margin` and
 `shape-image-threshold` are read, written back and animated, a shape as
 `clip-path` reads one and computed as Chromium writes it, `rect()` and
 `xywh()` as the `inset()` they are, about the margin box where it names
-none; but no float lays its lines out along one, so a float's box is what
-lines go around. Inline elements
+none. And a float's lines go around it (CSS Shapes 1, 6–7): its float
+area is the shape — a circle, an ellipse, an `inset()` with its corners,
+a polygon, a `path()`, or a box named alone, rounded by `border-radius`
+(the margin box's corners spread as a shadow's are) — clipped to the
+margin box and grown by `shape-margin`. A line is narrowed by how far the
+area reaches across over all of its band, top to bottom, and not at all
+where the area has nothing there: a float whose area is empty, as
+`inset(50%)` is, shortens no line. An image is its pixels whose alpha is
+over `shape-image-threshold`, stretched over the content box, once they
+are in — the document is laid out again as they arrive — and an SVG image
+what it fills, where its fill's alpha is; a linear or a radial gradient is
+worked out a pixel at a time from its line or its rings. Only lines go
+around it: another float and a box with a formatting context of its own
+keep to the margin box. Not yet: a float in a vertical writing mode, which
+keeps its margin box, and an SVG's strokes and text, which are no part of
+its area. Inline elements
 have all of it but the
 sizes: an inline box's padding, border and margin take room on its line —
 the start side before its first fragment, the end side after its last, on

@@ -8780,7 +8780,7 @@ export function cornersOf(
  * `border-radius` is that box, and for a `clip-path`'s `round` is the
  * rectangle inside it — would overlap. Null where every corner is square.
  */
-function cornersFor(
+export function cornersFor(
   across: readonly Len[],
   down: readonly Len[] | null,
   w: number,
@@ -8823,7 +8823,7 @@ function cornersFor(
  *  (CSS Backgrounds 3, 5.2), and square where that leaves none. A shaped
  *  corner loses its own share of the width (`shapedBy`), so a bevel's
  *  border is as thick across the corner as along its sides. */
-function insetCorners(
+export function insetCorners(
   c: Corners,
   top: number,
   right: number,
@@ -11127,7 +11127,11 @@ function linearGradient(
 /** A linear gradient's angle across a box `w` by `h`: its own, or the
  *  one a corner gives it there, whose perpendicular runs through the other
  *  two corners. */
-function lineAngle(gradient: LinearGradient, w: number, h: number): number {
+export function lineAngle(
+  gradient: LinearGradient,
+  w: number,
+  h: number,
+): number {
   if (!gradient.corner) return gradient.angle;
   const turn = Math.atan2(h, w);
   return gradient.corner === 'top right'
@@ -11287,7 +11291,7 @@ function addStops(
  * spread evenly between its neighbours', the first at 0 and the last at 1
  * where they have none, and none is before the one before it.
  */
-function stopOffsets(stops: GradientStop[], length: number): number[] {
+export function stopOffsets(stops: GradientStop[], length: number): number[] {
   const at: (number | null)[] = stops.map((stop) =>
     stop.at === null
       ? null
@@ -11432,7 +11436,7 @@ function radialGradient(
 
 /** A radial gradient's centre and radii across a box `w` by `h`
  *  (`radialGradient`): its radii as written, or as its keyword says. */
-function radialShape(
+export function radialShape(
   gradient: RadialGradient,
   w: number,
   h: number,

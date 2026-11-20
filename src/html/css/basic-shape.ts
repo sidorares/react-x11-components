@@ -285,6 +285,9 @@ export function shapePolygons(
   shape: BasicShape,
   w: number,
   h: number,
+  /** How far a chord may stray from its curve: a float's area is cut far
+   *  finer than a clip, since a line beside it is placed by its extent. */
+  tolerance = TOLERANCE,
 ): { polys: number[][]; rule: FillRule } {
   switch (shape.kind) {
     case 'circle':
@@ -314,7 +317,10 @@ export function shapePolygons(
         rx = side(shape.rx, w, nearX, farX);
         ry = side(shape.ry, h, nearY, farY);
       }
-      return { polys: [ellipsePoints(cx, cy, rx, ry)], rule: 'nonzero' };
+      return {
+        polys: [ellipsePoints(cx, cy, rx, ry, tolerance)],
+        rule: 'nonzero',
+      };
     }
     case 'polygon': {
       const points: number[] = [];
@@ -369,6 +375,7 @@ export function shapePolygons(
             shape.radiiY ?? shape.radii,
             w,
             h,
+            tolerance,
           ),
         ],
         rule: 'nonzero',
@@ -379,10 +386,11 @@ export function shapePolygons(
 
 /** How many chords a curve that bends through `turn` radians at a radius
  *  of `r` takes, each within `TOLERANCE` of it. */
-function chords(r: number, turn: number): number {
-  if (!(r > TOLERANCE)) return 1;
-  const step = 2 * Math.acos(1 - TOLERANCE / r);
-  return Math.max(1, Math.min(256, Math.ceil(Math.abs(turn) / step)));
+function chords(r: number, turn: number, tolerance = TOLERANCE): number {
+  if (!(r > tolerance)) return 1;
+  const step = 2 * Math.acos(1 - tolerance / r);
+  const most = tolerance < TOLERANCE ? 4096 : 256;
+  return Math.max(1, Math.min(most, Math.ceil(Math.abs(turn) / step)));
 }
 
 function ellipsePoints(
@@ -390,9 +398,10 @@ function ellipsePoints(
   cy: number,
   rx: number,
   ry: number,
+  tolerance = TOLERANCE,
 ): number[] {
   const out: number[] = [];
-  const n = Math.max(8, chords(Math.max(rx, ry), 2 * Math.PI));
+  const n = Math.max(8, chords(Math.max(rx, ry), 2 * Math.PI, tolerance));
   for (let i = 0; i < n; i += 1) {
     const a = (i / n) * 2 * Math.PI;
     out.push(cx + rx * Math.cos(a), cy + ry * Math.sin(a));
@@ -412,6 +421,7 @@ function roundedPoints(
   down: readonly Len[] | null,
   boxW: number,
   boxH: number,
+  tolerance = TOLERANCE,
 ): number[] {
   if (!across || !down) return [x, y, x + w, y, x + w, y + h, x, y + h];
   const rx = across.map((r) => Math.max(0, resolve(r, boxW)));
@@ -431,7 +441,7 @@ function roundedPoints(
   const out: number[] = [];
   // each corner's quarter, from where it leaves one side to the next
   const corner = (cx: number, cy: number, i: number, from: number) => {
-    const n = chords(Math.max(rx[i], ry[i]), Math.PI / 2);
+    const n = chords(Math.max(rx[i], ry[i]), Math.PI / 2, tolerance);
     for (let k = 0; k <= n; k += 1) {
       const a = from + (k / n) * (Math.PI / 2);
       out.push(cx + rx[i] * Math.cos(a), cy + ry[i] * Math.sin(a));

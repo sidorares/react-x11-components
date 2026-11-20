@@ -14,8 +14,9 @@
 //   a position as the two length-percentages it comes to, `rect()` and
 //   `xywh()` as the `inset()` they are, path data absolute (`pathText`).
 //
-// What floats lay their lines out along is not worked out here: layout does
-// not read the shape, so a float's box is what lines go around.
+// What floats lay their lines out along is worked out in layout, from what
+// these compute to (`layout/float-shape.ts`): the shape laid down in its box
+// as polygons, or an image's alpha (`ComputedStyle.shapeImage`).
 
 import { serializeMath } from './calc-tree.js';
 import { parseShapeFunction } from './shape-function.js';
@@ -226,7 +227,15 @@ function circleOrEllipse(fn: string, inner: string): Shape | null {
 
 /** `inset()`, `rect()` and `xywh()`: four lengths and the corners. */
 function boxShape(fn: string, inner: string): Shape | null {
-  const parts = splitValue(inner);
+  // a `/` between the radii needs no space around it: `40px/ 0 60px`
+  const parts = splitValue(inner).flatMap((p) =>
+    /^[^(]*\//.test(p)
+      ? p
+          .split('/')
+          .flatMap((q, i) => (i ? ['/', q] : [q]))
+          .filter(Boolean)
+      : [p],
+  );
   const round = parts.findIndex((p) => p.toLowerCase() === 'round');
   const sides = round < 0 ? parts : parts.slice(0, round);
   const radii = round < 0 ? null : radiiOf(parts.slice(round + 1));

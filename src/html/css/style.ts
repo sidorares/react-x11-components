@@ -1208,9 +1208,14 @@ export interface ComputedStyle {
    *  `none`. Not inherited. */
   objectViewBox: ObjectViewBox | null;
   /** `shape-outside`, `shape-margin` and `shape-image-threshold` (CSS
-   *  Shapes 1, 6), as they compute (`shape-outside.ts`): read back, and
-   *  not laid out along. Not inherited. */
+   *  Shapes 1, 6), as they compute (`shape-outside.ts`): read back, and a
+   *  float's lines laid out along them (`layout/float-shape.ts`). Not
+   *  inherited. */
   shapeOutside: ClipPath | string | null;
+  /** The image a `shape-outside` that is one names, read as a background
+   *  layer's is — a url, a gradient — for its alpha; null where it is a
+   *  shape or none. */
+  shapeImage: BackgroundImage;
   shapeMargin: Len;
   shapeImageThreshold: number;
   /** A form control's own look (`auto`), or `none`: the page draws it,
@@ -2158,6 +2163,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     imageRendering: 'auto',
     objectViewBox: null,
     shapeOutside: null,
+    shapeImage: null,
     shapeMargin: 0,
     shapeImageThreshold: 0,
     appearance: 'auto',
@@ -3255,11 +3261,17 @@ export function applyDeclaration(
     case 'shape-outside': {
       // a shape is read as `clip-path` reads one, whose interpolation it
       // takes, about the margin box where it names none; an image is kept
-      // as written, and not laid out along (`shape-outside.ts`)
+      // as written, for its computed value, and read as a background's is,
+      // for its alpha (`layout/float-shape.ts`)
       const v = value.trim();
-      if (/^none$/i.test(v)) style.shapeOutside = null;
-      else if (isShapeImage(v)) style.shapeOutside = v;
-      else if (shapeOutsideSpecified(v)) {
+      if (/^none$/i.test(v)) {
+        style.shapeOutside = null;
+        style.shapeImage = null;
+      } else if (isShapeImage(v)) {
+        style.shapeOutside = v;
+        style.shapeImage = backgroundImageOf(v, ctx) ?? null;
+      } else if (shapeOutsideSpecified(v)) {
+        style.shapeImage = null;
         const shape = parseClipPath(v, ctx);
         if (!shape) return;
         style.shapeOutside = {
@@ -10969,7 +10981,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'object-fit': ['objectFit'],
   'image-rendering': ['imageRendering'],
   'object-view-box': ['objectViewBox'],
-  'shape-outside': ['shapeOutside'],
+  'shape-outside': ['shapeOutside', 'shapeImage'],
   'shape-margin': ['shapeMargin'],
   'shape-image-threshold': ['shapeImageThreshold'],
   appearance: ['appearance', 'appearanceText'],

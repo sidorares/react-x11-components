@@ -1282,8 +1282,23 @@ function linesOf(
    *  goes on, so they are placed with it, never left at a line's end. */
   let pending: Extract<Item, { kind: 'edge' }>[] = [];
   let pendingWidth = 0;
+  /** Place the open line's content against `left` from here on: what is
+   *  on it already moves with it. Each piece is placed against the room of
+   *  its own height, and the line's lines up by the left it ends on, so a
+   *  piece that only set the new left — text after an inline-block that
+   *  reached past a float's shape — left the block where the taller band
+   *  had it, and the line's alignment moved it on again by the difference. */
+  const leftTo = (left: number): void => {
+    if (!isEmpty(open) && left !== open.left) {
+      const dx = left - open.left;
+      for (const text of open.texts) text.drawX += dx;
+      for (const placed of open.atomics) placed.x += dx;
+      for (const edge of open.edges) edge.x += dx;
+    }
+    open.left = left;
+  };
   const placePending = (left: number): void => {
-    if (pending.length) open.left = left;
+    leftTo(left);
     for (const edge of pending) {
       const placed: EdgePlacement = {
         box: edge.box,
@@ -1438,14 +1453,7 @@ function linesOf(
       if (fits) {
         options.floatBoxes!.place(item.box, options.startY + y);
         floatsPlaced.push(item.box);
-        const left = bandAt(options, y, guess).left;
-        if (!isEmpty(open) && left !== open.left) {
-          const dx = left - open.left;
-          for (const text of open.texts) text.drawX += dx;
-          for (const placed of open.atomics) placed.x += dx;
-          for (const edge of open.edges) edge.x += dx;
-          open.left = left;
-        }
+        leftTo(bandAt(options, y, guess).left);
       } else {
         deferred.push(item.box);
       }
@@ -1471,7 +1479,6 @@ function linesOf(
         open.edges.push(placed);
         open.order.push({ kind: 'edge', at: open.x, item: placed });
         open.x += item.width;
-        open.left = band.left;
       }
       index += 1;
       continue;
@@ -1543,7 +1550,6 @@ function linesOf(
       open.x += outer;
       open.hang = 0;
       open.glued = false;
-      open.left = room.left;
       index += 1;
       continue;
     }
@@ -1891,7 +1897,6 @@ function linesOf(
         : null),
     });
     open.x += first.width;
-    open.left = band.left;
     open.hang = 0;
     open.glued =
       first.end > first.start &&
@@ -3602,6 +3607,10 @@ function finishLine(
   }
   let dx = band.left - open.left - indent;
   if (shift > 0 && Number.isFinite(free) && free > 0) dx += free * shift;
+  // the spaces a right-to-left line ends on are at its visual left (UAX #9,
+  // L1), and hang past that edge rather than push what is on the line over
+  // by their width: a box as wide as its line stood a space past its end
+  if (rtl && open.hang > 0) dx -= open.hang;
   if (dx) {
     for (const text of open.texts) text.drawX += dx;
     for (const placed of open.atomics) placed.x += dx;
@@ -3615,8 +3624,11 @@ function finishLine(
     textStart = Math.min(textStart, text.textStart);
     textEnd = Math.max(textEnd, text.textEnd);
   }
+  // and the line starts after them, so they are no overflow either: a
+  // reach past the left of a right-to-left block shifts the document over
+  const hung = rtl && open.hang > 0 ? open.hang : 0;
   const line: LineBox = {
-    x: open.left + indent,
+    x: open.left + indent + hung,
     y,
     width: used,
     height,
@@ -8745,7 +8757,7 @@ function belowFloats(
   y: number,
   height: number,
 ): number | null {
-  const edge = options.floats?.nextEdgeBelow(options.startY + y, height);
+  const edge = options.floats?.nextEdgeBelow(options.startY + y, height, true);
   return edge == null ? null : Math.max(y + 1, edge - options.startY);
 }
 
@@ -8793,6 +8805,8 @@ function bandAt(
     height,
     options.originX,
     options.originX + options.width,
+    false,
+    true,
   );
   return {
     left: Math.max(0, band.left - options.originX),
