@@ -7948,9 +7948,15 @@ two lines, a dotted one's dots or a rounded one's ring, the shapes the
 border itself is drawn with. With `text` it paints in both. A `linear-gradient()` is drawn over the colour as
 an image the size of the padding box, or the size `background-size` gives
 it, repeated like one: by angle, side or corner, with its stops where they
-say or spread between their neighbours, and a colour interpolation method,
-`in oklab` as Tailwind 4 writes it, read and not honoured; the gradient is
-mixed in sRGB. A `radial-gradient()` is drawn the same way (CSS Images 3,
+say or spread between their neighbours, its colours mixed in the space
+its interpolation method names (`in oklab`, as Tailwind 4 writes it, or `in
+hsl longer hue`), in oklab where a stop is no legacy colour (CSS Color 4's
+own functions, a relative colour, a component left `none`), and in sRGB
+otherwise (CSS Images 4, 3.5.2). A transition mixed in another space, or
+eased by a hint between two stops, is drawn as many straight runs between
+colours worked out in that space; one stop fills the box with its colour.
+Stop colours are clipped to sRGB as they are read, so a transition through
+colours outside it is drawn through the clipped ones. A `radial-gradient()` is drawn the same way (CSS Images 3,
 3.2): a circle or an ellipse, to the nearest or the furthest side or
 corner of its box or of the radii it names, centred where `at` puts it,
 its stops along the ray from the centre to its edge and past it, and

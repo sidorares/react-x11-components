@@ -1668,3 +1668,51 @@ const NOT_SCHEMES = new Set([
   'revert-layer',
   'default',
 ]);
+
+/**
+ * Two colours `t` of the way from the first to the second, mixed in a
+ * colour space as a gradient mixes its stops (CSS Images 4, 3.5.2; CSS
+ * Color 4, 12): premultiplied by their alphas, a polar space's hue by
+ * `method`. Gamma-encoded sRGB in and out, clipped to it. Null where
+ * either is no colour, or the space is none this knows.
+ */
+export function mixIn(
+  a: string,
+  b: string,
+  t: number,
+  space: string,
+  method = 'shorter',
+): string | null {
+  const x = readRgba(a);
+  const y = readRgba(b);
+  if (!x || !y) return null;
+  const xs = toSpace(space, x.rgb);
+  const ys = toSpace(space, y.rgb);
+  if (!xs || !ys) return null;
+  const alpha = x.a * (1 - t) + y.a * t;
+  const hueAt = HUE[space] ?? -1;
+  const out: Triple = [0, 0, 0];
+  for (let i = 0; i < 3; i += 1) {
+    if (i === hueAt) {
+      // a hue a colour with no chroma has none of, and takes the other's
+      const grey = (c: Triple): boolean =>
+        space === 'hsl'
+          ? c[1] === 0
+          : space === 'hwb'
+            ? c[1] + c[2] >= 100
+            : c[1] < 1e-4;
+      out[i] = mixHue(
+        grey(xs) ? NaN : xs[i],
+        grey(ys) ? NaN : ys[i],
+        t,
+        method,
+      );
+    } else {
+      const v = xs[i] * x.a * (1 - t) + ys[i] * y.a * t;
+      out[i] = alpha === 0 ? xs[i] * (1 - t) + ys[i] * t : v / alpha;
+    }
+  }
+  const rgb = fromSpace(space, out);
+  if (!rgb) return null;
+  return serialize([clamp01(rgb[0]), clamp01(rgb[1]), clamp01(rgb[2])], alpha);
+}
