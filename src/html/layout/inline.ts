@@ -2751,6 +2751,7 @@ function layoutOwnBreaks(
   const starts = runStarts(runs);
   const rules = breakRulesOf(items);
   const breaks = breakOpportunities(text, rules);
+  const forced = new Set(breaks.filter((k) => k.required).map((k) => k.at));
   const breakSpacesAt = (at: number): boolean =>
     !!rules[runIndexAt(starts, at)].breakSpaces;
   const options = {
@@ -2782,7 +2783,13 @@ function layoutOwnBreaks(
   // place a line may break is, and a caret's place for the rest. One layout
   // a paragraph, which the engine keeps, and a few looks a line.
   const total = text.length;
-  const one = fonts.layout(runs, base, { ...options, wrap: false });
+  // with no width at all, which is what keeps it on one line on an engine
+  // that reads no `wrap` (CoreText)
+  const one = fonts.layout(runs, base, {
+    ...options,
+    maxWidth: undefined,
+    wrap: false,
+  });
   const xs = new Map<number, number>();
   const lineOf = new Map<number, number>();
   for (let l = 0; l < one.lines.length; l += 1) {
@@ -2863,12 +2870,17 @@ function layoutOwnBreaks(
       piece += 1;
     }
     // a layout of its own, as a `break-spaces` line is
-    const layout = fonts.layout(own, base, {
+    let layout = fonts.layout(own, base, {
       ...options,
       maxWidth: width + lines.length * 1e-6,
       align,
       wrap: false,
     });
+    // a line wider than its room starts at its start edge (CSS Text 3,
+    // 7.1), and an engine that reads no `wrap` would break it again
+    if (layout.lines.length > 1 && !forced.has(to)) {
+      layout = fonts.layout(own, base, { ...options, maxWidth: undefined });
+    }
     LAYOUT_RUNS.set(layout, own);
     widest = Math.max(widest, emitLayout(layout, spans, 0, y, lines));
     y += layout.height;
