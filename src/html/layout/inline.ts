@@ -1534,62 +1534,109 @@ function linesOf(
     // it, and its last line ends in an ellipsis — as it does where the
     // clamp point falls just after the lines, more of the container after
     // them (CSS Overflow 4, 4.2).
-    let clampCut = false;
-    if (clamp) {
+    // What a clamp makes of the runs laid out at a width: cut to its
+    // lines, and its last ending in an ellipsis. Balancing asks it again
+    // at narrower widths, so it reads the runs as they were before it.
+    const wholeRuns = runs;
+    const wholeSpans = spans;
+    const clampAt = (at: number, laid: TextLayoutLike) => {
+      let runs = wholeRuns;
+      let spans = wholeSpans;
+      let layout = laid;
+      const options = { ...layoutOptions, maxWidth: at };
       // lines that do not wrap are laid out whole (`cutOf`), and an engine
       // counts no lines it does not wrap: the clamp's are cut here
       let past = false;
-      if (layout.lines.length > clamp.lines) {
-        const end = layout.lines[clamp.lines - 1].end;
+      if (layout.lines.length > clamp!.lines) {
+        const end = layout.lines[clamp!.lines - 1].end;
         past = inkBeyond(runs, end);
         runs = sliceRuns(runs, 0, end);
-        layout = fonts.layout(runs, base, layoutOptions);
-        LAYOUT_RUNS.set(layout, runs);
+        layout = fonts.layout(runs, base, options);
       }
       const shown = layout.lines.length;
-      clampCut =
+      const clampCut =
         shown > 0 &&
-        shown >= clamp.lines &&
+        shown >= clamp!.lines &&
         (past ||
           (layout.truncated ?? inkBeyond(runs, layout.lines[shown - 1].end)));
+      let kept = 0;
+      for (const run of runs) kept += run.text.length;
       if (
-        clamp.ellipsis &&
+        clamp!.ellipsis &&
         shown > 0 &&
-        shown === clamp.lines &&
-        (clampCut || clamp.follows)
+        shown === clamp!.lines &&
+        (clampCut || clamp!.follows)
       ) {
         const ended = ellipsized(
           fonts,
           textItems,
           runs,
           base,
-          layoutOptions,
+          options,
           layout,
-          options.width,
+          at,
           style,
-          !!clamp.legacy,
+          !!clamp!.legacy,
         );
         layout = ended.layout;
         runs = ended.runs;
         spans = ended.spans;
-        LAYOUT_RUNS.set(layout, runs);
+        // the ellipsis is the last run, and no text of the document's
+        kept = 0;
+        for (let i = 0; i < runs.length - 1; i += 1) {
+          kept += runs[i].text.length;
+        }
       }
+      return { layout, runs, spans, clampCut, kept, shown };
+    };
+    // A clamp that cut the text short says so, for the clamp point after
+    // it, and its last line ends in an ellipsis — as it does where the
+    // clamp point falls just after the lines, more of the container after
+    // them (CSS Overflow 4, 4.2).
+    let clampCut = false;
+    let clamped: ReturnType<typeof clampAt> | null = null;
+    if (clamp) {
+      clamped = clampAt(options.width, layout);
+      ({ layout, runs, spans, clampCut } = clamped);
+      LAYOUT_RUNS.set(layout, runs);
     }
     // `text-wrap: balance`: the lines broken at the narrowest width that
-    // keeps as many of them, and then set in the whole width
+    // keeps as many of them, and then set in the whole width. Under a
+    // clamp it is the lines the clamp keeps that are balanced, the
+    // ellipsis on the last of them, as Chrome has it: the narrowest width
+    // at which the clamp keeps as much of the text in as few lines as at
+    // the whole width. So the text before a line the ellipsis displaced
+    // comes down beside the ellipsis, and the ellipsis takes its room on
+    // the last line, where the clamp shows one.
     let balanced = false;
     if (
       style.textWrapStyle === 'balance' &&
       layoutOptions.maxWidth !== undefined &&
-      !cut &&
+      (!cut || (clamped && wraps(style))) &&
       style.textAlign !== 'justify' &&
-      layout.lines.length > 1 &&
-      layout.lines.length <= BALANCE_LINES
+      // as many lines as the clamp shows, a line the ellipsis displaced
+      // among them
+      (clamped?.shown ?? layout.lines.length) > 1 &&
+      (clamped?.shown ?? layout.lines.length) <= BALANCE_LINES
     ) {
       const width = layoutOptions.maxWidth;
-      const at = balancedWidth(fonts, runs, base, layoutOptions, width, layout);
+      const whole = clamped;
+      const count = whole?.shown ?? layout.lines.length;
+      const laidAt = (at: number) =>
+        fonts.layout(whole ? wholeRuns : runs, base, {
+          ...layoutOptions,
+          maxWidth: at,
+        });
+      const fits = whole
+        ? (mid: number) => {
+            const at = clampAt(mid, laidAt(mid));
+            return at.kept >= whole.kept && at.layout.lines.length <= count;
+          }
+        : (mid: number) => laidAt(mid).lines.length <= count;
+      const at = balancedWidth(fits, width, layout, count);
       if (at < width) {
-        layout = fonts.layout(runs, base, { ...layoutOptions, maxWidth: at });
+        if (whole) ({ layout, runs, spans } = clampAt(at, laidAt(at)));
+        else layout = laidAt(at);
         LAYOUT_RUNS.set(layout, runs);
         balanced = true;
       }
@@ -7647,8 +7694,16 @@ function ellipsized(
     } else end = last.start + (probe('break-word').lines[0]?.end ?? 0);
   }
   // the text to the break, less the white space the line ends in — an
-  // empty line keeps the break before it, and is the ellipsis alone
-  const line = sliceRuns(runs, last.start, end);
+  // empty line is the ellipsis alone, after a forced break: the space
+  // before it was a break the engine may not take again, where the
+  // ellipsis fits after the line before, which is the line the clamp
+  // displaced it from (WPT's `block-ellipsis-016`)
+  const displaced = end === last.start && layout.lines.length > 1;
+  const line = sliceRuns(
+    runs,
+    displaced ? layout.lines[layout.lines.length - 2].start : last.start,
+    end,
+  );
   let trailing = 0;
   for (let i = line.length - 1; i >= 0; i -= 1) {
     const text = line[i].text;
@@ -7669,8 +7724,9 @@ function ellipsized(
     left -= length;
     at = item.start + length;
   }
-  spans.add(at, mark.text.length, null);
-  kept.push(mark);
+  const ending = displaced ? { ...mark, text: '\n' + mark.text } : mark;
+  spans.add(at, ending.text.length, null);
+  kept.push(ending);
   return { layout: fonts.layout(kept, base, options), runs: kept, spans };
 }
 
@@ -8272,22 +8328,20 @@ const BALANCE_LINES = 6;
  * across a page.
  */
 function balancedWidth(
-  fonts: FontsLike,
-  runs: TextRun[],
-  base: Record<string, unknown>,
-  options: Parameters<FontsLike['layout']>[2],
+  /** Whether the text still breaks as it should at a width. */
+  fits: (width: number) => boolean,
   width: number,
   layout: TextLayoutLike,
+  /** How many lines the text is to break into. */
+  count: number,
 ): number {
-  const count = layout.lines.length;
   let total = 0;
   for (const line of layout.lines) total += line.width;
   let lo = total / count;
   let hi = width;
   for (let step = 0; step < 8 && hi - lo > 1; step += 1) {
     const mid = (lo + hi) / 2;
-    const probe = fonts.layout(runs, base, { ...options, maxWidth: mid });
-    if (probe.lines.length <= count) hi = mid;
+    if (fits(mid)) hi = mid;
     else lo = mid;
   }
   return Math.ceil(hi);
