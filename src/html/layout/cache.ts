@@ -286,7 +286,8 @@ function sameRun(a: DocumentRun, b: DocumentRun): boolean {
     a.shapeApart === b.shapeApart &&
     a.kernAcross === b.kernAcross &&
     a.inline === b.inline &&
-    a.stretch === b.stretch
+    a.stretch === b.stretch &&
+    a.emphasis === b.emphasis
   );
 }
 
@@ -318,7 +319,8 @@ function sameStyle(
     a.shapeApart === b.shapeApart &&
     a.kernAcross === b.kernAcross &&
     a.inline === b.inline &&
-    a.stretch === b.stretch
+    a.stretch === b.stretch &&
+    a.emphasis === b.emphasis
   );
 }
 

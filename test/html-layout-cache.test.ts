@@ -151,6 +151,7 @@ const other: Record<(typeof RUN_FIELDS)[number], TextRun[keyof TextRun]> = {
   kernAcross: true,
   inline: { width: 10, draw: () => {} },
   stretch: 75,
+  emphasis: 'o\u0000#000000\u0000\u25cf',
 };
 
 test('every field of a run is what it is found by', () => {
