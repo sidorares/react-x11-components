@@ -37,6 +37,7 @@ import { isShapeProp, shapeInitial, shapeValue } from './shapes.js';
 import type { ShapeContext } from './shapes.js';
 import { IDENTITY, multiply, parseTransform } from './transform.js';
 import type { Matrix, TransformFunction } from './transform.js';
+import { transformOriginSpecified } from './specified.js';
 import { parseLength, splitValue } from './values.js';
 import type { Len } from './values.js';
 
@@ -373,7 +374,9 @@ function originIn(
     } else if (x === null) x = at(part, box.width);
     else if (y === null) y = at(part, box.height);
   }
+  // one value: the other is `center` (CSS Transforms 1, 6)
   if (parts.length === 1 && y === null) y = box.height / 2;
+  if (parts.length === 1 && x === null) x = box.width / 2;
   return [box.x + (x ?? 0), box.y + (y ?? 0)];
 }
 
@@ -425,4 +428,183 @@ function mix(prop: string, a: string, b: string, q: number): string {
 /** A matrix as an SVG transform attribute has it. */
 function matrixText(m: Matrix): string {
   return `matrix(${m.map((n) => +n.toFixed(6)).join(' ')})`;
+}
+
+/** A number as SVG's transform list writes one: a sign, digits with a
+ *  point or none, and an exponent (SVG 1.1, 7.6). */
+const SVG_NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/;
+
+/** How many numbers each function of a transform list takes. */
+const SVG_ARITY: Record<string, readonly number[]> = {
+  matrix: [6],
+  translate: [1, 2],
+  scale: [1, 2],
+  rotate: [1, 3],
+  skewX: [1],
+  skewY: [1],
+};
+
+/**
+ * A `transform` attribute as the `transform` property's value, in CSS's
+ * syntax: lengths in user units and angles in degrees, a `rotate()` about a
+ * point as the moves around it. `none` for a list that is none of SVG's —
+ * a unit, a `rotate()` of two numbers, a name in the wrong case — which
+ * leaves the element untransformed in all three browsers, as an invalid
+ * attribute does, where `SvgView` reads the numbers out of it and moves the
+ * element by them.
+ */
+export function svgTransformCss(text: string): string {
+  let at = 0;
+  const out: string[] = [];
+  const space = (): void => {
+    while (at < text.length && /[\s]/.test(text[at])) at += 1;
+  };
+  const separator = (): boolean => {
+    const from = at;
+    space();
+    if (text[at] === ',') {
+      at += 1;
+      space();
+    }
+    return at > from;
+  };
+  space();
+  while (at < text.length) {
+    // functions may stand with nothing between them (SVG 1.1, 7.6)
+    if (out.length) separator();
+    if (at >= text.length) break;
+    const name = /^[a-zA-Z]+/.exec(text.slice(at))?.[0];
+    const arity = name !== undefined ? SVG_ARITY[name] : undefined;
+    if (!name || !arity) return 'none';
+    at += name.length;
+    space();
+    if (text[at] !== '(') return 'none';
+    at += 1;
+    space();
+    const n: number[] = [];
+    while (text[at] !== ')') {
+      if (n.length) {
+        separator();
+        if (text[at] === ')') return 'none';
+      }
+      const number = SVG_NUMBER.exec(text.slice(at))?.[0];
+      if (number === undefined) return 'none';
+      at += number.length;
+      n.push(Number(number));
+      space();
+      if (at >= text.length) return 'none';
+    }
+    at += 1;
+    if (!arity.includes(n.length)) return 'none';
+    const px = (v: number): string => `${v}px`;
+    switch (name) {
+      case 'matrix':
+        out.push(`matrix(${n.join(',')})`);
+        break;
+      case 'translate':
+        out.push(`translate(${px(n[0])},${px(n[1] ?? 0)})`);
+        break;
+      case 'scale':
+        out.push(`scale(${n[0]},${n[1] ?? n[0]})`);
+        break;
+      case 'rotate':
+        if (n.length === 3) {
+          out.push(
+            `translate(${px(n[1])},${px(n[2])}) rotate(${n[0]}deg) ` +
+              `translate(${px(-n[1])},${px(-n[2])})`,
+          );
+        } else out.push(`rotate(${n[0]}deg)`);
+        break;
+      case 'skewX':
+        out.push(`skewX(${n[0]}deg)`);
+        break;
+      case 'skewY':
+        out.push(`skewY(${n[0]}deg)`);
+        break;
+    }
+    space();
+  }
+  return out.length ? out.join(' ') : 'none';
+}
+
+/** Lists read, by their text: a drawing has the same few many times. */
+let SVG_LISTS = new Map<string, string>();
+
+/** A `transform` attribute as `svgTransformCss` reads it, kept. */
+function svgListOf(text: string): string {
+  let css = SVG_LISTS.get(text);
+  if (css === undefined) {
+    if (SVG_LISTS.size > 4096) SVG_LISTS = new Map();
+    css = svgTransformCss(text);
+    SVG_LISTS.set(text, css);
+  }
+  return css;
+}
+
+/** A `transform-origin` attribute as the property's value: its numbers are
+ *  user units, which CSS writes as pixels (SVG 2, 6.2). */
+function svgOriginCss(text: string): string | null {
+  const css = text
+    .trim()
+    .split(/[\s,]+/)
+    .map((part) =>
+      /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(part)
+        ? `${part}px`
+        : part,
+    )
+    .join(' ');
+  // one that is no value of the property is as though it were not there
+  // (`top 100%`, `left right`): the origin an SVG element starts with
+  return transformOriginSpecified(css) === null ? null : css;
+}
+
+/**
+ * What an element's presentation attributes say of how it moves, where
+ * `SvgView` would draw it otherwise: a `transform-origin`, which it does not
+ * read, and a `transform` that is no list of SVG's, which it reads the
+ * numbers out of. Null where the attributes are `SvgView`'s to draw.
+ */
+export function presentedMotion(el: Element): ShapeMotion | null {
+  const attribs = el.attribs;
+  const written = attribs['transform-origin'];
+  const origin = written === undefined ? null : svgOriginCss(written);
+  const list = attribs.transform;
+  const transform = list === undefined ? null : svgListOf(list);
+  const invalid =
+    transform === 'none' && list !== undefined && list.trim() !== '';
+  if (origin === null && !invalid) return null;
+  return {
+    animations: NO_ANIMATIONS,
+    transform,
+    origin,
+    box: null,
+  };
+}
+
+/** What the rules say of how an element moves, over what its attributes
+ *  say: a declaration's value for each of them it sets, and the
+ *  attribute's for the rest, as a presentation attribute is under every
+ *  rule (SVG 2, 6.2). The attribute's `transform` counts only where the
+ *  rules set an origin or a box it is placed by, or the attributes call for
+ *  it (`presentedMotion`). */
+export function underAttributes(
+  el: Element,
+  motion: ShapeMotion | null,
+): ShapeMotion | null {
+  const presented = presentedMotion(el);
+  if (!presented) {
+    if (!motion || motion.transform !== null) return motion;
+    if (motion.origin === null && motion.box === null) return motion;
+    const list = el.attribs.transform;
+    return list === undefined
+      ? motion
+      : { ...motion, transform: svgListOf(list) };
+  }
+  if (!motion) return presented;
+  return {
+    animations: motion.animations,
+    transform: motion.transform ?? presented.transform,
+    origin: motion.origin ?? presented.origin,
+    box: motion.box,
+  };
 }
