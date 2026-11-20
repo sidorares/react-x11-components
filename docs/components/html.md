@@ -5855,7 +5855,11 @@ Where nothing scrolls the element it is placed at rest, where a browser
 starts it, against the viewport's `top` and start side alone. A float, an inline-block and an absolute box of `width: auto`
 shrink to fit the room their margins leave, and an absolute box the room
 its offset or its static position leaves: at `left: 50%` it has half the
-width. None is narrower than its longest word. A relatively positioned inline box moves its text, its
+width. None is narrower than its longest word. An absolute box with both offsets
+down and `height: auto` has the height they leave it as a definite one, so a
+percentage height in it is of that height, a canvas or an image at
+`height: 100%` takes its ratio's width from it, and the box shrinks to that.
+A relatively positioned inline box moves its text, its
 background and borders and any block inside it, and leaves its lines where
 they were, which is how Tailwind's preflight and normalize.css raise a
 `<sup>`; a paragraph with one is laid out a line at a time, as one with an
