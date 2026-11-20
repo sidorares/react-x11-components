@@ -8610,7 +8610,9 @@ where a line in any other vertical mode would be. Its lines are as long as
 its containing block is tall where that is definite, else as its
 containing block's definite `max-height` lets them be, raised to its
 `min-height` where that is more and held to the viewport's height, else as
-the viewport is tall (7.3.1), and no longer than their content. A frame is drawn through its
+the nearest scroll container above it is tall where that is definite, held
+to the viewport's height too, else as the viewport is tall (7.3.1), and no
+longer than their content. A frame is drawn through its
 turn at a whole translation, the fraction moved into where what it holds is
 painted from, so what is in it is snapped to the pixels the page would snap
 it to, its lines' edges included. An absolute box at its static position in

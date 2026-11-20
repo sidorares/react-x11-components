@@ -4690,6 +4690,17 @@ function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
       ctx.readViewportHeight = true;
     }
   }
+  // else the nearest scroll container's above it, where its height is
+  // definite, held to the viewport's as well — as Chrome reads 7.3.1, and
+  // WPT's available-size-003 and -005 ask: not what is left of it after
+  // what comes before, nor its own padding's
+  if (!Number.isFinite(base)) {
+    const port = scrollportHeightAbove(box);
+    if (Number.isFinite(port)) {
+      base = Math.min(port, ctx.viewportHeight);
+      ctx.readViewportHeight = true;
+    }
+  }
   if (!Number.isFinite(base)) {
     base = ctx.viewportHeight;
     ctx.readViewportHeight = true;
@@ -4729,6 +4740,19 @@ function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
   }
   // within its own `min-height` and `max-height`
   return clampHeight(box, size + box.verticalExtra) - box.verticalExtra;
+}
+
+/** The content height of the nearest scroll container above a box, where
+ *  it has one of its own or a greatest one; NaN where there is none, or
+ *  its height is its content's. */
+function scrollportHeightAbove(box: Box): number {
+  for (let at = box.parent; at; at = at.parent) {
+    if (!at.el || !scrolls(at.style)) continue;
+    const own = percentBaseInside(at);
+    if (Number.isFinite(own)) return own;
+    return maxContentHeightOf(at);
+  }
+  return NaN;
 }
 
 /** The most a block's content box may be tall, where its `max-height`
