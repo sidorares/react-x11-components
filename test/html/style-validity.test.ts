@@ -242,6 +242,16 @@ test('a keyword property takes its keywords each at most once, as the three brow
     ['border-shape', 'circle() padding-box margin-box', ''],
     ['border-shape', 'padding-box circle()', ''],
     ['border-shape', 'nonsense', ''],
+    [
+      'border-shape',
+      'circle(farthest-corner at center)',
+      'circle(farthest-corner at center center)',
+    ],
+    [
+      'border-shape',
+      'ellipse(closest-corner farthest-corner at 20px 50px)',
+      'ellipse(closest-corner farthest-corner at 20px 50px)',
+    ],
   ];
   const out = await readBack(cases.map(([p, v]) => [p, v]));
   assert.deepEqual(

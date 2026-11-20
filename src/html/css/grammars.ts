@@ -394,6 +394,23 @@ function maxLines(word: string): string | null {
   return words.length === 2 ? `${n} auto` : n;
 }
 
+/** A basic shape at its shortest, with the corner radii CSS Borders 4
+ *  adds to `circle()` and `ellipse()` (6.1), which a shape outside
+ *  takes none of: read as the sides they stand beside, and put back. */
+function basicShapeOf(token: string): string | null {
+  const corners: string[] = [];
+  const read = token.replace(/\b(closest|farthest)-(corner|side)\b/gi, (m) => {
+    corners.push(m.toLowerCase());
+    return m.replace(/-corner$/i, '-side');
+  });
+  const shape = basicShapeSpecified(read) ?? null;
+  if (!shape || !corners.length) return shape;
+  let at = 0;
+  return shape.replace(/\b(?:closest|farthest)-side\b/g, (m) =>
+    at < corners.length ? corners[at++] : m,
+  );
+}
+
 /** `border-shape` (CSS Borders 4, 6): `none`, or one or two shapes, each
  *  with a box after it or none, the outer shape's `border-box` left out. */
 function borderShape(word: string): string | null {
@@ -411,7 +428,7 @@ function borderShape(word: string): string | null {
     }
     const shape = /^shape\(/i.test(token)
       ? (parseShapeFunction(token, CHECK)?.text ?? null)
-      : (basicShapeSpecified(token) ?? null);
+      : basicShapeOf(token);
     if (!shape || shapes === 2) return null;
     shapes += 1;
     boxed = false;
