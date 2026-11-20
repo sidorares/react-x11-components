@@ -4369,6 +4369,14 @@ type FaceSource = Pick<
   'fontFamily' | 'fontSize' | 'fontWeight' | 'fontStyle' | 'fontStretch'
 >;
 
+/** The names `text-orientation` is declared under, read with the face
+ *  where a sheet declares a writing mode: what a `ch` is measured as. */
+const TEXT_ORIENTATION_NAMES = new Set([
+  'text-orientation',
+  '-webkit-text-orientation',
+  '-epub-text-orientation',
+]);
+
 /** …and its line height, for `lh`. */
 type LineSource = FaceSource &
   Pick<ComputedStyle, 'lineHeight' | 'lineHeightIsLength'>;
@@ -8810,7 +8818,7 @@ export class Cascade {
       scale: this.scale * zoom,
       zoom,
       ex: () => this._exOf(style),
-      ch: () => this._chOf(style),
+      ch: () => this._chIn(style, style),
       lh: () => this._lineHeightOf(style),
       rlh: () => this._lineHeightOf(root) * rootZoom,
     };
@@ -8831,6 +8839,24 @@ export class Cascade {
       this._xHeights.set(key, ex);
     }
     return ex;
+  }
+
+  /** A `ch` for an element: the advance of its "0" along its inline axis
+   *  (CSS Values 4, 6.1.1), which in a vertical line set upright is the
+   *  em a glyph stands in there (`uprightItems`), and otherwise the
+   *  font's "0" across. */
+  private _chIn(
+    style: Pick<ComputedStyle, 'writingMode' | 'textOrientation'>,
+    face: FaceSource,
+  ): number {
+    if (
+      (style.writingMode === 'vertical-rl' ||
+        style.writingMode === 'vertical-lr') &&
+      style.textOrientation === 'upright'
+    ) {
+      return face.fontSize;
+    }
+    return this._chOf(face);
   }
 
   /** The advance of a style's font's "0": the font's own, asked once per
@@ -9591,7 +9617,7 @@ export class Cascade {
       scale: this.scale * zoom,
       zoom,
       ex: () => this._exOf(parentStyle),
-      ch: () => this._chOf(parentStyle),
+      ch: () => this._chIn(parentStyle, parentStyle),
       families: this._mapFamilies,
       lh: () => this._lineHeightOf(parentStyle),
       rlh: () => {
@@ -9640,7 +9666,10 @@ export class Cascade {
           d.prop === 'color-scheme' ||
           d.prop === 'font-size' ||
           d.prop === 'font' ||
-          d.prop === 'all'
+          d.prop === 'all' ||
+          // and the orientation, which makes a `ch` in a vertical line set
+          // upright an em (`_chIn`)
+          (this._writing && TEXT_ORIENTATION_NAMES.has(d.prop))
         ) {
           this._apply(style, parentStyle, d, ctxParent);
         }
@@ -9691,7 +9720,7 @@ export class Cascade {
       em: style.fontSize,
       rem: root ? style.fontSize : ctxParent.rem,
       ex: () => this._exOf(face),
-      ch: () => this._chOf(face),
+      ch: () => this._chIn(style, face),
       lh: () => this._lineHeightOf(line ?? style),
     };
     // an `lh` in `line-height` is the parent's line height, as an `em` in
