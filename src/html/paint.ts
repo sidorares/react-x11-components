@@ -2450,6 +2450,10 @@ function paintTransformed(
 
 /** Whether a matrix's linear part is a quarter turn, a half turn or a
  *  mirror: every entry -1, 0 or 1, one of each row and column nonzero. */
+/** How far a frame's origin is moved back along an axis its turn runs
+ *  backwards, which is far less than anything is drawn to. */
+const TIE = 1e-6;
+
 function axisAligned(a: number, b: number, c: number, d: number): boolean {
   const unit = (v: number) => v === 0 || v === 1 || v === -1;
   if (!unit(a) || !unit(b) || !unit(c) || !unit(d)) return false;
@@ -2530,10 +2534,16 @@ function paintTurned(ctx: PaintContext, box: Box, options: PaintOptions): void {
     const ty = Math.round(ky);
     through = [a, b, c, d, tx, ty];
     // and what is held painted from Aᵀ · (K − T)
+    // An axis the turn runs backwards breaks a tie the other way: what is
+    // half a pixel along it rounds up in the frame and down on the page,
+    // so it is moved a hair back, to round down (WPT's css-grid
+    // grid-self-baseline-vertical-rl-004, whose Ahem baselines fall on
+    // halves).
+    const tie = (sign: number): number => (sign < 0 ? -TIE : 0);
     within = {
       ...options,
-      originX: a * (kx - tx) + b * (ky - ty),
-      originY: c * (kx - tx) + d * (ky - ty),
+      originX: a * (kx - tx) + b * (ky - ty) + tie(a + b),
+      originY: c * (kx - tx) + d * (ky - ty) + tie(c + d),
     };
   }
   const back = invert(through);
