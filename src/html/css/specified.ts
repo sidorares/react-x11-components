@@ -262,9 +262,13 @@ export function specifiedValue(
   const math = specifiedMath(name, value);
   if (math !== undefined) return math;
   // a colour, by its grammar (`color-syntax.ts`); a gap rule's colour is
-  // a list of them, and a caret's, an accent's and an outline's may be
-  // `auto`
-  if (PLAIN_COLOR.test(name) && !name.includes('rule-')) {
+  // a list of them, a caret's is followed by `auto` or none, and an
+  // accent's and an outline's may be `auto`
+  if (
+    PLAIN_COLOR.test(name) &&
+    !name.includes('rule-') &&
+    name !== 'caret-color'
+  ) {
     const word = value.trim();
     const lower = word.toLowerCase();
     if (
