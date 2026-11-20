@@ -17,7 +17,9 @@
  * rows and items, among them (CSS Flexbox 1, 10; CSS Grid 1, 12) — never
  * inside a line, a replaced element, a table, a box that clips or
  * scrolls, one size containment applies to, or one that says
- * `break-inside: avoid` (4.1); before a box a forced break is on (3.1); `orphans` and `widows` lines of a block
+ * `break-inside: avoid` (4.1); before a box a forced break is on (3.1); not
+ * before one a `break-before` or `break-after` avoids where an earlier
+ * break will do (3.2, 4.4); `orphans` and `widows` lines of a block
  * kept together at either side of one (4.3), and a margin next to one
  * dropped where the break was not forced (5.2). A box with a height and
  * nothing in it has no line or box for a break to fall inside, and is cut
@@ -121,6 +123,10 @@ interface Unit {
   /** Whether a forced break comes before it (CSS Fragmentation 3, 3.1),
    *  and where the column after it starts: above the margin it keeps. */
   forced?: number;
+  /** Whether a break before it is to be avoided (CSS Fragmentation 3,
+   *  3.2): its own `break-before`, or the `break-after` of what is before
+   *  it, is `avoid`. */
+  avoid?: boolean;
 }
 
 /** The units that overlap down the strip, which go together: one alone, or
@@ -142,6 +148,8 @@ interface Group {
   last: number;
   /** Where a forced break before it starts the next column, if one does. */
   forced?: number;
+  /** Whether a break before it is to be avoided, where another will do. */
+  avoid?: boolean;
 }
 
 interface Gathered {
@@ -158,6 +166,8 @@ interface Gathered {
   /** Whether the last box gathered asked for a break after it, which comes
    *  before whatever follows it. */
   after?: boolean;
+  /** Whether the last box gathered avoids a break after it. */
+  avoidAfter?: boolean;
   /** The boxes a break may fall inside that clone their edges at one
    *  (`box-decoration-break: clone`), in the order they were gathered. */
   cloned: Box[];
@@ -299,6 +309,13 @@ function forces(value: string | undefined): boolean {
     value !== 'avoid' &&
     !value.startsWith('avoid-')
   );
+}
+
+/** Whether a `break-before` or `break-after` value avoids a break in
+ *  columns (CSS Fragmentation 3, 3.2): `avoid` and `avoid-column` do, and
+ *  `avoid-page` and `avoid-region` are of other fragmentation contexts. */
+function avoids(value: string | undefined): boolean {
+  return value === 'avoid' || value === 'avoid-column';
 }
 
 /** Make a unit end, for the breaks, no lower than a box it is in. */
@@ -461,6 +478,8 @@ function gather(
   }
   // a forced break after the box before, which comes before this one
   let pending = false;
+  // and a `break-after: avoid` there, which avoids the break before this one
+  let shunning = false;
   // a forced break before a box's first child is the box's own, which a box
   // with layout containment does not take on (CSS Containment 2, 3.2), so
   // there it is no break at all (WPT's css-contain/contain-layout-breaks-002)
@@ -486,6 +505,10 @@ function gather(
       pending || (!heading && forces(child.style.passive['break-before']));
     heading = false;
     pending = false;
+    // a break avoided before a box is avoided before its first unit, which
+    // is where that break falls, however deep the unit is in it
+    const shun = shunning || avoids(child.style.passive['break-before']);
+    shunning = false;
     // a forced break before the first unit of a box, which keeps the
     // margin after it (CSS Fragmentation 3, 5.2): the column starts above
     // the box's own
@@ -495,6 +518,8 @@ function gather(
         unit.forced = Math.min(unit.forced ?? Infinity, at);
       }
       pending = forces(child.style.passive['break-after']);
+      if (shun) unit.avoid = true;
+      shunning = avoids(child.style.passive['break-after']);
     };
     // the room clearance set it down by, which is none of its margin
     const clear = CLEARED_FROM.get(child);
@@ -544,6 +569,8 @@ function gather(
     if (into.loose.has(child)) into.loose.add(box);
     const afterInside = into.after;
     into.after = false;
+    const avoidInside = into.avoidAfter;
+    into.avoidAfter = false;
     if (!span) {
       // nothing in its flow to break between: it goes whole, or is cut
       const unit: Unit = {
@@ -592,8 +619,11 @@ function gather(
     reach(span);
     force(span[0]);
     pending ||= afterInside === true;
+    // a break avoided after a box's last child is avoided after the box
+    shunning ||= avoidInside === true;
   }
   into.after = pending;
+  into.avoidAfter = shunning;
   return first && last ? [first, last] : null;
 }
 
@@ -636,6 +666,7 @@ function groupsOf(units: Unit[]): Group[] {
       unit.forced !== undefined && top <= unit.top + EPS
         ? unit.forced
         : undefined,
+    avoid: unit.avoid === true && top <= unit.top + EPS,
   });
   // what no break may fall inside: what overlaps goes together
   let group: Group | null = null;
@@ -654,6 +685,7 @@ function groupsOf(units: Unit[]): Group[] {
       if (unit.forced !== undefined && unit.top <= group.top + EPS) {
         group.forced = Math.min(group.forced ?? Infinity, unit.forced);
       }
+      if (unit.avoid && unit.top <= group.top + EPS) group.avoid = true;
     } else {
       group = fresh(unit, unit.top, unit.bottom);
       group.empty = unit.size <= EPS;
@@ -702,6 +734,7 @@ function groupsOf(units: Unit[]): Group[] {
     if (unit.forced !== undefined && unit.group.top >= unit.top - EPS) {
       unit.group.forced = Math.min(unit.group.forced ?? Infinity, unit.forced);
     }
+    if (unit.avoid && unit.group.top >= unit.top - EPS) unit.group.avoid = true;
     unit.ends =
       unit.below !== undefined
         ? groupAt(groups, unit.below, true)
@@ -834,6 +867,17 @@ function fill(
   /** Where each break inside a group falls for the boxes it clones the
    *  edges of: the column's foot, before the end edges came off it. */
   const ats = [top];
+  /** Where to break, for a break before a group: before it, or, where a
+   *  break there is avoided (`break-before` or `break-after: avoid`), at
+   *  the last break before it in the column that is not, past something
+   *  with a height — and before it after all where there is none (CSS
+   *  Fragmentation 3, 4.4: the avoid rules are the first to give way). */
+  const shunned = (at: number): number => {
+    for (let j = at; j > head; j -= 1) {
+      if (!groups[j].avoid) return j === at || !bare(j, true) ? j : at;
+    }
+    return at;
+  };
   const next = (at: number, from: number, inside: boolean, y = from): void => {
     const lift = clones ? clones.start(at, inside, y) : 0;
     ats.push(y);
@@ -877,7 +921,7 @@ function fill(
       const bottom = columnTop + height;
       const foot = bottom - drop(i, true, bottom);
       if (foot - from > EPS) next(i, foot, true, bottom);
-      else next(i, group.top, false);
+      else next(shunned(i), groups[shunned(i)].top, false);
       continue;
     }
     if (jumpFrom && (i === head || bare(i, true))) {
@@ -956,6 +1000,7 @@ function fill(
         }
       }
     }
+    at = shunned(at);
     next(at, groups[at].top, false);
   }
   return { starts, tops, cut, shortage, over, lifts, ats };
