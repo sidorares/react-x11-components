@@ -2496,7 +2496,11 @@ metric(
     const last = lines[3].texts[0];
     const rows = COLUMN_ROWS.get(last as never);
     assert.ok(rows, 'the last line is cut to its rows');
-    const natural = last.layout.lines[last.layoutLine];
+    // the harness's layouts name no line's height: the engine's do
+    const natural = last.layout.lines[last.layoutLine] as unknown as {
+      y: number;
+      height: number;
+    };
     assert.strictEqual(rows.bottom, natural.y + natural.height, 'at its foot');
     assert.ok(
       last.layout.lines.length > last.layoutLine + 1,
