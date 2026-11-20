@@ -2123,6 +2123,32 @@ metric('line-clamp: auto shows the lines its height holds', async () => {
 });
 
 metric(
+  'a balanced clamp evens out the lines it keeps, the ellipsis on the last',
+  async () => {
+    // WPT's text-wrap-balance-line-clamp-003 and -004: the clamp first,
+    // its third line displaced by the ellipsis, then balanced; and where
+    // nothing can come down beside the ellipsis, it is alone on the line
+    // it displaced, not after the line before
+    const { node } = await render(
+      '<style>body{margin:0} div{font-family:monospace;width:9.1ch;' +
+        'text-wrap-style:balance;line-clamp:3}</style>' +
+        '<div id="a">1 2 3 4 5 6 7 8 9 unbreakable stuff</div>' +
+        '<div id="b">12345678 123456 123456789012 123</div>',
+    );
+    const el = view(node);
+    const a = lineTextsOf(el, 'a').map((text) => text.trim());
+    assert.deepStrictEqual(a.slice(0, 2), ['1 2 3', '4 5 6']);
+    assert.strictEqual(a.length, 3);
+    assert.strictEqual(lastRunText(linesOf(el, 'a')[2]), '…');
+    const b = lineTextsOf(el, 'b').map((text) => text.trim());
+    assert.deepStrictEqual(b.slice(0, 2), ['12345678', '123456']);
+    assert.strictEqual(b.length, 3);
+    assert.doesNotMatch(lastRunText(linesOf(el, 'b')[1]) ?? '', /\u2026/);
+    assert.match(lastRunText(linesOf(el, 'b')[2]) ?? '', /\u2026$/);
+  },
+);
+
+metric(
   "truncate: a line that clips ends in an ellipsis at the box's width",
   async () => {
     const { node } = await render(

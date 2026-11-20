@@ -6137,7 +6137,11 @@ formatting context of its own, a `flow-root` say, breaks as any block does;
 only one that scrolls or clips, a multicol container, a clamp and an
 orthogonal flow go to a column whole, as does a box whose only content is a
 float that cannot be cut. A forced break before the first child of a box
-with layout containment is none, since it would be the box's own. The
+with layout containment is none, since it would be the box's own. A break
+`break-before` or `break-after` avoids (`avoid`, `avoid-column`), on a box
+or on what is about it, a flex item's included, goes to the last break
+before it in the column that is not avoided and has something with a height
+before it, and falls where it would where there is none. The
 columns balance, and CSS leaves how to the user agent; this does as Blink
 does — the content's height shared out between the columns, no less than
 the tallest thing that cannot break, then as much
@@ -6189,7 +6193,9 @@ strip the columns were cut from had its containing block, an
 inline box's among them, whose fragments are taken where the strip had its
 lines before the columns moved them — its first one at the end of a
 line, holding nothing, where it starts there with a box out of the flow
-and all its text goes on to the next, as Blink keeps it — and is then cut
+and all its text goes on to the next, as Blink keeps it, but not after a
+forced break, which ends the line before with nothing of the box on it —
+and is then cut
 into them as a float with a height is, with what it holds; an anchor it
 refers to in the same columns it sees unbroken, where the strip had it,
 and one outside them the rectangle around the anchor's pieces (CSS Anchor
@@ -8284,17 +8290,18 @@ start tag is dropped, as HTML's parser drops it) and CSS Text 4's halves
 of it, `white-space-collapse` and `text-wrap-mode`, `text-wrap` (Tailwind
 4's `text-nowrap`, and `text-balance`: a heading of up to six lines broken
 at the narrowest width that keeps as many of them, and set in its whole
-width, as Chrome does it; lines made a piece at a time, beside a float,
-after an indent or in fonts of more than one size, are balanced as Blink
-balances them, each line's room narrowed alike, a float keeping the line
-the unbalanced lines placed it on; and `text-pretty`, a paragraph's last word kept
+width, as Chrome does it, under a clamp the lines the clamp keeps, with
+room for its ellipsis on the last; lines made a piece at a time, beside a
+float, after an indent or in fonts of more than one size, are balanced as
+Blink balances them, each line's room narrowed alike, a float keeping the
+line the unbalanced lines placed it on; and `text-pretty`, a paragraph's last word kept
 off a line of its own where Chrome keeps it off — see
 [the decisions](#the-decisions)), `line-clamp`
 (CSS Overflow 4: a line-clamp container shows the first lines of its
 formatting context, counted through the blocks in it, and is as tall as
 they are; what comes after them is invisible and takes no room, and the
 last line ends in an ellipsis where more follows, placed after the words
-that fit beside it. Tailwind's `line-clamp-2` writes it as
+that fit beside it, or alone on the line it displaced where none do. Tailwind's `line-clamp-2` writes it as
 `-webkit-line-clamp` on a vertical `-webkit-box`, the one place that form
 clamps, as in a browser, and that form's ellipsis cuts inside a word where
 the line has no room for it, as `text-overflow`'s does — as Chrome, Firefox
@@ -9864,8 +9871,12 @@ each direction a rule gives a `content`, `*` naming all four and `up`,
 to right has them, siblings after the element and its `::after` and before
 a group placed after it, in the order block-start, inline-start,
 inline-end, block-end, and items blockified where what holds them is a flex
-box or a grid. Blink makes them whether or not the element scrolls, and so
-does this. A button is `:enabled` where its element is a scroll container
+box or a grid, each holding what its `content` says, text, counters and
+images, as a `::before` does, and each with a button's look: the user
+agent's rules for a `<button>` are a `::scroll-button()`'s too, the
+palette's chrome where the page leaves its look alone, and the web's
+outset frame where it styles it (`stylesControl`), as for a `<button>`.
+Blink makes them whether or not the element scrolls, and so does this. A button is `:enabled` where its element is a scroll container
 that can scroll its way from where it is, by its writing mode and direction,
 and `:disabled` otherwise: the view works that out after each layout and
 each scroll, and tells a change as one of `-rx-scroll-buttons`, an attribute

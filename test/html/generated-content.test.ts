@@ -1877,7 +1877,7 @@ test('an element has a ::scroll-button() box for each direction a rule gives a c
   // none for a direction no rule gives a `content` (CSS Overflow 5, 4; WPT's
   // css-pseudo/relative-box-order-of-pseudo-elements)
   const { node } = await render(
-    '<style>body{margin:0}#s::scroll-button(*){display:block;height:10px}' +
+    '<style>body{margin:0}#s::scroll-button(*){display:block;height:10px;padding:0;border:0}' +
       '#s::scroll-button(right){content:""}#s::scroll-button(up){content:""}' +
       '</style><div id="s"></div><p id="after"></p>',
   );
@@ -1933,4 +1933,65 @@ test('a ::scroll-button() is :enabled where its element can scroll its way, and 
   await act();
   await act();
   assert.deepStrictEqual(colours(), [gray, gold, gray, gray], 'and at the end');
+});
+
+test('a ::scroll-button() holds the text its content says, a counter in it counted', async () => {
+  // as a `::before` holds its (CSS Overflow 5, 4; WPT's scroll-buttons-
+  // contents-appearance and -counter-appearance)
+  const { node } = await render(
+    '<style>body{margin:0}#s{counter-reset:n 3}#s::scroll-button(right){' +
+      'content:"next " counter(n);display:block}</style><div id="s"></div>',
+  );
+  type Laid = LaidBox & {
+    parent: Laid | null;
+    kind?: string;
+    text?: string;
+  };
+  const s = boxOf(view(node), 's') as Laid;
+  const siblings = s.parent!.children as Laid[];
+  const button = siblings[siblings.indexOf(s) + 1];
+  assert.strictEqual(button?.pseudo, 'scroll-button');
+  const text = (box: Laid): string =>
+    box.kind === 'text'
+      ? (box.text ?? '')
+      : (box.children as Laid[]).map(text).join('');
+  assert.strictEqual(text(button), 'next 3');
+});
+
+test("a ::scroll-button() has a button's look: the palette's, and the web's where the page styles it", async () => {
+  // as a `<button>` has (CSS Overflow 5, 4; WPT's scroll-buttons-appearance
+  // and scroll-buttons-enabled): its padding and frame from the user agent,
+  // the palette's chrome where the page leaves its look alone, and Chrome's
+  // outset border where it gives it a background
+  const { node } = await render(
+    '<style>body{margin:0}#a::scroll-button(right),#b::scroll-button(right){' +
+      'content:"p"}#b::scroll-button(right){background:gold}</style>' +
+      '<div id="a"></div><div id="b"></div><button id="plain">p</button>' +
+      '<button id="styled" style="background:gold">p</button>',
+  );
+  type Laid = LaidBox & {
+    parent: Laid | null;
+    style: { borderTopStyle: string; borderRadius: unknown; display: string };
+  };
+  const el = view(node);
+  const button = (id: string) => {
+    const s = boxOf(el, id) as Laid;
+    const siblings = s.parent!.children as Laid[];
+    // inline-level among blocks, in the anonymous block after its element
+    const after = siblings[siblings.indexOf(s) + 1];
+    return after.pseudo ? after : (after.children[0] as Laid);
+  };
+  const look = (b: Laid) => [b.style.borderTopStyle, b.style.borderRadius];
+  assert.strictEqual(button('a').style.display, 'inline-block');
+  assert.deepStrictEqual(
+    look(button('a')),
+    look(boxOf(el, 'plain') as Laid),
+    "the palette's, as a <button>'s",
+  );
+  assert.deepStrictEqual(
+    look(button('b')),
+    look(boxOf(el, 'styled') as Laid),
+    "the web's, as a styled <button>'s",
+  );
+  assert.strictEqual(button('b').style.borderTopStyle, 'outset');
 });
