@@ -6154,25 +6154,7 @@ in a spanner, and in nothing positioned in it, is positioned in the
 container, its offset parent with it, and an anchor in it is in none of the
 boxes it is laid out through. A box a break falls inside has a piece in each
 column: its background and its borders are drawn a piece at a time, with no
-edge at the break.
-
-`column-height` and `column-wrap` (CSS Multi-column 2) set the columns in
-rows, a `row-gap` apart, each row as many columns as there are and as tall
-as `column-height` says, or, where it says `auto` and `column-wrap: wrap`
-asks for rows, as the container's own height. `column-wrap: auto` wraps
-where `column-height` is a length, and `columns` takes one after a slash
-(`columns: 2 / 100px`), as `column-height` alone makes a box a multicol
-container. The rows are filled one after another, and under
-`column-fill: balance` each row's columns are then as short as still hold
-what the row holds, the row keeping its full height; a spanner goes in what is left of its row where it fits
-there, and at the next row's top where it does not, and a column of no
-height still takes a pixel of what can be cut, as Blink sets them. With no
-height to wrap at there is one row, but where forced breaks make more
-columns than there are, rows of them, each as tall as its tallest. Not
-wrapping, the columns are as tall as `column-height`, whatever the
-container's height. A multicol container in another's columns still goes
-whole, so the rows of one nested in another's are not cut where the outer
-columns end. Under `box-decoration-break: clone` each piece is a box of
+edge at the break. Under `box-decoration-break: clone` each piece is a box of
 its own, with its borders, padding, shadows and outline all round it, a piece a break ends running on to the column's foot as Blink fills it, and
 the edges take room: the column before a break keeps the end edges of every
 cloned box the break falls inside at its foot, and the one after starts
@@ -6200,11 +6182,37 @@ refers to in the same columns it sees unbroken, where the strip had it,
 and one outside them the rectangle around the anchor's pieces (CSS Anchor
 Positioning 1, 2). A multicol container in a vertical writing mode sets its
 columns in its frame, along the inline axis down the page and as tall as its
-block size, and what is positioned in them is cut where they are. A
-multicol container in another's columns goes to a column whole, where a
-browser breaks it. A box positioned in a block a spanner breaks is laid out
+block size, and what is positioned in them is cut where they are. A box positioned in a block a spanner breaks is laid out
 against all of the block, its rows one after another down the strip, and
 cut into the columns of each row it reaches.
+
+`column-height` and `column-wrap` (CSS Multi-column 2) set the columns in
+rows, a `row-gap` apart, each row as many columns as there are and as tall
+as `column-height` says, or, where it says `auto` and `column-wrap: wrap`
+asks for rows, as the container's own height. `column-wrap: auto` wraps
+where `column-height` is a length, and `columns` takes one after a slash
+(`columns: 2 / 100px`), as `column-height` alone makes a box a multicol
+container. The rows are filled one after another, and under
+`column-fill: balance` each row's columns are then as short as still hold
+what the row holds, the row keeping its full height; a spanner goes in what is left of its row where it fits
+there, and at the next row's top where it does not, and a column of no
+height still takes a pixel of what can be cut, as Blink sets them. With no
+height to wrap at there is one row, but where forced breaks make more
+columns than there are, rows of them, each as tall as its tallest. Not
+wrapping, the columns are as tall as `column-height`, whatever the
+container's height. A multicol container in another's columns whose height is known before
+its content is set — rows of `column-height`, or columns filled in turn to
+a height of their own — has its rows cut where those columns end: a row
+starts at each one it reaches, as tall as what is left of it, and where the
+container's own rows are of a height, at the next one's top where one does
+not fit in what is left, cut to the column where it is taller. What stands
+first in a row it does not fit goes to the next row, where it is taller,
+and so do lines `orphans` keeps together, but where they are the first of a
+container that avoids a break before it.
+Such a container is cut at the foot of each column as a box that holds
+nothing is, and what it holds moved to the column it is in. It still goes whole as a float, an item or out of the flow, and in columns that are balanced, which have no height until its content
+is set, and where it holds a box that spans its columns.
+
 A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
 `grid-template-rows`, or the `grid-template` and `grid` shorthands —
 lengths, percentages, `fr`s, `auto`, `minmax()`, `fit-content()`, and
@@ -8692,6 +8700,10 @@ subgrid has no frame of its own whatever its writing mode, since it is laid
 out in its grid's axes (CSS Grid 2, 9), and what is in it is orthogonal, or
 not, by its grid's writing mode: a vertical item of a vertical subgrid of a
 horizontal grid draws its text down the page.
+
+A `vertical-lr` flow is laid out as `vertical-rl`'s and put back across;
+a block in it that runs right to left, a `vertical-rl` one, keeps its lines
+and blocks in its own order, and is moved whole.
 
 Not yet: `text-combine-upright` and its kin, a horizontal block, float or
 absolutely positioned box inside a `vertical-lr` flow (laid out turned with

@@ -1920,6 +1920,62 @@ test('the columns shorthand takes a column-height after a slash', async () => {
   assert.deepStrictEqual(at(el, 'c', 'm'), [0, 40, 280, 20], 'a row down');
 });
 
+test('a multicol container in another’s columns starts a row of its columns at each one it reaches', async () => {
+  // The inner container starts 40px down a column 100px tall: a row 60px
+  // tall there holds 120px of its 300px, and the rest goes to a row at
+  // the next column's top, balanced at 90px, with what follows under it
+  // (CSS Multi-column 1, 8.1; WPT's multicol-nested-013 and
+  // column-height-027).
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:2;gap:0;column-fill:auto;width:200px;height:100px">' +
+      '<div style="height:40px"></div>' +
+      '<div id="i" style="columns:2;gap:0"><div id="c" style="height:300px">' +
+      '</div></div><div id="a" style="height:10px"></div></div>',
+    300,
+  );
+  const el = view(node);
+  const pieces = (id: string) =>
+    COLUMN_PIECES.get(boxOf(el, id) as never)?.map((p) => [
+      p.x,
+      p.y,
+      p.width,
+      p.height,
+    ]);
+  assert.deepStrictEqual(pieces('c'), [
+    [0, 40, 50, 60],
+    [50, 40, 50, 60],
+    [100, 0, 50, 90],
+    [150, 0, 50, 90],
+  ]);
+  assert.deepStrictEqual(pieces('i'), [
+    [0, 40, 100, 60],
+    [100, 0, 100, 90],
+  ]);
+  const a = boxOf(el, 'a');
+  assert.deepStrictEqual([a.x, a.y], [100, 90], 'what follows');
+});
+
+test('lines orphans keeps together go to the next row where a row is cut short', async () => {
+  // The inner container has 90px left of the outer column: two lines of
+  // 50px under `orphans: 2` do not fit, and go together to the row at the
+  // next column's top (WPT's multicol-nested-018).
+  const { node } = await render(
+    '<style>body{margin:0}.mc{columns:2;column-gap:0;column-fill:auto}' +
+      '.ib{display:inline-block;vertical-align:top;width:200%;height:50px}' +
+      '</style><div style="width:100px">' +
+      '<div class="mc" style="height:190px;line-height:50px;orphans:2;widows:2">' +
+      '<div style="height:100px"></div><div class="mc">' +
+      '<div class="ib" id="a"></div><br><div class="ib" id="b"></div><br>' +
+      '</div></div></div>',
+    300,
+  );
+  const el = view(node);
+  const a = boxOf(el, 'a');
+  const b = boxOf(el, 'b');
+  assert.deepStrictEqual([a.x, a.y, b.x, b.y], [50, 0, 50, 50]);
+});
+
 test('a box break-inside: avoid keeps whole is broken where it is taller than a column', async () => {
   // Columns 100px tall: a box of 200px under `break-inside: avoid` cannot
   // go whole, so it starts the next column, past the 15px left of this one,
