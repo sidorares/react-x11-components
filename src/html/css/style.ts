@@ -40,6 +40,8 @@ import {
   trimValue,
 } from './values.js';
 import type { FontSizeBasis, Len, Pct, UnitContext } from './values.js';
+import { firstOf, mapList, ruleInset, ruleList, single } from './gap-rule.js';
+import type { RuleInset, RuleList } from './gap-rule.js';
 import { cornerShapeOf } from './corner-shape.js';
 import { textIndentParts } from './text-indent.js';
 import { CALC_SIZE, calcSizeOf } from './calc-size.js';
@@ -692,19 +694,26 @@ function rectShape(
 
 /**
  * The rule one axis's gaps are drawn with (CSS Gap Decorations 1): its
- * width, in device pixels, its style and colour, as a border side's; where
- * a rule is broken (`*-rule-break`) — `none` one rule the gap's length,
- * `normal` broken only where an item spans the gap, `intersection` at every
- * gap it crosses too; and how far in each end of a piece of it stands
- * (`*-rule-inset`), a percentage of the gap it ends at. Shared, as nearly
- * every box has `NO_RULE`.
+ * width, in device pixels, its style and colour, as a border side's — the
+ * first of each where a list gives each gap its own, which `widths`,
+ * `styles` and `colors` then hold (4.5); where a rule is broken
+ * (`*-rule-break`) — `none` one rule the gap's length, `normal` broken
+ * only where an item spans the gap, `intersection` at every gap it crosses
+ * too; how far in each end of a piece of it stands (`*-rule-inset-*`), as
+ * cap start, cap end, junction start and junction end, a percentage of the
+ * gap it ends at; and next to which items it is drawn
+ * (`*-rule-visibility-items`). Shared, as nearly every box has `NO_RULE`.
  */
 export interface GapRule {
   width: number;
   style: BorderStyle;
   color: string;
+  widths?: RuleList<number>;
+  styles?: RuleList<BorderStyle>;
+  colors?: RuleList<string>;
   break: 'none' | 'normal' | 'intersection';
-  inset: readonly [Len, Len];
+  inset: readonly [RuleInset, RuleInset, RuleInset, RuleInset];
+  visibility: 'normal' | 'all' | 'around' | 'between';
 }
 
 /** A size as a share of the one its keyword gives a box, and a length or
@@ -4394,7 +4403,34 @@ export function applyDeclaration(
     case 'rule-break':
     case 'column-rule-inset':
     case 'row-rule-inset':
-    case 'rule-inset': {
+    case 'rule-inset':
+    case 'column-rule-visibility-items':
+    case 'column-rule-inset-cap':
+    case 'column-rule-inset-junction':
+    case 'column-rule-inset-start':
+    case 'column-rule-inset-end':
+    case 'column-rule-inset-cap-start':
+    case 'column-rule-inset-cap-end':
+    case 'column-rule-inset-junction-start':
+    case 'column-rule-inset-junction-end':
+    case 'row-rule-visibility-items':
+    case 'row-rule-inset-cap':
+    case 'row-rule-inset-junction':
+    case 'row-rule-inset-start':
+    case 'row-rule-inset-end':
+    case 'row-rule-inset-cap-start':
+    case 'row-rule-inset-cap-end':
+    case 'row-rule-inset-junction-start':
+    case 'row-rule-inset-junction-end':
+    case 'rule-visibility-items':
+    case 'rule-inset-cap':
+    case 'rule-inset-junction':
+    case 'rule-inset-start':
+    case 'rule-inset-end':
+    case 'rule-inset-cap-start':
+    case 'rule-inset-cap-end':
+    case 'rule-inset-junction-start':
+    case 'rule-inset-junction-end': {
       applyGapRule(style, name, value, ctx);
       return;
     }
@@ -9707,21 +9743,21 @@ function noRule(medium: number): GapRule {
     color: 'currentColor',
     break: 'normal',
     inset: NO_INSET,
+    visibility: 'normal',
   };
 }
 
-const NO_INSET: readonly [Len, Len] = Object.freeze([0, 0]) as readonly [
-  Len,
-  Len,
-];
+const NO_INSET: GapRule['inset'] = Object.freeze([
+  0, 0, 0, 0,
+]) as GapRule['inset'];
 
 /**
  * A declaration of a gap's rule (CSS Gap Decorations 1): `column-rule`,
  * `row-rule` or `rule` for both axes, and each one's `-width`, `-style`,
- * `-color`, `-break` and `-inset`. The shorthand takes a width, a style
- * and a colour in any order, each reset where it is left out, as
- * `outline` does. A list of rules — a comma, `repeat()` — is not read, and
- * leaves the declaration none.
+ * `-color`, `-break`, `-visibility-items` and the `-inset` family. The
+ * shorthand takes a list of rules, each a width, a style and a colour in
+ * any order, each reset where it is left out, as `outline` does; the
+ * width, the style and the colour each take a list of their own (4.5).
  */
 function applyGapRule(
   style: ComputedStyle,
@@ -9729,7 +9765,6 @@ function applyGapRule(
   value: string,
   ctx: UnitContext,
 ): void {
-  if (splitCommas(value).length > 1 || /(?:^|\s)repeat\(/i.test(value)) return;
   const axes: ('columnRule' | 'rowRule')[] = name.startsWith('column-')
     ? ['columnRule']
     : name.startsWith('row-')
@@ -9738,40 +9773,76 @@ function applyGapRule(
   const part = name.replace(/^(?:column-|row-)?rule-?/, '');
   const v = value.trim().toLowerCase();
   let change: Partial<GapRule> | null = null;
+  const widthOf = (p: string) => {
+    const w = borderWidth(p, ctx);
+    return w !== null && w >= 0 ? w : null;
+  };
+  const styleOf = (p: string) => {
+    const lower = p.trim().toLowerCase();
+    return BORDER_STYLES.has(lower) ? (lower as BorderStyle) : null;
+  };
+  const colorOf = (p: string) =>
+    /^repeat\(/i.test(p.trim()) ? null : parseColor(p);
   switch (part) {
     case '': {
-      let width = BORDER_WIDTH_KEYWORDS.medium * ctx.scale;
-      let kind: BorderStyle = 'none';
-      let color = 'currentColor';
-      for (const p of splitValue(value)) {
-        const lower = p.toLowerCase();
-        if (BORDER_STYLES.has(lower)) {
-          kind = lower as BorderStyle;
-          continue;
+      const list = ruleList(value, (entry) => {
+        let width = BORDER_WIDTH_KEYWORDS.medium * ctx.scale;
+        let kind: BorderStyle = 'none';
+        let color = 'currentColor';
+        const seen = new Set<string>();
+        for (const p of splitValue(entry)) {
+          const k = styleOf(p);
+          if (k !== null && !seen.has('s')) {
+            kind = k;
+            seen.add('s');
+            continue;
+          }
+          const w = widthOf(p);
+          if (w !== null && !seen.has('w')) {
+            width = w;
+            seen.add('w');
+            continue;
+          }
+          const c = parseColor(p);
+          if (c === null || seen.has('c')) return null;
+          color = c;
+          seen.add('c');
         }
-        const w = borderWidth(p, ctx);
-        if (w !== null) {
-          width = w;
-          continue;
-        }
-        const c = parseColor(p);
-        if (c === null) return;
-        color = c;
-      }
-      change = { width, style: kind, color };
+        return { width, style: kind, color };
+      });
+      if (!list) return;
+      change = {
+        ...listed(
+          'width',
+          'widths',
+          mapList(list, (r) => r.width),
+        ),
+        ...listed(
+          'style',
+          'styles',
+          mapList(list, (r) => r.style),
+        ),
+        ...listed(
+          'color',
+          'colors',
+          mapList(list, (r) => r.color),
+        ),
+      };
       break;
     }
     case 'width': {
-      const w = borderWidth(value, ctx);
-      if (w !== null) change = { width: w };
+      const list = ruleList(value, widthOf);
+      if (list) change = listed('width', 'widths', list);
       break;
     }
-    case 'style':
-      if (BORDER_STYLES.has(v)) change = { style: v as BorderStyle };
+    case 'style': {
+      const list = ruleList(value, styleOf);
+      if (list) change = listed('style', 'styles', list);
       break;
+    }
     case 'color': {
-      const c = parseColor(value);
-      if (c !== null) change = { color: c };
+      const list = ruleList(value, colorOf);
+      if (list) change = listed('color', 'colors', list);
       break;
     }
     case 'break':
@@ -9780,17 +9851,91 @@ function applyGapRule(
         change = { break: v };
       } else if (v === 'spanning-item') change = { break: 'normal' };
       break;
-    case 'inset': {
-      const parts = splitValue(value).map((p) => parseLength(p, ctx));
-      if (!parts.length || parts.length > 2) return;
-      if (parts.some((p) => p === null || p === AUTO)) return;
-      const [start, end = start] = parts as Len[];
-      change = { inset: [start, end] };
+    case 'visibility-items':
+      if (v === 'all' || v === 'around' || v === 'between' || v === 'normal') {
+        change = { visibility: v };
+      }
       break;
+    default: {
+      const which = INSET_PARTS[part];
+      if (!which) return;
+      const insets = gapInsets(part, value, ctx);
+      if (!insets) return;
+      for (const axis of axes) {
+        const next = style[axis].inset.slice() as RuleInset[];
+        which.forEach((slot, k) => (next[slot] = insets[k]));
+        style[axis] = {
+          ...style[axis],
+          inset: next as unknown as GapRule['inset'],
+        };
+      }
+      return;
     }
   }
   if (!change) return;
   for (const axis of axes) style[axis] = { ...style[axis], ...change };
+}
+
+/** A rule's width, style or colour from its list: the first value, and
+ *  the list beside it only where it has more than one. */
+function listed<K extends 'width' | 'style' | 'color'>(
+  key: K,
+  lists: 'widths' | 'styles' | 'colors',
+  list: RuleList<GapRule[K]>,
+): Partial<GapRule> {
+  return {
+    [key]: firstOf(list),
+    [lists]: single(list) ? undefined : list,
+  } as Partial<GapRule>;
+}
+
+/** The inset slots each `-inset` property sets — cap start, cap end,
+ *  junction start, junction end — in the order `gapInsets` answers. */
+const INSET_PARTS: Record<string, readonly number[]> = {
+  inset: [0, 1, 2, 3],
+  'inset-cap': [0, 1],
+  'inset-junction': [2, 3],
+  'inset-start': [0, 2],
+  'inset-end': [1, 3],
+  'inset-cap-start': [0],
+  'inset-cap-end': [1],
+  'inset-junction-start': [2],
+  'inset-junction-end': [3],
+};
+
+/**
+ * The values an `-inset` property sets, in its `INSET_PARTS` order (3.3):
+ * `-inset` a cap's start and end and, after a slash, a junction's, which
+ * are the cap's where left out; `-inset-cap` and `-inset-junction` a start
+ * and an end, the end the start where left out; `-inset-start` and
+ * `-inset-end` one value for the cap and the junction; a longhand one.
+ */
+function gapInsets(
+  part: string,
+  value: string,
+  ctx: UnitContext,
+): RuleInset[] | null {
+  const pair = (text: string): RuleInset[] | null => {
+    const parts = splitValue(text).map((p) => ruleInset(p, ctx));
+    if (!parts.length || parts.length > 2 || parts.includes(null)) return null;
+    const [start, end = start] = parts as RuleInset[];
+    return [start, end];
+  };
+  if (part === 'inset') {
+    const halves = value.split('/');
+    if (halves.length > 2) return null;
+    const cap = pair(halves[0]);
+    const junction = halves.length > 1 ? pair(halves[1]) : cap;
+    return cap && junction ? [...cap, ...junction] : null;
+  }
+  if (part === 'inset-cap' || part === 'inset-junction') return pair(value);
+  const one = splitValue(value);
+  if (one.length !== 1) return null;
+  const inset = ruleInset(one[0], ctx);
+  if (inset === null) return null;
+  return part === 'inset-start' || part === 'inset-end'
+    ? [inset, inset]
+    : [inset];
 }
 
 /** What each `corner-shape` keyword is as a superellipse's parameter (CSS
@@ -10576,14 +10721,17 @@ function partOf<F extends PartedField>(
 
 /** A member of a gap's rule under its three names, `rule-width` being the
  *  rule of both axes. */
-function ruleParts(key: keyof GapRule): [string, FieldPart][] {
-  const column = partOf('columnRule', key);
-  const row = partOf('rowRule', key);
+function ruleParts(
+  name: string,
+  ...keys: (keyof GapRule)[]
+): [string, FieldPart][] {
+  const column = partOf('columnRule', ...keys);
+  const row = partOf('rowRule', ...keys);
   return [
-    [`column-rule-${key}`, column],
-    [`row-rule-${key}`, row],
+    [`column-rule-${name}`, column],
+    [`row-rule-${name}`, row],
     [
-      `rule-${key}`,
+      `rule-${name}`,
       (style, from) => {
         column(style, from);
         row(style, from);
@@ -10689,11 +10837,22 @@ const FIELD_PARTS = new Map<string, FieldPart>([
   ['border-image-width', partOf('borderImage', 'width')],
   ['border-image-outset', partOf('borderImage', 'outset')],
   ['border-image-repeat', partOf('borderImage', 'repeat')],
-  ...ruleParts('width'),
-  ...ruleParts('style'),
-  ...ruleParts('color'),
-  ...ruleParts('break'),
-  ...ruleParts('inset'),
+  ...ruleParts('width', 'width', 'widths'),
+  ...ruleParts('style', 'style', 'styles'),
+  ...ruleParts('color', 'color', 'colors'),
+  ...ruleParts('break', 'break'),
+  ...ruleParts('visibility-items', 'visibility'),
+  ...[
+    'inset',
+    'inset-cap',
+    'inset-junction',
+    'inset-start',
+    'inset-end',
+    'inset-cap-start',
+    'inset-cap-end',
+    'inset-junction-start',
+    'inset-junction-end',
+  ].flatMap((name) => ruleParts(name, 'inset')),
   // an inset, with what of it an `anchor()` or an `anchor-size()` holds
   // (`anchorInsets`, `anchorSizes`): `unset` in a `@position-try` rule took
   // the length back and left the base style's `anchor()` on the side
@@ -10965,6 +11124,33 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'rule-color': ['columnRule', 'rowRule'],
   'rule-break': ['columnRule', 'rowRule'],
   'rule-inset': ['columnRule', 'rowRule'],
+  'column-rule-visibility-items': ['columnRule'],
+  'row-rule-visibility-items': ['rowRule'],
+  'rule-visibility-items': ['columnRule', 'rowRule'],
+  'column-rule-inset-cap': ['columnRule'],
+  'row-rule-inset-cap': ['rowRule'],
+  'rule-inset-cap': ['columnRule', 'rowRule'],
+  'column-rule-inset-junction': ['columnRule'],
+  'row-rule-inset-junction': ['rowRule'],
+  'rule-inset-junction': ['columnRule', 'rowRule'],
+  'column-rule-inset-start': ['columnRule'],
+  'row-rule-inset-start': ['rowRule'],
+  'rule-inset-start': ['columnRule', 'rowRule'],
+  'column-rule-inset-end': ['columnRule'],
+  'row-rule-inset-end': ['rowRule'],
+  'rule-inset-end': ['columnRule', 'rowRule'],
+  'column-rule-inset-cap-start': ['columnRule'],
+  'row-rule-inset-cap-start': ['rowRule'],
+  'rule-inset-cap-start': ['columnRule', 'rowRule'],
+  'column-rule-inset-cap-end': ['columnRule'],
+  'row-rule-inset-cap-end': ['rowRule'],
+  'rule-inset-cap-end': ['columnRule', 'rowRule'],
+  'column-rule-inset-junction-start': ['columnRule'],
+  'row-rule-inset-junction-start': ['rowRule'],
+  'rule-inset-junction-start': ['columnRule', 'rowRule'],
+  'column-rule-inset-junction-end': ['columnRule'],
+  'row-rule-inset-junction-end': ['rowRule'],
+  'rule-inset-junction-end': ['columnRule', 'rowRule'],
   'rule-overlap': ['ruleOverlap'],
   'text-shadow': ['textShadow'],
   'line-clamp': [

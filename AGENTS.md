@@ -8480,6 +8480,34 @@ break after its last is one before the next sibling of each it is last
 in, and a forced break inside a box that cannot break is none. Size
 containment is monolithic (`whole`), as CSS Containment 2, 3.1 has it.
 
+**A gap's rules are worked out in one place and drawn in another**
+(`src/html/gap-rules.ts`, `paintGapRules`; CSS Gap Decorations 1). What a
+container's layout left — a grid's `GRID_TRACKS`, a grid lanes container's
+`lanes.stack`, a multicol container's `COLUMN_BOXES`, a flex box's items —
+comes to `RuleSegment`s: a piece of a gap, which gap of how many it is, and
+what each end meets, a junction with a gap across that is drawn there or a
+cap, with that gap's size. Paint reads the rule's lists by the gap, moves the
+ends by the cap or the junction insets, and draws. Five things are
+load-bearing. **A list is kept beside its first value**
+(`GapRule.widths`, `styles`, `colors`, only where there is more than one):
+`width`, `style` and `color` are what every other reader reads, a computed
+read and an interpolation among them, so anything that draws a rule reads a
+gap's value through `ruleValue`. **`start` and `end` are logical, `from` and
+`to` physical**, and a mirrored piece says so (`flipped`), or a
+right-to-left grid takes its start insets at its left. **Visibility splits a
+grid's rule, and an end beside what it hides is a cap** whose percentage is
+still of the gap there: a junction is an end a crossing gap's own visibility
+draws beside, which is what `overlap-join` reaches through (WPT's
+`grid-gap-decorations-079` and `-081` settle both). **A grid lanes
+container's rules go by its placement**, so the layout hands over each
+item's area down its lanes from the fill start, with how those places are
+drawn (`lanes.stack`): anything new that moves items in the stacking axis
+after placement keeps that record true. And **a box columns broke draws its
+rules a piece at a time** (`pieceRules`): a grid's from its tracks, which
+are the whole box's, a flex box's from its items put back through the piece
+each stands in, at its first piece's size, since a broken item's rect is a
+union across columns; a row gap a break falls in is drawn in no piece.
+
 **A view transition's tree is boxes in the top layer, and what it
 captured is a hole** (`src/html/transition.ts`). The page's realm runs
 the transition's steps and asks the element to capture each state; the

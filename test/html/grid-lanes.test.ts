@@ -5,7 +5,7 @@ import assert from 'node:assert';
 import { cleanup } from 'react-x11/test';
 import { applyDeclaration, initialStyle } from '../../src/html/css/style.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
-import { boxOf, metric, render, view } from './harness.js';
+import { boxOf, metric, render, rulesIn, view } from './harness.js';
 
 afterEach(cleanup);
 
@@ -530,4 +530,46 @@ test('an auto repetition takes tracks its content sizes, and fixed ones beside i
     'an intrinsic track beside it',
   );
   assert.strictEqual(columns('1fr repeat(auto-fill, 100px)'), null, 'an fr');
+});
+
+test("a grid lanes container's rules: broken around a spanner across its lanes, and one in each stacking gap down a lane", async () => {
+  // three lanes of 86px, 10px apart: the first spanner takes lanes 1 and
+  // 2 at 0 to 56, the second lanes 2 and 3 at 100 to 156, below the 90px
+  // item in lane 3
+  const source =
+    '<div style="display:grid-lanes;grid-template-columns:repeat(3,86px);' +
+    'gap:10px;width:max-content;column-rule:4px solid #ff0000;' +
+    'row-rule:2px solid #0000ff">' +
+    '<div style="grid-column:1/span 2;height:56px"></div>' +
+    '<div style="height:90px"></div>' +
+    '<div style="grid-column:2/span 2;height:56px"></div>' +
+    '<div style="height:60px"></div>' +
+    '<div style="height:48px"></div><div style="height:48px"></div>' +
+    '<div style="height:48px"></div></div>';
+  // a grid-axis rule stops a stacking gap before a spanner and starts one
+  // after it
+  assert.deepStrictEqual(await rulesIn(source, '#ff0000'), [
+    [89, 66, 4, 148],
+    [185, 0, 4, 90],
+    [185, 166, 4, 48],
+  ]);
+  // a stacking-axis rule is in each lane's own gaps, across the lane: one
+  // in every lane a spanner spans, where any of them has an item before it
+  const rows = await rulesIn(source, '#0000ff');
+  assert.ok(rows.length >= 5, `rules down the lanes: ${rows.length}`);
+  assert.ok(
+    rows.every(([, , w, h]) => w === 86 && h === 2),
+    'each across one lane',
+  );
+  // the second spanner is at 100 in lanes 2 and 3, and the rule before it
+  // in lane 2 is in the gap just before it, 90 to 100: not in the one after
+  // the first spanner, 56 to 66, which the space it is aligned in follows
+  assert.ok(
+    rows.some(([x, y]) => x === 96 && y === 94),
+    'in the gap before the second spanner in lane 2',
+  );
+  assert.ok(
+    !rows.some(([x, y]) => x === 96 && y === 60),
+    'none in the gap after the first spanner there',
+  );
 });

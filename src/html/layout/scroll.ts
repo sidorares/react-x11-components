@@ -457,6 +457,14 @@ export function scrolledBy(box: Box): [number, number] {
   return [x, y];
 }
 
+/** How far a scroll container's own scroll moved what it holds from where
+ *  its layout put it, across and down: what is drawn of its content as it
+ *  scrolls, its gap rules among it, is moved back by as much. */
+export function ownScroll(box: Box): [number, number] {
+  const at = APPLIED.get(box);
+  return at ? [at.x, at.y] : [0, 0];
+}
+
 /**
  * Whether a scroll container's scroll moves a box: the box is in it, and
  * neither the box nor any box between them is positioned against
