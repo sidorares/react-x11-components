@@ -1975,3 +1975,20 @@ test('lines orphans keeps together go to the next row where a row is cut short',
   const b = boxOf(el, 'b');
   assert.deepStrictEqual([a.x, a.y, b.x, b.y], [50, 0, 50, 50]);
 });
+
+test('a forced break before the first child of a box with layout containment is none', async () => {
+  // the break is the box's own, which layout containment keeps from it,
+  // so the child stays under the box's top border (CSS Containment 2,
+  // 3.2; WPT's css-contain/contain-layout-breaks-002)
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:2;column-fill:auto;gap:0;width:200px;height:400px">' +
+      '<div style="border-top:100px solid"></div>' +
+      '<div style="border-top:100px solid;contain:layout">' +
+      '<div id="c" style="border-top:100px solid;break-before:column">' +
+      '</div></div></div>',
+    300,
+  );
+  const c = boxOf(view(node), 'c');
+  assert.deepStrictEqual([c.x, c.y], [0, 200]);
+});

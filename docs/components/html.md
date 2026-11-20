@@ -6125,7 +6125,8 @@ column ends and goes on at the head of the next. A block that is a
 formatting context of its own, a `flow-root` say, breaks as any block does;
 only one that scrolls or clips, a multicol container, a clamp and an
 orthogonal flow go to a column whole, as does a box whose only content is a
-float that cannot be cut. The
+float that cannot be cut. A forced break before the first child of a box
+with layout containment is none, since it would be the box's own. The
 columns balance, and CSS leaves how to the user agent; this does as Blink
 does — the content's height shared out between the columns, no less than
 the tallest thing that cannot break, then as much
