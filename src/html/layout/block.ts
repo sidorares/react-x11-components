@@ -4250,7 +4250,10 @@ function layoutInternals(
 ): void {
   const outer = ctx.clamp ?? null;
   const lines = box.style.lineClamp;
-  if (lines === null && (outer === null || !establishesBFC(box))) {
+  if (
+    lines === null &&
+    (outer === null || !establishesBFC(box) || framesClamp(outer, box))
+  ) {
     layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
     return;
   }
@@ -4278,7 +4281,13 @@ function layoutClamped(
   y: number,
   outerFloats?: FloatContext,
 ): void {
-  const floor = lines === Infinity ? autoFloor(box, y) : Infinity;
+  const frame = framed.any ? FRAMES.get(box) : undefined;
+  const floor =
+    lines !== Infinity
+      ? Infinity
+      : frame
+        ? framedFloor(box)
+        : autoFloor(box, y);
   if (floor === Infinity) {
     // counted against the number, or where `auto` has no height to fill,
     // against none: the boxes a clamp hid before show again
@@ -4294,6 +4303,29 @@ function layoutClamped(
   ctx.positioned.length = positioned;
   ctx.clamp = { box, left: fit.lines, done: fit.lines === 0, fit: null };
   layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
+}
+
+/** Whether a box is the frame of a line-clamp container in a vertical
+ *  writing mode (`makeFrame`): what the container holds, turned, which
+ *  its clamp counts the lines of, where any other formatting context of
+ *  its own is laid out outside the clamp around it. */
+function framesClamp(clamp: Clamp, box: Box): boolean {
+  return framed.any && FRAMES.get(clamp.box) === box;
+}
+
+/** Where an `auto` clamp's lines have to end by in the frame of a
+ *  container in a vertical writing mode: its block size is its width, and
+ *  the frame is laid out from 0, its lines down what is across the page. */
+function framedFloor(box: Box): number {
+  const set = resolveOrNull(box.style.width, NaN);
+  const outer =
+    set === null
+      ? Infinity
+      : box.style.boxSizing === 'border-box'
+        ? Math.max(set, box.horizontalExtra)
+        : set + box.horizontalExtra;
+  const width = clampWidth(box, outer, NaN);
+  return Number.isFinite(width) ? width - box.horizontalExtra : Infinity;
 }
 
 /** Where an `auto` clamp's lines have to end by, in document coordinates:
@@ -4663,7 +4695,24 @@ function framedWidth(box: Box, frame: Box, ctx: LayoutContext): number {
   const queued = ctx.positioned.length;
   ctx.clamp = null;
   try {
-    layFrame(frame, ctx, inline, NaN);
+    // and its own clamp, which the frame's block size, the root's width,
+    // is cut to (`layoutClamped`)
+    const lines = box.style.lineClamp;
+    const floor = lines === Infinity ? framedFloor(box) : Infinity;
+    if (floor === Infinity) {
+      if (lines !== null) {
+        ctx.clamp = { box, left: lines, done: false, fit: null };
+      }
+      layFrame(frame, ctx, inline, NaN);
+    } else {
+      const fit = { floor, lines: 0, over: false };
+      ctx.clamp = { box, left: Infinity, done: false, fit };
+      layFrame(frame, ctx, inline, NaN);
+      if (fit.over) {
+        ctx.clamp = { box, left: fit.lines, done: fit.lines === 0, fit: null };
+        layFrame(frame, ctx, inline, NaN);
+      }
+    }
   } finally {
     ctx.clamp = outer;
   }

@@ -8674,8 +8674,10 @@ algorithm places a neutral. An image, a background image and a gradient in
 a vertical flow are drawn upright, level with the page, as its lines are
 not: the frame turns all it draws a quarter, and they are turned back about
 its origin, an image scaled on a surface of its own first so that the turn
-copies it pixel for pixel. An inline element in a writing mode its
-parent is not in is an inline-block (3.1). The root is laid out by its
+copies it pixel for pixel. A root that is a line-clamp container clamps
+the lines of its frame, and is as wide as the lines it keeps; an `auto`
+clamp fills its block size, which is its width. An inline element in a
+writing mode its parent is not in is an inline-block (3.1). The root is laid out by its
 parent as any box is, in the page's axes. Its width is its block size,
 which is its content's where it has none of its own (7.3.2): a block, a
 float, an inline-block, a table cell and an absolute box alike are as wide
