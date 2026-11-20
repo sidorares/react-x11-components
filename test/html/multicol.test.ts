@@ -1976,6 +1976,35 @@ test('lines orphans keeps together go to the next row where a row is cut short',
   assert.deepStrictEqual([a.x, a.y, b.x, b.y], [50, 0, 50, 50]);
 });
 
+test('a box break-inside: avoid keeps whole is broken where it is taller than a column', async () => {
+  // Columns 100px tall: a box of 200px under `break-inside: avoid` cannot
+  // go whole, so it starts the next column, past the 15px left of this one,
+  // and is broken there as a last resort (CSS Fragmentation 3, 4.4; WPT's
+  // multicol-nested-028). One that fits goes whole.
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:4;gap:0;column-fill:auto;width:100px;height:100px">' +
+      '<div style="height:110px"></div>' +
+      '<div id="a" style="break-inside:avoid;height:75px"></div>' +
+      '<div id="b" style="break-inside:avoid;height:200px"></div></div>',
+    300,
+  );
+  const el = view(node);
+  const a = boxOf(el, 'a');
+  assert.deepStrictEqual([a.x, a.y, a.height], [25, 10, 75], 'whole');
+  assert.deepStrictEqual(
+    COLUMN_PIECES.get(boxOf(el, 'b') as never)?.map((p) => [
+      p.x,
+      p.y,
+      p.height,
+    ]),
+    [
+      [50, 0, 100],
+      [75, 0, 100],
+    ],
+  );
+});
+
 test('a forced break before the first child of a box with layout containment is none', async () => {
   // the break is the box's own, which layout containment keeps from it,
   // so the child stays under the box's top border (CSS Containment 2,

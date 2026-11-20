@@ -6117,7 +6117,10 @@ between them, and the container is a formatting context of its own. Its
 content is laid out once, a column wide, and broken where CSS Fragmentation
 3 has it break: between the lines of a block and between boxes, never
 inside a line, an image, a table, a flex box or a grid, a box that clips or
-one that says `break-inside: avoid` (`page-break-inside` too), with
+one that says `break-inside: avoid` (`page-break-inside` too) — but where
+such a box is taller than a column whose height is known before the content
+is set, a container's own or `column-height`'s, which it starts at the top
+of, and is broken in as a last resort — with
 `orphans` and `widows` lines of a block kept at either side of a break, two
 of each unless they say otherwise, and a margin at a break dropped. A box
 with a height and nothing in it, a float among them, is cut wherever a
