@@ -210,6 +210,22 @@ export const PASSIVE: Record<string, PassiveProperty> = Object.assign(
       }
       return [mode, angle].filter(Boolean).join(' ');
     }),
+    // which edges of a container trim the margins of what it holds (CSS
+    // Box 4, 3.3): read by layout (`marginTrimOf`), which is why it is no
+    // longer only passive
+    'margin-trim': own('none', (v) => {
+      const words = wordsOf(v);
+      if (words.length === 1 && words[0] === 'none') return 'none';
+      return (
+        anyOrder(['block'], ['inline'])(v) ??
+        anyOrder(
+          ['block-start'],
+          ['inline-start'],
+          ['block-end'],
+          ['inline-end'],
+        )(v)
+      );
+    }),
     'overflow-anchor': own('auto', keyword('auto', 'none')),
     'overscroll-behavior-x': own('auto', keyword('contain', 'none', 'auto')),
     'overscroll-behavior-y': own('auto', keyword('contain', 'none', 'auto')),
@@ -337,4 +353,23 @@ export function passiveValue(
   name: string,
 ): string {
   return record[name] ?? PASSIVE[name].initial;
+}
+
+/** A box's `margin-trim` as which of its edges trim: block-start (1),
+ *  block-end (2), inline-start (4) and inline-end (8). */
+export function marginTrimOf(
+  passive: Readonly<Record<string, string>>,
+): number {
+  const v = passive['margin-trim'];
+  if (v === undefined || v === 'none') return 0;
+  let bits = 0;
+  for (const w of v.split(' ')) {
+    if (w === 'block') bits |= 3;
+    else if (w === 'inline') bits |= 12;
+    else if (w === 'block-start') bits |= 1;
+    else if (w === 'block-end') bits |= 2;
+    else if (w === 'inline-start') bits |= 4;
+    else if (w === 'inline-end') bits |= 8;
+  }
+  return bits;
 }

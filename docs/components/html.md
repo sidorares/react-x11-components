@@ -6134,7 +6134,8 @@ further in, through blocks in the container's flow that are no formatting
 context of their own: what comes before it is balanced in columns of its
 own, whatever `column-fill` says, the box under them as wide as the
 container, and what follows in columns under it; its margins collapse only
-with those of a spanner next to it, and the container is no narrower than
+with those of a spanner next to it, and at the container's edge are
+trimmed where its `margin-trim` says so, and the container is no narrower than
 it where its content sets its width. A block a spanner is in is broken
 about it, its top edges in the row before and its bottom ones in the row
 after, and is one rectangle around its pieces in both. What is positioned
