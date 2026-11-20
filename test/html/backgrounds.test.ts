@@ -2897,3 +2897,36 @@ test('an interlaced PNG cut short has the passes it reached, each pixel at its f
     null,
   );
 });
+
+test('a filter() of a gradient through colour functions is the gradient with its stops filtered', async () => {
+  // Filter Effects 1, 12: each colour function is a map of one colour to
+  // another, so the gradient filtered is its stops filtered (WPT's
+  // css/filter-effects/filter-function/filter-function-linear-gradient)
+  const { node } = await render(
+    '<div id="a" style="background-image:' +
+      'filter(linear-gradient(red, orange), invert(1))"></div>' +
+      '<div id="b" style="background-image:' +
+      'filter(conic-gradient(red, blue), opacity(0.5))"></div>' +
+      // an image needs pixels, and a blur: neither is drawn yet, and the
+      // declaration goes as one this does not know
+      '<div id="c" style="background-image:' +
+      'filter(linear-gradient(red, blue), blur(2px))"></div>',
+  );
+  const el = view(node);
+  const gradient = (id: string) =>
+    (boxOf(el, id) as unknown as { style: ComputedStyle }).style
+      .backgroundGradient;
+  const a = gradient('a')!;
+  assert.strictEqual(a.kind, 'linear');
+  assert.deepStrictEqual(
+    a.stops.map((s) => parseColor(s.color)),
+    [parseColor('rgb(0, 255, 255)'), parseColor('rgb(0, 90, 255)')],
+  );
+  const b = gradient('b')!;
+  assert.strictEqual(b.kind, 'conic');
+  assert.deepStrictEqual(
+    b.stops.map((s) => parseColor(s.color)),
+    [parseColor('rgba(255, 0, 0, 0.5)'), parseColor('rgba(0, 0, 255, 0.5)')],
+  );
+  assert.strictEqual(gradient('c'), null);
+});

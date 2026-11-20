@@ -7974,7 +7974,10 @@ again, where most changes are taken in place.
 **Backgrounds:** `background-color`, and `background-image` — through
 `onResource`, like an `<img>`, and an `image-set()` as the one option it
 chooses ([Image sets](#image-sets)), and `src("a.png")` and `image("a.png")`
-as the url they name, or an `image(red)` as the colour all over; a string
+as the url they name, or an `image(red)` as the colour all over, and a
+`filter()` of a gradient through colour functions alone as that gradient
+with each stop's colour filtered (a filter of an image, or with a blur or a
+shadow in it, is not drawn, and the declaration goes); a string
 alone is no image — with `background-repeat`, `space` and
 `round` among it and each axis its own, and `background-position`, placed
 in the box `background-origin` names — the

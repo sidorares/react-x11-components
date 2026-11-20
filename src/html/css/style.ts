@@ -64,7 +64,7 @@ import {
 import type { ContentItem, CounterChange } from './content.js';
 import { parseRotate, parseScale, parseTransform } from './transform.js';
 import type { TransformFunction, Turn } from './transform.js';
-import { parseFilter } from './filter.js';
+import { colourFilter, parseFilter } from './filter.js';
 import type { FilterFunction } from './filter.js';
 import {
   ANIMATION_LONGHANDS,
@@ -83,6 +83,7 @@ import {
   colorSchemeKeywords,
   lightDark,
   mixIn,
+  rgbaOf,
   systemColors,
   usedColorScheme,
 } from './color.js';
@@ -7523,6 +7524,7 @@ function backgroundImageOf(
   }
   if (lower.startsWith('src(')) return srcUrl(v);
   if (lower.startsWith('image(')) return imageFunctionOf(v);
+  if (lower.startsWith('filter(')) return filteredImageOf(v, ctx);
   if (lower !== 'none' && !lower.startsWith('url(')) return undefined;
   return parseUrl(v);
 }
@@ -7534,8 +7536,60 @@ function startsImage(lower: string): boolean {
     lower.startsWith('url(') ||
     lower.startsWith('src(') ||
     lower.startsWith('image(') ||
+    lower.startsWith('filter(') ||
     IMAGE_FUNCTION.test(lower)
   );
+}
+
+/**
+ * A `filter()` (Filter Effects 1, 12): an image run through a filter list.
+ * Of a gradient through colour functions alone — `invert()`, `sepia()`,
+ * `hue-rotate()` and their kin, and `opacity()` — each of which is a map
+ * of one colour to another, applied to the gradient's stops, which comes
+ * to the gradient filtered: the maps are affine, and a gradient mixes its
+ * stops linearly. Undefined for any other, as though the function were
+ * not known: an image, a blur and a shadow need pixels.
+ */
+function filteredImageOf(
+  text: string,
+  ctx: UnitContext,
+): BackgroundImage | undefined {
+  const end = closingParen(text, 7);
+  if (end < 0 || end < text.length - 1) return undefined;
+  const args = splitCommas(text.slice(7, end));
+  if (args.length < 2) return undefined;
+  const image = backgroundImageOf(args[0], ctx);
+  if (!image || typeof image === 'string' || !('stops' in image)) {
+    return undefined;
+  }
+  const list = parseFilter(args.slice(1).join(','), ctx);
+  if (list === undefined) return undefined;
+  if (list === null) return image;
+  const colour = colourFilter(list);
+  if (!colour) return image;
+  if (colour.steps || colour.blur > 0) return undefined;
+  const stops: GradientStop[] = [];
+  for (const stop of image.stops) {
+    const rgba = rgbaOf(stop.color);
+    if (!rgba) return undefined;
+    let r = rgba[0] * 255;
+    let g = rgba[1] * 255;
+    let b = rgba[2] * 255;
+    for (const m of colour.matrices) {
+      const r1 = m[0] * r + m[1] * g + m[2] * b + m[3];
+      const g1 = m[4] * r + m[5] * g + m[6] * b + m[7];
+      const b1 = m[8] * r + m[9] * g + m[10] * b + m[11];
+      r = Math.min(255, Math.max(0, r1));
+      g = Math.min(255, Math.max(0, g1));
+      b = Math.min(255, Math.max(0, b1));
+    }
+    const a = rgba[3] * colour.alpha;
+    stops.push({
+      ...stop,
+      color: `rgba(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)}, ${a})`,
+    });
+  }
+  return { ...image, stops };
 }
 
 /** A `src()` (CSS Values 4, 4.5.1): the url its string names, its
