@@ -371,15 +371,6 @@ function hangingPunctuation(word: string): string | null {
   return words.join(' ');
 }
 
-/** `text-decoration-skip-spaces` (CSS Text Decoration 4, 2.8): `none`,
- *  `all`, or `start` and `end`, either or both, in that order. */
-function skipSpaces(word: string): string | null {
-  const lower = word.toLowerCase();
-  if (lower === 'none' || lower === 'all') return lower;
-  const words = keywordsOf(word, new Set(['start', 'end']));
-  return words && inOrder(words, ['start', 'end']);
-}
-
 /** `block-ellipsis` (CSS Overflow 4, 5.4): `no-ellipsis`, `ellipsis` or a
  *  string. */
 function blockEllipsis(word: string): string | null {
@@ -387,6 +378,18 @@ function blockEllipsis(word: string): string | null {
   if (lower === 'no-ellipsis' || lower === 'ellipsis') return lower;
   const s = readString(word);
   return s && s.end === word.length ? word : null;
+}
+
+/** `max-lines` (CSS Overflow 4, 5.3): `auto`, or a count of 1 or more
+ *  with `auto` beside it or none, written back count first. */
+function maxLines(word: string): string | null {
+  const words = splitValue(word).map((w) => w.toLowerCase());
+  if (words.length === 1 && words[0] === 'auto') return 'auto';
+  const counts = words.filter((w) => w !== 'auto');
+  if (counts.length !== 1 || words.length > 2) return null;
+  const n = counts[0];
+  if (!MATH.test(n) && !(/^[+-]?\d+$/.test(n) && Number(n) >= 1)) return null;
+  return words.length === 2 ? `${n} auto` : n;
 }
 
 /** The properties read here, by name. */
@@ -408,9 +411,9 @@ export const GRAMMARS: Readonly<
   'caret-color': caretColor,
   'initial-letter': initialLetter,
   'baseline-source': oneOf('auto', 'first', 'last'),
-  'text-group-align': oneOf('none', 'start', 'end', 'left', 'right', 'center'),
   'hanging-punctuation': hangingPunctuation,
-  'text-decoration-skip-spaces': skipSpaces,
   'block-ellipsis': blockEllipsis,
   'scroll-marker-group': oneOf('none', 'before', 'after'),
+  'max-lines': maxLines,
+  continue: oneOf('normal', 'discard', 'collapse', '-webkit-legacy'),
 };

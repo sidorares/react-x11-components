@@ -225,13 +225,15 @@ test('a keyword property takes its keywords each at most once, as the three brow
     ['initial-letter', 'drop', ''],
     ['initial-letter', '0', ''],
     ['baseline-source', 'auto first', ''],
-    ['text-group-align', 'justify', ''],
     ['hanging-punctuation', 'first last force-end', 'first last force-end'],
     ['hanging-punctuation', 'force-end allow-end', ''],
-    ['text-decoration-skip-spaces', 'end start', 'start end'],
-    ['text-decoration-skip-spaces', 'none all', ''],
     ['block-ellipsis', 'auto', ''],
     ['scroll-marker-group', 'before, after', ''],
+    ['max-lines', 'auto 8', '8 auto'],
+    ['max-lines', '0', ''],
+    ['max-lines', '3 4', ''],
+    ['continue', 'auto discard', ''],
+    ['continue', 'discard', 'discard'],
   ];
   const out = await readBack(cases.map(([p, v]) => [p, v]));
   assert.deepEqual(
