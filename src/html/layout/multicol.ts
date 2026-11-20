@@ -1214,7 +1214,11 @@ export function cutIntoColumns(
     c -= 1;
   }
   const was = { x: box.x, y: box.y, width: box.width, height: box.height };
-  if (was.y + was.height <= endOf(c) + EPS) {
+  // moved whole only where all it holds in its flow is in the column too:
+  // a box short enough for one, whose content runs on past it, is cut by
+  // what runs on, as Blink fragments an out-of-flow box's overflow (WPT's
+  // css-break/out-of-flow-in-multicolumn-002)
+  if (flowReach(box) <= endOf(c) + EPS) {
     const dx = geometry.dx(c);
     const dy = geometry.dy(c);
     STRIP.set(box, { geometry, dx, dy, width: was.width, height: was.height });
@@ -1688,4 +1692,20 @@ export function forgetColumns(box: Box): void {
     }
     if (COLUMN_PIECES.delete(child) || !whole(child)) forgetColumns(child);
   }
+}
+
+/** How far down a box reaches with what it holds in its flow: its own
+ *  bottom, and its in-flow boxes' and lines', where they run on past it. */
+function flowReach(box: Box): number {
+  let bottom = box.y + box.height;
+  for (const line of box.lines ?? []) {
+    bottom = Math.max(bottom, line.y + line.height);
+  }
+  for (const child of box.children) {
+    if (child.outOfFlow || child.kind === 'text' || child.kind === 'break') {
+      continue;
+    }
+    bottom = Math.max(bottom, flowReach(child));
+  }
+  return bottom;
 }

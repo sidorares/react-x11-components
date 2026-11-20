@@ -1613,6 +1613,26 @@ test('an item margin that makes a flex box taller is dropped at a break', async 
   assert.deepStrictEqual(at(view(node), 'b', 'm'), [50, 0, 50, 100]);
 });
 
+test('an out-of-flow box short enough for its column is cut where what it holds runs on past it', async () => {
+  // CSS Fragmentation 3: the box fits its column and its child does not;
+  // moved whole, the child hung down past the container where Blink cuts it
+  // into the columns after (WPT's out-of-flow-in-multicolumn-002)
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:2;column-fill:auto;gap:0;width:100px;height:100px">' +
+      '<div style="position:relative"><div style="position:absolute;height:10px;width:20px">' +
+      '<div id="c" style="height:250px;width:20px"></div></div></div></div>',
+  );
+  const pieces = COLUMN_PIECES.get(boxOf(view(node), 'c') as never)?.map(
+    (p) => [p.x, p.y, p.height],
+  );
+  assert.deepStrictEqual(pieces, [
+    [0, 0, 100],
+    [50, 0, 100],
+    [100, 0, 50],
+  ]);
+});
+
 test("a flex box's row gap that a column break falls in has no rule, however narrow the rule", async () => {
   // multi-line-row-flex-fragmentation-094: three lines 50px tall spread
   // over 180px, so 15px between them, in columns 60px tall. The second
