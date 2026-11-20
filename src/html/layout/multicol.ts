@@ -164,6 +164,9 @@ interface Gathered {
   /** The boxes `break-inside: avoid` keeps whole that are taller than a
    *  column, which a break falls inside after all (`layoutColumns`). */
   tall?: Set<Box>;
+  /** The tables whose header group or footer group is repeated at each
+   *  break inside them (`repeatedOf`). */
+  repeats?: Map<Box, { header: Box | null; footer: Box | null }>;
 }
 
 const NO_GROUP: Group = {
@@ -462,13 +465,23 @@ function gather(
   // with layout containment does not take on (CSS Containment 2, 3.2), so
   // there it is no break at all (WPT's css-contain/contain-layout-breaks-002)
   let heading = contained(box, CONTAIN_LAYOUT);
-  for (const child of box.children) {
+  // a table that repeats a group, its groups in the order it lays them
+  // out, its header first and its footer last, wherever they are in the
+  // tree, which the room for them is reckoned in
+  const children =
+    box.kind === 'table' && into.repeats?.has(box)
+      ? laidOrder(box.children)
+      : box.children;
+  for (const child of children) {
     if (child.isFloat && !child.outOfFlow) {
       floatUnit(child, box, into);
       continue;
     }
     if (!flows(child)) continue;
-    if (columned.any) COLUMN_PIECES.delete(child);
+    if (columned.any) {
+      COLUMN_PIECES.delete(child);
+      REPEATED.delete(child);
+    }
     const before =
       pending || (!heading && forces(child.style.passive['break-before']));
     heading = false;
@@ -515,6 +528,10 @@ function gather(
       reach([unit, unit]);
       force(unit);
       continue;
+    }
+    if (child.kind === 'table') {
+      const repeated = repeatedOf(child);
+      if (repeated) (into.repeats ??= new Map()).set(child, repeated);
     }
     const span = gather(child, into, clip);
     // a box `break-inside: avoid` cannot keep whole starts a column, where
@@ -1539,10 +1556,47 @@ function clonesOf(
     ats: number[],
   ): (Break | undefined)[];
 } | null {
-  if (!gathered.cloned.length) return null;
+  if (!gathered.cloned.length && !gathered.repeats?.size) return null;
   const index = new Map<Group, number>();
   groups.forEach((group, i) => index.set(group, i));
   const list: Cloned[] = [];
+  // a table that repeats its header or footer at a break inside it holds
+  // room for them as a box that clones its edges does: the header's at the
+  // head of each column after one, and the footer's at the foot of each
+  // column before one, between the header and the footer
+  for (const [table, { header, footer }] of gathered.repeats ?? []) {
+    const span = gathered.spans.get(table);
+    if (!span) continue;
+    const spacing = table.style.borderSpacingY;
+    const groupOf = (box: Box | null, end: boolean): number | undefined => {
+      if (!box) return undefined;
+      const unit = gathered.boxes.get(box);
+      if (unit) return index.get(unit.group);
+      const inner = gathered.spans.get(box);
+      return (
+        inner &&
+        index.get(end ? (inner[1].ends ?? inner[1].group) : inner[0].group)
+      );
+    };
+    // with no header, from the table's top: a footer group is gathered
+    // where it is in the tree, which may be first, and laid out at the end
+    let top = groups.findIndex((g) => g.top >= table.y - EPS);
+    if (top < 0) top = 0;
+    const first = header ? groupOf(header, true) : top;
+    const footerAt = groupOf(footer, false);
+    const last =
+      footerAt !== undefined
+        ? footerAt - 1
+        : index.get(span[1].ends ?? span[1].group);
+    if (first === undefined || last === undefined || last < first) continue;
+    list.push({
+      box: table,
+      first,
+      last,
+      start: header ? header.height + spacing : 0,
+      end: footer ? footer.height + spacing : 0,
+    });
+  }
   for (const box of gathered.cloned) {
     const whole = gathered.boxes.get(box);
     const span = gathered.spans.get(box) ?? (whole && [whole, whole]);
@@ -1598,6 +1652,98 @@ function clonesOf(
       return out;
     },
   };
+}
+
+/**
+ * The header group and the footer group of a table that are repeated at
+ * each break that falls inside the table (CSS Tables 3, 9.4): its first
+ * `table-header-group` and its first `table-footer-group`, where they say
+ * `break-inside: avoid`, as Blink repeats them. Null where neither is,
+ * or where the table is in a box that clips.
+ */
+function repeatedOf(
+  table: Box,
+): { header: Box | null; footer: Box | null } | null {
+  // not inside a box that clips, between it and the columns: the room a
+  // repeated group takes in a column is no room of that box's own height,
+  // which Blink counts it against, and that box would run on past where it
+  // ends (WPT's repeated-section-in-clipped-overflow-001)
+  for (let at = table.parent; at && !at.style.columns; at = at.parent) {
+    if (at.style.overflowX !== 'visible' || at.style.overflowY !== 'visible') {
+      return null;
+    }
+  }
+  let header: Box | null = null;
+  let footer: Box | null = null;
+  for (const child of table.children) {
+    if (child.kind !== 'table-row-group') continue;
+    if (child.style.breakInside !== 'avoid') continue;
+    const display = child.style.display;
+    if (display === 'table-header-group') header ??= child;
+    else if (display === 'table-footer-group') footer ??= child;
+  }
+  return header || footer ? { header, footer } : null;
+}
+
+/** Where a table's header and footer groups are painted again: the group,
+ *  and how far from where it was laid out (`place`). */
+export const REPEATED = new WeakMap<
+  Box,
+  { group: Box; dx: number; dy: number }[]
+>();
+
+/** A table's children in the order its layout stacks them: its captions
+ *  at the top, its first header group, its other groups where they are, its
+ *  first footer group, and its captions at the bottom (CSS 2.1 17.2, 17.4). */
+function laidOrder(children: Box[]): Box[] {
+  const header = children.find((c) => c.style.display === 'table-header-group');
+  const footer = children.find((c) => c.style.display === 'table-footer-group');
+  if (!header && !footer) return children;
+  const bottom = (c: Box) =>
+    c.kind === 'table-caption' && c.style.captionSide === 'bottom';
+  const middle = children.filter(
+    (c) => c !== header && c !== footer && !bottom(c),
+  );
+  const top = middle.filter((c) => c.kind === 'table-caption');
+  const rest = middle.filter((c) => c.kind !== 'table-caption');
+  return [
+    ...top,
+    ...(header ? [header] : []),
+    ...rest,
+    ...(footer ? [footer] : []),
+    ...children.filter(bottom),
+  ];
+}
+
+/** Note where a table's repeated header and footer go (`REPEATED`): the
+ *  header at the head of each of its pieces after the first, and the footer
+ *  at the foot of each before the last, from where each was laid out. */
+function noteRepeated(
+  table: Box,
+  pieces: ColumnPiece[],
+  { header, footer }: { header: Box | null; footer: Box | null },
+): void {
+  const out: { group: Box; dx: number; dy: number }[] = [];
+  const last = pieces.length - 1;
+  for (let k = 0; k <= last; k += 1) {
+    const piece = pieces[k];
+    if (header && k > 0) {
+      out.push({
+        group: header,
+        dx: piece.x - pieces[0].x,
+        dy: piece.y - header.y,
+      });
+    }
+    if (footer && k < last) {
+      out.push({
+        group: footer,
+        dx: piece.x - pieces[last].x,
+        dy: piece.y + piece.height - footer.height - footer.y,
+      });
+    }
+  }
+  if (out.length) REPEATED.set(table, out);
+  else REPEATED.delete(table);
 }
 
 /** Whether a box is another or inside it. */
@@ -2183,6 +2329,8 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
     box.width = x2 - x1;
     box.height = y2 - y1;
     if (nested) moveNested(box, to);
+    const repeat = gathered.repeats?.get(box);
+    if (repeat) noteRepeated(box, pieces, repeat);
   }
   for (const [child, c] of asides) {
     const at = child.staticPosition!;

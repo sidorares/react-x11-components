@@ -121,7 +121,7 @@ import {
   holdsOutOfFlow,
   viewBoxOf,
 } from './layout/block.js';
-import { containingParent } from './layout/multicol.js';
+import { containingParent, REPEATED } from './layout/multicol.js';
 import { gapSegments } from './gap-rules.js';
 import type { FlexFrame, RuleEnd, RuleSegment } from './gap-rules.js';
 import { ruleValue } from './css/gap-rule.js';
@@ -6840,6 +6840,9 @@ interface BackgroundPass {
   entered: { box: Box; clip: ClipEdge }[];
   /** How many of `entered` are pushed, the outermost first. */
   pushed: number;
+  /** The tables met whose header or footer group columns repeat
+   *  (`REPEATED`), painted again after the flow. */
+  repeats?: Box[];
 }
 
 /**
@@ -6888,6 +6891,17 @@ function paintFlow(
   // 10 left the choice open): drawn after each block's own lines, an
   // outline went under an inline-block the next block held
   paintLater(ctx, outlines, options, false);
+  // a table's header and footer groups again, at each break columns put
+  // inside it (CSS Tables 3, 9.4; `REPEATED`)
+  for (const table of pass.repeats ?? []) {
+    for (const { group, dx, dy } of REPEATED.get(table) ?? []) {
+      paintBox(ctx, group, {
+        ...options,
+        originX: options.originX + dx,
+        originY: options.originY + dy,
+      });
+    }
+  }
 }
 
 /** Whether a pass takes a child (`Part`). */
@@ -6936,6 +6950,9 @@ function paintFlowBackgrounds(
     }
     if (!inFlow(box, child, options) || !intersects(child, options)) continue;
     if (child.kind === 'table-cell' && COLLAPSED_CELLS.has(child)) continue;
+    if (columned.any && child.kind === 'table' && REPEATED.has(child)) {
+      (pass.repeats ??= []).push(child);
+    }
     const visible = child.style.visibility === 'visible';
     if (visible) {
       if (pass.pushed < pass.entered.length && drawsOwn(child)) {
