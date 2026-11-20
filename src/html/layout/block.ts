@@ -170,6 +170,7 @@ import {
   INLINE_OFFSETS,
   MOVED_OFF_LINES,
   LINE_BOX_RAISES,
+  RUBY_COLUMNS,
   SHIFTED_LINES,
   STICKY_SIZES,
   TEXT_RAISES,
@@ -182,6 +183,7 @@ import {
 import type {
   BoxTree,
   ColumnPiece,
+  RubyColumn,
   FirstLineStyler,
   ForeignObject,
   Intrinsic,
@@ -214,6 +216,7 @@ import type {
   InlineResult,
 } from './inline.js';
 import { overEdge, underEdge } from '../css/text-box.js';
+import { passiveValue } from '../css/passive-properties.js';
 import type { TextRun } from '../../richtext/index.js';
 import { forgetGridItem } from './css-grid.js';
 import {
@@ -3707,6 +3710,55 @@ function layoutAtomic(
   }
   const width = shrinkToFitWidth(box, ctx, availableWidth);
   layoutOwn(box, ctx, width);
+  const ruby = RUBY_COLUMNS.get(box);
+  if (ruby) placeRuby(box, ruby, ctx);
+}
+
+/**
+ * Set a ruby column's annotations over its base, or under it, by each
+ * one's `ruby-position` (CSS Ruby 1, 3.1): against the edge of the base's
+ * font, its first line's ascent above its baseline or its descent below,
+ * and each further annotation on that side beyond the one before it. The
+ * column is then as tall as what it holds reaches, from its top, so an
+ * annotation that the line's leading has room for grows nothing, and one
+ * it has none for grows the line by what it reaches past (4.3), as Blink
+ * has it.
+ *
+ * Asked after every layout of the column, the one `layoutOwn` keeps among
+ * them, and so it moves each block by how far it is from where it goes,
+ * which is nothing the second time.
+ */
+function placeRuby(column: Box, ruby: RubyColumn, ctx: LayoutContext): void {
+  const base = ruby.base;
+  const line = base.lines?.[0];
+  let over = base.y;
+  let under = base.y + base.height;
+  if (line && ctx.fonts) {
+    const face = faceExtentOf(ctx.fonts, base.style);
+    const baseline = line.y + line.baseline;
+    over = baseline - face.ascent;
+    under = baseline + face.descent;
+  }
+  let top = base.y;
+  let bottom = base.y + base.height;
+  for (const annotation of ruby.annotations) {
+    const position = passiveValue(
+      annotation.style.passiveInherited,
+      'ruby-position',
+    );
+    const below = position.includes('under');
+    const y = below ? under : over - annotation.height;
+    translate(annotation, 0, y - annotation.y);
+    if (below) under += annotation.height;
+    else over -= annotation.height;
+    top = Math.min(top, y);
+    bottom = Math.max(bottom, y + annotation.height);
+  }
+  const contentTop = column.y + column.borderTop + column.padTop;
+  if (top !== contentTop) {
+    for (const child of column.children) translate(child, 0, contentTop - top);
+  }
+  column.height = bottom - top + column.verticalExtra;
 }
 
 /**
