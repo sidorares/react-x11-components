@@ -848,6 +848,13 @@ function Tab(props: {
       charset: doc.charset,
       partial: false,
       baseUrl: doc.baseUrl,
+      // a browser's own defaults, as `wpt.tsx` has them: `medium` is 16px
+      // and the default face a serif one. Left to the palette, a document
+      // was 14px sans-serif, and a test that sets `font: 16px Ahem` beside
+      // a reference sized in `1em` compared 16px squares with 14px ones.
+      fontSize: 16,
+      fontFamily: 'serif',
+      monoFamily: 'monospace',
       onResource,
       // a form aimed at a window of no name, which a script may submit
       onSubmit: (submission) => {
