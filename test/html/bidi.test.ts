@@ -341,3 +341,26 @@ metric(
     assert.ok(Math.abs(s.x - e.x) < 1, `from e on: ${s.x}, ${e.x}`);
   },
 );
+
+test('a right-to-left line of inline-blocks wider than its room starts at its right and spills past its left', async () => {
+  // CSS Text 3, 7.1: a line that does not fit starts at its start edge,
+  // which a right-to-left one has at its right, as a line of text already
+  // did; one of atomics stood at the left and spilled past its end, so a
+  // scroller had nothing to scroll (WPT's css-overflow/scroll-markers/
+  // scroll-buttons-enabled-rtl)
+  const { node } = await render(
+    '<style>body{margin:0}#s{width:100px;height:20px;overflow:auto;' +
+      'white-space:nowrap;direction:rtl}#s div{display:inline-block;' +
+      'width:100px;height:10px}</style><div id="s"><div id="a"></div>' +
+      '<div id="b"></div></div>',
+  );
+  const el = view(node);
+  const s = boxOf(el, 's');
+  assert.deepStrictEqual(
+    [boxOf(el, 'a').x - s.x, boxOf(el, 'b').x - s.x],
+    [0, -100],
+    'the first at the right, the second past the left',
+  );
+  const state = el.scrollStateOf(findById(el.document, 's')!);
+  assert.strictEqual(state?.width, 200, 'and scrolls');
+});

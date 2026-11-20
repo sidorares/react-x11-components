@@ -4037,6 +4037,10 @@ function finishLine(
   }
   let dx = band.left - open.left - indent;
   if (shift > 0 && Number.isFinite(free) && free > 0) dx += free * shift;
+  // and one wider than its room starts at its start edge, the right of a
+  // right-to-left one, and spills past its left (CSS Text 3, 7.1), where
+  // a line of atomics stood at the left and spilled past its end
+  else if (rtl && Number.isFinite(free) && free < 0) dx += free;
   // the spaces a right-to-left line ends on are at its visual left (UAX #9,
   // L1), and hang past that edge rather than push what is on the line over
   // by their width: a box as wide as its line stood a space past its end
