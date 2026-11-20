@@ -1060,11 +1060,9 @@ interface Cloned {
 }
 
 /** What a break before a column clones: the boxes it falls inside that do,
- *  where the column before it ends down the strip, and what that column
- *  keeps at its foot for their end edges. */
+ *  and what the column before it keeps at its foot for their end edges. */
 interface Break {
   open: Cloned[];
-  end: number;
   drop: number;
 }
 
@@ -1139,10 +1137,7 @@ function clonesOf(
         }
         let drop = 0;
         for (const c of here) drop += c.end;
-        // the column before ends where its last group does, or where the
-        // break cut the group it falls inside
-        const end = inside ? Number.NaN : (groups[at - 1]?.bottom ?? 0);
-        out.push({ open: here, end, drop });
+        out.push({ open: here, drop });
       }
       return out;
     },
@@ -1606,20 +1601,19 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
       // a column on
       if (c > first && to.tops[c] >= end - EPS) break;
       const from = c === first ? was.y : to.tops[c];
-      let until = c === last ? end : Math.min(end, to.room(c));
+      const until = c === last ? end : Math.min(end, to.room(c));
       let y = from + to.dy(c);
       let height = Math.max(0, until - from);
       if (to.breaks) {
         // a piece reaches over the edges a break clones of the boxes in it,
-        // and a cloned box's own: each of its pieces a whole box, round
-        // the content it has there, where a sliced one runs to the foot
+        // and a cloned box's own: each of its pieces a whole box, which a
+        // break ends at the column's foot, whatever its content came to
+        // there, as Blink fills a fragment a break ends (WPT's
+        // css-break/box-decoration-break-clone-020)
         const before = to.breaks[c];
         const after = to.breaks[c + 1];
         if (c > first) y -= cloned(before, 'start');
         if (c < last) {
-          if (clone && !Number.isNaN(after?.end ?? Number.NaN)) {
-            until = Math.min(until, after!.end);
-          }
           height = until + to.dy(c) + cloned(after, 'end') - y;
         } else height = until + to.dy(c) - y;
       }

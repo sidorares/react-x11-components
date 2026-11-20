@@ -1750,3 +1750,32 @@ test('a box that clones its edges at a break has them in every column, and they 
     [100, 0, 100, 100, false],
   ]);
 });
+
+test('a piece of a box that clones its edges fills the column a break ends it in', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      // a forced break after 20px of content: the first piece runs on to
+      // the column's foot, its cloned end edge there, as Blink fills a
+      // fragment a break ends (WPT's css-break/box-decoration-break-clone-020)
+      '<div style="columns:2;column-fill:auto;gap:0;width:100px;height:100px">' +
+      '<div id="c" style="box-decoration-break:clone;border:solid;' +
+      'border-width:20px 0 10px">' +
+      '<div style="height:20px"></div>' +
+      '<div style="break-before:column;height:70px"></div>' +
+      '</div></div>',
+    300,
+  );
+  const el = view(node);
+  const top = boxOf(el, 'c').y;
+  assert.deepStrictEqual(
+    COLUMN_PIECES.get(boxOf(el, 'c') as never)?.map((p) => [
+      p.x,
+      p.y - top,
+      p.height,
+    ]),
+    [
+      [0, 0, 100],
+      [50, 0, 100],
+    ],
+  );
+});
