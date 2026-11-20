@@ -6731,14 +6731,16 @@ under `intersection`: in a row the first are its column rules and the second
 its row rules, and in a column the other way round. `rule-overlap:
 column-over-row` draws the row rules under the column rules, where they are
 over them. A right-to-left container's horizontal rules start at their right.
+The rows of columns `column-wrap` makes are a grid of columns for its rules:
+a row rule is drawn in each row gap between them, across the columns, and a
+column rule stops at a row gap under `normal`, which is `intersection` there
+as at a spanner, its ends there junctions where the row rule is drawn.
 
 A grid or a flex container that columns break has its rules drawn in each
 piece, as the whole box has them, where its pieces stand; a row gap a break
 falls in has no rule (3.6). Not here: a grid lanes container that columns
 break, a container in a vertical writing mode, whose rules are drawn as a
-horizontal one's are, and multicol's `column-height` and `column-wrap`,
-whose rows of columns the layout does not make, nor the row rules between
-them.
+horizontal one's are.
 
 **Boxes:** `width`/`height` with `min-`/`max-`, `margin` (a negative one
 on an inline box takes its room back from the line), `padding`,

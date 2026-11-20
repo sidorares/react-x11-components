@@ -898,6 +898,9 @@ export interface ColumnRow {
   /** The left of every column of the row, those that hold nothing as
    *  well, which `rule-visibility-items: all` draws rules between. */
   every?: number[];
+  /** The rows of columns `column-wrap` made together share this, which
+   *  the row gaps between them are of, and a row rule is drawn in. */
+  wrap?: object;
 }
 export const COLUMN_BOXES = new WeakMap<Box, ColumnRow[]>();
 
