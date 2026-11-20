@@ -11114,6 +11114,12 @@ const UNTOUCHED = Object.freeze({});
 
 let probeStyle: ComputedStyle | null = null;
 
+/** An initial style, of no document's: what a question about a style's
+ *  fields, rather than about an element, is asked of. */
+export function probedStyle(): ComputedStyle {
+  return (probeStyle ??= initialStyle(PROBE_LOOK));
+}
+
 /**
  * Whether the cascade takes a declaration of a property, read from what it
  * makes of it rather than from a grammar written beside it: the value is
@@ -11172,7 +11178,7 @@ function cascadeTakesNow(name: string, value: string): boolean | undefined {
     return undefined;
   }
   if (unreadValue(prop, v)) return undefined;
-  probeStyle ??= initialStyle(PROBE_LOOK);
+  probeStyle ??= probedStyle();
   const style = copyStyle(probeStyle) as unknown as Record<string, unknown>;
   for (const f of fields) style[f] = UNTOUCHED;
   try {
