@@ -167,6 +167,7 @@ export const PASSIVE: Record<string, PassiveProperty> = Object.assign(
     'column-height': own('auto', (v) =>
       /^auto$/i.test(v.trim()) ? 'auto' : lengthOf(v.trim(), false, true),
     ),
+    'column-wrap': own('auto', keyword('auto', 'nowrap', 'wrap')),
     'font-palette': inherited('normal', (v) => {
       const w = v.trim();
       if (/^(?:normal|light|dark)$/i.test(w)) return w.toLowerCase();

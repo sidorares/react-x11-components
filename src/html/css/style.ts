@@ -1253,7 +1253,8 @@ export interface ComputedStyle {
   /** `-webkit-box-flex`: how an item of a `-webkit-box` grows and shrinks,
    *  which is not at all unless it is set. */
   webkitBoxFlex: number;
-  /** Whether `column-count` (1) or `column-width` (2) makes the box a
+  /** Whether `column-count` (1), `column-width` (2) or `column-height`
+   *  (4) makes the box a
    *  multicol container, which this lays out as one column and which
    *  `line-clamp` does not clamp (CSS Overflow 4, 5.2). */
   columns: number;
@@ -1261,6 +1262,12 @@ export interface ComputedStyle {
    *  a length; null for `auto` (CSS Multi-column 1, 2 and 3). */
   columnCount: number | null;
   columnWidth: number | null;
+  /** `column-height` where it is a length, and `column-wrap` (CSS
+   *  Multi-column 2, 3.6 and 3.7): rows of columns that tall, one under
+   *  another a row gap apart. `auto` wraps where a height is given. Both
+   *  are kept in the passive record as well, for a page to read back. */
+  columnHeight: number | null;
+  columnWrap: 'auto' | 'nowrap' | 'wrap';
   /** Whether `column-gap` is `normal`: nothing in a flex box or a grid,
    *  and an em between the columns of a multicol container (4.1). */
   columnGapNormal: boolean;
@@ -2244,6 +2251,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     columns: 0,
     columnCount: null,
     columnWidth: null,
+    columnHeight: null,
+    columnWrap: 'auto',
     columnGapNormal: true,
     orphans: 2,
     widows: 2,
@@ -3059,6 +3068,9 @@ export function applyDeclaration(
     if (taken === null) return;
     const key = passive.inherited ? 'passiveInherited' : 'passive';
     style[key] = { ...style[key], [name]: taken };
+    if (name === 'column-height' || name === 'column-wrap') {
+      columnRows(style, ctx);
+    }
     return;
   }
   // a system colour is a `light-dark()` of its own, in a property that
@@ -3209,6 +3221,19 @@ export function applyDeclaration(
       const bit = name === 'column-count' ? 1 : name === 'column-width' ? 2 : 3;
       let count: number | null = null;
       let width: number | null = null;
+      // `columns` takes a `column-height` after a slash, and sets
+      // `column-wrap` back (CSS Multi-column 2, 3.8)
+      let rowHeight = 'auto';
+      if (bit === 3) {
+        const slash = value.indexOf('/');
+        if (slash >= 0) {
+          rowHeight =
+            PASSIVE['column-height'].take(value.slice(slash + 1)) ?? '';
+          if (!rowHeight) return;
+          value = value.slice(0, slash);
+          if (!value.trim()) return;
+        }
+      }
       for (const part of splitValue(value)) {
         const v = part.toLowerCase();
         if (v === 'auto') continue;
@@ -3224,6 +3249,15 @@ export function applyDeclaration(
       }
       if (bit & 1) style.columnCount = count;
       if (bit & 2) style.columnWidth = width;
+      if (bit === 3) {
+        const passive = { ...style.passive };
+        if (rowHeight === 'auto') delete passive['column-height'];
+        else passive['column-height'] = rowHeight;
+        delete passive['column-wrap'];
+        style.passive = passive;
+        columnRows(style, ctx);
+        return;
+      }
       style.columns = multicolBits(style);
       return;
     }
@@ -10902,6 +10936,11 @@ function inheritOne(
     if (v === undefined) delete next[name];
     else next[name] = v;
     style[key] = next;
+    if (name === 'column-height' || name === 'column-wrap') {
+      style.columnHeight = parent.columnHeight;
+      style.columnWrap = parent.columnWrap;
+      columnRows(style, null);
+    }
     return;
   }
   const list = MASK_LISTS[name];
@@ -11106,11 +11145,28 @@ function triggerEdge(list: 'activation' | 'active', edge: 0 | 1): FieldPart {
   };
 }
 
+/** A style's `column-height` and `column-wrap` from its passive record,
+ *  where they are kept as written: a length resolved with `ctx`, or, with
+ *  none, the field as it stands. */
+function columnRows(style: ComputedStyle, ctx: UnitContext | null): void {
+  const height = style.passive['column-height'];
+  if (height === undefined || height === 'auto') style.columnHeight = null;
+  else if (ctx) {
+    const len = parseLength(height, ctx);
+    style.columnHeight = typeof len === 'number' && len >= 0 ? len : null;
+  }
+  const wrap = style.passive['column-wrap'];
+  style.columnWrap = wrap === 'nowrap' || wrap === 'wrap' ? wrap : 'auto';
+  style.columns = multicolBits(style);
+}
+
 /** Which of a count and a width a multicol container has, as `columns`
  *  keeps them. */
 function multicolBits(style: ComputedStyle): number {
   return (
-    (style.columnCount !== null ? 1 : 0) | (style.columnWidth !== null ? 2 : 0)
+    (style.columnCount !== null ? 1 : 0) |
+    (style.columnWidth !== null ? 2 : 0) |
+    (style.columnHeight !== null ? 4 : 0)
   );
 }
 
@@ -11521,7 +11577,13 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   '-webkit-box-pack': ['webkitBoxPack'],
   '-webkit-box-align': ['webkitBoxAlign'],
   '-webkit-box-flex': ['webkitBoxFlex'],
-  columns: ['columns', 'columnCount', 'columnWidth'],
+  columns: [
+    'columns',
+    'columnCount',
+    'columnWidth',
+    'columnHeight',
+    'columnWrap',
+  ],
   'column-count': ['columns', 'columnCount'],
   'column-width': ['columns', 'columnWidth'],
   orphans: ['orphans'],
