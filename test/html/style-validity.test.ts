@@ -178,6 +178,8 @@ test('a value Chromium, Firefox and WebKit all take is kept in the form all thre
     out.map((got, i) => [cases[i][0], cases[i][1], got]),
     cases,
   );
+});
+
 test('a name no property has is an expando on the style, as in a browser, and makes no declaration', async () => {
   const page = await scriptedPage(
     `<style>@font-face { font-family: f; src: url(f.woff2); }</style>
