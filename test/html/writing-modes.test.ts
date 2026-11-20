@@ -1201,3 +1201,42 @@ test("a grid's items aligned by their baselines across a column meet at them, an
     'as wide as what moved',
   );
 });
+
+metric(
+  'a horizontal item in a vertical-lr grid is laid out across the page, as one in vertical-rl is',
+  async () => {
+    // Its frame turns back what the grid's turned (`makeFrame`'s `back`),
+    // and the grid's frame, put back across after its layout
+    // (`reflectFrame`), moves it whole and leaves what is in it alone. A
+    // `vertical-lr` flow had made no such frame, and an item was laid out in
+    // the grid's axes: as wide as its text was tall, and as tall as its line
+    // was long. Chrome's, Firefox's and Safari's numbers, the item and an
+    // absolutely positioned one alike (WPT's
+    // grid-self-alignment-stretch-vertical-lr-*).
+    const { node } = await render(
+      '<style>body{margin:0}' +
+        '.g{position:relative;display:inline-grid;writing-mode:vertical-lr;' +
+        'grid-template-columns:100px 150px;grid-template-rows:150px 100px}' +
+        '.g>div{writing-mode:horizontal-tb;line-height:0}' +
+        '.c{display:inline-block;width:15px;height:10px;vertical-align:top}</style>' +
+        '<div class="g">' +
+        '<div id="a" style="grid-row:1;grid-column:1;justify-self:stretch;' +
+        'align-self:start"><span class="c"></span><span class="c"></span></div>' +
+        '<div id="b" style="grid-row:2;grid-column:2;justify-self:start;' +
+        'align-self:stretch"><span class="c"></span><span class="c"></span></div>' +
+        '<div id="p" style="position:absolute;grid-row:2/3;grid-column:1/2;' +
+        'justify-self:end;align-self:end"><span class="c"></span><span class="c"></span></div>' +
+        '</div>',
+      600,
+    );
+    const el = view(node);
+    const rect = (id: string) => {
+      const r = el.offsetRect(findById(el.document, id)!)!;
+      return [r.x, r.y, r.width, r.height];
+    };
+    // a row is across the page and a column down it
+    assert.deepStrictEqual(rect('a'), [0, 0, 30, 100], 'stretched down');
+    assert.deepStrictEqual(rect('b'), [150, 100, 100, 10], 'stretched across');
+    assert.deepStrictEqual(rect('p'), [220, 90, 30, 10], 'at the far corner');
+  },
+);
