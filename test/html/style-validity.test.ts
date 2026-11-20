@@ -221,6 +221,7 @@ test('a keyword property takes its keywords each at most once, as the three brow
     ['caret-color', 'red green', ''],
     ['caret-color', '50%', ''],
     ['caret-color', 'auto', 'auto'],
+    ['caret-color', 'currentcolor auto', ''],
     ['initial-letter', 'drop 1.23', '1.23 drop'],
     ['initial-letter', 'drop', ''],
     ['initial-letter', '0', ''],

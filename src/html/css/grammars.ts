@@ -320,19 +320,12 @@ function imageOrientation(word: string): string | null {
   return lower === 'from-image' || lower === 'none' ? lower : null;
 }
 
-/** `caret-color` (CSS UI 4, 6.2.2): `auto`, a colour, or a colour and
- *  `auto` after it; which words are colours is the cascade's to say. */
+/** `caret-color` (CSS UI 4, 6.2.2): `auto` or one colour, which the
+ *  cascade judges. The two-value form CSS UI 4 adds is taken by no engine,
+ *  and is refused here as all of them refuse it. */
 function caretColor(word: string): null | undefined {
   const words = splitValue(word);
-  if (words.length === 1) {
-    return /^[+-]?[\d.]/.test(words[0]) ? null : undefined;
-  }
-  return words.length === 2 &&
-    words[1].toLowerCase() === 'auto' &&
-    words[0].toLowerCase() !== 'auto' &&
-    !/^[+-]?[\d.]/.test(words[0])
-    ? undefined
-    : null;
+  return words.length === 1 && !/^[+-]?[\d.]/.test(words[0]) ? undefined : null;
 }
 
 /** One keyword of a few, in lower case. */
