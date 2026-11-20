@@ -189,7 +189,15 @@ function whole(box: Box): boolean {
   // a transform makes no box monolithic (CSS Fragmentation 3, 4.1): a
   // positioned box's containing block made by one is broken as any block
   // is, though its pieces are drawn through the matrix of the whole
-  return establishesBFC(box);
+  // — nor does being a formatting context of its own: a `flow-root` is
+  // broken as any block is, and only what scrolls or clips its overflow,
+  // a multicol container, a clamp, and an orthogonal flow, whose block
+  // axis is across the columns', go whole
+  if (!establishesBFC(box)) return false;
+  return (
+    monolithic(box) ||
+    box.style.writingMode !== (box.parent?.style.writingMode ?? 'horizontal-tb')
+  );
 }
 
 /** Whether a flex or grid container, or an item of one, is a box no break
@@ -223,7 +231,12 @@ function sliceable(box: Box): boolean {
   if (contained(box, CONTAIN_SIZE)) return false;
   if (box.lines?.length) return false;
   for (const child of box.children) {
+    // a float that cannot be cut is something in it, which it goes with:
+    // a `flow-root` that holds one is no empty box (WPT's
+    // css-break/box-decoration-break-clone-013), where one that holds a
+    // float with nothing in it is cut with it (float-stretching-bfc-000)
     if (flows(child)) return false;
+    if (child.isFloat && !child.outOfFlow && !sliceable(child)) return false;
   }
   return true;
 }
