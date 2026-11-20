@@ -2930,3 +2930,26 @@ test('a filter() of a gradient through colour functions is the gradient with its
   );
   assert.strictEqual(gradient('c'), null);
 });
+
+test('a filter() of an image is the image, with the list its pixels are put through', async () => {
+  // its pixels are filtered as it is drawn, at the size it is drawn at
+  // (WPT's css/filter-effects/filter-function/filter-function-003 and -007)
+  const { node } = await render(
+    '<div id="a" style="background-image:' +
+      'filter(url(a.png), drop-shadow(5px 0 0 green))"></div>' +
+      '<div id="b" style="background-image:filter(url(a.png), none)"></div>',
+  );
+  const el = view(node);
+  const image = (id: string) =>
+    (boxOf(el, id) as unknown as { style: ComputedStyle }).style
+      .backgroundImage;
+  const a = image('a') as { url: string; filter?: { fn: string }[] };
+  assert.ok(a.url.endsWith('a.png'), a.url);
+  assert.deepStrictEqual(
+    a.filter?.map((f) => f.fn),
+    ['drop-shadow'],
+  );
+  // a list of none is the image as it is
+  const b = image('b');
+  assert.ok(typeof b === 'string' && b.endsWith('a.png'), String(b));
+});

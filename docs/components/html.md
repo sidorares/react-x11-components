@@ -7980,8 +7980,12 @@ again, where most changes are taken in place.
 chooses ([Image sets](#image-sets)), and `src("a.png")` and `image("a.png")`
 as the url they name, or an `image(red)` as the colour all over, and a
 `filter()` of a gradient through colour functions alone as that gradient
-with each stop's colour filtered (a filter of an image, or with a blur or a
-shadow in it, is not drawn, and the declaration goes); a string
+with each stop's colour filtered, and a `filter()` of an image as its pixels
+put through the list — colour functions, blurs and drop shadows in the order
+written — at the size it is drawn, so a shadow's offset is the page's
+pixels and not the image's (a gradient with a blur or a shadow in it is not
+drawn, and the declaration goes; a border image or a `content` of one draws
+nothing); a string
 alone is no image — with `background-repeat`, `space` and
 `round` among it and each axis its own, and `background-position`, placed
 in the box `background-origin` names — the
