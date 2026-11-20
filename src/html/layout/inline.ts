@@ -6541,7 +6541,7 @@ function setTabs(
       // merges runs alike (CoreText) would otherwise take it into
       tabs.add(units + p);
       runs.push({
-        ...item.run,
+        ...tabRunOf(item.run),
         text: spaceIn(item.box),
         letterSpacing: (item.run.letterSpacing ?? 0) + tabs.size * HAIR,
       });
@@ -6583,10 +6583,10 @@ function setTabs(
     const text = item.run.text;
     const at = starts.get(item)!;
     const every = everyFor(item.box.style);
+    const tabRun = tabRunOf(item.run);
     // what the space a tab is laid out as takes before it is spaced out
     const own =
-      advanceOf(fonts, item.run, spaceIn(item.box)) +
-      (item.run.letterSpacing ?? 0);
+      advanceOf(fonts, tabRun, spaceIn(item.box)) + (tabRun.letterSpacing ?? 0);
     const piece = (start: number, end: number, run: TextRun): void => {
       next.push({
         ...item,
@@ -6624,9 +6624,9 @@ function setTabs(
         added.set(caret.line, before + advance - own);
       }
       piece(p, p + 1, {
-        ...item.run,
+        ...tabRun,
         text: spaceIn(item.box),
-        letterSpacing: (item.run.letterSpacing ?? 0) + advance - own,
+        letterSpacing: (tabRun.letterSpacing ?? 0) + advance - own,
       });
       done = p + 1;
     }
@@ -6635,6 +6635,17 @@ function setTabs(
     }
   }
   items.splice(0, items.length, ...next);
+}
+
+/**
+ * The run a tab is laid out in: its text's, but where that is set at no
+ * size, a pixel. An engine spaces out only a glyph with an advance
+ * (ntk's `spaceGlyphs`), and a tab moves what follows it to
+ * the next stop whatever its size: a `<pre>` at `font-size: 0` with
+ * its text in spans of their own sizes has its tabs between them.
+ */
+function tabRunOf(run: TextRun): TextRun {
+  return (run.size ?? 1) > 0 ? run : { ...run, size: 1 };
 }
 
 /** The space a tab in a box is laid out as: a `pre`'s spaces are held

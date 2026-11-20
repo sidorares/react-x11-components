@@ -8409,7 +8409,9 @@ Helvetica — is a little more than CSS gives it. Underlines an element outside 
 the line's baseline. White space collapses across element boundaries as CSS
 2.1 16.6.1 has it — none at the start or the end of a line, one between two
 words whatever elements they are in — and text at `font-size: 0` takes no
-room, which is how a row of inline-blocks is set without gaps. The space
+room, which is how a row of inline-blocks is set without gaps, but for the
+forced breaks and the tabs a `white-space` keeps in it, which still break
+the line and go to the next stop. The space
 that is left is the first of them, in the element it was written in: a
 link whose text ends in a space, before more on its line, is that space
 wider (`elementRect`, a selection's band) and is underlined under it, and
