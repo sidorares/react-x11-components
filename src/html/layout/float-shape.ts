@@ -25,6 +25,8 @@ import {
   insetCorners,
   lineAngle,
   radialShape,
+  conicTable,
+  conicPlace,
   spreadCorners,
   stopOffsets,
 } from '../paint.js';
@@ -354,6 +356,21 @@ function alphaOf(
     // a pixel's fraction of the way along the line, from its centre
     along = (x, y) =>
       length > 0 ? ((x - w / 2) * dx + (y - h / 2) * dy) / length + 0.5 : 0;
+  } else if (gradient.kind === 'conic') {
+    // the share of a turn each pixel is round the centre, looked up in the
+    // gradient's table of a turn
+    const table = conicTable(gradient, current);
+    const { turn } = conicPlace(gradient, w, h);
+    for (let py = 0; py < h; py += 1) {
+      for (let px = 0; px < w; px += 1) {
+        const k = Math.min(
+          table.length / 4 - 1,
+          Math.floor((turn(px + 0.5, py + 0.5) * table.length) / 4),
+        );
+        alpha[py * w + px] = Math.round(table[k * 4 + 3] * 255);
+      }
+    }
+    return { width: w, height: h, alpha };
   } else {
     const { cx, cy, rx, ry } = radialShape(gradient, w, h);
     if (!(rx > 0 && ry > 0)) {

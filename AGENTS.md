@@ -6796,6 +6796,16 @@ draws it at its origin. Its `translate`, `rotate` and `scale` are written
 before its `transform` as one list (`staticTransform`), so anything new that
 moves a drawing's element without an animation goes through it.
 
+**A basic-shape `clip-path` on a drawing's element is a `<clipPath>` of
+the copy's** (`drawingClipPath` in the cascade, `clipCopies` in `svg.ts`).
+SvgView clips to a `<clipPath>` alone, so the cascade lays the shape down
+in the element's reference box with `shapePolygons`, in user units, and the
+copy makes a `<clipPath>` of the path under an id no document can name. An
+element whose `style` or `clip-path` attribute holds a shape is resolved
+whether a rule reaches it or not (`clipsToShape`). A circle's edge in the
+harness differs from a filled circle's, since ntk's clip mask is the in-process
+server's trapezoids; that is the harness, not this.
+
 **A colour no context reads is worked out in the drawing's copy**
 (`coloursToWorkOut`, `workOutColours`). `SvgView` hands a paint to the context as
 it is written, and a context reads what `rgb()`, `hsl()` and a hex say, so
@@ -7735,8 +7745,15 @@ needed. Every way a gradient is drawn then draws ordinary sRGB stops, so
 gradient in sRGB with no hints keeps the stops it was written with, which is
 what keeps the common case as cheap as it was. Stop colours are sRGB strings
 clipped as they are read, so a transition outside the gamut is drawn through
-the clipped colours; keeping them unclipped is the follow-up. Conic
-gradients are not drawn.
+the clipped colours; keeping them unclipped is the follow-up.
+
+**A conic gradient is a picture of its box** (`conicFill`, CSS Images 4,
+3.3). No context has one of its own, so each pixel's angle round the centre
+is looked up in a table a turn long (`conicTable`), and the picture, kept by
+what it was made from, is filled as a pattern from the box's corner.
+`shape-outside` reads the same table (`float-shape.ts`). **Anything new that
+draws a gradient handles `kind: 'conic'` before it reads a line or a
+radius**, as `unrolled` and `gradientFill` do.
 
 **A repeating gradient is unrolled where its box is known** (`unrolled`):
 its stops laid down again along a linear one's line or out to a radial
