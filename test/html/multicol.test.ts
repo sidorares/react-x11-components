@@ -1936,6 +1936,35 @@ test('a row rule is drawn in the row gaps between rows of columns, and a column 
   ]);
 });
 
+test('a column rule in a row of columns a spanner ends stops at the spanner, unless it runs on through it', async () => {
+  // WPT's multicol-gap-decorations-002 and -012: two boxes 60px tall
+  // balanced into three columns 40px tall before a spanner, in rows of
+  // columns 60px tall. The rules of that row are as tall as its columns,
+  // and not as the row, which the spanner is in; under
+  // `column-rule-break: none` each gap's rule runs on from the top to the
+  // last row's foot
+  const doc = (more: string) =>
+    '<div style="width:200px;height:200px;column-count:3;' +
+    'column-width:60px;column-height:60px;gap:10px;column-wrap:wrap;' +
+    `column-fill:auto;column-rule:10px solid #0000ff;${more}">` +
+    '<p style="height:60px;margin:0"></p>'.repeat(2) +
+    '<h2 style="column-span:all;margin:0;height:18px"></h2>' +
+    '<p style="height:60px;margin:0"></p>'.repeat(3) +
+    '</div>';
+  const rules = await rulesIn(doc(''), '#0000ff');
+  assert.deepStrictEqual(rules.slice(0, 2), [
+    [60, 0, 10, 40],
+    [130, 0, 10, 40],
+  ]);
+  assert.deepStrictEqual(
+    await rulesIn(doc('column-rule-break:none'), '#0000ff'),
+    [
+      [60, 0, 10, 130],
+      [130, 0, 10, 130],
+    ],
+  );
+});
+
 test('column-height and column-wrap set the columns in rows, a row gap apart', async () => {
   // Rows of two columns 30px tall, 10px apart: six boxes of 20px that go
   // whole take a column each, three rows, and the last row is as tall as

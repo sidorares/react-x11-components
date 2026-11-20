@@ -1408,7 +1408,10 @@ export function layoutColumns(
       const holding = Math.max(0, Math.min(count, used - first));
       rows.push({
         top: rowTop(j) - box.contentY,
-        height: rowHeight(j),
+        // as tall as its columns: a row balanced shorter than it is, before
+        // a spanner, has the spanner under its columns, which the rules
+        // between them stop at
+        height: heights ? Math.min(rowHeight(j), heights(first)) : rowHeight(j),
         lefts: Array.from({ length: holding }, (_, k) => left(first + k)),
         width: columns.width,
         every: Array.from({ length: count }, (_, k) => left(first + k)),

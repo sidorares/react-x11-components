@@ -621,7 +621,28 @@ function multicolSegments(box: Box): {
       of: most,
     });
   }
-  return { columns: [...columns, ...wrapped], rows: across };
+  if (rule.break !== 'none' || !wrapped.length) {
+    return { columns: [...columns, ...wrapped], rows: across };
+  }
+  // under `none` a gap's rule runs on from the first row to the last, across
+  // a spanner, rows of columns `column-wrap` set among the rest
+  const runs: RuleSegment[] = [];
+  for (const piece of [...columns, ...wrapped]) {
+    const run = runs.find((p) => Math.abs(p.at - piece.at) < 0.5);
+    if (!run) {
+      runs.push({ ...piece });
+      continue;
+    }
+    if (piece.from < run.from) {
+      run.from = piece.from;
+      run.start = piece.start;
+    }
+    if (piece.to > run.to) {
+      run.to = piece.to;
+      run.end = piece.end;
+    }
+  }
+  return { columns: runs, rows: across };
 }
 
 /** Rows of columns as a grid's tracks, from the content box's corner: the
