@@ -7,6 +7,7 @@ import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { parseColor } from '../../src/html/css/values.js';
 import { COLUMN_PIECES } from '../../src/html/layout/boxes.js';
+import { REPEATED } from '../../src/html/layout/multicol.js';
 import { resolvedInsets } from '../../src/html/layout/block.js';
 import {
   FONTS,
@@ -2044,6 +2045,70 @@ test('a table in columns breaks between its rows and inside its cells', async ()
     [
       [0, 0, 100],
       [50, 0, 50],
+    ],
+  );
+});
+
+test('a table repeats its header group at the head of each column it breaks into, and its footer group at the foot', async () => {
+  // header and footer groups that say `break-inside: avoid` are drawn
+  // again where a break falls inside the table, and the body takes the
+  // room that leaves (CSS Tables 3, 9.4; WPT's css-break/table/
+  // repeated-section/header-footer)
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:4;column-fill:auto;gap:0;width:100px;height:100px">' +
+      '<div id="t" style="display:table">' +
+      '<div style="display:table-header-group;break-inside:avoid">' +
+      '<div style="height:20px"></div></div>' +
+      '<div id="c" style="width:25px;height:240px"></div>' +
+      '<div style="display:table-footer-group;break-inside:avoid">' +
+      '<div style="height:20px"></div></div></div></div>',
+    300,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(
+    COLUMN_PIECES.get(boxOf(el, 'c') as never)?.map((p) => [
+      p.x,
+      p.y,
+      p.height,
+    ]),
+    [
+      [0, 20, 60],
+      [25, 20, 60],
+      [50, 20, 60],
+      [75, 20, 60],
+    ],
+    'the body between the header and the footer in each column',
+  );
+  assert.strictEqual(
+    REPEATED.get(boxOf(el, 't') as never)?.length,
+    6,
+    'three headers and three footers drawn again',
+  );
+});
+
+test('a box positioned in an inline box columns break is placed against the strip and cut into the columns', async () => {
+  // the inline box's fragments are where the strip had them, before the
+  // columns moved its lines, and the box laid out against them is cut into
+  // the columns after, as one in a block is (CSS Position 3, 4.2; WPT's
+  // css-break/out-of-flow-in-multicolumn-056), where it hung out of them
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:2;column-fill:auto;gap:0;width:100px;height:100px">' +
+      '<div style="height:200px;width:50px"></div>' +
+      '<span style="position:relative"><div id="a" style="position:absolute;' +
+      'width:50px;height:200px;top:-200px"></div></span></div>',
+    300,
+  );
+  assert.deepStrictEqual(
+    COLUMN_PIECES.get(boxOf(view(node), 'a') as never)?.map((p) => [
+      p.x,
+      p.y,
+      p.height,
+    ]),
+    [
+      [0, 0, 100],
+      [50, 0, 100],
     ],
   );
 });

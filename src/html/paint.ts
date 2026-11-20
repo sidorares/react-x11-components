@@ -121,7 +121,7 @@ import {
   holdsOutOfFlow,
   viewBoxOf,
 } from './layout/block.js';
-import { containingParent } from './layout/multicol.js';
+import { containingParent, REPEATED } from './layout/multicol.js';
 import { gapSegments } from './gap-rules.js';
 import type { FlexFrame, RuleEnd, RuleSegment } from './gap-rules.js';
 import { ruleValue } from './css/gap-rule.js';
@@ -147,6 +147,7 @@ import {
   PADDED_FACES,
   Box,
   CLAMPED,
+  CLAMP_CUT,
   CLIPPED_CELLS,
   COLLAPSED_CELLS,
   COLUMN_LINES,
@@ -6840,6 +6841,9 @@ interface BackgroundPass {
   entered: { box: Box; clip: ClipEdge }[];
   /** How many of `entered` are pushed, the outermost first. */
   pushed: number;
+  /** The tables met whose header or footer group columns repeat
+   *  (`REPEATED`), painted again after the flow. */
+  repeats?: Box[];
 }
 
 /**
@@ -6888,6 +6892,26 @@ function paintFlow(
   // 10 left the choice open): drawn after each block's own lines, an
   // outline went under an inline-block the next block held
   paintLater(ctx, outlines, options, false);
+  // a table's header and footer groups again, at each break columns put
+  // inside it (CSS Tables 3, 9.4; `REPEATED`)
+  for (const table of pass.repeats ?? []) {
+    for (const { group, dx, dy } of REPEATED.get(table) ?? []) {
+      paintBox(ctx, group, {
+        ...options,
+        originX: options.originX + dx,
+        originY: options.originY + dy,
+      });
+    }
+  }
+}
+
+/** The line-clamp container whose clamp point fell inside it that a float
+ *  is in (`CLAMP_CUT`), or null. */
+function clampCutAround(float: Box): Box | null {
+  for (let at = float.parent; at; at = at.parent) {
+    if (at.style.lineClamp !== null) return CLAMP_CUT.has(at) ? at : null;
+  }
+  return null;
 }
 
 /** Whether a pass takes a child (`Part`). */
@@ -6922,7 +6946,11 @@ function paintFlowBackgrounds(
     if (CLAMPED.has(child)) continue;
     if (child.isFloat) {
       pass.floats.boxes.push(child);
-      pass.floats.clips.push(clips);
+      // a line-clamp container whose clamp point fell inside it cuts its
+      // floats at its padding box (CSS Overflow 4, 5.3.1; WPT's
+      // line-clamp-with-floats-005)
+      const cut = clampCutAround(child);
+      pass.floats.clips.push(cut ? [...clips, cut] : clips);
       continue;
     }
     if (flowFlex(box, child, options)) {
@@ -6936,6 +6964,9 @@ function paintFlowBackgrounds(
     }
     if (!inFlow(box, child, options) || !intersects(child, options)) continue;
     if (child.kind === 'table-cell' && COLLAPSED_CELLS.has(child)) continue;
+    if (columned.any && child.kind === 'table' && REPEATED.has(child)) {
+      (pass.repeats ??= []).push(child);
+    }
     const visible = child.style.visibility === 'visible';
     if (visible) {
       if (pass.pushed < pass.entered.length && drawsOwn(child)) {
@@ -7133,6 +7164,22 @@ function enterFlowClip(
  *  where it has no area and nothing under it shows: there is no positioned
  *  box in it, which may be outside the clip. */
 function flowClip(box: Box, options: PaintOptions): ClipEdge | null {
+  // a line-clamp container cuts its floats at its clamp point, its content
+  // box's foot, and nowhere else: one wider than it shows past its side,
+  // and one moved up past its top above it (WPT's line-clamp-with-floats-
+  // 005, line-clamp-auto-016)
+  if (
+    CLAMP_CUT.has(box) &&
+    box.style.overflowX === 'visible' &&
+    box.style.overflowY === 'visible'
+  ) {
+    const foot = Math.round(box.contentY + box.contentHeight + options.originY);
+    return {
+      rect: { x: -1e6, y: foot - 2e6, w: 2e6, h: 2e6 },
+      radii: null,
+      shape: null,
+    };
+  }
   const clip = clipEdge(box, options);
   const { w, h } = clip.rect;
   return (w <= 0 || h <= 0) && !holdsAbsolute(box) ? null : clip;

@@ -6125,8 +6125,12 @@ of, and is broken in as a last resort — with
 of each unless they say otherwise, and a margin at a break dropped. A
 table breaks between its rows and inside its cells, as a grid does between
 its rows and inside its items, a row's cells side by side down the strip
-and an empty cell cut where a column ends; its header and footer are not
-yet repeated in each column. A box
+and an empty cell cut where a column ends. Its first header group and its
+first footer group, where they say `break-inside: avoid`, are drawn again at
+the head and the foot of each column a break inside it reaches, the body
+taking the room that leaves, as Blink repeats them (CSS Tables 3, 9.4); not
+where a box between the table and the columns clips, since that box's
+height would not count the room. A box
 with a height and nothing in it, a float among them, is cut wherever a
 column ends and goes on at the head of the next. A block that is a
 formatting context of its own, a `flow-root` say, breaks as any block does;
@@ -6181,7 +6185,9 @@ box is the rectangle around its pieces each transformed about its own
 origin, as a browser draws them. An absolutely positioned box whose containing block is inside
 the columns — or a fixed one whose containing block a transform makes
 there — is laid out as though nothing were broken, against where the
-strip the columns were cut from had its containing block, and is then cut
+strip the columns were cut from had its containing block, an
+inline box's among them, whose fragments are taken where the strip had its
+lines before the columns moved them, and is then cut
 into them as a float with a height is, with what it holds; an anchor it
 refers to in the same columns it sees unbroken, where the strip had it,
 and one outside them the rectangle around the anchor's pieces (CSS Anchor
@@ -8289,7 +8295,10 @@ box's `height` or `max-height` holds, and `max-lines`, `continue` and
 drawn in place of the `…`. A block laid out a line at a time, around an
 image or a float, ends in the ellipsis as one laid out at once does, and
 where the lines after a float are one layout, the lines the clamp drops are
-cut from it rather than drawn with the line it keeps. Where
+cut from it rather than drawn with the line it keeps. A float the dropped
+lines reach is past the clamp point and hidden with them, and one on a line
+kept is cut at the container's content box foot, the clamp point, and
+nowhere else. Where
 the last line's first word is too wide to leave the ellipsis room, a line
 of text that wraps is displaced whole and shows the ellipsis alone, as the
 non-tentative WPT tests, Edge and Safari have it; Chrome's experimental

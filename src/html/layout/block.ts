@@ -144,6 +144,7 @@ import {
   spansColumns,
   spannedRows,
   rowGridOf,
+  stripShiftOf,
   columnsAround,
   spannerRow,
   isSpanner,
@@ -161,6 +162,7 @@ import {
   BOX_RAISES,
   Box,
   clampBox,
+  CLAMP_CUT,
   COLUMN_BOXES,
   CLEARED_FROM,
   COLUMN_PIECES,
@@ -3627,6 +3629,22 @@ function countLines(
   }
   clamp.left -= result.lines.length;
   if (result.cut || (clamp.left <= 0 && cut?.follows)) clamp.done = true;
+  // a float placed from the lines the clamp dropped is past the clamp
+  // point, and hidden with them (CSS Overflow 4, 5.3.1; WPT's
+  // line-clamp-with-floats-003), where one on the last line kept stays
+  // (-005)
+  if (result.cut) {
+    const last = result.lines[result.lines.length - 1];
+    const foot = last ? contentTop + last.y + last.height : contentTop;
+    const stack = [...box.children];
+    while (stack.length) {
+      const at = stack.pop()!;
+      if (at.isFloat && !at.outOfFlow) {
+        if (at.y - Math.max(0, at.marginTop) >= foot - 0.01) hideClamped(at);
+        else unclampBox(at);
+      } else if (at.kind === 'inline') stack.push(...at.children);
+    }
+  }
 }
 
 /** Mark a box past a clamp point, and take from everything in it the lines
@@ -4465,6 +4483,8 @@ function layoutBoxAt(
   // Past a clamp point, a line-clamp container clips its floats rather
   // than holding them (CSS Overflow 4, 5.3.1).
   const clamped = ctx.clamp?.box === box && ctx.clamp.done;
+  if (clamped) CLAMP_CUT.add(box);
+  else if (box.style.lineClamp !== null) CLAMP_CUT.delete(box);
   const withFloats =
     ownFloats && !clamped
       ? Math.max(
@@ -10361,13 +10381,12 @@ function inColumns(box: Box, containing: Box): ReturnType<typeof stripOf> {
   // a fixed box's containing block is in the columns only where a box
   // with a transform makes it one, which `stripOf` finds of no other
   const position = box.style.position;
-  if (
-    (position !== 'absolute' && position !== 'fixed') ||
-    containing.kind === 'inline' ||
-    !containing.parent
-  ) {
+  if ((position !== 'absolute' && position !== 'fixed') || !containing.parent) {
     return null;
   }
+  // an inline box's rectangle is its fragments' where the strip had them
+  // (`inlineContainingBlock`), and only the columns are wanted of it, to
+  // cut the box into (WPT's css-break/out-of-flow-in-multicolumn-048)
   return stripOf(containing);
 }
 
@@ -11514,9 +11533,14 @@ function inlineContainingBlock(
     const span = spanOn(line, inline);
     if (!span) continue;
     const [top, bottom] = fragmentRow(line, inline, face, false);
+    // where the strip had the line, where columns moved it: what is
+    // positioned in the inline box is laid out against the strip, and cut
+    // into the columns after (CSS Position 3, 4.2; WPT's
+    // css-break/out-of-flow-in-multicolumn-048)
+    const moved = columned.any ? stripShiftOf(line) : undefined;
     const rect = {
-      x: span[0],
-      y: top,
+      x: span[0] - (moved?.dx ?? 0),
+      y: top - (moved?.dy ?? 0),
       width: span[1] - span[0],
       height: bottom - top,
     };
@@ -11525,12 +11549,18 @@ function inlineContainingBlock(
   }
   if (!first || !last) {
     const at = box.staticPosition;
-    const x = at ? at.from.x + at.x : 0;
-    const y = at ? at.from.y + at.y : 0;
-    const line = block?.lines?.find((l) => l.y <= y && y < l.y + l.height);
+    // in the strip, where columns moved the line and what it is from
+    const strip = columned.any ? stripStatic(box) : null;
+    const x = strip ? strip.fromX + strip.x : at ? at.from.x + at.x : 0;
+    const y = strip ? strip.fromY + strip.y : at ? at.from.y + at.y : 0;
+    const dyOf = (l: LineBox) =>
+      columned.any ? (stripShiftOf(l)?.dy ?? 0) : 0;
+    const line = block?.lines?.find(
+      (l) => l.y - dyOf(l) <= y && y < l.y - dyOf(l) + l.height,
+    );
     if (!line) return { x, y, width: 0, height: 0 };
     const [top, bottom] = fragmentRow(line, inline, face, false);
-    return { x, y: top, width: 0, height: bottom - top };
+    return { x, y: top - dyOf(line), width: 0, height: bottom - top };
   }
   const rtl = inline.style.direction === 'rtl';
   const start = rtl ? first.x + first.width : first.x;

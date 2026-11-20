@@ -792,6 +792,11 @@ export const CLIPPED_CELLS = new WeakSet<Box>();
  *  paint and the paint bounds. Written through `clampBox` and `unclampBox`. */
 export const CLAMPED = new WeakSet<Box>();
 
+/** The line-clamp containers whose clamp point fell inside them, which
+ *  clip their floats at their padding box rather than holding them (CSS
+ *  Overflow 4, 5.3.1): set as each is laid out. */
+export const CLAMP_CUT = new WeakSet<Box>();
+
 /**
  * How many times a box went into `CLAMPED` or came out of it, or went into
  * `CLIPPED_CELLS`: what a layout marks that the order of the layers reads
