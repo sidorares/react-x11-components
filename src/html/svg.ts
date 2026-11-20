@@ -24,7 +24,7 @@ import {
   untoldGeneration,
 } from './dom.js';
 import type { HtmlChange } from './dom.js';
-import { Cascade, drawingVars } from './css/cascade.js';
+import { CLIP_PATH, Cascade, drawingVars } from './css/cascade.js';
 import { parseMediaQuery, parseStylesheet } from './css/parse.js';
 import type { Stylesheet } from './css/parse.js';
 import { isUse, quotedFamilies, urlIds, useHref } from './css/shapes.js';
@@ -2117,6 +2117,9 @@ function paintsWithContext(nodes: readonly ChildNode[]): boolean {
  *  space in them, which no id a document can name by a `url()` has. */
 const CONTEXT_COPY = 'rx-context copy ';
 
+/** The id of a `<clipPath>` made of a basic shape (`clipCopies`). */
+const CLIP_COPY = 'rx-clip-copy-\u2063';
+
 /** What a `<use>` says of where its element goes, and not of how it looks:
  *  the rest is the group's the element is drawn in. */
 const USE_PLACEMENT = new Set([
@@ -2295,6 +2298,28 @@ function copyTree(
   };
   /** The copies of what a `<use>` draws that are drawn through one. */
   const contextCopies: Element[] = [];
+  /** The `<clipPath>`s made of a basic shape an element is clipped to,
+   *  which the cascade laid down as a path (`CLIP_PATH`): `SvgView` clips
+   *  to a `<clipPath>` alone. Under an id no document can name, as a
+   *  context copy's is. */
+  const clipCopies: Element[] = [];
+  const clipCopied = (own: ShapeStyle): ShapeStyle => {
+    const clip = own['clip-path'];
+    if (!clip?.startsWith(CLIP_PATH)) return own;
+    const rest = clip.slice(CLIP_PATH.length);
+    const space = rest.indexOf(' ');
+    const id = `${CLIP_COPY}${clipCopies.length}`;
+    clipCopies.push(
+      new Element('clipPath', { id, clipPathUnits: 'userSpaceOnUse' }, [
+        new Element(
+          'path',
+          { d: rest.slice(space + 1), 'clip-rule': rest.slice(0, space) },
+          [],
+        ),
+      ]),
+    );
+    return { ...own, 'clip-path': `url(#${id})` };
+  };
   /** What the drawing names outside the root, copied, by its id: an
    *  element a `<use>` in a `<clipPath>` names, and one a `url(#…)` names
    *  (`urlIds`) — a marker, a gradient, a clip path. `SvgView` looks a
@@ -2369,7 +2394,7 @@ function copyTree(
     hidden = hiddenIn(own, hidden);
     const attribs = { ...el.attribs };
     if (scheme) workOutColours(attribs, scheme);
-    if (own) restyle(attribs, own);
+    if (own) restyle(attribs, clipCopied(own));
     // its own font size, which an `em` in its lengths is of, written out
     // where `SvgView` would read it otherwise
     const size = fontSizeOf(attribs, inherited, lengths, (px) => {
@@ -2414,7 +2439,7 @@ function copyTree(
   const tree = copy(root, true);
   const defs: Element[] = [];
   for (const el of brought.values()) if (el) defs.push(el);
-  defs.push(...contextCopies);
+  defs.push(...contextCopies, ...clipCopies);
   if (defs.length) tree.children.push(new Element('defs', {}, defs));
   return tree;
 }

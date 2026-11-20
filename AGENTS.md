@@ -6796,6 +6796,16 @@ draws it at its origin. Its `translate`, `rotate` and `scale` are written
 before its `transform` as one list (`staticTransform`), so anything new that
 moves a drawing's element without an animation goes through it.
 
+**A basic-shape `clip-path` on a drawing's element is a `<clipPath>` of
+the copy's** (`drawingClipPath` in the cascade, `clipCopies` in `svg.ts`).
+SvgView clips to a `<clipPath>` alone, so the cascade lays the shape down
+in the element's reference box with `shapePolygons`, in user units, and the
+copy makes a `<clipPath>` of the path under an id no document can name. An
+element whose `style` or `clip-path` attribute holds a shape is resolved
+whether a rule reaches it or not (`clipsToShape`). A circle's edge in the
+harness differs from a filled circle's, since ntk's clip mask is the in-process
+server's trapezoids; that is the harness, not this.
+
 **A colour no context reads is worked out in the drawing's copy**
 (`coloursToWorkOut`, `workOutColours`). `SvgView` hands a paint to the context as
 it is written, and a context reads what `rgb()`, `hsl()` and a hex say, so

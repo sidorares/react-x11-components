@@ -134,6 +134,7 @@ import {
   presentedMotion,
   underAttributes,
 } from './shape-animations.js';
+import { shapePolygons } from './basic-shape.js';
 import type { ShapeAnimations, ShapeMotion } from './shape-animations.js';
 import {
   animatedWillChange,
@@ -170,6 +171,7 @@ import {
   zoomedBy,
   initialStyle,
   sameStyle,
+  drawingClipOf,
 } from './style.js';
 import type {
   FeatureValues,
@@ -10265,7 +10267,8 @@ export class Cascade {
           !inCopy &&
           el !== root &&
           (presentedMotion(el) !== null ||
-            (!!inline && INLINE_MOTION.test(inline)));
+            (!!inline && INLINE_MOTION.test(inline)) ||
+            clipsToShape(el));
         if (!ruled && !presented && !inlineVars && !moves) {
           each(el, null);
           continue;
@@ -10384,6 +10387,29 @@ export class Cascade {
           } else value = shapeValue(d.prop, d.value, ctx);
           if (value !== null) (own ??= {})[d.prop] = value;
         }
+      }
+      // a basic shape it is clipped to, laid down in its reference box as
+      // a path its copy makes a `<clipPath>` of (`clipCopies`)
+      const clip =
+        own?.['clip-path'] ??
+        (el && !isRoot ? shapeClipAttribute(el) : undefined);
+      if (
+        clip !== undefined &&
+        el &&
+        !isRoot &&
+        clip !== 'none' &&
+        clip !== 'inherit' &&
+        !clip.startsWith('url(')
+      ) {
+        own = own ?? {};
+        own['clip-path'] = drawingClipPath(
+          clip,
+          el,
+          root,
+          own!,
+          ctx,
+          this.shapeAnimations,
+        );
       }
       if (el && !isRoot) motion = underAttributes(el, motion);
       const clock = this.shapeAnimations;
@@ -11761,7 +11787,7 @@ export function drawingVars(
   let targets: Set<Element> | null = null;
   for (let el = stack.pop(); el; el = stack.pop()) {
     if (attributeVars(el)) return true;
-    if (el !== root && presentedMotion(el)) return true;
+    if (el !== root && (presentedMotion(el) || clipsToShape(el))) return true;
     // the root's own custom properties are its box's already
     const style = el.attribs.style;
     if (el !== root && style && INLINE_MOTION.test(style)) return true;
@@ -11788,6 +11814,28 @@ export function drawingVars(
 
 /** A `style` attribute that says how a drawing's element moves: what
  *  `SvgView` does not read, and `shapeStyles` does where it is set. */
+/** A `clip-path` of a basic shape, in a `style` attribute or as the
+ *  attribute itself: what `SvgView` does not cut to, and the drawing's
+ *  cascade lays down (`drawingClipPath`). */
+const CLIP_SHAPE_DECLARED =
+  /(?:^|[;\s])clip-path\s*:\s*(?!\s*(?:url\(|none\b|inherit\b))[a-z-]+\(|(?:^|[;\s])clip-path\s*:\s*(?:fill|stroke|view|border|padding|content|margin)-box/i;
+const CLIP_SHAPE_VALUE =
+  /^(?:(?:fill|stroke|view|border|padding|content|margin)-box\s+)?(?:circle|ellipse|inset|rect|xywh|polygon|path|shape)\(/i;
+
+/** Whether an element clips to a basic shape by its `style` or its
+ *  `clip-path` attribute. */
+function clipsToShape(el: Element): boolean {
+  const style = el.attribs.style;
+  if (style && CLIP_SHAPE_DECLARED.test(style)) return true;
+  return shapeClipAttribute(el) !== undefined;
+}
+
+/** The `clip-path` attribute where it is a basic shape. */
+function shapeClipAttribute(el: Element): string | undefined {
+  const attr = el.attribs['clip-path']?.trim();
+  return attr && CLIP_SHAPE_VALUE.test(attr) ? attr : undefined;
+}
+
 const INLINE_MOTION =
   /(?:^|[;\s])(?:transform(?:-origin|-box)?|translate|rotate|scale)\s*:/i;
 
@@ -12879,4 +12927,46 @@ function settleRecord(
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(record)) out[key] = settleSums(record[key]);
   return out;
+}
+
+/** What a drawing's element's basic-shape `clip-path` is handed to its
+ *  copy as: `CLIP_PATH`, the fill rule, a space, and the path data in user
+ *  units — or `none` where it cannot be laid down. */
+export const CLIP_PATH = 'rx-clip ';
+
+/**
+ * A drawing's element's basic-shape `clip-path` laid down in its reference
+ * box (CSS Masking 1, 5.1), as `CLIP_PATH` path data in its user units:
+ * the box its fill takes up, that grown by half its stroke, or the
+ * viewport it is in. `SvgView` clips to a `<clipPath>` alone, and a shape
+ * of CSS's own drew nothing of the clip.
+ */
+function drawingClipPath(
+  value: string,
+  el: Element,
+  root: Element,
+  own: Record<string, string>,
+  ctx: ShapeContext,
+  clock: ShapeAnimations | null,
+): string {
+  const read = drawingClipOf(value, ctx.units);
+  if (!read || !clock) return 'none';
+  const box = clock.referenceBox(el, root, read.box, own);
+  const scale = ctx.units.scale || 1;
+  const { polys, rule } = shapePolygons(
+    read.shape,
+    box.width * scale,
+    box.height * scale,
+  );
+  let d = '';
+  for (const poly of polys) {
+    for (let i = 0; i + 1 < poly.length; i += 2) {
+      const x = box.x + poly[i] / scale;
+      const y = box.y + poly[i + 1] / scale;
+      d += `${i ? 'L' : 'M'}${+x.toFixed(4)} ${+y.toFixed(4)}`;
+    }
+    if (poly.length) d += 'Z';
+  }
+  // a shape of no area clips everything away
+  return `${CLIP_PATH}${rule} ${d || 'M0 0Z'}`;
 }

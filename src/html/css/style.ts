@@ -609,6 +609,42 @@ function parseClipPath(
 }
 
 /**
+ * A `clip-path` that is a basic shape, as a drawing's element takes it: the
+ * shape, and the reference box it names, or null for `none`, a `url()` and
+ * anything else. The box is the SVG one it stands for (CSS Masking 1, 5.1):
+ * `fill-box` for the content and padding boxes, `stroke-box` for the border
+ * and margin boxes and where none is named.
+ */
+export function drawingClipOf(
+  value: string,
+  ctx: UnitContext,
+): { shape: BasicShape; box: 'fill-box' | 'stroke-box' | 'view-box' } | null {
+  let shape: BasicShape | null = null;
+  let box: 'fill-box' | 'stroke-box' | 'view-box' = 'stroke-box';
+  for (const part of splitValue(value.trim())) {
+    const word = part.toLowerCase();
+    if (
+      word === 'fill-box' ||
+      word === 'content-box' ||
+      word === 'padding-box'
+    ) {
+      box = 'fill-box';
+    } else if (
+      word === 'stroke-box' ||
+      word === 'border-box' ||
+      word === 'margin-box'
+    ) {
+      box = 'stroke-box';
+    } else if (word === 'view-box') box = 'view-box';
+    else if (!shape && part.endsWith(')')) {
+      shape = parseBasicShape(part, ctx, (radii) => parseRadii(radii, ctx));
+      if (!shape) return null;
+    } else return null;
+  }
+  return shape ? { shape, box } : null;
+}
+
+/**
  * `polygon()` (CSS Shapes 1, 3.1): a fill rule and a comma, or neither,
  * then one vertex or more, each a pair of lengths or percentages; undefined
  * for anything else. `round`, which Chrome alone reads, is not read, as

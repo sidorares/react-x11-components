@@ -384,11 +384,14 @@ export function shapeValue(
       return v === 'nonzero' || v === 'evenodd' ? v : null;
     }
     case 'clip-path': {
-      // `none`, or the `<clipPath>` a `url()` names in the drawing: a
-      // shape of CSS's own is one `SvgView` does not cut to
+      // `none`, or the `<clipPath>` a `url()` names in the drawing
       if (value.toLowerCase() === 'none') return 'none';
       const url = /^url\(\s*(['"]?)(#[^'")\s]+)\1\s*\)$/i.exec(value);
-      return url ? `url(${url[2]})` : null;
+      if (url) return `url(${url[2]})`;
+      // a basic shape, which the drawing's cascade lays down in the
+      // element's reference box as a `<clipPath>` of its own
+      // (`Cascade.shapeStyles`, `clipCopies` in `svg.ts`)
+      return CLIP_SHAPE.test(value.trim()) ? value.trim() : null;
     }
     case 'visibility': {
       const v = value.toLowerCase();
@@ -579,3 +582,7 @@ function lengthIn(value: string, units: UnitContext): number | null {
   const length = parseLength(value, units);
   return typeof length === 'number' ? length / units.scale : null;
 }
+
+/** A `clip-path` that is a basic shape, or a reference box with one. */
+const CLIP_SHAPE =
+  /^(?:(?:fill|stroke|view|border|padding|content|margin)-box\s+)?(?:circle|ellipse|inset|rect|xywh|polygon|path|shape)\(/i;
