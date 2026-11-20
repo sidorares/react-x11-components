@@ -487,6 +487,34 @@ function parseRgb(color: string): number[] {
 }
 
 metric(
+  'a conic gradient goes round its centre from the angle it starts at, and a repeating one round again',
+  async () => {
+    // CSS Images 4, 3.3: drawn as nothing before, since no context has a
+    // conic gradient of its own; worked out a pixel at a time
+    const ctx = await renderWithImages(
+      '<style>body{margin:0}div{width:40px;height:40px}</style>' +
+        // red for the first quarter turn clockwise from up, blue after
+        '<div style="background:conic-gradient(#ff0000 25%,#0000ff 25%)"></div>' +
+        // started a quarter turn round, at the box's top left
+        '<div style="background:conic-gradient(from 90deg at 0 0,#00ff00 25%,#ff00ff 25%)"></div>' +
+        // and repeated every quarter turn: red and blue by turns
+        '<div style="background:repeating-conic-gradient(#ff0000 0 45deg,#0000ff 45deg 90deg)"></div>',
+    );
+    await expectPixel(ctx, 30, 10, '#ff0000', { message: 'top right' });
+    await expectPixel(ctx, 30, 30, '#0000ff', { message: 'bottom right' });
+    await expectPixel(ctx, 10, 10, '#0000ff', { message: 'top left' });
+    await expectPixel(ctx, 30, 50, '#00ff00', { message: 'from 90deg at 0 0' });
+    // past the box's corner the second quarter is all there is
+    await expectPixel(ctx, 30, 75, '#00ff00', {
+      message: 'still its first quarter',
+    });
+    await expectPixel(ctx, 25, 82, '#ff0000', { message: 'the first eighth' });
+    await expectPixel(ctx, 32, 95, '#0000ff', { message: 'the second eighth' });
+    await expectPixel(ctx, 8, 95, '#ff0000', { message: 'round again' });
+  },
+);
+
+metric(
   'a repeating gradient lays its stops down again along its whole line',
   async () => {
     // CSS Images 3, 3.4: from the first stop to the last, again and again,

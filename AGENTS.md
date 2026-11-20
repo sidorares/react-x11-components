@@ -7735,8 +7735,15 @@ needed. Every way a gradient is drawn then draws ordinary sRGB stops, so
 gradient in sRGB with no hints keeps the stops it was written with, which is
 what keeps the common case as cheap as it was. Stop colours are sRGB strings
 clipped as they are read, so a transition outside the gamut is drawn through
-the clipped colours; keeping them unclipped is the follow-up. Conic
-gradients are not drawn.
+the clipped colours; keeping them unclipped is the follow-up.
+
+**A conic gradient is a picture of its box** (`conicFill`, CSS Images 4,
+3.3). No context has one of its own, so each pixel's angle round the centre
+is looked up in a table a turn long (`conicTable`), and the picture, kept by
+what it was made from, is filled as a pattern from the box's corner.
+`shape-outside` reads the same table (`float-shape.ts`). **Anything new that
+draws a gradient handles `kind: 'conic'` before it reads a line or a
+radius**, as `unrolled` and `gradientFill` do.
 
 **A repeating gradient is unrolled where its box is known** (`unrolled`):
 its stops laid down again along a linear one's line or out to a radial

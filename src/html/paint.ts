@@ -71,6 +71,7 @@ import type {
   LinearGradient,
   MaskComposite,
   RadialGradient,
+  ConicGradient,
   RepeatMode,
 } from './css/style.js';
 import {
@@ -11099,7 +11100,7 @@ function unrolled(
   h: number,
   currentColor: string,
 ): Gradient {
-  if (!gradient.repeating) return gradient;
+  if (!gradient.repeating || gradient.kind === 'conic') return gradient;
   let length: number;
   let reach: number;
   if (gradient.kind === 'linear') {
@@ -11272,11 +11273,14 @@ function gradientFill(
   currentColor: string,
   visible: { x: number; y: number; w: number; h: number } | null = null,
 ): GradientFill | null {
+  if (gradient.kind === 'conic') {
+    return conicFill(ctx, gradient, x, y, w, h, currentColor);
+  }
   gradient = unrolled(gradient, w, h, currentColor);
   if (gradient.kind === 'radial') {
     return radialGradient(ctx, gradient, x, y, w, h, currentColor, visible);
   }
-  if (!ctx.createLinearGradient) return null;
+  if (gradient.kind === 'conic' || !ctx.createLinearGradient) return null;
   return {
     style: linearGradient(ctx, gradient, x, y, w, h, currentColor, visible),
     matrix: null,
@@ -17689,4 +17693,128 @@ function paintEmphasis(
       }
     }
   }
+}
+
+/** A conic gradient's colour at each angle round its centre, as a table
+ *  a turn long (`CONIC_STEPS` entries), straight RGBA: what `conicImage`
+ *  and `shape-outside` look a pixel's angle up in. */
+export function conicTable(
+  gradient: ConicGradient,
+  currentColor: string,
+): Float32Array {
+  const at = stopOffsets(gradient.stops, 360);
+  const rgba = gradient.stops.map(
+    (stop) => rgbaOf(inkColor(stop.color, currentColor)) ?? [0, 0, 0, 0],
+  );
+  const first = at[0];
+  const period = at[at.length - 1] - first;
+  const table = new Float32Array(CONIC_STEPS * 4);
+  for (let k = 0; k < CONIC_STEPS; k += 1) {
+    let t = (k + 0.5) / CONIC_STEPS;
+    // a repeating one's stops go round again from the first, both ways
+    if (gradient.repeating && period > 0) {
+      t = first + ((((t - first) % period) + period) % period);
+    }
+    let i = 0;
+    while (i < at.length && at[i] <= t) i += 1;
+    let c: number[];
+    if (i === 0) c = rgba[0];
+    else if (i === at.length) c = rgba[at.length - 1];
+    else {
+      const a = rgba[i - 1];
+      const b = rgba[i];
+      const span = at[i] - at[i - 1];
+      const q = span > 0 ? (t - at[i - 1]) / span : 1;
+      // premultiplied, as a gradient mixes its stops (CSS Images 3, 3.5.2)
+      const alpha = a[3] + (b[3] - a[3]) * q;
+      c = [0, 1, 2].map((j) =>
+        alpha > 0
+          ? (a[j] * a[3] + (b[j] * b[3] - a[j] * a[3]) * q) / alpha
+          : a[j] + (b[j] - a[j]) * q,
+      );
+      c.push(alpha);
+    }
+    table.set(c, k * 4);
+  }
+  return table;
+}
+
+/** How finely a turn of a conic gradient is looked up: a tenth of a degree. */
+const CONIC_STEPS = 3600;
+
+/** Where a conic gradient's centre is in a box `w` by `h`, and the share
+ *  of a turn a point is round it, clockwise from where the stops start. */
+export function conicPlace(
+  gradient: ConicGradient,
+  w: number,
+  h: number,
+): { cx: number; cy: number; turn: (x: number, y: number) => number } {
+  const cx = resolve(gradient.at[0], w);
+  const cy = resolve(gradient.at[1], h);
+  const from = gradient.from;
+  return {
+    cx,
+    cy,
+    turn: (x, y) => {
+      const angle = Math.atan2(x - cx, cy - y) - from;
+      const t = angle / (2 * Math.PI);
+      return t - Math.floor(t);
+    },
+  };
+}
+
+/** The pictures of the conic gradients drawn, by what each is drawn from:
+ *  a box's background drawn again draws the picture it drew. */
+const CONIC_IMAGES = new Map<string, unknown>();
+
+/** The most pixels a conic gradient's picture is made of: past it, the
+ *  gradient draws nothing, as it did before it was drawn at all. */
+const CONIC_MOST = 4096 * 4096;
+
+/**
+ * A `conic-gradient()` across a box (CSS Images 4, 3.3), as a picture its
+ * size, worked out a pixel at a time from the angle of the pixel's centre
+ * round the gradient's, and filled as a pattern from the box's corner: no
+ * context has a conic gradient of its own. Kept by what it was made from.
+ */
+function conicFill(
+  ctx: PaintContext,
+  gradient: ConicGradient,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  currentColor: string,
+): GradientFill | null {
+  if (!ctx.createPattern) return null;
+  const width = Math.max(1, Math.ceil(w));
+  const height = Math.max(1, Math.ceil(h));
+  if (width * height > CONIC_MOST) return null;
+  const key = `${width}x${height} ${currentColor} ${JSON.stringify(gradient)}`;
+  let image = CONIC_IMAGES.get(key);
+  if (image === undefined) {
+    const table = conicTable(gradient, currentColor);
+    const { turn } = conicPlace(gradient, w, h);
+    const data = new Uint8ClampedArray(width * height * 4);
+    for (let py = 0; py < height; py += 1) {
+      for (let px = 0; px < width; px += 1) {
+        const k = Math.min(
+          CONIC_STEPS - 1,
+          Math.floor(turn(px + 0.5, py + 0.5) * CONIC_STEPS),
+        );
+        const o = (py * width + px) * 4;
+        // straight RGBA, as a canvas's pixels are
+        data[o] = table[k * 4] * 255;
+        data[o + 1] = table[k * 4 + 1] * 255;
+        data[o + 2] = table[k * 4 + 2] * 255;
+        data[o + 3] = table[k * 4 + 3] * 255;
+      }
+    }
+    image = new ntk.Image({ width, height, data });
+    if (CONIC_IMAGES.size > 64) CONIC_IMAGES.clear();
+    CONIC_IMAGES.set(key, image);
+  }
+  const style = ctx.createPattern(image, 'no-repeat');
+  if (!style) return null;
+  return { style, matrix: [1, 0, 0, 1, x, y] };
 }

@@ -8002,7 +8002,9 @@ colours outside it is drawn through the clipped ones. A `radial-gradient()` is d
 3.2): a circle or an ellipse, to the nearest or the furthest side or
 corner of its box or of the radii it names, centred where `at` puts it,
 its stops along the ray from the centre to its edge and past it, and
-wherever a linear one is: a layer, a mask, a border image. One with no
+wherever a linear one is: a layer, a mask, a border image. A `conic-gradient()`, repeating or not, is drawn the
+same way (CSS Images 4, 3.3): its stops round the centre `at` puts, clockwise
+from the angle `from` gives, worked out a pixel at a time. One with no
 width or no height is its last colour, as Chrome draws it, and one whose
 circle or centre is further off than a context carries is drawn as the
 part of it the box sees. **Radial

@@ -355,7 +355,20 @@ export type RadialExtent =
   'closest-side' | 'closest-corner' | 'farthest-side' | 'farthest-corner';
 
 /** An image a gradient function draws. */
-export type Gradient = LinearGradient | RadialGradient;
+/** A `conic-gradient()` (CSS Images 4, 3.3): its stops around a centre,
+ *  clockwise from the angle it starts at, a position in percentages of a
+ *  turn — an angle's taken as its share of 360deg. */
+export interface ConicGradient {
+  kind: 'conic';
+  /** Where the stops start, clockwise from up, in radians. */
+  from: number;
+  at: [Len, Len];
+  stops: GradientStop[];
+  /** A `repeating-conic-gradient()`: its stops again and again round. */
+  repeating?: true;
+}
+
+export type Gradient = LinearGradient | RadialGradient | ConicGradient;
 
 /** Where a grid item starts or ends (CSS Grid 1, 8.3): a line, counted
  *  among the lines of a name where it has one; a span, to a line of a name
@@ -7986,6 +7999,9 @@ function parseStops(
   args: string[],
   ctx: UnitContext,
   method: { space: string; hue: string } | null = null,
+  /** How a stop's or a hint's position is read: a length, or for a conic
+   *  gradient an angle as its share of a turn. */
+  position: (part: string) => Len | null = (part) => parseLength(part, ctx),
 ): GradientStop[] | null {
   const stops: GradientStop[] = [];
   /** The hint before each stop, by the stop's index. */
@@ -7998,7 +8014,7 @@ function parseStops(
     if (color === null) {
       // a hint, the midpoint of the transition between two stops
       if (parts.length === 1) {
-        const hint = parseLength(parts[0], ctx);
+        const hint = position(parts[0]);
         if (hint !== null && hint !== AUTO) {
           if (!stops.length || pendingHint !== null) return null;
           pendingHint = hint;
@@ -8019,7 +8035,7 @@ function parseStops(
     ) {
       modern = true;
     }
-    const at = parts.slice(1).map((p) => parseLength(p, ctx));
+    const at = parts.slice(1).map((p) => position(p));
     if (at.some((p) => p === null || p === AUTO)) return null;
     if (!at.length) {
       hints[stops.length] = pendingHint;
@@ -8137,7 +8153,88 @@ function expandStops(
 
 /** A gradient function's image, where it is one this draws. */
 function parseGradient(text: string, ctx: UnitContext): Gradient | null {
-  return parseLinearGradient(text, ctx) ?? parseRadialGradient(text, ctx);
+  return (
+    parseLinearGradient(text, ctx) ??
+    parseRadialGradient(text, ctx) ??
+    parseConicGradient(text, ctx)
+  );
+}
+
+/** An angle as a share of a turn, in degrees, or null for none. */
+function turnsOf(part: string): number | null {
+  const m =
+    /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(deg|rad|grad|turn)?$/i.exec(
+      part.trim(),
+    );
+  if (!m) return null;
+  const n = Number(m[1]);
+  const unit = (m[2] ?? (n === 0 ? 'deg' : '')).toLowerCase();
+  const per: Record<string, number> = {
+    deg: 1,
+    rad: 180 / Math.PI,
+    grad: 0.9,
+    turn: 360,
+  };
+  return unit in per ? n * per[unit] : null;
+}
+
+/**
+ * A `conic-gradient()` (CSS Images 4, 3.3), or null for anything else:
+ * `from` an angle, `at` a position as `background-position` writes one,
+ * and a colour interpolation method, each optional, then the stops, whose
+ * positions are angles or percentages of a turn.
+ */
+function parseConicGradient(
+  text: string,
+  ctx: UnitContext,
+): ConicGradient | null {
+  const m = /^(repeating-)?conic-gradient\((.*)\)$/is.exec(text.trim());
+  if (!m) return null;
+  const args = splitCommas(m[2]).map((a) => a.trim());
+  const out: ConicGradient = {
+    kind: 'conic',
+    from: 0,
+    at: [{ pct: 50 }, { pct: 50 }],
+    stops: [],
+  };
+  if (m[1]) out.repeating = true;
+  const first = withoutInterpolation(args[0] ?? '');
+  let from = 0;
+  const words = splitValue(first);
+  if (!first || words[0] === 'from' || words[0] === 'at') {
+    from = 1;
+    let i = 0;
+    if (words[i] === 'from') {
+      const deg = turnsOf(words[i + 1] ?? '');
+      if (deg === null) return null;
+      out.from = (deg * Math.PI) / 180;
+      i += 2;
+    }
+    if (words[i] === 'at') {
+      const position = positionPair(words.slice(i + 1), ctx);
+      if (!position) return null;
+      out.at = position;
+      i = words.length;
+    }
+    if (i < words.length) return null;
+  }
+  const stops = parseStops(
+    args.slice(from),
+    ctx,
+    interpolationOf(args[0]),
+    (part) => {
+      const deg = turnsOf(part);
+      if (deg !== null) return deg === 0 ? 0 : { pct: deg / 3.6 };
+      const len = parseLength(part, ctx);
+      // a percentage is of a turn; a length is no position round one
+      return len !== null && typeof len === 'object' && !len.px && !len.of
+        ? len
+        : null;
+    },
+  );
+  if (!stops) return null;
+  out.stops = stops;
+  return out;
 }
 
 /** The images CSS3 has beyond `url()`, which a layer may name: a linear
