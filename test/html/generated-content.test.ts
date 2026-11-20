@@ -1829,7 +1829,9 @@ test("a scroll container's ::scroll-marker-group is a box beside it, holding the
       '<div id="s"><div id="a"></div><div id="none"></div><div id="b"></div>' +
       '</div>',
   );
-  const scroller = boxOf(view(node), 's');
+  const scroller = boxOf(view(node), 's') as LaidBox & {
+    parent: LaidBox | null;
+  };
   const siblings = scroller.parent!.children;
   const group = siblings[siblings.indexOf(scroller) - 1];
   assert.strictEqual(group?.pseudo, 'scroll-marker-group', 'before it');
