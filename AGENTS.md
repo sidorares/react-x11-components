@@ -8865,6 +8865,38 @@ margin's width off, on the wrong side, in `vertical-lr` alone. And
 text** (`selfFlips`, `staticAlignment`, `selfAligned`): the keyword layout
 keeps holds them as a start and an end.
 
+**A ruby is columns the fix-up makes, and an emphasis mark is drawn where
+an annotation of it would be** (`fixUpRuby`, `placeRuby`, `placeMarks`).
+The cascade keeps a ruby's boxes `inline`, with `rubyKind` saying which
+they are, and the fix-up pairs what a ruby holds into atomic inlines, one
+a column (`RUBY_COLUMNS`): an anonymous block for the base and one for
+each annotation level, the base first. So the box tree, the line breaker
+and the intrinsic widths know nothing of ruby; only three things do. A
+column is laid out as any inline-block and then `placeRuby` moves its
+annotations against the edge of the base's font and makes it as tall as
+they reach, after every `layoutAtomic`, the one `layoutOwn` keeps among
+them, which is why it moves each block by how far it is from where it
+goes. `ownBaseline` asks the base for a column's, since its last line is
+an annotation's. And an annotation that is in no ruby is wrapped in one
+(`wrapAnnotations`), but in a column's own blocks (`ANNOTATION_HOLDERS`)
+and in a `ruby-text-container`, or the fix-up wraps its own work for good.
+Three things are load-bearing. **The base is before its annotations in a
+column, and a column of one pair keeps the tree's text in the document's
+order**: a segment of several pairs does not, and is the one place it is
+not. **Emphasis is that geometry and no other**: every reference WPT has
+for `text-emphasis` is drawn with `<ruby><rt>`, so `emphasisRoom` sets a
+mark's line as the UA sheet sets an annotation's, its strut's ascent from
+`ascentOnLine`, and anything new that moves an annotation in `placeRuby`
+moves a mark in `placeMarks` the same way, or the two come apart by a
+fraction of a pixel and every reference fails. And **a run's marks are a
+field of it** (`DocumentRun.emphasis`), in `RUN_FIELDS`, `sameRun` and the
+restyle's `FACE_FIELDS`, since they take room on the line; a paragraph
+with any is laid out a line at a time (`strutted`), where `finishLine`
+makes the room and keeps the marks by their `LineText`
+(`EMPHASIS_MARKS`) for paint. `ruby-position`, `ruby-align` and
+`text-emphasis-style` are read from the passive records, though they are
+laid out by.
+
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
 including why the seams stay the parent's and why `handle.document` would

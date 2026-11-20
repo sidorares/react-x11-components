@@ -8234,6 +8234,48 @@ wider (`elementRect`, a selection's band) and is underlined under it, and
 a space a line ends on is removed, from the link and from every box that
 ends there with it.
 
+**Ruby:** `<ruby>`, `<rb>`, `<rt>`, `<rtc>` and `<rp>`, and the five ruby
+values of `display`, which `getComputedStyle` reads back (CSS Ruby 1). The
+fix-up pairs what a ruby holds into columns (`fixUpRuby`): the n-th base of
+a segment and the n-th annotation of each level after it, a level of one
+annotation over several bases spanning them, and a `ruby-base-container`
+or a `ruby-text-container` of several being its bases or its annotations.
+A column is an atomic inline, so a line breaks between columns and never
+inside one, as wide as the widest of what it holds, each part centred in
+it but where `ruby-align: start` says otherwise. An annotation is set
+against the edge of its base's font, above its ascent or below its
+descent by `ruby-position`, and a line grows only by what an annotation
+reaches past it: one the line's leading has room for grows nothing, as in
+Blink. White space between two bases or two segments is a space between
+their columns, and any other is dropped. An annotation outside a ruby is
+in an anonymous one over an empty base. The UA sheet sets an annotation at
+half its base's size, on a line of `line-height: normal`, with `rp`
+hidden. Not here: `ruby-align`'s `space-between` and `space-around`, which
+centre; `ruby-overhang`, so an annotation wider than its base widens its
+column and pushes the text beside it apart; `inter-character` and the
+`alternate` of a second level, which go over; an annotation's `::first-line`
+style; and tabs in a base, measured from the column's start. A column that
+pairs a base with an annotation after other bases holds the annotation
+before them in the tree, so the tree's text is out of the document's order
+there, which a selection across it shows.
+
+**Emphasis marks:** `text-emphasis`, `text-emphasis-style`,
+`text-emphasis-color` and `text-emphasis-position`, and their `-webkit-`
+spellings (CSS Text Decoration 3, 3). A mark is drawn over or under each
+character but a space, a separator, a punctuation mark and a control or
+format character, centred on it, and where a ruby annotation of the mark
+would be: at half the text's size, on a line of `line-height: normal`
+against the edge of the text's face (`placeMarks`). A line makes room for
+its marks as for an annotation, so a paragraph with marks is laid out a
+line at a time. The five shapes filled and open, and a string's first
+character; a shape left out is a circle across and a sesame down. Set down,
+`right` is over the text and `left` under it. `auto` is under the text
+where it is Chinese and set across, and over it on the right everywhere
+else. Not here: a mark set upright on a line that is set down, which is
+drawn turned with the line; and a mark wider than its character, which a
+browser lets run over its neighbours and a ruby reference widens its
+column for.
+
 **Generated content:** `::before` and `::after`, and CSS 2's `:before` and
 `:after`, as boxes of their own `display` holding what `content` comes to:
 strings with their escapes, images, `attr()`, `counter()` and `counters()` in
@@ -8767,7 +8809,7 @@ Two limits. `grid` and `grid-template` read as nothing,
 since a grid's tracks resolve to what a layout came to and a box does not
 say. So do `mask` and `border-image`, whose images a style keeps in no form
 a page can read, and what a style holds nothing of: `overscroll-behavior`,
-`offset`, `marker`, `text-emphasis` and `font-synthesis`, the
+`offset`, `marker`, the `text-emphasis` shorthand and `font-synthesis`, the
 `corner-*-shape` pairs, and the `-webkit-` spellings.
 
 What `getComputedStyle` reads back for `color`, `background-color`, the

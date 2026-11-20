@@ -783,6 +783,10 @@ function display(style: ComputedStyle): string {
   if (style.flowRoot) return 'flow-root';
   if (style.webkitBox === 'block') return '-webkit-box';
   if (style.webkitBox === 'inline') return '-webkit-inline-box';
+  if (style.rubyKind === 'ruby') {
+    return style.display === 'block' ? 'block ruby' : 'ruby';
+  }
+  if (style.rubyKind) return style.rubyKind;
   return style.display;
 }
 

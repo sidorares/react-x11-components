@@ -85,6 +85,7 @@ import {
   verticalMode,
 } from '../css/style.js';
 import { AUTO } from '../css/values.js';
+import { passiveValue } from '../css/passive-properties.js';
 import { focusableElement } from '../focus.js';
 import {
   atDensity,
@@ -6797,6 +6798,16 @@ function fixUp(box: Box, anonymous: AnonymousStyle): void {
 
 /** `fixUp` of a box whose children have had theirs. */
 function fixUpOwn(box: Box, anonymous: AnonymousStyle): void {
+  if (box.style.rubyKind === 'ruby' && box.el !== null) {
+    fixUpRuby(box, anonymous);
+  } else if (
+    box.kind !== 'text' &&
+    !ANNOTATION_HOLDERS.has(box) &&
+    box.style.rubyKind !== 'ruby-text-container' &&
+    box.children.some(isAnnotation)
+  ) {
+    wrapAnnotations(box, anonymous);
+  }
   if (box.kind === 'table') {
     fixUpTable(box, anonymous);
     return;
@@ -7460,3 +7471,279 @@ function fixUpTable(table: Box, anonymous: AnonymousStyle): void {
   table.children = [...captions, ...columns, ...groups];
   for (const child of table.children) child.parent = table;
 }
+
+/**
+ * A ruby column (CSS Ruby 1, 2.2): an atomic inline the fix-up made of one
+ * ruby segment, its base and the annotations that go with it, which
+ * `placeRuby` sets one over (or under) the other. The base is first among
+ * its children and the annotations after it, in the order the document
+ * has them, so the tree's text stays in document order.
+ */
+export interface RubyColumn {
+  base: Box;
+  annotations: Box[];
+}
+
+/** The blocks a ruby column holds its annotations in, which are where an
+ *  annotation belongs (`wrapAnnotations`). */
+const ANNOTATION_HOLDERS = new WeakSet<Box>();
+
+/** Each ruby column the fix-up made, by its box. */
+export const RUBY_COLUMNS = new WeakMap<Box, RubyColumn>();
+
+/** Whether a box is an annotation of a ruby: a `ruby-text`, or a container
+ *  of them, which a column holds over its base. */
+function isAnnotation(box: Box): boolean {
+  const kind = box.style.rubyKind;
+  return (
+    box.kind === 'inline' &&
+    (kind === 'ruby-text' || kind === 'ruby-text-container')
+  );
+}
+
+/**
+ * Pair what a ruby holds into columns (CSS Ruby 1, 2.2 and 2.3). A ruby is
+ * segments, each a run of bases and the annotation levels after them; the
+ * n-th base of a segment and the n-th annotation of each level are one
+ * column, an atomic inline of its own, so a line breaks between columns
+ * and never in one, and a column is as wide as the widest of what it
+ * holds. A level of one annotation over a segment of several bases spans
+ * them, and they are one column. A `ruby-base-container` or a
+ * `ruby-text-container` of several is its bases or annotations, paired one
+ * by one.
+ *
+ * White space between two bases, or between two segments, is a space of
+ * the ruby's own between their columns, and any other is dropped (2.3.1).
+ * Where a column pairs a base with annotations that come after other bases,
+ * the tree holds the annotation before them, and so its text out of the
+ * document's order: only a segment of more than one pair does that.
+ */
+function fixUpRuby(ruby: Box, anonymous: AnonymousStyle): void {
+  const children = ruby.children;
+  if (!children.length) return;
+  const out: Box[] = [];
+  const made: Box[] = [];
+  const align = passiveValue(ruby.style.passiveInherited, 'ruby-align');
+  const blank = (box: Box): boolean => box.kind === 'text' && isBlank(box.text);
+
+  interface Segment {
+    bases: Box[][];
+    /** A unit of base content not of its own element, which the next loose
+     *  content joins. */
+    loose: boolean;
+    /** The spaces after each base. */
+    spaces: Box[][];
+    levels: Box[][][];
+    /** Whether the last level takes another `ruby-text`. */
+    open: boolean;
+  }
+  const fresh = (): Segment => ({
+    bases: [],
+    loose: false,
+    spaces: [],
+    levels: [],
+    open: false,
+  });
+  let segment = fresh();
+
+  const column = (bases: Box[][], levels: (Box[] | undefined)[]): Box => {
+    const box = new Box('block', null, anonymous(ruby.style, 'inline-block'));
+    const base = new Box(
+      'block',
+      null,
+      rubyBlockStyle(anonymous, ruby.style, align),
+    );
+    box.append(base);
+    for (let i = 0; i < bases.length; i++) {
+      for (const child of bases[i]) base.append(child);
+      if (i < bases.length - 1) {
+        for (const space of segment.spaces[i] ?? []) base.append(space);
+      }
+    }
+    const annotations: Box[] = [];
+    for (const unit of levels) {
+      if (!unit?.length) continue;
+      const holder = new Box(
+        'block',
+        null,
+        rubyBlockStyle(
+          anonymous,
+          unit[0].style,
+          passiveValue(unit[0].style.passiveInherited, 'ruby-align'),
+        ),
+      );
+      for (const child of unit) holder.append(child);
+      ANNOTATION_HOLDERS.add(holder);
+      box.append(holder);
+      annotations.push(holder);
+    }
+    RUBY_COLUMNS.set(box, { base, annotations });
+    made.push(box);
+    return box;
+  };
+
+  const flush = (after: Box[]): void => {
+    const { bases, levels } = segment;
+    if (bases.length || levels.length) {
+      const spans = bases.length > 1 && levels.some((l) => l.length === 1);
+      if (spans || bases.length <= 1) {
+        out.push(
+          column(
+            bases,
+            levels.map((l) => l.flat()),
+          ),
+        );
+      } else {
+        const n = Math.max(bases.length, ...levels.map((l) => l.length));
+        for (let i = 0; i < n; i++) {
+          // a base of white space paired with white space or nothing is a
+          // space between the columns, as an intra-level space is
+          if (
+            bases[i]?.every(onlySpace) &&
+            levels.every((l) => !l[i] || l[i].every(onlySpace))
+          ) {
+            out.push(...bases[i]);
+            if (i < bases.length - 1) out.push(...(segment.spaces[i] ?? []));
+            continue;
+          }
+          out.push(
+            column(
+              bases[i] ? [bases[i]] : [],
+              levels.map((l) => l[i]),
+            ),
+          );
+          if (i < bases.length - 1) out.push(...(segment.spaces[i] ?? []));
+        }
+      }
+    }
+    out.push(...after);
+    segment = fresh();
+  };
+
+  /** The children of a container of several, or the container. */
+  const unitsOf = (box: Box): Box[][] => {
+    const inner = box.children.filter((c) => !blank(c));
+    return inner.length > 1 && box.kind === 'inline'
+      ? inner.map((c) => [c])
+      : [[box]];
+  };
+
+  const next = (from: number): Box | null => {
+    for (let i = from + 1; i < children.length; i++) {
+      if (!blank(children[i])) return children[i];
+    }
+    return null;
+  };
+
+  children.forEach((child, i) => {
+    if (blank(child)) {
+      const after = next(i);
+      if (!after || isAnnotation(after)) return;
+      if (segment.levels.length) flush([child]);
+      else if (segment.bases.length) {
+        (segment.spaces[segment.bases.length - 1] ??= []).push(child);
+        segment.loose = false;
+      }
+      return;
+    }
+    if (isAnnotation(child)) {
+      const text = child.style.rubyKind === 'ruby-text';
+      if (text && segment.open) {
+        segment.levels[segment.levels.length - 1].push([child]);
+        return;
+      }
+      segment.levels.push(text ? [[child]] : unitsOf(child));
+      segment.open = text;
+      return;
+    }
+    if (segment.levels.length) flush([]);
+    const kind = child.style.rubyKind;
+    if (kind === 'ruby-base-container') {
+      segment.bases.push(...unitsOf(child));
+      segment.loose = false;
+    } else if (kind === 'ruby-base' || !segment.loose) {
+      segment.bases.push([child]);
+      segment.loose = kind !== 'ruby-base';
+    } else {
+      segment.bases[segment.bases.length - 1].push(child);
+    }
+  });
+  flush([]);
+
+  ruby.children = [];
+  for (const box of out) ruby.append(box);
+  for (const box of made) {
+    for (const block of box.children) fixUpOwn(block, anonymous);
+  }
+}
+
+/** Whether a box holds white space and nothing else. */
+function onlySpace(box: Box): boolean {
+  if (box.kind === 'text') return isBlank(box.text);
+  return box.kind === 'inline' && box.children.every(onlySpace);
+}
+
+/** An annotation that is not in a ruby is in one of its own, an anonymous
+ *  ruby over an empty base (CSS Ruby 1, 2.2): a run of them side by side
+ *  in one, as they would be in a ruby. */
+function wrapAnnotations(box: Box, anonymous: AnonymousStyle): void {
+  const children = box.children;
+  box.children = [];
+  let ruby: Box | null = null;
+  for (const child of children) {
+    if (isAnnotation(child)) {
+      if (!ruby) {
+        ruby = new Box('inline', null, anonymous(box.style, 'inline'));
+        box.append(ruby);
+      }
+      ruby.append(child);
+      continue;
+    }
+    if (ruby && child.kind === 'text' && isBlank(child.text)) {
+      ruby.append(child);
+      continue;
+    }
+    if (ruby) {
+      fixUpRuby(ruby, anonymous);
+      ruby = null;
+    }
+    box.append(child);
+  }
+  if (ruby) fixUpRuby(ruby, anonymous);
+}
+
+/** The style of a ruby column's base or annotation block: its parent's,
+ *  as an anonymous block's, set in the middle of the column but where
+ *  `ruby-align` says to start it. One per parent and alignment, and among
+ *  the styles the tree's `anonymous` made. */
+function rubyBlockStyle(
+  anonymous: AnonymousStyle,
+  parent: ComputedStyle,
+  align: string,
+): ComputedStyle {
+  let byParent = RUBY_BLOCK_STYLES.get(anonymous);
+  if (!byParent) {
+    byParent = new WeakMap();
+    RUBY_BLOCK_STYLES.set(anonymous, byParent);
+  }
+  let byAlign = byParent.get(parent);
+  if (!byAlign) {
+    byAlign = new Map();
+    byParent.set(parent, byAlign);
+  }
+  let style = byAlign.get(align);
+  if (!style) {
+    style = copyStyle(anonymous(parent, 'block'));
+    style.textAlign = align === 'start' ? 'start' : 'center';
+    byAlign.set(align, style);
+    (ANONYMOUS_MADE.get(anonymous) as Set<ComputedStyle> | undefined)?.add(
+      style,
+    );
+  }
+  return style;
+}
+
+const RUBY_BLOCK_STYLES = new WeakMap<
+  AnonymousStyle,
+  WeakMap<ComputedStyle, Map<string, ComputedStyle>>
+>();

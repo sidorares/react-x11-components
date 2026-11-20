@@ -237,6 +237,18 @@ export const PASSIVE: Record<string, PassiveProperty> = Object.assign(
         ? 'stable both-edges'
         : null;
     }),
+    // ruby (CSS Ruby 1), which `fixUpRuby` and `placeRuby` lay out by
+    'ruby-align': inherited(
+      'space-around',
+      keyword('start', 'center', 'space-between', 'space-around'),
+    ),
+    'ruby-position': inherited('alternate', (v) => {
+      const words = wordsOf(v);
+      if (words.length === 1 && words[0] === 'inter-character') {
+        return words[0];
+      }
+      return anyOrder(['alternate'], ['over', 'under'])(v);
+    }),
     speak: inherited('auto', keyword('auto', 'never', 'always')),
     'text-decoration-skip': inherited('auto', keyword('none', 'auto')),
     'text-decoration-skip-ink': inherited(
@@ -244,8 +256,31 @@ export const PASSIVE: Record<string, PassiveProperty> = Object.assign(
       keyword('auto', 'none', 'all'),
     ),
     'text-emphasis-color': inherited('currentcolor', colorOf),
+    // the marks `paintEmphasis` draws: `none`, a fill and a shape, either
+    // left out where the other is said, or a string of one character
+    'text-emphasis-style': inherited('none', (v) => {
+      const t = v.trim();
+      const quoted = /^(["'])(.*)\1$/s.exec(t);
+      if (quoted) return JSON.stringify(quoted[2]);
+      const words = wordsOf(t);
+      if (words.length === 1 && words[0] === 'none') return 'none';
+      const fill = words.filter((w) => w === 'filled' || w === 'open');
+      const shape = words.filter((w) =>
+        ['dot', 'circle', 'double-circle', 'triangle', 'sesame'].includes(w),
+      );
+      if (
+        fill.length > 1 ||
+        shape.length > 1 ||
+        fill.length + shape.length !== words.length ||
+        !words.length
+      ) {
+        return null;
+      }
+      return [fill[0] ?? 'filled', shape[0]].filter(Boolean).join(' ');
+    }),
     'text-emphasis-position': inherited('over right', (v) => {
       const words = wordsOf(v);
+      if (words.length === 1 && words[0] === 'auto') return 'auto';
       const side = words.find((w) => w === 'over' || w === 'under');
       const edge = words.find((w) => w === 'right' || w === 'left');
       if (!side || words.length > 2 || (words.length === 2 && !edge))

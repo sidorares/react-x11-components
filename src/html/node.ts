@@ -450,7 +450,7 @@ import {
   runFor,
   fontOf,
 } from './layout/inline.js';
-import type { FontsLike } from './layout/inline.js';
+import type { DocumentRun, FontsLike } from './layout/inline.js';
 import type { SvgMeasure } from './scripts/svg-geometry.js';
 import { bboxOf, svgElementAt } from './scripts/svg-geometry.js';
 import { ShapeAnimations } from './css/shape-animations.js';
@@ -22613,6 +22613,8 @@ const FACE_FIELDS = [
   'style',
   'letterSpacing',
   'features',
+  // marks take room on the line (`finishLine`)
+  'emphasis',
 ] as const;
 
 /** Whether two styles differ in ink alone: true where they do, null where
@@ -23719,8 +23721,14 @@ function reinked(
     const fades = box && refaded ? textFade(box, next) : faded;
     if (box && (style || fades !== faded)) {
       if (spans.boxAt(offset + length - 1) !== box) return false;
-      const was = fadeRun(runFor(run.text, box.style), faded);
-      const now = fadeRun(runFor(run.text, style ?? box.style), fades);
+      const was: DocumentRun = fadeRun(
+        runFor(run.text, box.style, box.el),
+        faded,
+      );
+      const now: DocumentRun = fadeRun(
+        runFor(run.text, style ?? box.style, box.el),
+        fades,
+      );
       for (const f of FACE_FIELDS) {
         if (sameValue(was[f], now[f])) continue;
         return lengths & FONT_LENGTHS ? null : false;

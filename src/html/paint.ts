@@ -190,6 +190,7 @@ import {
   layoutOffsetOf,
   layoutOffsets,
   ruleRun,
+  EMPHASIS_MARKS,
 } from './layout/inline.js';
 import { tableGrid } from './layout/grid.js';
 import type { Cell } from './layout/grid.js';
@@ -15265,6 +15266,7 @@ function paintLinePart(
 
   paintRules(ctx, box, visible, dx, dy, options.scale ?? 1, 'over', skip);
   paintHighlightRules(ctx, visible, options, dx, dy, 'over', skip);
+  paintEmphasis(ctx, visible, dx, dy, skip);
   if (bleeds.length) paintBleeds(ctx, bleeds, options);
   // One painted with the positioned boxes is its stacking context's to
   // paint, there (`layered`) — one set below the flow with a negative
@@ -17724,4 +17726,30 @@ export function selectionRows(
     baseline + (natural.descent ?? 0),
   );
   return { y: top, height: bottom - top };
+}
+
+/** The emphasis marks over or under the text of lines (CSS Text Decoration
+ *  3, 3), drawn after its glyphs where the line placed them
+ *  (`placeMarks`). */
+function paintEmphasis(
+  ctx: unknown,
+  lines: readonly LineBox[],
+  dx: number,
+  dy: number,
+  skip: ReadonlySet<unknown> | null | undefined,
+): void {
+  for (const line of lines) {
+    for (const text of line.texts) {
+      if (skip?.has(text)) continue;
+      const marks = EMPHASIS_MARKS.get(text);
+      if (!marks) continue;
+      for (const mark of marks) {
+        mark.layout.draw(
+          ctx,
+          text.drawX + dx + mark.x,
+          text.drawY + dy + mark.y,
+        );
+      }
+    }
+  }
 }

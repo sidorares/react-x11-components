@@ -180,6 +180,22 @@ export function verticalMode(mode: WritingMode): boolean {
   return mode !== 'horizontal-tb';
 }
 
+/** The boxes of CSS Ruby 1's layout model (2.1). */
+export type RubyKind =
+  | 'ruby'
+  | 'ruby-base'
+  | 'ruby-text'
+  | 'ruby-base-container'
+  | 'ruby-text-container';
+
+const RUBY_KINDS = new Set<string>([
+  'ruby',
+  'ruby-base',
+  'ruby-text',
+  'ruby-base-container',
+  'ruby-text-container',
+]);
+
 export type Display =
   | 'none'
   | 'block'
@@ -1030,6 +1046,11 @@ export interface ComputedStyle {
 
   // --- not inherited --------------------------------------------------------
   display: Display;
+  /** The ruby box an element's `display` makes (CSS Ruby 1, 2.1), its
+   *  `display` being `inline` for each, or `block` for `block ruby`: what
+   *  the fix-up pairs into columns (`fixUpRuby`), and null for anything
+   *  else. */
+  rubyKind: RubyKind | null;
   /** `display: flow-root`: a block that makes a formatting context of its
    *  own, which is what `display` is then (CSS Display 3, 2.3). */
   flowRoot: boolean;
@@ -2098,6 +2119,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     custom: null,
 
     display: 'inline',
+    rubyKind: null,
     flowRoot: false,
     contain: 0,
     contentVisibility: 'visible',
@@ -2823,6 +2845,11 @@ const PREFIXED_ALIASES: Record<string, string> = {
   '-ms-writing-mode': 'writing-mode',
   '-epub-writing-mode': 'writing-mode',
   '-webkit-text-orientation': 'text-orientation',
+  // emphasis marks and ruby under the names WebKit had them by
+  '-webkit-text-emphasis': 'text-emphasis',
+  '-webkit-text-emphasis-style': 'text-emphasis-style',
+  '-webkit-text-emphasis-color': 'text-emphasis-color',
+  '-webkit-text-emphasis-position': 'text-emphasis-position',
   '-epub-text-orientation': 'text-orientation',
 };
 
@@ -2880,6 +2907,32 @@ export function applyDeclaration(
   const lower = value.toLowerCase();
   if (name === 'all') {
     applyAll(style, parent, lower.replace(/\s*!\s*important$/, ''), ctx);
+    return;
+  }
+  // `text-emphasis` (CSS Text Decoration 3, 3.3): its style and its colour,
+  // in either order, each set back where it is not said
+  if (name === 'text-emphasis') {
+    const bare = value.replace(/\s*!\s*important$/i, '');
+    const keyword = bare.toLowerCase();
+    if (/^(?:inherit|initial|unset|revert|revert-layer)$/.test(keyword)) {
+      applyDeclaration(style, parent, 'text-emphasis-style', bare, ctx);
+      applyDeclaration(style, parent, 'text-emphasis-color', bare, ctx);
+      return;
+    }
+    const marks: string[] = [];
+    const colors: string[] = [];
+    for (const word of splitValue(bare)) {
+      if (EMPHASIS_WORD.test(word) || /^["']/.test(word)) marks.push(word);
+      else colors.push(word);
+    }
+    if (colors.length > 1 || (!marks.length && !colors.length)) return;
+    const mark = PASSIVE['text-emphasis-style'].take(marks.join(' ') || 'none');
+    const color = PASSIVE['text-emphasis-color'].take(
+      colors[0] ?? 'currentcolor',
+    );
+    if (mark === null || color === null) return;
+    applyDeclaration(style, parent, 'text-emphasis-style', mark, ctx);
+    applyDeclaration(style, parent, 'text-emphasis-color', color, ctx);
     return;
   }
   if (lower === 'inherit') {
@@ -2996,7 +3049,27 @@ export function applyDeclaration(
 
     // --- box ----------------------------------------------------------------
     case 'display': {
-      const v = oneDisplay(value.toLowerCase());
+      const lower = value.trim().toLowerCase();
+      // a ruby box is an inline one to everything but the fix-up, which
+      // pairs what it holds (`fixUpRuby`); `block ruby` a block holding one
+      const ruby =
+        lower === 'inline ruby' || lower === 'ruby inline'
+          ? 'ruby'
+          : lower === 'block ruby' || lower === 'ruby block'
+            ? 'block ruby'
+            : RUBY_KINDS.has(lower)
+              ? lower
+              : null;
+      if (ruby) {
+        style.display = ruby === 'block ruby' ? 'block' : 'inline';
+        style.rubyKind = ruby === 'block ruby' ? 'ruby' : (ruby as RubyKind);
+        style.flowRoot = false;
+        style.gridLanes = false;
+        style.grid = false;
+        style.webkitBox = null;
+        return;
+      }
+      const v = oneDisplay(lower);
       if (v === 'inline-block' || v === 'inline-flex') style.display = v;
       // a grid container is a flex container to the box tree — its
       // children are blockified items, and it holds its floats — and its
@@ -3013,6 +3086,7 @@ export function applyDeclaration(
         style.display = 'inline-flex';
       } else if (DISPLAYS.has(v)) style.display = v as Display;
       else return;
+      style.rubyKind = null;
       style.flowRoot = v === 'flow-root';
       style.gridLanes = v === 'grid-lanes' || v === 'inline-grid-lanes';
       style.grid = style.gridLanes || v === 'grid' || v === 'inline-grid';
@@ -10739,7 +10813,14 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'counter-increment': ['counterIncrement'],
   'counter-set': ['counterSet'],
   'border-spacing': ['borderSpacing', 'borderSpacingY'],
-  display: ['display', 'flowRoot', 'webkitBox', 'grid', 'gridLanes'],
+  display: [
+    'display',
+    'rubyKind',
+    'flowRoot',
+    'webkitBox',
+    'grid',
+    'gridLanes',
+  ],
   width: ['width', 'widthKeyword', 'widthSize'],
   height: ['height', 'heightKeyword', 'heightSize'],
   'interpolate-size': ['interpolateSize'],
@@ -11315,18 +11396,15 @@ function unreadValue(prop: string, value: string): boolean {
   return prop === 'opacity' && v === 'auto';
 }
 
+/** A word of `text-emphasis-style`, which `text-emphasis` tells from its
+ *  colour by. */
+const EMPHASIS_WORD =
+  /^(?:none|filled|open|dot|circle|double-circle|triangle|sesame)$/i;
+
 const SYSTEM_FONTS =
   /^(?:caption|icon|menu|message-box|small-caption|status-bar)$/;
 
-const UNREAD_DISPLAYS = new Set([
-  'ruby',
-  'ruby-base',
-  'ruby-text',
-  'ruby-base-container',
-  'ruby-text-container',
-  'run-in',
-  'math',
-]);
+const UNREAD_DISPLAYS = new Set(['run-in', 'math']);
 
 const LIST_ITEM_WITH = new Set([
   'list-item',
@@ -11606,6 +11684,9 @@ export function blockify(style: ComputedStyle, inFlexContainer: boolean): void {
     case 'table-column':
     case 'table-column-group':
       style.display = 'block';
+      // a ruby is a `block ruby`, and what is inside one a block (CSS Ruby
+      // 1, 2.1)
+      if (style.rubyKind !== 'ruby') style.rubyKind = null;
       return;
     case 'inline-flex':
       style.display = 'flex';

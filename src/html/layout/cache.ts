@@ -245,6 +245,7 @@ export const RUN_FIELDS = [
   'kernAcross',
   'inline',
   'stretch',
+  'emphasis',
 ] as const satisfies readonly (keyof DocumentRun)[];
 
 /** A field of `DocumentRun` missing from `RUN_FIELDS` names itself here. */
@@ -270,6 +271,7 @@ function sameRun(a: DocumentRun, b: DocumentRun): boolean {
     a.style === b.style &&
     a.color === b.color &&
     a.letterSpacing === b.letterSpacing &&
+    a.emphasis === b.emphasis &&
     a.bg === b.bg &&
     a.bgFill === b.bgFill &&
     a.underline === b.underline &&

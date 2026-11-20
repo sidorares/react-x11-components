@@ -41,9 +41,11 @@ import {
   INLINE_BEFORE_ABSOLUTE,
   scrolls,
 } from '../css/style.js';
-import { inkColor, isTransparent, resolve } from '../css/values.js';
+import { inkColor, isTransparent, parseColor, resolve } from '../css/values.js';
+import { passiveValue } from '../css/passive-properties.js';
 import { bidiJs } from '../direction.js';
 import { isInputButton, tagOf } from '../dom.js';
+import type { Element } from '../dom.js';
 import {
   BOX_RAISES,
   CLAMPED,
@@ -52,6 +54,7 @@ import {
   layerMarks,
   LINE_BOX_RAISES,
   PADDED_FACES,
+  RUBY_COLUMNS,
   laidApart,
   letteredAfter,
   SHADOWED_TEXT,
@@ -114,7 +117,263 @@ const FIT_SLACK = 1 / 64;
  */
 export interface DocumentRun extends TextRun {
   stretch?: number;
+  /** The emphasis marks drawn over or under each character (CSS Text
+   *  Decoration 3, 3): `emphasisOf`'s, which `emphasisMark` reads back. */
+  emphasis?: string;
 }
+
+/** A run's emphasis marks: which side of the text they are on, their
+ *  colour and the string each is. */
+export interface EmphasisMark {
+  under: boolean;
+  color: string;
+  mark: string;
+}
+
+/** The marks of a style's emphasis, in the one string a run carries, or
+ *  null for none (CSS Text Decoration 3, 3.1 to 3.4). A shape with no fill
+ *  is filled, and a fill with no shape a circle, where the text is set
+ *  across, and a sesame where it is set down. */
+export function emphasisOf(
+  style: ComputedStyle,
+  el: Element | null = null,
+): string | null {
+  const said = passiveValue(style.passiveInherited, 'text-emphasis-style');
+  if (said === 'none') return null;
+  let mark: string;
+  if (said.startsWith('"')) {
+    mark = [...(JSON.parse(said) as string)][0] ?? '';
+    if (!mark) return null;
+  } else {
+    const words = said.split(' ');
+    const open = words[0] === 'open';
+    const shape =
+      words[1] ?? (style.writingMode === 'horizontal-tb' ? 'circle' : 'sesame');
+    mark = (open ? OPEN_MARKS : FILLED_MARKS)[shape] ?? '';
+  }
+  let position = passiveValue(style.passiveInherited, 'text-emphasis-position');
+  // `auto` (CSS Text Decoration 4, 3.6): under the text where it is
+  // Chinese and set across, and over it on the right everywhere else
+  if (position === 'auto') {
+    position =
+      el && /^zh(?:-|$)/i.test(languageOf(el)) ? 'under right' : 'over right';
+  }
+  // set across, the marks go over or under the text; set down, to its
+  // right, which is over it, or its left
+  const under =
+    style.writingMode === 'horizontal-tb'
+      ? position.startsWith('under')
+      : position.endsWith('left');
+  const color = inkColor(
+    parseColor(passiveValue(style.passiveInherited, 'text-emphasis-color')) ??
+      'currentColor',
+    style.color,
+  );
+  return `${under ? 'u' : 'o'}\u0000${color}\u0000${mark}`;
+}
+
+/** A run's emphasis, read back from the string `emphasisOf` made it. */
+export function emphasisMark(run: DocumentRun): EmphasisMark | null {
+  if (!run.emphasis) return null;
+  const [side, color, mark] = run.emphasis.split('\u0000');
+  return { under: side === 'u', color, mark };
+}
+
+const FILLED_MARKS: Readonly<Record<string, string>> = {
+  dot: '\u2022',
+  circle: '\u25cf',
+  'double-circle': '\u25c9',
+  triangle: '\u25b2',
+  sesame: '\ufe45',
+};
+
+const OPEN_MARKS: Readonly<Record<string, string>> = {
+  dot: '\u25e6',
+  circle: '\u25cb',
+  'double-circle': '\u25ce',
+  triangle: '\u25b3',
+  sesame: '\ufe46',
+};
+
+/**
+ * Whether a character takes an emphasis mark (CSS Text Decoration 3, 3.1):
+ * not a separator, a space, a punctuation mark, nor a control or format
+ * character.
+ */
+export function takesEmphasis(char: string): boolean {
+  return !NO_EMPHASIS.test(char);
+}
+
+const NO_EMPHASIS = /^[\p{Z}\p{P}\p{Cc}\p{Cf}\s]$/u;
+
+/**
+ * Where emphasis marks in a style's face go about the text they are on, as
+ * a ruby annotation of the mark at half the size, on a line of its face's
+ * normal height, goes against the edge of the text's face (`placeRuby`):
+ * how far the line's box reaches past the face's edge, and where the
+ * mark's baseline is in it.
+ */
+export interface EmphasisRoom {
+  /** The height of the mark's line. */
+  height: number;
+  /** From the top of the mark's line to its baseline. */
+  baseline: number;
+  /** The text's face, from its baseline. */
+  ascent: number;
+  descent: number;
+  /** The size the marks are set at. */
+  size: number;
+}
+
+export function emphasisRoom(fonts: FontsLike, run: DocumentRun): EmphasisRoom {
+  const size = (run.size ?? 16) / 2;
+  const key = `${run.family}|${run.size}|${run.weight}|${run.style}|${run.emphasis}`;
+  let cache = EMPHASIS_ROOMS.get(fonts);
+  if (!cache) {
+    cache = new Map();
+    EMPHASIS_ROOMS.set(fonts, cache);
+  }
+  let room = cache.get(key);
+  if (room) return room;
+  const options = {
+    size: run.size ?? 16,
+    weight:
+      run.weight === 'bold' ? 700 : run.weight === 'normal' ? 400 : run.weight,
+    style: run.style,
+  };
+  let face = { ascent: options.size * 0.8, descent: options.size * 0.2 };
+  let height = size * 1.2;
+  let baseline = size;
+  try {
+    const own = fonts
+      .match(run.family ?? '', options as never)
+      .metrics(options.size);
+    face = { ascent: own.ascent, descent: own.descent };
+    // the line the mark is set on, an annotation's strut (`strutOf`)
+    const small = fonts
+      .match(run.family ?? '', { ...options, size } as never)
+      .metrics(size) as FaceMetrics;
+    height = faceLineHeight(small);
+    baseline = ascentOnLine(small.ascent, small.descent, height);
+  } catch {
+    // a face nothing answers for keeps the guesses
+  }
+  room = { height, baseline, size, ...face };
+  if (cache.size > 64) cache.clear();
+  cache.set(key, room);
+  return room;
+}
+
+const EMPHASIS_ROOMS = new WeakMap<FontsLike, Map<string, EmphasisRoom>>();
+
+/** A mark a line's text is drawn with, from the text's draw origin. */
+export interface PlacedMark {
+  x: number;
+  y: number;
+  layout: TextLayoutLike;
+}
+
+/** The emphasis marks of each piece of text that has them, which paint
+ *  draws after its glyphs (`paintEmphasis`). */
+export const EMPHASIS_MARKS = new WeakMap<LineText, PlacedMark[]>();
+
+/**
+ * The marks over or under each character of a piece of a line that takes
+ * one: centred on it, and set as the annotation of a ruby is over its base
+ * (`placeRuby`), the mark at half the text's size on a line of its face's
+ * normal height, against the edge of the text's face.
+ */
+function placeMarks(fonts: FontsLike, text: LineText): void {
+  const layout = text.layout;
+  const line = layout.lines[text.layoutLine];
+  let marks: PlacedMark[] | null = null;
+  for (const run of line.runs) {
+    const span = run.span as DocumentRun | undefined;
+    const mark = span ? emphasisMark(span) : null;
+    if (!span || !mark) continue;
+    const from = spanStart(layout, span);
+    const chars = [...span.text];
+    const room = emphasisRoom(fonts, span);
+    const drawn = markLayout(fonts, span, mark, room.size);
+    const width = drawn.width;
+    const baseline = line.y + line.baseline;
+    const top = mark.under
+      ? baseline + room.descent
+      : baseline - room.ascent - room.height;
+    const first = drawn.lines[0];
+    const y = top + room.baseline - (first ? first.y + first.baseline : 0);
+    for (let i = run.start; i < run.end; i += 1) {
+      const char = chars[i - from];
+      if (char === undefined || !takesEmphasis(char)) continue;
+      const left = layout.caretPosition(i);
+      const right =
+        i + 1 < run.end
+          ? layout.caretPosition(i + 1)
+          : { x: line.x + run.x + run.width, line: left.line };
+      const x0 = left.x;
+      const x1 = right.line === left.line ? right.x : x0;
+      (marks ??= []).push({ x: (x0 + x1) / 2 - width / 2, y, layout: drawn });
+    }
+  }
+  if (marks) EMPHASIS_MARKS.set(text, marks);
+}
+
+/** Where a span's text starts in a layout's, which is where the first of
+ *  the runs it was laid out in starts. */
+function spanStart(layout: TextLayoutLike, span: TextRun): number {
+  let starts = SPAN_STARTS.get(layout);
+  if (!starts) {
+    starts = new Map();
+    for (const line of layout.lines) {
+      for (const run of line.runs) {
+        if (!run.span) continue;
+        const at = starts.get(run.span);
+        if (at === undefined || run.start < at) starts.set(run.span, run.start);
+      }
+    }
+    SPAN_STARTS.set(layout, starts);
+  }
+  return starts.get(span) ?? 0;
+}
+
+const SPAN_STARTS = new WeakMap<TextLayoutLike, Map<TextRun, number>>();
+
+/** A mark laid out in its text's face and its colour, at half its size. */
+function markLayout(
+  fonts: FontsLike,
+  span: DocumentRun,
+  mark: EmphasisMark,
+  size: number,
+): TextLayoutLike {
+  const key = `${span.family}|${size}|${span.weight}|${span.style}|${mark.color}|${mark.mark}`;
+  let cache = MARK_LAYOUTS.get(fonts);
+  if (!cache) {
+    cache = new Map();
+    MARK_LAYOUTS.set(fonts, cache);
+  }
+  let laid = cache.get(key);
+  if (!laid) {
+    laid = fonts.layout(
+      [
+        {
+          text: mark.mark,
+          family: span.family,
+          size,
+          weight: span.weight,
+          style: span.style,
+          color: mark.color,
+        },
+      ],
+      {},
+      {},
+    );
+    if (cache.size > 64) cache.clear();
+    cache.set(key, laid);
+  }
+  return laid;
+}
+
+const MARK_LAYOUTS = new WeakMap<FontsLike, Map<string, TextLayoutLike>>();
 
 /** The slice of ntk's font manager this needs. Structural, as everywhere. */
 export interface FontsLike {
@@ -948,7 +1207,13 @@ function linesOf(
   const strut = fonts ? strutOf(fonts, style) : null;
   // and the first line holds what it is handed besides: a marker's room
   const firstStrut = withRoom(strut, options.firstStrut);
-  let strutted = false;
+  // text with emphasis marks, whose lines make room for them a piece at a
+  // time (`finishLine`)
+  const emphasized = items.some(
+    (item) =>
+      item.kind === 'text' && (item.run as DocumentRun).emphasis !== undefined,
+  );
+  let strutted = emphasized;
 
   // Inline boxes' edges as spacers in one layout, where the engine left
   // every edge on the line of the content it belongs to (`layoutSpaced`);
@@ -1377,6 +1642,7 @@ function linesOf(
           : lineJustify
         : null,
       levels,
+      emphasized ? fonts : null,
     );
     if (!line) {
       open = openLine(last ? indents.forced : indents.soft);
@@ -3447,6 +3713,9 @@ function finishLine(
   justify: LineJustify | null = null,
   /** The paragraph's bidi levels, where it has them (`ParagraphBidi`). */
   levels: LineLevels | null = null,
+  /** The fonts, where the line's text has emphasis marks to make room
+   *  for (`emphasisRoom`). */
+  emphasized: FontsLike | null = null,
 ): LineBox | null {
   if (!open.texts.length && !open.atomics.length && !open.edges.length) {
     return null;
@@ -3499,6 +3768,7 @@ function finishLine(
     { to: 'top' | 'bottom'; ascent: number; descent: number }
   > | null = null;
   for (let i = 0; i < open.texts.length; i += 1) {
+    if (emphasized) placeMarks(emphasized, open.texts[i]);
     const lift = lifted?.[i];
     if (lift) {
       if (lift.edge) {
@@ -3526,6 +3796,18 @@ function finishLine(
     const own = lineAscent(natural);
     ascent = Math.max(ascent, own);
     descent = Math.max(descent, natural.height - own);
+    // and the marks over or under it, as an annotation over a ruby base
+    // grows a line where its leading has no room for it (`placeRuby`)
+    if (emphasized) {
+      for (const run of natural.runs) {
+        const span = run.span as DocumentRun | undefined;
+        if (!span?.emphasis) continue;
+        const room = emphasisRoom(emphasized, span);
+        if (emphasisMark(span)!.under) {
+          descent = Math.max(descent, room.descent + room.height);
+        } else ascent = Math.max(ascent, room.ascent + room.height);
+      }
+    }
   }
   // an inline box with no text on the line is on it all the same, as tall
   // as its own face and line height make it (CSS 2.1 10.8): an empty one,
@@ -4429,6 +4711,12 @@ function madeUpBaseline(box: Box): number {
 /** Where an atomic's own baseline is, from the top of its margin box, or
  *  null where it has none and one is made up (`atomicBaseline`). */
 function ownBaseline(box: Box): number | null {
+  // a ruby column sits on its base's, whatever is over it (`placeRuby`)
+  const ruby = RUBY_COLUMNS.get(box);
+  if (ruby) {
+    const found = firstBaselineIn(ruby.base) ?? ruby.base.y;
+    return box.marginTop + (found - box.y);
+  }
   // a control on its text's baseline, or on its border box's bottom,
   // where layout containment does not keep its baseline in
   const control =
@@ -5074,7 +5362,10 @@ function collect(
     switch (child.kind) {
       case 'text':
         if (child.text) {
-          const run = fadeRun(runFor(heldText(child), child.style), fade);
+          const run = fadeRun(
+            runFor(heldText(child), child.style, child.el),
+            fade,
+          );
           // shaping is broken across the edge (CSS Text 3, 7.3), and the
           // engine shapes a word that runs across spans shaped alike as one:
           // its text is shaped on its own. At both of its sides, the one
@@ -6487,7 +6778,12 @@ const FEATURES = new Map<string, Readonly<Record<string, number>>>();
  *  paint field of a run of the document's text is this function's, which
  *  is what lets a pointer move re-ink a paragraph without laying it out
  *  again (`HtmlViewNode._hoverInPlace`). */
-export function runFor(text: string, style: ComputedStyle): DocumentRun {
+export function runFor(
+  text: string,
+  style: ComputedStyle,
+  /** The element the text is in, whose language `auto` marks go by. */
+  el: Element | null = null,
+): DocumentRun {
   const run: DocumentRun = {
     text,
     family: style.fontFamily,
@@ -6509,6 +6805,11 @@ export function runFor(text: string, style: ComputedStyle): DocumentRun {
     shapeApart: false,
   };
   if (style.letterSpacing) run.letterSpacing = style.letterSpacing;
+  // set only where there are marks, which few runs have
+  if (style.passiveInherited['text-emphasis-style']) {
+    const emphasis = emphasisOf(style, el);
+    if (emphasis) run.emphasis = emphasis;
+  }
   const features = featuresOf(style);
   if (features) run.features = features;
   // Hidden text keeps its place on the line and draws nothing, rules

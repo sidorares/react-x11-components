@@ -108,6 +108,30 @@ summary, dir, menu, center, marquee, dialog {
 head, link, meta, style, script, title, base, template, param,
 source, track, col, colgroup, datalist, area, rp { display: none; }
 
+/* ruby (HTML 15.3.4, CSS Ruby 1, Appendix A): an annotation is half the
+   size of its base, on a line of its own font's height, in the font's
+   ruby glyphs, and marks no emphasis of its own */
+ruby { display: ruby; }
+rb { display: ruby-base; }
+rtc {
+  display: ruby-text-container;
+  font-size: 50%;
+  line-height: normal;
+  font-variant-east-asian: ruby;
+  text-emphasis: none;
+  white-space: nowrap;
+}
+/* an annotation in a container is the container's size, not half again */
+rtc > rt { font-size: 100%; }
+rt {
+  display: ruby-text;
+  font-size: 50%;
+  line-height: normal;
+  font-variant-east-asian: ruby;
+  text-emphasis: none;
+  white-space: nowrap;
+}
+
 /* …and where the host runs the document's scripts (<Html scripting>) it
    represents nothing, as a browser that runs JavaScript hides it: Chrome's
    sheet for a scripted document, which no page's rule shows again */
