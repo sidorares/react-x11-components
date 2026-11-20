@@ -82,7 +82,7 @@ import {
 import { tableGrid } from './grid.js';
 import { endsShort, prettyBreaks, shortLine, spacedWords } from './pretty.js';
 import { SMALL_KANA, breakOpportunities, movesBreaks } from './word-break.js';
-import type { BreakRule } from './word-break.js';
+import type { BreakAt, BreakRule } from './word-break.js';
 import type { PrettySetting } from './pretty.js';
 
 /** How a paragraph's lines are fitted to their width, and measured: as a
@@ -2717,10 +2717,6 @@ function breakRulesOf(
   return rules;
 }
 
-/** How much of a paragraph is laid out on one line to measure where its
- *  next line may end (`layoutOwnBreaks`), at first. */
-const OWN_BREAKS_WINDOW = 256;
-
 /**
  * A paragraph whose text breaks where UAX #14 does not say (CSS Text 3, 5.2
  * and 5.3): `word-break: break-all` between any two letters, `keep-all`
@@ -2763,44 +2759,81 @@ function layoutOwnBreaks(
     direction: style.direction,
     fit: PARAGRAPH_FIT,
   };
+  // Where all that moves the places is a small kana `normal` lets a line
+  // break before, the engine's own lines stand unless one of them would
+  // end at such a place: Japanese is full of small kana and seldom ends a
+  // line at one, and every paragraph of it would be laid out a line at a
+  // time for nothing.
+  if (
+    rules.every(
+      (r) =>
+        !r.anywhere &&
+        !r.breakSpaces &&
+        r.wordBreak !== 'break-all' &&
+        r.wordBreak !== 'keep-all' &&
+        r.lineBreak !== 'loose',
+    ) &&
+    !kanaMovesALine(fonts.layout(runs, base, options), breaks, width, text)
+  ) {
+    return null;
+  }
+  // The paragraph on one line a forced break at a time, which says where
+  // each place is: where a run starts or ends, which is where nearly every
+  // place a line may break is, and a caret's place for the rest. One layout
+  // a paragraph, which the engine keeps, and a few looks a line.
+  const total = text.length;
+  const one = fonts.layout(runs, base, { ...options, wrap: false });
+  const xs = new Map<number, number>();
+  const lineOf = new Map<number, number>();
+  for (let l = 0; l < one.lines.length; l += 1) {
+    for (const run of one.lines[l].runs) {
+      if (!xs.has(run.start)) xs.set(run.start, run.x);
+      if (!xs.has(run.end)) xs.set(run.end, run.x + run.width);
+    }
+    lineOf.set(one.lines[l].start, l);
+  }
+  let offsets: number[] | null = null;
+  const xAt = (at: number): number => {
+    const x = xs.get(at);
+    if (x !== undefined) return x;
+    offsets ??= codeUnitOffsets(text);
+    return one.caretPosition(codePointAtOffset(offsets, at)).x;
+  };
+  // the white space a line ends on hangs past it, but for the spaces
+  // `break-spaces` keeps, which take room
+  const inkEnd = (at: number, from: number): number => {
+    let end = at;
+    while (
+      end > from &&
+      /[ \t\n]/.test(text[end - 1]) &&
+      !(text[end - 1] === ' ' && breakSpacesAt(end - 1))
+    ) {
+      end -= 1;
+    }
+    return end;
+  };
   // where a line ends: the last place that fits from `from`, the first past
   // the room where none does, and a forced break wherever it comes
-  const total = text.length;
   let b = 0;
-  // a few lines' worth, once a line says how much one holds
-  let window = OWN_BREAKS_WINDOW;
   const endFrom = (from: number): number => {
     while (b < breaks.length && breaks[b].at <= from) b += 1;
-    for (;;) {
-      const to = Math.min(total, from + window);
-      const probe = sliceRuns(runs, from, to);
-      const one = fonts.layout(probe, base, { ...options, wrap: false });
-      const offsets = codeUnitOffsets(text.slice(from, to));
-      const x0 = one.caretPosition(0).x;
-      const xAt = (at: number): number =>
-        one.caretPosition(codePointAtOffset(offsets, at - from)).x - x0;
-      let fit = -1;
-      for (let k = b; k < breaks.length && breaks[k].at <= to; k += 1) {
-        const at = breaks[k].at;
-        // the white space a line ends on hangs past it, but for the spaces
-        // `break-spaces` keeps, which take room
-        let end = at;
-        while (
-          end > from &&
-          /[ \t\n]/.test(text[end - 1]) &&
-          !(text[end - 1] === ' ' && breakSpacesAt(end - 1))
-        ) {
-          end -= 1;
-        }
-        if (fit >= 0 && xAt(end) > width + FIT_SLACK) return fit;
-        if (fit < 0 && xAt(end) > width + FIT_SLACK) return at;
-        fit = at;
-        if (breaks[k].required) return at;
-      }
-      // every place laid out fits: the line may reach further
-      if (to >= total) return fit >= 0 ? fit : total;
-      window *= 2;
+    if (b >= breaks.length) return total;
+    // up to the next forced break, which ends the line wherever it fits
+    let last = b;
+    while (last < breaks.length - 1 && !breaks[last].required) last += 1;
+    // a forced break starts a line of its own in the measuring layout
+    const x0 = lineOf.has(from) ? 0 : xAt(from);
+    const fits = (k: number): boolean =>
+      xAt(inkEnd(breaks[k].at, from)) - x0 <= width + FIT_SLACK;
+    if (!fits(b)) return breaks[b].at;
+    let lo = b;
+    let hi = last;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (fits(mid)) lo = mid;
+      else hi = mid - 1;
     }
+    return breaks[lo].at;
   };
   const lines: LineBox[] = [];
   let widest = 0;
@@ -2808,7 +2841,6 @@ function layoutOwnBreaks(
   for (let from = 0; from < total;) {
     let to = endFrom(from);
     if (to <= from) to = total;
-    window = Math.max(64, (to - from) * 4);
     const own = sliceRuns(runs, from, to).slice();
     const spans = new SpanMap();
     let piece = 0;
@@ -2843,6 +2875,37 @@ function layoutOwnBreaks(
     from = to;
   }
   return { lines, height: y, width: widest };
+}
+
+/**
+ * Whether a line the engine broke ends before a place `breaks` has and the
+ * engine has not, which the text after it up to that place would fit: the
+ * engine's next line starts with the text up to there, where a small kana
+ * glued it to what is before it.
+ */
+function kanaMovesALine(
+  layout: TextLayoutLike,
+  breaks: readonly BreakAt[],
+  width: number,
+  text: string,
+): boolean {
+  const lines = layout.lines;
+  const offsets = codeUnitOffsets(text);
+  let k = 0;
+  for (let i = 0; i + 1 < lines.length; i += 1) {
+    const end = lines[i].end;
+    const next = lines[i + 1];
+    while (k < breaks.length && breaks[k].at <= end) k += 1;
+    if (k >= breaks.length) return false;
+    const at = breaks[k].at;
+    if (at >= next.end) continue;
+    const used = lines[i].advance ?? lines[i].width;
+    const more =
+      layout.caretPosition(codePointAtOffset(offsets, at)).x -
+      layout.caretPosition(codePointAtOffset(offsets, next.start)).x;
+    if (used + more <= width + FIT_SLACK) return true;
+  }
+  return false;
 }
 
 /** A character of a right-to-left script, or a control that embeds one. */
