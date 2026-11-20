@@ -4677,10 +4677,17 @@ function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
   // the initial containing block's, which is the viewport's height, read
   // as a percentage height on the root reads it (`readsViewportHeight`)
   let base = box.percentHeightBase;
-  // else its containing block's greatest height, where that is definite
-  // (CSS Writing Modes 4, 7.3.1, step 2: WPT's
-  // css-writing-modes/available-size-001)
-  if (!Number.isFinite(base)) base = maxContentHeightOf(box.parent);
+  // else its containing block's greatest height, where that is definite,
+  // and no more than the initial containing block's (CSS Writing Modes 4,
+  // 7.3.1, step 2: WPT's css-writing-modes/available-size-001, and -015,
+  // whose `min-height` raises its `max-height` past the viewport)
+  if (!Number.isFinite(base)) {
+    const most = maxContentHeightOf(box.parent);
+    if (Number.isFinite(most)) {
+      base = Math.min(most, ctx.viewportHeight);
+      ctx.readViewportHeight = true;
+    }
+  }
   if (!Number.isFinite(base)) {
     base = ctx.viewportHeight;
     ctx.readViewportHeight = true;
@@ -4731,8 +4738,14 @@ function maxContentHeightOf(box: Box | null): number {
   if (!box || box.style.maxHeight === 'none' || box.style.maxHeightKeyword) {
     return NaN;
   }
-  const max = resolveOrNull(box.style.maxHeight, box.percentHeightBase);
+  let max = resolveOrNull(box.style.maxHeight, box.percentHeightBase);
   if (max === null || !Number.isFinite(max)) return NaN;
+  // and its least height wins over it, as it does for any height
+  // (CSS 2.1 10.7)
+  const least = box.style.minHeightKeyword
+    ? null
+    : resolveOrNull(box.style.minHeight, box.percentHeightBase);
+  if (least !== null && Number.isFinite(least)) max = Math.max(max, least);
   return box.style.boxSizing === 'border-box'
     ? Math.max(0, max - box.verticalExtra)
     : Math.max(0, max);
