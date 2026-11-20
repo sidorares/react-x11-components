@@ -8925,12 +8925,14 @@ this, a scroller in any vertical flow drew none. A `vertical-lr` flow's
 frame, which `reflectFrame` puts back across after its layout, holds them
 too: **`reflectFrame` moves a turn-back root with the rest and goes no
 further into it**, since what is in it is laid out across the page and is
-not to be put back. It had made no turn-back frame, and a horizontal grid
-item in a `vertical-lr` grid was laid out in the grid's axes, as wide as its
-text was tall. Only a grid's items have one there (`holdsTurnBack`): a
-block, a float and a box at its static position in such a flow are placed
-from where the flow was put back across, which a frame of their own does
-not yet follow, and 10 of css-writing-modes' reftests fell with one.
+not to be put back. Nor into the root's own frame when the root's flow is
+put back: the frame is placed in its root turned, so its box is not where it
+draws, and mirrored in the root it took every horizontal block's text out
+of its border (`reflectFrame` skips a child in `FRAME_ROOTS`). A block in
+the flow, or relatively positioned, and a grid's item have one there
+(`holdsTurnBack`); a float and a box at its static position are placed from
+where the flow was put back across, which a frame of their own does not yet
+follow, and are laid out turned with the flow.
 
 **A box positioned in a `vertical-lr` frame is placed after the frame was
 put back across, and is not put back itself** (`placedAfterReflection`, in

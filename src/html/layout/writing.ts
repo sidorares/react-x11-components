@@ -59,12 +59,12 @@ export function frameTurn(frame: Box): WritingMode {
 
 /** Whether a frame of this writing mode may hold the frame of a horizontal
  *  box, which turns back what it turned. A frame that is put back across
- *  (`reflectFrame`) moves what it holds after it is laid out, and a grid's
- *  item, in its flow or placed in its area, is moved whole with its own
- *  frame; anything else in such a flow — a block, a float, a box at its
- *  static position — is placed from where the flow put back across put it,
- *  which a frame of its own does not yet follow, so it is laid out turned
- *  with the flow. */
+ *  (`reflectFrame`) moves what it holds after it is laid out, and a block
+ *  in its flow, or a grid's item, in its flow or placed in its area, is
+ *  moved whole with its own frame; a float, or a box at its static
+ *  position, is placed from where the flow put back across put it, which a
+ *  frame of its own does not yet follow, so it is laid out turned with the
+ *  flow. */
 export function holdsTurnBack(
   mode: WritingMode,
   style: ComputedStyle,
@@ -72,7 +72,12 @@ export function holdsTurnBack(
 ): boolean {
   if (mode === 'horizontal-tb') return false;
   if (!reflects(mode)) return true;
-  return style.float === 'none' && into.kind === 'flex' && into.style.grid;
+  if (style.float !== 'none') return false;
+  return (
+    (into.kind === 'flex' && into.style.grid) ||
+    style.position === 'static' ||
+    style.position === 'relative'
+  );
 }
 
 /** Whether the tree being laid out or painted holds a frame
@@ -617,6 +622,9 @@ export function reflectFrame(
       } else {
         for (const child of box.children) {
           if (child.outOfFlow || child.isFloat) continue;
+          // a turn-back root's own frame is placed in it, turned, and its
+          // box is not where it draws: the root is moved, and it with it
+          if (FRAME_ROOTS.has(child)) continue;
           move(child, 0, top + bottom - 2 * child.y - child.height);
         }
       }
