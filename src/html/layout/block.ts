@@ -143,6 +143,8 @@ import {
   layoutColumns,
   spansColumns,
   spannedRows,
+  rowGridOf,
+  spannerRow,
   isSpanner,
   containingParent,
   joinedGeometry,
@@ -4688,6 +4690,17 @@ function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
       ctx.readViewportHeight = true;
     }
   }
+  // else the nearest scroll container's above it, where its height is
+  // definite, held to the viewport's as well — as Chrome reads 7.3.1, and
+  // WPT's available-size-003 and -005 ask: not what is left of it after
+  // what comes before, nor its own padding's
+  if (!Number.isFinite(base)) {
+    const port = scrollportHeightAbove(box);
+    if (Number.isFinite(port)) {
+      base = Math.min(port, ctx.viewportHeight);
+      ctx.readViewportHeight = true;
+    }
+  }
   if (!Number.isFinite(base)) {
     base = ctx.viewportHeight;
     ctx.readViewportHeight = true;
@@ -4727,6 +4740,19 @@ function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
   }
   // within its own `min-height` and `max-height`
   return clampHeight(box, size + box.verticalExtra) - box.verticalExtra;
+}
+
+/** The content height of the nearest scroll container above a box, where
+ *  it has one of its own or a greatest one; NaN where there is none, or
+ *  its height is its content's. */
+function scrollportHeightAbove(box: Box): number {
+  for (let at = box.parent; at; at = at.parent) {
+    if (!at.el || !scrolls(at.style)) continue;
+    const own = percentBaseInside(at);
+    if (Number.isFinite(own)) return own;
+    return maxContentHeightOf(at);
+  }
+  return NaN;
 }
 
 /** The most a block's content box may be tall, where its `max-height`
@@ -4817,6 +4843,8 @@ function layoutRows(
    *  of all the rows (`joinedGeometry`). */
   let from = top;
   const joined = joinedGeometry(box);
+  // the rows the columns wrap into, which a spanner keeps to as well
+  const grid = rowGridOf(box, limit);
   try {
     for (let r = 0; r <= spanners.length; r += 1) {
       const row = slices.get(box)!.rows[r] ?? [];
@@ -4857,7 +4885,7 @@ function layoutRows(
           Math.max(0, limit - (y - top)),
           y,
           r < spanners.length,
-          { from, into: joined },
+          { from, into: joined, grid },
         );
         from += strip;
       }
@@ -4882,6 +4910,21 @@ function layoutRows(
         y,
         contentWidth,
       );
+      // in rows of columns, a spanner in a gap goes to the next row, and
+      // so does one that does not fit in what is left of its row: one at a
+      // row's top stays there however tall (WPT's column-height-018)
+      const below = grid ? spannerRow(grid, y, child.height) : null;
+      if (below !== null) {
+        y = below;
+        layoutBlockLevel(
+          child,
+          ctx,
+          new FloatContext(box.contentX, box.contentX + contentWidth),
+          box.contentX,
+          y,
+          contentWidth,
+        );
+      }
       y = child.y + child.height;
       margin = child.marginBottom;
     }

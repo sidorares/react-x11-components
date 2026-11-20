@@ -1410,6 +1410,24 @@ test("an orthogonal flow's line is no longer than the viewport, and its containi
   assert.ok(v.height > 100, `${v.height} past the max-height`);
 });
 
+test('an orthogonal flow in a block of no height is as long as the scroll container above it is tall', async () => {
+  // failing a definite height or max-height on its containing block, the
+  // nearest scroll container's above it, held to the viewport's, and not
+  // what is left of it after what comes before (WPT's
+  // css-writing-modes/available-size-003 and -005)
+  const { node } = await render(
+    '<style>body{margin:0}#s{height:100px;overflow:hidden}' +
+      '#v{writing-mode:vertical-rl}</style>' +
+      '<div id="s"><div style="padding-bottom:30px">' +
+      '<div style="height:20px"></div><div id="v">' +
+      'aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm ' +
+      'nnnn oooo pppp qqqq rrrr</div></div></div>',
+  );
+  const v = boxOf(view(node), 'v');
+  assert.ok(v.height <= 100, `${v.height} no taller than the scroller`);
+  assert.ok(v.height > 80, `${v.height} as tall as it lets it be`);
+});
+
 test('a vertical-rl block in a vertical-lr flow keeps its own lines right to left', async () => {
   // a vertical-lr flow is laid out as vertical-rl's and put back across;
   // a block in it that runs right to left was laid out as it reads, and

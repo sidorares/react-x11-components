@@ -722,7 +722,11 @@ function fill(
    *  its `max-height`, is what they are. */
   fixed: boolean,
   clones: Clones | null = null,
+  /** How tall each column is, where they are not all `height` tall: the
+   *  rows of columns `column-wrap` makes (`RowGrid`). */
+  heightOf?: (column: number) => number,
 ): Filled {
+  if (heightOf) height = heightOf(0);
   const starts = [0];
   const tops = [top];
   const cut = [false];
@@ -770,6 +774,7 @@ function fill(
     columnTop = from - lift;
     goesOn = inside;
     i = at;
+    if (heightOf) height = heightOf(starts.length - 1);
   };
   while (i < groups.length) {
     const group = groups[i];
@@ -935,7 +940,7 @@ export function layoutColumns(
   /** A row of columns among others about spanners (`layoutRows`): where
    *  its content was laid out down a strip that goes on from the row
    *  before's, and the geometry of all the rows it adds its columns to. */
-  row?: { from: number; into: ColumnGeometry },
+  row?: { from: number; into: ColumnGeometry; grid: RowGrid | null },
 ): number {
   // where the strip it is cut from starts, which the columns are set from
   // `top`
@@ -954,12 +959,132 @@ export function layoutColumns(
   // as far down as the content goes, past a box with a height it overflows:
   // what stands out of a box takes room in a column as what is in it does
   for (const group of groups) strip = Math.max(strip, group.bottom - from);
-  let height: number;
-  let filled: Filled;
+  let height = 0;
+  let filled: Filled | null = null;
   // how tall a column is that what is out of the flow is cut into, which
   // a container with less than a column of content is no shorter than
-  let columnHeight: number;
-  if (box.style.columnFill === 'auto' && !beforeSpanner) {
+  let columnHeight = 0;
+  const count = columns.count;
+  // rows of columns (CSS Multi-column 2, 3.7): where each column's row
+  // is and how tall the column is, and how far down the rows this sets
+  // reach; a column's slot in its row is its index past the rows before
+  const grid = row ? row.grid : rowGridOf(box, limit);
+  // not wrapping, the columns are as tall as `column-height` says
+  // whatever the container's height (WPT's column-height-005)
+  if (!grid && box.style.columnHeight !== null) {
+    limit = box.style.columnHeight;
+  }
+  let rowOf: ((c: number) => number) | null = null;
+  let rowTop: (j: number) => number = () => top;
+  let rowHeight: (j: number) => number = () => 0;
+  let heights: ((c: number) => number) | undefined;
+  let reach = 0;
+  if (grid && Number.isFinite(grid.height)) {
+    const H = grid.height;
+    const period = H + grid.gap;
+    let k0 = period > EPS ? Math.floor((top - grid.base + EPS) / period) : 0;
+    if (k0 < 0) k0 = 0;
+    // a row the content starts part way down, where the spanner before it
+    // ended, or the next row, where that was in a gap
+    let firstTop = top;
+    let firstHeight = H - (top - (grid.base + k0 * period));
+    if (top - (grid.base + k0 * period) > EPS && firstHeight <= EPS) {
+      k0 += 1;
+      firstTop = grid.base + k0 * period;
+      firstHeight = H;
+    }
+    rowTop = (j) => (j === 0 ? firstTop : grid.base + (k0 + j) * period);
+    rowHeight = (j) => (j === 0 ? firstHeight : H);
+    rowOf = (c) => Math.floor(c / count);
+    // a column of no height still takes a pixel of what can be cut, as
+    // Blink moves on (WPT's column-height-022)
+    const room = (j: number) => Math.max(rowHeight(j), 1);
+    /** Each row's columns as balanced, where they are shorter than the
+     *  row: the rows are filled first, and then each one's columns are
+     *  made as short as still hold what the row holds (WPT's
+     *  column-height-024, whose rows of forced breaks are a pixel). */
+    const short: number[] = [];
+    heights = (c) => short[rowOf!(c)] ?? room(rowOf!(c));
+    filled = fill(groups, from, room(0), true, clones?.edges, heights);
+    const rowCount = rowOf(Math.max(1, filled.starts.length) - 1) + 1;
+    if (groups.length && (box.style.columnFill !== 'auto' || beforeSpanner)) {
+      for (let j = 0; j < rowCount; j += 1) {
+        const first = j * count;
+        const next = first + count;
+        const lastRow = j === rowCount - 1;
+        const ref = filled;
+        // the row holds what is between its first column and the next
+        // row's, which balancing it leaves where it is
+        const holds = (f: Filled): boolean =>
+          lastRow
+            ? f.starts.length <= next && !f.over
+            : f.starts[next] === ref.starts[next] &&
+              Math.abs(f.tops[next] - ref.tops[next]) <= EPS &&
+              f.cut[next] === ref.cut[next];
+        const end = lastRow ? from + strip : ref.tops[next];
+        const at = ref.starts[first];
+        const until = lastRow ? groups.length : ref.starts[next] + 1;
+        const most = room(j);
+        short[j] = Math.min(
+          most,
+          Math.max(
+            (end - ref.tops[first]) / count,
+            tallestOf(groups.slice(at, until)),
+          ),
+        );
+        let tried = fill(groups, from, room(0), true, clones?.edges, heights);
+        for (let pass = 0; pass < 4096; pass += 1) {
+          if (holds(tried)) break;
+          if (short[j] >= most || !Number.isFinite(tried.shortage)) break;
+          short[j] = Math.min(most, short[j] + tried.shortage);
+          tried = fill(groups, from, room(0), true, clones?.edges, heights);
+        }
+        if (holds(tried)) filled = tried;
+        else delete short[j];
+      }
+    }
+    height = H;
+    columnHeight = room(0);
+    const end = rowOf(Math.max(1, filled.starts.length) - 1);
+    // before a spanner, the rows end where the balanced columns do, which
+    // the spanner goes under where it fits in the row (`layoutRows`)
+    reach = groups.length
+      ? rowTop(end) +
+        (beforeSpanner ? heights(end * count) : rowHeight(end)) -
+        top
+      : 0;
+  } else if (grid) {
+    // no height to wrap at: one row, but where forced breaks make more
+    // columns than there are, rows of them, each as tall as its tallest
+    // (WPT's column-wrap-no-constraints-002)
+    const tall = fill(groups, from, Infinity, false, clones?.edges);
+    const made = tall.starts.length;
+    if (made > count) {
+      filled = tall;
+      const natural = (c: number) =>
+        (c + 1 < made ? tall.tops[c + 1] : from + strip) - tall.tops[c];
+      const tallest: number[] = [];
+      for (let c = 0; c < made; c += 1) {
+        const j = Math.floor(c / count);
+        tallest[j] = Math.max(tallest[j] ?? 0, natural(c));
+      }
+      const tops = [top];
+      for (let j = 1; j < tallest.length; j += 1) {
+        tops.push(tops[j - 1] + tallest[j - 1] + grid.gap);
+      }
+      rowTop = (j) => tops[j] ?? tops[tops.length - 1];
+      rowHeight = (j) => tallest[j] ?? 0;
+      rowOf = (c) => Math.floor(c / count);
+      heights = (c) => rowHeight(rowOf!(c));
+      height = tallest[0];
+      columnHeight = height;
+      const end = tallest.length - 1;
+      reach = rowTop(end) + rowHeight(end) - top;
+    }
+  }
+  if (filled) {
+    // set in rows, above
+  } else if (box.style.columnFill === 'auto' && !beforeSpanner) {
     height = Number.isFinite(limit) ? limit : strip;
     columnHeight = height;
     filled = fill(groups, from, height, height >= limit, clones?.edges);
@@ -983,25 +1108,46 @@ export function layoutColumns(
     }
     columnHeight = height;
   }
+  const done = filled;
   // the row of columns this is, for the rules between them: each column
   // that holds something, from the start of the line
   const rtl = box.style.direction === 'rtl';
   const step = columns.width + columns.gap;
   const across = (c: number): number => (rtl ? -c * step : c * step);
   const origin = rtl ? box.contentWidth - columns.width : 0;
-  const used = groups.length ? filled.starts.length : 0;
+  const used = groups.length ? done.starts.length : 0;
+  /** Where a column is across, and the top of its row, and how tall it
+   *  is: in one row of `top`, or in the rows `column-wrap` makes. */
+  const slot = (c: number): number => (rowOf ? c % count : c);
+  const topOf = (c: number): number => (rowOf ? rowTop(rowOf(c)) : top);
+  const heightOf = (c: number): number => (heights ? heights(c) : height);
+  const left = (c: number): number => origin + across(slot(c));
   let rows = COLUMN_BOXES.get(box);
   if (!rows) COLUMN_BOXES.set(box, (rows = []));
-  rows.push({
-    top: top - box.contentY,
-    height,
-    lefts: Array.from({ length: used }, (_, c) => origin + across(c)),
-    width: columns.width,
-    every: Array.from(
-      { length: Math.max(used, columns.count) },
-      (_, c) => origin + across(c),
-    ),
-  });
+  if (rowOf) {
+    const last = rowOf(Math.max(1, used) - 1);
+    for (let j = 0; j <= last; j += 1) {
+      const first = j * count;
+      const holding = Math.max(0, Math.min(count, used - first));
+      rows.push({
+        top: rowTop(j) - box.contentY,
+        height: rowHeight(j),
+        lefts: Array.from({ length: holding }, (_, k) => left(first + k)),
+        width: columns.width,
+        every: Array.from({ length: count }, (_, k) => left(first + k)),
+      });
+    }
+  } else {
+    rows.push({
+      top: top - box.contentY,
+      height,
+      lefts: Array.from({ length: used }, (_, c) => left(c)),
+      width: columns.width,
+      every: Array.from({ length: Math.max(used, columns.count) }, (_, c) =>
+        left(c),
+      ),
+    });
+  }
   // where each column is, for what is out of the flow inside it, which is
   // laid out after all of this, in the strip (`stripOf`, `cutIntoColumns`)
   // past the start edges a break clones, which what is out of the flow
@@ -1010,29 +1156,35 @@ export function layoutColumns(
   // css-break/box-decoration-break-clone-005)
   // (`tops` is a copy: a frame moves it with the container, and leaves
   // how far the columns moved the strip as it was)
-  const oofTops = filled.tops.map((t, c) => t + filled.lifts[c]);
+  const oofTops = done.tops.map((t, c) => t + done.lifts[c]);
+  const stripTop = (c: number): number =>
+    oofTops[c] ??
+    oofTops[oofTops.length - 1] + (c - oofTops.length + 1) * columnHeight;
   const own: ColumnGeometry = {
     container: box,
     tops: [...oofTops],
     height: columnHeight,
-    dx: (c) => origin + across(c),
-    dy: (c) => top - (oofTops[c] ?? oofTops[0] + c * columnHeight),
+    dx: left,
+    dy: (c) => topOf(c) - stripTop(c),
   };
+  if (heights) own.ends = oofTops.map((t, c) => t + heightOf(c));
   const geometry = row ? joinGeometry(row.into, own) : own;
   GEOMETRY.set(box, geometry);
   columnsSet.any = true;
+  const answer = rowOf ? reach : height;
   // all in one column where it started, and nothing to move — but a float
   // that is cut where the column ends, which may reach past it
   if (
     from === top &&
+    topOf(0) === top &&
     !gathered.loose.size &&
-    (!groups.length || filled.starts.length === 1)
+    (!groups.length || done.starts.length === 1)
   ) {
-    return height;
+    return answer;
   }
 
   // the column each group starts in, and the one it ends in
-  const { starts, tops, cut } = filled;
+  const { starts, tops, cut } = done;
   let c = 0;
   for (let i = 0; i < groups.length; i += 1) {
     while (
@@ -1047,19 +1199,64 @@ export function layoutColumns(
     groups[i].last = c;
   }
   // the first column at the start of the line: the right, right to left
-  const { lifts } = filled;
-  const breaks = clones?.breaks(starts, cut, filled.ats);
+  const { lifts } = done;
+  const breaks = clones?.breaks(starts, cut, done.ats);
   place(box, null, {
     gathered,
     tops,
     height,
-    dx: (c) => origin + across(c),
-    dy: (c) => top - tops[c] + lifts[c],
+    dx: left,
+    dy: (c) => topOf(c) - tops[c] + lifts[c],
     geometry,
-    room: (c) => tops[c] + height - lifts[c] - (breaks?.[c + 1]?.drop ?? 0),
+    room: (c) =>
+      tops[c] + heightOf(c) - lifts[c] - (breaks?.[c + 1]?.drop ?? 0),
     breaks,
   });
-  return height;
+  return answer;
+}
+
+/** The rows a multicol container's columns wrap into (CSS Multi-column 2,
+ *  3.6 and 3.7): as tall as `column-height` says, or as the container's
+ *  own height or `max-height` (`limit`) where it says `auto`, or of no
+ *  height at all, and a `row-gap` apart, from the content box's top. Null
+ *  where they do not wrap: `column-wrap: auto` wraps where `column-height`
+ *  is a length. */
+export interface RowGrid {
+  height: number;
+  gap: number;
+  base: number;
+}
+
+/** Where a spanner `height` tall that would start at `y` starts in rows
+ *  of columns: the next row's top, where `y` is in a gap or the spanner
+ *  does not fit in what is left of its row; null where it stays. */
+export function spannerRow(
+  grid: RowGrid,
+  y: number,
+  height: number,
+): number | null {
+  if (!Number.isFinite(grid.height)) return null;
+  const period = grid.height + grid.gap;
+  if (!(period > EPS)) return null;
+  const k = Math.max(0, Math.floor((y - grid.base + EPS) / period));
+  const off = y - (grid.base + k * period);
+  if (off <= EPS) return null;
+  if (off < grid.height - EPS && height <= grid.height - off + EPS) return null;
+  return grid.base + (k + 1) * period;
+}
+
+export function rowGridOf(box: Box, limit: number): RowGrid | null {
+  const style = box.style;
+  const wrap =
+    style.columnWrap === 'wrap' ||
+    (style.columnWrap === 'auto' && style.columnHeight !== null);
+  if (!wrap) return null;
+  const height = style.columnHeight ?? limit;
+  // `normal` is an em, as between the columns (CSS Box Alignment 3, 8.1)
+  const gap = style.rowGapNormal
+    ? style.fontSize
+    : gapOf(style.rowGap, Number.isFinite(limit) ? limit : 0);
+  return { height, gap, base: box.contentY };
 }
 
 /** A box that clones its edges at a break, and the groups it starts and
