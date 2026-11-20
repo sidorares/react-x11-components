@@ -6148,7 +6148,7 @@ container, its offset parent with it, and an anchor in it is in none of the
 boxes it is laid out through. A box a break falls inside has a piece in each
 column: its background and its borders are drawn a piece at a time, with no
 edge at the break. Under `box-decoration-break: clone` each piece is a box of
-its own, with its borders, padding, shadows and outline all round it, and
+its own, with its borders, padding, shadows and outline all round it, a piece a break ends running on to the column's foot as Blink fills it, and
 the edges take room: the column before a break keeps the end edges of every
 cloned box the break falls inside at its foot, and the one after starts
 below their start edges, as Blink sets them. A float a break cuts steers clear of the edges cloned of the boxes it is in: it stops above their end edges at a column's foot and goes on below their start edges at the next column's head. A box with nothing in it whose
