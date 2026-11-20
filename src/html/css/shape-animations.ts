@@ -57,6 +57,11 @@ const MOTION = new Set([
   'transform',
   'transform-origin',
   'transform-box',
+  // the individual transforms, which go before `transform` (CSS
+  // Transforms 2, 6)
+  'translate',
+  'rotate',
+  'scale',
 ]);
 
 /** Whether a declaration says how a drawing's element animates or moves. */
@@ -72,6 +77,10 @@ export interface ShapeMotion {
   transform: string | null;
   origin: string | null;
   box: string | null;
+  /** `translate`, `rotate` and `scale` as written, where a rule set them. */
+  translate?: string | null;
+  rotate?: string | null;
+  scale?: string | null;
 }
 
 /** One declaration of how an element moves, over what came before it in
@@ -100,6 +109,9 @@ export function addMotion(
   if (prop === 'transform') return { ...was, transform: v };
   if (prop === 'transform-origin') return { ...was, origin: v };
   if (prop === 'transform-box') return { ...was, box: v.toLowerCase() };
+  if (prop === 'translate' || prop === 'rotate' || prop === 'scale') {
+    return { ...was, [prop]: v };
+  }
   return motion;
 }
 
@@ -246,15 +258,16 @@ export class ShapeAnimations {
     else if (starts) this._starts.delete(el);
     if (next < Infinity) this._note(root, next);
     // a transform the rules give it, where no animation set one
-    if (transform === undefined && motion.transform !== null) {
-      transform = this._transformOf(motion.transform, ctx);
+    const fixed = staticTransform(motion);
+    if (transform === undefined && fixed !== null) {
+      transform = this._transformOf(fixed, ctx);
       if (transform === undefined) return out;
     }
     if (transform !== undefined) {
       (out ??= {}).transform =
         transform === null
           ? 'none'
-          : matrixText(this._placed(el, root, transform, motion, ctx));
+          : matrixText(this._placed(el, root, transform, motion, ctx, own));
     }
     return out;
   }
@@ -275,8 +288,9 @@ export class ShapeAnimations {
     list: readonly TransformFunction[],
     motion: ShapeMotion,
     ctx: ShapeContext,
+    own: Record<string, string> | null,
   ): Matrix {
-    const box = this._referenceBox(el, root, motion.box);
+    const box = this._referenceBox(el, root, motion.box, own);
     // lengths were read in device pixels, which a drawing's user units are
     // not: what scales them is the scale it is drawn at
     const scale = ctx.units.scale || 1;
@@ -310,11 +324,33 @@ export class ShapeAnimations {
     el: Element,
     root: Element,
     which: string | null,
+    own: Record<string, string> | null,
   ): ShapeBox {
     if (which === 'fill-box' || which === 'stroke-box') {
       const box = this.bbox?.(el) ?? null;
+      // the stroke's box is the fill's grown by half the stroke's width
+      // all round, where it is stroked (SVG 2, 8.10)
+      if (box && which === 'stroke-box') {
+        const half = strokeWidthOf(el, own) / 2;
+        return {
+          x: box.x - half,
+          y: box.y - half,
+          width: box.width + 2 * half,
+          height: box.height + 2 * half,
+        };
+      }
       if (box) return box;
     }
+    // the nearest viewport the element is in, which may be an `<svg>`
+    // inside the drawing (CSS Transforms 1, 4: `view-box`)
+    let viewport = root;
+    for (let at = el.parent; at && at !== root; at = at.parent) {
+      if (at.type === 'tag' && (at as Element).name.toLowerCase() === 'svg') {
+        viewport = at as Element;
+        break;
+      }
+    }
+    root = viewport;
     const view = (root.attribs.viewBox ?? root.attribs.viewbox ?? '')
       .trim()
       .split(/[\s,]+/)
@@ -594,7 +630,12 @@ export function underAttributes(
   const presented = presentedMotion(el);
   if (!presented) {
     if (!motion || motion.transform !== null) return motion;
-    if (motion.origin === null && motion.box === null) return motion;
+    if (
+      motion.origin === null &&
+      motion.box === null &&
+      !setsIndividual(motion)
+    )
+      return motion;
     const list = el.attribs.transform;
     return list === undefined
       ? motion
@@ -602,9 +643,82 @@ export function underAttributes(
   }
   if (!motion) return presented;
   return {
+    ...motion,
     animations: motion.animations,
     transform: motion.transform ?? presented.transform,
     origin: motion.origin ?? presented.origin,
     box: motion.box,
   };
+}
+
+/** A shape's stroke width in user units, where it is stroked at all: what
+ *  the rules give it over its attributes, and 1 where nothing says. */
+function strokeWidthOf(
+  el: Element,
+  own: Record<string, string> | null,
+): number {
+  const stroke = own?.stroke ?? el.attribs.stroke;
+  if (stroke === undefined || stroke.trim().toLowerCase() === 'none') return 0;
+  const width = parseFloat(
+    own?.['stroke-width'] ?? el.attribs['stroke-width'] ?? '1',
+  );
+  return Number.isFinite(width) && width > 0 ? width : 0;
+}
+
+/** Whether a rule set any of `translate`, `rotate` and `scale`. */
+function setsIndividual(motion: ShapeMotion): boolean {
+  return (
+    (motion.translate ?? null) !== null ||
+    (motion.rotate ?? null) !== null ||
+    (motion.scale ?? null) !== null
+  );
+}
+
+/** A length or a number written alone, as a transform function takes it. */
+const ANGLE = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:deg|rad|grad|turn)$/i;
+
+/**
+ * The transform an element is drawn with where no animation sets one: its
+ * `translate`, `rotate` and `scale`, then its `transform`, about one origin
+ * (CSS Transforms 2, 6), as one list. Null where it has none of them.
+ */
+function staticTransform(motion: ShapeMotion): string | null {
+  if (!setsIndividual(motion)) return motion.transform;
+  const parts: string[] = [];
+  const translate = motion.translate?.trim();
+  if (translate && translate.toLowerCase() !== 'none') {
+    const v = splitValue(translate);
+    if (v.length === 1) parts.push(`translate(${v[0]})`);
+    else if (v.length === 2) parts.push(`translate(${v[0]},${v[1]})`);
+    else if (v.length === 3) parts.push(`translate3d(${v[0]},${v[1]},${v[2]})`);
+  }
+  const rotate = motion.rotate?.trim();
+  if (rotate && rotate.toLowerCase() !== 'none') {
+    const v = splitValue(rotate);
+    const angle = v.find((part) => ANGLE.test(part) || part === '0');
+    const axis = v.filter((part) => part !== angle).map((p) => p.toLowerCase());
+    if (angle !== undefined) {
+      if (!axis.length || (axis.length === 1 && axis[0] === 'z')) {
+        parts.push(`rotate(${angle})`);
+      } else if (axis.length === 1 && axis[0] === 'x') {
+        parts.push(`rotateX(${angle})`);
+      } else if (axis.length === 1 && axis[0] === 'y') {
+        parts.push(`rotateY(${angle})`);
+      } else if (axis.length === 3) {
+        parts.push(`rotate3d(${axis.join(',')},${angle})`);
+      }
+    }
+  }
+  const scale = motion.scale?.trim();
+  if (scale && scale.toLowerCase() !== 'none') {
+    const v = splitValue(scale).map((part) =>
+      part.endsWith('%') ? String(parseFloat(part) / 100) : part,
+    );
+    if (v.length === 1) parts.push(`scale(${v[0]})`);
+    else if (v.length === 2) parts.push(`scale(${v[0]},${v[1]})`);
+    else if (v.length === 3) parts.push(`scale3d(${v[0]},${v[1]},${v[2]})`);
+  }
+  const transform = motion.transform?.trim();
+  if (transform && transform.toLowerCase() !== 'none') parts.push(transform);
+  return parts.length ? parts.join(' ') : 'none';
 }

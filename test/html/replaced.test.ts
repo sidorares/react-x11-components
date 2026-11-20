@@ -1474,6 +1474,38 @@ metric(
 );
 
 metric(
+  "a shape's translate, rotate and scale go before its transform, a view-box is its nearest viewport's, and a stroke-box takes in its stroke",
+  async () => {
+    // CSS Transforms 2, 6 and CSS Transforms 1, 4
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}svg{display:block}' +
+        '.vb{transform-box:view-box;transform:translate(50%)}' +
+        '.sb{transform-box:stroke-box;transform-origin:0 0;rotate:90deg}</style>' +
+        // moved 20 across and 5 down by `translate` alone
+        '<svg width="40" height="20">' +
+        '<rect width="10" height="10" fill="#ff0000" style="translate:20px 5px"/></svg>' +
+        // half the width of the `<svg>` it is in, 20, and not the drawing's
+        '<svg width="40" height="20"><svg width="20" height="20">' +
+        '<rect class="vb" width="10" height="10" fill="#0000ff"/></svg></svg>' +
+        // turned about its stroke's corner (8, 3), not its fill's (10, 5)
+        '<svg width="40" height="20">' +
+        '<rect class="sb" x="10" y="5" width="10" height="10" fill="#00ff00"' +
+        ' stroke="#000000" stroke-width="4"/></svg>',
+      {},
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 25, 10, '#ff0000', { message: 'translated' });
+    await expectPixel(ctx, 5, 5, '#ffffff', { message: 'not at its start' });
+    await expectPixel(ctx, 15, 25, '#0000ff', { message: 'half its viewport' });
+    await expectPixel(ctx, 25, 25, '#ffffff', { message: "not the drawing's" });
+    await expectPixel(ctx, 3, 50, '#00ff00', { message: 'turned' });
+    await expectPixel(ctx, 9, 50, '#ffffff', {
+      message: "the stroke's corner",
+    });
+  },
+);
+
+metric(
   "an SVG's currentcolor and none are paint keywords in any case",
   async () => {
     // CSS Values 4, 2.5: Apple's tab strips draw their arrows with

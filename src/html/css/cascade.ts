@@ -11759,7 +11759,8 @@ export function drawingVars(
 
 /** A `style` attribute that says how a drawing's element moves: what
  *  `SvgView` does not read, and `shapeStyles` does where it is set. */
-const INLINE_MOTION = /(?:^|[;\s])transform(?:-origin|-box)?\s*:/i;
+const INLINE_MOTION =
+  /(?:^|[;\s])(?:transform(?:-origin|-box)?|translate|rotate|scale)\s*:/i;
 
 /** An element's presentation attributes of a shape's properties that have
  *  a `var()` in them, as declarations to substitute, or null for none. One

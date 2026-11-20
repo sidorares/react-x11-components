@@ -6724,8 +6724,9 @@ which has no units. One with a list SvgView reads right and nothing to
 place it by is left to SvgView, which keeps a page of icons as cheap as it
 was. **Anything new that places a drawing's element by its transform joins
 `presentedMotion` and `drawingVars`' check**, or a drawing no rule reaches
-draws it at its origin. An individual `translate`, `rotate` or `scale` on a
-drawing's element is not read yet, nor `stroke-box`.
+draws it at its origin. Its `translate`, `rotate` and `scale` are written
+before its `transform` as one list (`staticTransform`), so anything new that
+moves a drawing's element without an animation goes through it.
 
 **A colour no context reads is worked out in the drawing's copy**
 (`coloursToWorkOut`, `workOutColours`). `SvgView` hands a paint to the context as

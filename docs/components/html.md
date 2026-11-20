@@ -7749,8 +7749,10 @@ element inside it, and its CSS animations. A `transform` attribute turns
 about the element's `transform-origin`, the attribute's or a rule's, in its
 `transform-box`, and is read in SVG's own grammar: one with a unit in it,
 or a `rotate()` of two numbers, moves nothing, as in all three browsers.
-An individual `translate`, `rotate` or `scale` on such an element, and
-`transform-box: stroke-box`, are not read yet. An animation in a drawing runs
+Its `translate`, `rotate` and `scale` go before its `transform`, a
+`view-box` is the nearest `<svg>` it is in, and a `stroke-box` is its fill's
+box grown by half its stroke's width. Not yet: `vector-effect:
+non-scaling-stroke`, which no drawing here draws. An animation in a drawing runs
 on a clock of the drawing's elements, from the paint that first asks for it,
 and sets the shape properties above and the transform: `.play .fx {
 animation: rise .5s forwards }` fades a group in and holds it there, as a
