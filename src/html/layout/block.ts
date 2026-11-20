@@ -4481,11 +4481,12 @@ function layoutBoxAt(
   // A box that establishes a formatting context contains its own floats, so
   // it has to be at least as tall as they are. One that does not, does not —
   // that is the classic "collapsed parent" every author has met.
-  // Past a clamp point, a line-clamp container clips its floats rather
-  // than holding them (CSS Overflow 4, 5.3.1).
-  const clamped = ctx.clamp?.box === box && ctx.clamp.done;
+  // A line-clamp container clips its floats at its content box's foot
+  // rather than holding them, whether or not a clamp point fell in it (CSS
+  // Overflow 4, 5.3.1; WPT's line-clamp-with-floats-011, -016 and -017).
+  const clamped = box.style.lineClamp !== null;
   if (clamped) CLAMP_CUT.add(box);
-  else if (box.style.lineClamp !== null) CLAMP_CUT.delete(box);
+  else CLAMP_CUT.delete(box);
   const withFloats =
     ownFloats && !clamped
       ? Math.max(
