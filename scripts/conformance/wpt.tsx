@@ -315,8 +315,16 @@ function scripted(source: string): boolean {
 
 let serial = 0;
 
+/** Whether the page being shot has told its `load`: everything it asked
+ *  for has arrived or failed, its images decoded. An image of 8 KB or more
+ *  decodes on a worker thread, which outlasts a few quiet frames, and a
+ *  shot taken before it showed the image's empty box on both sides of a
+ *  test — a pass of nothing, or a fail of a reference with no image. */
+let loaded = false;
+
 function tree(path: string): React.ReactElement {
   const page = pageOf(path);
+  loaded = false;
   return h(
     ThemeProvider,
     { value: PALETTE, colorScheme: 'light' } as Record<string, unknown>,
@@ -342,6 +350,9 @@ function tree(path: string): React.ReactElement {
         fontFamily: 'serif',
         monoFamily: 'monospace',
         onResource: resourcesFor(path),
+        onLoaded: () => {
+          loaded = true;
+        },
         // the viewport is the canvas, as a browser's window is
         style: { flexGrow: 1 },
       }),
@@ -457,6 +468,12 @@ async function shoot(path: string): Promise<Uint8ClampedArray> {
   while (frames === before && performance.now() < deadline) {
     if (BACKEND === 'x11') await act();
     else await wait(4);
+  }
+  // and its `load`, which waits for its images to decode
+  const loading = performance.now() + 5000;
+  while (!loaded && performance.now() < loading) {
+    if (BACKEND === 'x11') await act();
+    await wait(4);
   }
   let last = await readViewport();
   for (let i = 0; i < 8; i++) {
