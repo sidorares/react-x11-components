@@ -228,3 +228,32 @@ test('text-emphasis sets its style and its colour, in either order', async () =>
   assert.equal(read('a', 'text-emphasis-style'), 'open triangle');
   assert.equal(read('b', 'text-emphasis-style'), 'none');
 });
+
+metric(
+  'ruby-overhang: spaces hangs a wide annotation over the spaces beside its ruby',
+  async () => {
+    const { node } = await render(
+      '<style>body{margin:0;font:20px serif}rt{font-size:10px}' +
+        '.s{ruby-overhang:spaces;ruby-align:center}</style>' +
+        // the annotation is wider than the base, so its column overlaps a
+        // space at either side by as much as the annotation passes the base
+        // there, no more than the space is wide (CSS Ruby 1, 4.2)
+        '<div id="a">x <ruby class="s">x<rt>xxxxxxxxxx</ruby> x</div>' +
+        '<div id="b">x <ruby>x<rt>xxxxxxxxxx</ruby> x</div>' +
+        // nor beside anything but a space
+        '<div id="c">xx<ruby class="s">x<rt>xxxxxxxxxx</ruby>xx</div>',
+      300,
+    );
+    const el = view(node);
+    const [a] = columnsIn(boxIn(el, 'a'));
+    const [b] = columnsIn(boxIn(el, 'b'));
+    const [c] = columnsIn(boxIn(el, 'c'));
+    assert.ok(a.marginLeft < 0 && a.marginRight < 0, 'hangs over both');
+    assert.strictEqual(a.marginLeft, a.marginRight, 'centred');
+    assert.deepStrictEqual([b.marginLeft, b.marginRight], [0, 0], 'auto: none');
+    assert.deepStrictEqual([c.marginLeft, c.marginRight], [0, 0], 'no space');
+    // as wide as a space at most, where the annotation passes the base by
+    // more: a space at 20px is a few pixels
+    assert.ok(-a.marginLeft < 10, `${-a.marginLeft} is a space's width`);
+  },
+);

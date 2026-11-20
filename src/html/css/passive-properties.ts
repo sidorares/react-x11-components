@@ -261,6 +261,9 @@ export const PASSIVE: Record<string, PassiveProperty> = Object.assign(
       'space-around',
       keyword('start', 'center', 'space-between', 'space-around'),
     ),
+    // whether an annotation wider than its base may hang over the spaces
+    // beside its ruby (CSS Ruby 1, 4.2), which `rubyOverhang` reads
+    'ruby-overhang': inherited('auto', keyword('auto', 'none', 'spaces')),
     'ruby-position': inherited('alternate', (v) => {
       const words = wordsOf(v);
       if (words.length === 1 && words[0] === 'inter-character') {
@@ -270,6 +273,16 @@ export const PASSIVE: Record<string, PassiveProperty> = Object.assign(
     }),
     speak: inherited('auto', keyword('auto', 'never', 'always')),
     'text-decoration-skip': inherited('auto', keyword('none', 'auto')),
+    // where an underline or a line through leaves a space out (CSS Text
+    // Decoration 4, 2.4): at a line's start and end, or every one;
+    // `paintRules` reads it, written back `start end` in that order
+    'text-decoration-skip-spaces': inherited('start end', (v) => {
+      const words = wordsOf(v);
+      if (words.length === 1 && (words[0] === 'none' || words[0] === 'all')) {
+        return words[0];
+      }
+      return anyOrder(['start'], ['end'])(v);
+    }),
     'text-decoration-skip-ink': inherited(
       'auto',
       keyword('auto', 'none', 'all'),
