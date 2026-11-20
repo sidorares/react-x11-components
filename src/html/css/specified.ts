@@ -5,6 +5,7 @@
 // kept as it was written, as it always was here, so a value a page sets and
 // reads back is never lost to a grammar this has not got.
 
+import { colorLayersText, colorValid } from './color-syntax.js';
 import { GRAMMARS } from './grammars.js';
 import { PASSIVE } from './passive-properties.js';
 import { parseTransform } from './transform.js';
@@ -260,6 +261,23 @@ export function specifiedValue(
   // takes and simplified (`math.ts`), where that can be said
   const math = specifiedMath(name, value);
   if (math !== undefined) return math;
+  // a colour, by its grammar (`color-syntax.ts`); a gap rule's colour is
+  // a list of them, and a caret's, an accent's and an outline's may be
+  // `auto`
+  if (PLAIN_COLOR.test(name) && !name.includes('rule-')) {
+    const word = value.trim();
+    const lower = word.toLowerCase();
+    if (
+      !/^(?:inherit|initial|unset|revert|revert-layer|revert-rule)$/.test(
+        lower,
+      ) &&
+      !(lower === 'auto' && /^(?:caret|accent|outline)-color$/.test(name))
+    ) {
+      if (colorValid(word) === false) return null;
+      const layers = colorLayersText(word);
+      if (layers) return layers;
+    }
+  }
   // the grid's, refused and kept as the cascade reads them
   // (`grid-specified.ts`)
   if (GRID_SPECIFIED.has(name)) {
