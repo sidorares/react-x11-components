@@ -8346,13 +8346,18 @@ it but where `ruby-align: start` says otherwise. An annotation is set
 against the edge of its base's font, above its ascent or below its
 descent by `ruby-position`, and a line grows only by what an annotation
 reaches past it: one the line's leading has room for grows nothing, as in
-Blink. White space between two bases or two segments is a space between
+Blink. Under `ruby-overhang: spaces` an annotation wider than its base
+hangs over a space beside its ruby, a plain, no-break or ideographic one,
+as far as it passes the base on that side and no further than the space is
+wide, so the text beside it closes up. White space between two bases or two segments is a space between
 their columns, and any other is dropped. An annotation outside a ruby is
 in an anonymous one over an empty base. The UA sheet sets an annotation at
 half its base's size, on a line of `line-height: normal`, with `rp`
 hidden. Not here: `ruby-align`'s `space-between` and `space-around`, which
-centre; `ruby-overhang`, so an annotation wider than its base widens its
-column and pushes the text beside it apart; `inter-character` and the
+centre; `ruby-overhang: auto`, which overhangs nothing, so an annotation
+wider than its base widens its column and pushes the text beside it apart;
+an overhang over anything but a space, such as the punctuation a
+`text-spacing-trim` halves; `inter-character` and the
 `alternate` of a second level, which go over; an annotation's `::first-line`
 style; and tabs in a base, measured from the column's start. A column that
 pairs a base with an annotation after other bases holds the annotation
