@@ -29,7 +29,7 @@ import { basename, dirname, extname, join, resolve } from 'node:path';
 import React from 'react';
 import { createRoot, loadFont, ThemeProvider } from 'react-x11';
 import { WindowNode } from 'react-x11/node';
-import { act, renderX11 } from 'react-x11/test';
+import { act, cleanup, renderX11 } from 'react-x11/test';
 import type { RenderX11Result } from 'react-x11/test';
 
 import { Html } from '../../src/html/index.js';
@@ -468,9 +468,24 @@ interface Mounted {
   /** Device pixels per logical one: what the viewport is read at. */
   scale: number;
   render(element: React.ReactElement): Promise<void>;
+  /** Whether a page has registered a face the mount began without, which
+   *  every page after it would have in its fallbacks. */
+  fontsAdded(): boolean;
+  dispose(): Promise<void>;
 }
 
 let mounted: Mounted | null = null;
+
+/** What the font manager has registered: a document's `@font-face` adds to
+ *  it, and nothing takes from it (`src/html/fonts.ts`). Read off ntk's
+ *  `FontManager`, which says nothing of it in its declarations. */
+interface Registered {
+  font: { postscriptName?: string; numGlyphs?: number };
+}
+const registeredOf = (app: unknown): Registered[] =>
+  (app as { fonts: { _registered: Registered[] } }).fonts._registered;
+const faceKey = ({ font }: Registered) =>
+  `${font.postscriptName}\u0000${font.numGlyphs}`;
 
 /** The X11 harness: node-x11's in-process server, the fonts as files. */
 async function mountX11(first: React.ReactElement): Promise<Mounted> {
@@ -479,12 +494,29 @@ async function mountX11(first: React.ReactElement): Promise<Mounted> {
     height: HEIGHT,
     fonts: FONTS,
   });
+  // A face a page registers stays in the font manager for good, and the
+  // fallback for a character no family a later page names has walks every
+  // face there is: a later page drew a glyph an earlier page's font had,
+  // and a result turned on what ran before it in its shard. So a mount
+  // that a page added a face to is made again before the next page, test
+  // or reference. A face the mount began with, Ahem's from
+  // `/fonts/ahem.css` above all, adds no glyph the fallback did not have.
+  const registered = registeredOf(result.app);
+  const base = new Set(registered.map(faceKey));
+  let seen = registered.length;
   return {
     // taken once: the harness's `ctx` getter makes a new context on every
     // read, and each subscribes to the window for good
     ctx: result.ctx as Mounted['ctx'],
     scale: 1,
     render: (element) => result.rerender(element),
+    fontsAdded() {
+      for (; seen < registered.length; seen++) {
+        if (!base.has(faceKey(registered[seen]))) return true;
+      }
+      return false;
+    },
+    dispose: () => cleanup(),
   };
 }
 
@@ -515,6 +547,10 @@ async function mountCocoa(first: React.ReactElement): Promise<Mounted> {
     ctx: windowNode!.window.getContext('2d') as Mounted['ctx'],
     scale: windowNode!.scale ?? 1,
     render,
+    // CoreText's fonts are the system's, and a window is slow to make: the
+    // faces a page registers stay, as they did
+    fontsAdded: () => false,
+    dispose: async () => root.unmount(),
   };
 }
 
@@ -534,6 +570,10 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
  *  or two after the first paint. */
 async function shoot(path: string): Promise<Uint8ClampedArray> {
   const before = frames;
+  if (mounted?.fontsAdded()) {
+    await mounted.dispose();
+    mounted = null;
+  }
   if (!mounted) {
     mounted =
       BACKEND === 'cocoa'
