@@ -8651,10 +8651,19 @@ line's width, 384 where the three engines make it 24. The frame is a
 formatting context, as its root is, so its blocks' last margin is in its
 height and not hanging out of it. The root element and its `<body>` still
 fill the line (`principal`): their writing mode is the document's principal
-one (8), which a browser hands to the viewport and nothing here does yet,
-and filling the line starts their lines where a browser starts them, but
-where containment on either keeps the body's writing mode to the body, as
-it keeps its `overflow`. And the frame lays its lines out on the alphabetic
+one (8), and filling the line starts their lines where a browser starts
+them, but where containment on either keeps the body's writing mode to the
+body, as it keeps its `overflow`. **The root element's box is laid out in
+the principal writing mode** (`_principalStyleOf` in the builder): the
+body's writing mode and direction, where the root has a `<body>`, are the
+root box's used ones, as all three engines lay it out, so there is no
+orthogonal flow between the two, and the viewport's scroll origin follows
+(`principalStyle`). The box's style is a copy and no element's, and what
+the root hands its children is its computed style, so an `html::after` is
+written in the root's own writing mode, and is an orthogonal flow's root
+where that is vertical in a horizontal body's (`_pseudo`). And an inline
+box's text is set in its block container's writing mode, its own not
+applying (2.1): `uprightItems` is handed the block's. And the frame lays its lines out on the alphabetic
 baseline, where a vertical line's is the central one unless its text is set
 sideways, so an atomic with no baseline of its own is raised to sit by its
 middle (`atomicRaise`, `ownBaseline`): on its edge, a 50px image made a

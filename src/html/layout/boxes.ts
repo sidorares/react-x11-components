@@ -4404,6 +4404,45 @@ class Builder {
     this._scopes.close();
   }
 
+  /**
+   * The style the root element's box is laid out in: its own, with the
+   * writing mode and direction of the document's principal writing mode,
+   * which is its first `<body>`'s where it has one and containment keeps it
+   * to neither (CSS Writing Modes 4, 8). That is the used value, as Blink,
+   * Gecko and WebKit lay the root out: no orthogonal flow between the root
+   * and the body. What the root hands its children is its computed style,
+   * so an `html::after` is still written in the root's own writing mode.
+   */
+  private _principalStyleOf(
+    el: Element,
+    style: ComputedStyle,
+    key: number,
+    inFlex: boolean,
+  ): ComputedStyle {
+    const body = el.children.find(
+      (c): c is Element => isElement(c) && tagOf(c) === 'body',
+    );
+    if (!body || style.contain) return style;
+    const own = this._options.cascade.sharedStyleFor(
+      body,
+      style,
+      key,
+      inFlex,
+    ).style;
+    if (
+      own.contain ||
+      own.display === 'none' ||
+      (own.writingMode === style.writingMode &&
+        own.direction === style.direction)
+    ) {
+      return style;
+    }
+    const used = copyStyle(style);
+    used.writingMode = own.writingMode;
+    used.direction = own.direction;
+    return used;
+  }
+
   private _elementIn(
     el: Element,
     tag: string,
@@ -4538,11 +4577,16 @@ class Builder {
     const depth = 1 + wrappersAround(into.kind, kind, style);
     if (this._depth + depth > MAX_DEPTH) return;
     const box = new Box(kind, el, style);
+    // the root element is laid out in the document's principal writing
+    // mode, its `<body>`'s where it has one (`principalStyleOf`)
+    if (into.parent === null && into.el === null && isRootElement(el)) {
+      box.style = this._principalStyleOf(el, style, key, inFlex);
+    }
     into.append(box);
     // a block container in a vertical writing mode in a horizontal one:
     // the root of an orthogonal flow (CSS Writing Modes 4, 7.3)
     if (
-      style.writingMode !== 'horizontal-tb' &&
+      box.style.writingMode !== 'horizontal-tb' &&
       (kind === 'table-cell' ||
         kind === 'table-caption' ||
         (kind === 'block' && !style.grid) ||
@@ -5083,6 +5127,17 @@ class Builder {
     box.pseudo = which;
     if (style !== own) UNBOXED.set(box, own);
     into.append(box);
+    // a block in a vertical writing mode in a horizontal flow is an
+    // orthogonal flow's root, a `::before`'s as an element's: the root
+    // element's `::after` where its box takes the body's writing mode
+    if (
+      style.writingMode !== 'horizontal-tb' &&
+      box.kind === 'block' &&
+      !style.grid &&
+      flowModeAround(into) === 'horizontal-tb'
+    ) {
+      this._orthogonal.push(box);
+    }
     // its images are its element's to ask for: a `::after` with no content
     // but a background, which designs hang a picture on, drew nothing
     GENERATED_FROM.set(box, el);
