@@ -1034,6 +1034,7 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
     statics,
   );
   const items = autospaced(collected, statics);
+  if (options.fonts) rubyOverhang(items, options.fonts);
   const result = linesOf(
     block,
     roomForCluster(block, options, items),
@@ -5576,6 +5577,116 @@ function collect(
     }
   }
   return floated;
+}
+
+/** What each ruby column was last made to hang over beside it, and the
+ *  margins that left it with: a layout of its lines may come again with
+ *  no layout of the column between, and must not take it twice. */
+const OVERHUNG = new WeakMap<
+  Box,
+  { left: number; right: number; marginLeft: number; marginRight: number }
+>();
+
+/** Whether a character is a space an annotation may hang over. */
+const OVERHANG_SPACE = /[ \u00a0\u3000]$/;
+
+/**
+ * `ruby-overhang: spaces` (CSS Ruby 1, 4.2): a ruby column whose
+ * annotation is wider than its base hangs that much over a space beside
+ * it, at either end, as far as its `ruby-align` leaves the annotation past
+ * the base there and no further than the space is wide. Taken off the
+ * column's margins, so the line sets the column into the space.
+ */
+function rubyOverhang(items: readonly Item[], fonts: FontsLike): void {
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    if (item.kind !== 'atomic') continue;
+    const column = item.box;
+    const ruby = RUBY_COLUMNS.get(column);
+    if (!ruby) continue;
+    const kept = OVERHUNG.get(column);
+    // a layout of the column since resolved its margins afresh
+    if (
+      kept &&
+      column.marginLeft === kept.marginLeft &&
+      column.marginRight === kept.marginRight
+    ) {
+      column.marginLeft += kept.left;
+      column.marginRight += kept.right;
+    }
+    OVERHUNG.delete(column);
+    if (
+      passiveValue(column.style.passiveInherited, 'ruby-overhang') !== 'spaces'
+    ) {
+      continue;
+    }
+    const excess = column.contentWidth - baseWidth(ruby.base);
+    if (!(excess > 0)) continue;
+    const align = passiveValue(column.style.passiveInherited, 'ruby-align');
+    const rtl = column.style.direction === 'rtl';
+    // what the annotation reaches past the base at its start and its end
+    const start = align === 'start' ? 0 : excess / 2;
+    const end = excess - start;
+    const before = spaceBeside(items, i, -1, fonts);
+    const after = spaceBeside(items, i, 1, fonts);
+    const left = Math.min(rtl ? end : start, before);
+    const right = Math.min(rtl ? start : end, after);
+    if (!(left > 0 || right > 0)) continue;
+    column.marginLeft -= left;
+    column.marginRight -= right;
+    OVERHUNG.set(column, {
+      left,
+      right,
+      marginLeft: column.marginLeft,
+      marginRight: column.marginRight,
+    });
+  }
+}
+
+/** How wide the space next to an item is, the way `step` goes in the
+ *  stream: the last or first character of the text there, past the edges
+ *  of inline boxes that take no room; 0 where it is no space. */
+function spaceBeside(
+  items: readonly Item[],
+  at: number,
+  step: 1 | -1,
+  fonts: FontsLike,
+): number {
+  for (let k = at + step; k >= 0 && k < items.length; k += step) {
+    const next = items[k];
+    if (next.kind === 'edge') {
+      if (next.width > 0) return 0;
+      continue;
+    }
+    if (next.kind !== 'text') return 0;
+    if (next.control) continue;
+    const text = next.run.text;
+    if (!text) continue;
+    const ch = step < 0 ? text.slice(-1) : text.slice(0, 1);
+    if (!OVERHANG_SPACE.test(ch)) return 0;
+    // between two letters: a space at a line's end hangs, and takes no
+    // width of the line's
+    const face: Record<string, unknown> = { ...next.run };
+    const width = (text: string) =>
+      fonts.layout([{ ...next.run, text }], face, {}).width;
+    return Math.max(0, width(`x${ch}x`) - width('xx'));
+  }
+  return 0;
+}
+
+/** How wide a ruby base's content is: its widest line's text. */
+function baseWidth(base: Box): number {
+  let widest = 0;
+  for (const line of base.lines ?? []) {
+    let width = 0;
+    for (const text of line.texts) width += text.layout.width;
+    for (const atomic of line.atomics) {
+      width +=
+        atomic.box.width + atomic.box.marginLeft + atomic.box.marginRight;
+    }
+    widest = Math.max(widest, width);
+  }
+  return widest;
 }
 
 /**

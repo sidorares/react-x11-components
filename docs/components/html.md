@@ -6151,7 +6151,7 @@ edge at the break. Under `box-decoration-break: clone` each piece is a box of
 its own, with its borders, padding, shadows and outline all round it, a piece a break ends running on to the column's foot as Blink fills it, and
 the edges take room: the column before a break keeps the end edges of every
 cloned box the break falls inside at its foot, and the one after starts
-below their start edges, as Blink sets them. A box with nothing in it whose
+below their start edges, as Blink sets them. A float a break cuts steers clear of the edges cloned of the boxes it is in: it stops above their end edges at a column's foot and goes on below their start edges at the next column's head. A box with nothing in it whose
 height is its border box's shares its cloned edges out of that height,
 adding none. What is out of the flow is cut as before, taking no room for
 cloned edges. `elementRect` answers the rectangle that takes in all of
@@ -8346,13 +8346,18 @@ it but where `ruby-align: start` says otherwise. An annotation is set
 against the edge of its base's font, above its ascent or below its
 descent by `ruby-position`, and a line grows only by what an annotation
 reaches past it: one the line's leading has room for grows nothing, as in
-Blink. White space between two bases or two segments is a space between
+Blink. Under `ruby-overhang: spaces` an annotation wider than its base
+hangs over a space beside its ruby, a plain, no-break or ideographic one,
+as far as it passes the base on that side and no further than the space is
+wide, so the text beside it closes up. White space between two bases or two segments is a space between
 their columns, and any other is dropped. An annotation outside a ruby is
 in an anonymous one over an empty base. The UA sheet sets an annotation at
 half its base's size, on a line of `line-height: normal`, with `rp`
 hidden. Not here: `ruby-align`'s `space-between` and `space-around`, which
-centre; `ruby-overhang`, so an annotation wider than its base widens its
-column and pushes the text beside it apart; `inter-character` and the
+centre; `ruby-overhang: auto`, which overhangs nothing, so an annotation
+wider than its base widens its column and pushes the text beside it apart;
+an overhang over anything but a space, such as the punctuation a
+`text-spacing-trim` halves; `inter-character` and the
 `alternate` of a second level, which go over; an annotation's `::first-line`
 style; and tabs in a base, measured from the column's start. A column that
 pairs a base with an annotation after other bases holds the annotation
