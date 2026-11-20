@@ -1870,3 +1870,30 @@ test('a ::scroll-marker-group no rule styles is made, a block, and holds its pos
     'placed against the group, not the viewport',
   );
 });
+
+test('an element has a ::scroll-button() box for each direction a rule gives a content, after it', async () => {
+  // siblings after the element, in the order block-start, inline-start,
+  // inline-end, block-end, `*` naming each and `right` the inline end, and
+  // none for a direction no rule gives a `content` (CSS Overflow 5, 4; WPT's
+  // css-pseudo/relative-box-order-of-pseudo-elements)
+  const { node } = await render(
+    '<style>body{margin:0}#s::scroll-button(*){display:block;height:10px}' +
+      '#s::scroll-button(right){content:""}#s::scroll-button(up){content:""}' +
+      '</style><div id="s"></div><p id="after"></p>',
+  );
+  type Laid = LaidBox & { parent: Laid | null };
+  const el = view(node);
+  const s = boxOf(el, 's') as Laid;
+  const siblings = s.parent!.children as Laid[];
+  const at = siblings.indexOf(s);
+  const buttons = siblings.slice(at + 1, at + 3);
+  assert.deepStrictEqual(
+    buttons.map((b) => [b.pseudo, b.y - s.y - s.height]),
+    [
+      ['scroll-button', 0],
+      ['scroll-button', 10],
+    ],
+    'up, then right, each 10px tall, after the element',
+  );
+  assert.strictEqual(siblings[at + 3], boxOf(el, 'after'), 'and no more');
+});

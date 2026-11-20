@@ -845,6 +845,7 @@ type PseudoElement =
   | 'backdrop'
   | 'scroll-marker'
   | 'scroll-marker-group'
+  | ScrollButton
   | 'details-content'
   | 'column';
 
@@ -872,7 +873,37 @@ interface KeptPart {
  *  `::-webkit-slider-runnable-track` are a range's, which only Chrome's and
  *  Safari's names reach, and every page that draws one writes. */
 const PSEUDO_ELEMENT =
-  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|file-selector-button|backdrop|scroll-marker|scroll-marker-group|details-content|column|target-text|spelling-error|grammar-error|-webkit-input-placeholder|-webkit-file-upload-button|-webkit-scrollbar|-webkit-slider-thumb|-webkit-slider-runnable-track)$|::highlight\(\s*((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f]|[^\s()\\])+)\s*\)$/i;
+  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|file-selector-button|backdrop|scroll-marker|scroll-marker-group|details-content|column|target-text|spelling-error|grammar-error|-webkit-input-placeholder|-webkit-file-upload-button|-webkit-scrollbar|-webkit-slider-thumb|-webkit-slider-runnable-track)$|::highlight\(\s*((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f]|[^\s()\\])+)\s*\)$|::scroll-button\(\s*([a-zA-Z*-]+)\s*\)$/i;
+
+/** A scroll container's `::scroll-button()`s, one a logical direction, in
+ *  the order they are made (CSS Overflow 5, 4). */
+export type ScrollButton =
+  | 'scroll-button-block-start'
+  | 'scroll-button-inline-start'
+  | 'scroll-button-inline-end'
+  | 'scroll-button-block-end';
+export const SCROLL_BUTTONS: readonly ScrollButton[] = [
+  'scroll-button-block-start',
+  'scroll-button-inline-start',
+  'scroll-button-inline-end',
+  'scroll-button-block-end',
+];
+
+/** What a `::scroll-button()`'s argument names: `*` each of them, a
+ *  physical direction the logical one it is in a horizontal flow from left
+ *  to right. A writing mode that turns the physical ones is not followed
+ *  yet. */
+const SCROLL_BUTTON_NAMES: Readonly<Record<string, readonly ScrollButton[]>> = {
+  '*': SCROLL_BUTTONS,
+  'block-start': ['scroll-button-block-start'],
+  'inline-start': ['scroll-button-inline-start'],
+  'inline-end': ['scroll-button-inline-end'],
+  'block-end': ['scroll-button-block-end'],
+  up: ['scroll-button-block-start'],
+  left: ['scroll-button-inline-start'],
+  right: ['scroll-button-inline-end'],
+  down: ['scroll-button-block-end'],
+};
 
 /** The pseudo-elements WebKit named, under what their rules are kept by. */
 const VENDOR_PSEUDO_ELEMENTS: Readonly<Record<string, PseudoElement>> = {
@@ -1009,9 +1040,11 @@ const DECORATION_PROPS = new Set([
  * last compound and match any child, `p *` and `p > *`.
  */
 function splitPseudoElement(rule: StyleRule): {
-  which: PseudoElement | 'highlight';
+  which: PseudoElement | 'highlight' | 'scroll-button';
   rule: StyleRule;
   name?: string;
+  /** A `::scroll-button()`'s, the directions it names. */
+  buttons?: readonly ScrollButton[];
 } | null {
   const m = PSEUDO_ELEMENT.exec(rule.selector);
   if (!m) return null;
@@ -1022,6 +1055,11 @@ function splitPseudoElement(rule: StyleRule): {
     : head !== trimmed || /[>+~]$/.test(trimmed)
       ? `${trimmed} *`
       : trimmed;
+  if (m[4] !== undefined) {
+    const buttons = SCROLL_BUTTON_NAMES[m[4].toLowerCase()];
+    if (!buttons) return null;
+    return { which: 'scroll-button', rule: { ...rule, selector }, buttons };
+  }
   // a custom highlight's, by its name, which is case-sensitive and may be
   // written with escapes: `::highlight(multi\ word)` is `multi word`'s
   if (m[3] !== undefined) {
@@ -4431,6 +4469,10 @@ export class Cascade {
     backdrop: new RuleIndex(true),
     'scroll-marker': new RuleIndex(true),
     'scroll-marker-group': new RuleIndex(true),
+    'scroll-button-block-start': new RuleIndex(true),
+    'scroll-button-inline-start': new RuleIndex(true),
+    'scroll-button-inline-end': new RuleIndex(true),
+    'scroll-button-block-end': new RuleIndex(true),
     'details-content': new RuleIndex(true),
     column: new RuleIndex(true),
   };
@@ -5313,7 +5355,14 @@ export class Cascade {
         continue;
       }
       const pseudo = splitPseudoElement(rule);
-      if (pseudo?.which === 'highlight') {
+      if (pseudo?.which === 'scroll-button') {
+        for (const which of pseudo.buttons!) {
+          this._latest.push(
+            this._pseudo[which].add(pseudo.rule, undefined, scope),
+          );
+        }
+        this._restated.push(pseudo.rule, rule);
+      } else if (pseudo?.which === 'highlight') {
         let index = this._highlights.get(pseudo.name!);
         if (!index)
           this._highlights.set(pseudo.name!, (index = new RuleIndex(true)));
@@ -6887,8 +6936,11 @@ export class Cascade {
    */
   private _addScoped(rule: StyleRule, rules: TreeRules): boolean {
     const pseudo = splitPseudoElement(rule);
-    // a custom highlight's is the document's, by its name, wherever it is
-    if (pseudo?.which === 'highlight') return false;
+    // a custom highlight's is the document's, by its name, wherever it is,
+    // and a scroll button's is filed by its directions, as the document's
+    if (pseudo?.which === 'highlight' || pseudo?.which === 'scroll-button') {
+      return false;
+    }
     if (pseudo) this._restated.push(pseudo.rule, rule);
     const which: PseudoTarget = pseudo?.which ?? '';
     const subject = pseudo?.rule ?? rule;
@@ -8403,6 +8455,35 @@ export class Cascade {
       return style;
     }
     blockify(style, true);
+    return style;
+  }
+
+  /**
+   * The style of an element's `::scroll-button()` for a direction (CSS
+   * Overflow 5, 4): what the rules for it make of it, inheriting from the
+   * element. Null where no rule gives it a `content`, which makes no box,
+   * as a `::before` makes none.
+   */
+  scrollButtonStyleFor(
+    el: Element,
+    which: ScrollButton,
+    elementStyle: ComputedStyle,
+  ): ComputedStyle | null {
+    const index = this._pseudo[which];
+    if (index.size === 0 || !index.reaches(el)) return null;
+    const candidates: Candidate[] = [];
+    this._matchInto(index, el, candidates);
+    if (!candidates.some(setsContent)) return null;
+    candidates.sort(byCascade);
+    const style = this._computeStyle(
+      el,
+      elementStyle,
+      false,
+      candidates,
+      false,
+      null,
+    );
+    if (style.content === 'normal' || style.content === 'none') return null;
     return style;
   }
 

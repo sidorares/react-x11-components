@@ -9845,7 +9845,7 @@ a pass of their own over the whole document, cut by the boxes that clip
 their container, so a box positioned over a container's edge is under its
 bar.
 
-**Scroll markers are built in phases: so far their boxes and where they go** (CSS
+**Scroll markers are built in phases: so far their boxes, where they go, and the buttons' boxes** (CSS
 Overflow 5, 3). A scroll container whose `scroll-marker-group` says `before`
 or `after` has a `::scroll-marker-group` box, its sibling before or after it,
 styled by the rules for it, made whether or not one reaches it, and
@@ -9854,9 +9854,17 @@ flow, `fixed` ones as well; in it is the `::scroll-marker` of
 each element the scroller holds, in the order of the tree, where a rule gives
 the marker a `content`, an item of the group where the group is a flex box
 or a grid. A marker draws its box and no text yet: `content: ""` is all
-these read. The `::scroll-button`s, `:target-current` on the marker of what is scrolled to,
-and a marker's press scrolling to its element are later phases, as is text
-`content` (`counter()`, `attr()`).
+these read. An element's `::scroll-button()`s are boxes too (4): one for
+each direction a rule gives a `content`, `*` naming all four and `up`,
+`left`, `right` and `down` the logical ones as a horizontal flow from left
+to right has them, siblings after the element and its `::after` and before
+a group placed after it, in the order block-start, inline-start,
+inline-end, block-end, and items blockified where what holds them is a flex
+box or a grid. Blink makes them whether or not the element scrolls, and so
+does this. What a press on a button does, `:enabled` and `:disabled` on it,
+`:target-current` on the marker of what is scrolled to and a marker's press
+scrolling to its element are later phases, as is text `content`, such as a
+`counter()` or an `attr()`.
 
 ## Shadow DOM
 

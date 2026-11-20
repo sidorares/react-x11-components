@@ -1940,6 +1940,7 @@ const PSEUDO_ELEMENTS = new Set([
   // a scroll container's markers and their group (CSS Overflow 5, 3)
   'scroll-marker',
   'scroll-marker-group',
+  'scroll-button',
   // a view transition's (CSS View Transitions 1, 3.2)
   'view-transition',
   'view-transition-group',

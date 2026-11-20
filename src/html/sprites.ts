@@ -391,6 +391,7 @@ export function overLiftOf(host: SpriteHost, box: Box): Lift | null {
     which === 'backdrop' ||
     which === 'scroll-marker' ||
     which === 'scroll-marker-group' ||
+    which === 'scroll-button' ||
     which === 'details-content' ||
     which === 'view-transition'
   ) {
