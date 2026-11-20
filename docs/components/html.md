@@ -8233,8 +8233,9 @@ engine's), which spaces the lines after it breaks them, so a paragraph
 laid out at another width is not shaped again; elsewhere each
 space is spaced through letter spacing, and a paragraph beside a float is
 spaced a line at a time that way on every engine; a line that does not
-wrap is aligned in its box as well, and one too long for it overflows its
-end),
+wrap is aligned in its box as well, and one too long for it starts at its
+start edge and overflows its end, the left of a right-to-left one, whether
+it holds text or inline-blocks),
 `text-indent` (with `hanging`, which indents every line but those that
 would be, and `each-line`, which indents a line after a forced break or
 a block-level box as the first; CSS Text 3, 7.1), `text-transform` (a case, `full-width` and `full-size-kana`
