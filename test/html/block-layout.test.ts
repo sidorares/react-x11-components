@@ -99,6 +99,51 @@ test('margins of both signs collapse to the largest and the most negative of all
   assert.strictEqual(boxOf(view(node), 'a').y, 11);
 });
 
+test("margin-trim trims what adjoins a block container's trimmed edges, and nothing else", async () => {
+  // CSS Box 4, 3.3: the first child's top margin and those collapsed into
+  // it, the empty blocks before it, the last one's bottom margin and the
+  // empty ones after it, and a spanner's at a multicol container's edge
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      // block-start: an empty block's 30px, then a child whose 20px
+      // collapses with its own child's 25px
+      '<div id="s" style="margin-trim:block-start;border:1px solid">' +
+      '<div style="margin:30px 0"></div>' +
+      '<div id="s1" style="margin-top:20px"><div style="margin-top:25px;height:10px"></div></div>' +
+      '<div id="s2" style="margin-top:7px;height:10px"></div></div>' +
+      // block-end: the last child's 40px and an empty block's after it
+      '<div id="e" style="margin-trim:block-end;border:1px solid">' +
+      '<div style="height:10px;margin-bottom:40px"></div>' +
+      '<div id="e1" style="margin-top:50px"></div></div>' +
+      // an empty box that trims its end: its child's margin goes, its own stays
+      '<div id="r" style="display:flow-root"><div id="t" style="margin-top:6px;margin-trim:block-end">' +
+      '<div style="margin-top:60px"></div></div><div id="t1" style="height:5px"></div></div>' +
+      // a spanner at both edges of a multicol container
+      '<div id="m" style="columns:2;margin-trim:block;border:1px solid">' +
+      '<div id="m1" style="column-span:all;margin:15px 0;height:10px"></div></div>',
+  );
+  const el = view(node);
+  const s = boxOf(el, 's');
+  assert.strictEqual(boxOf(el, 's1').y, s.y + 1, 'the first child at the top');
+  assert.strictEqual(
+    boxOf(el, 's2').y,
+    s.y + 1 + 10 + 7,
+    'later ones keep theirs',
+  );
+  const e = boxOf(el, 'e');
+  assert.strictEqual(e.height, 2 + 10, 'no margin under the last child');
+  assert.strictEqual(
+    boxOf(el, 'e1').y,
+    e.y + 1 + 10,
+    'the empty block at the end',
+  );
+  const r = boxOf(el, 'r');
+  assert.strictEqual(boxOf(el, 't1').y - r.y, 6, 'its own 6px only, above it');
+  const m = boxOf(el, 'm');
+  assert.strictEqual(boxOf(el, 'm1').y, m.y + 1, 'the spanner at the top');
+  assert.strictEqual(m.height, 2 + 10, 'and nothing under it');
+});
+
 metric('a probe of an unbounded width puts no box at infinity', async () => {
   // A flex item is measured at its max-content width, a layout in unbounded
   // room. Its table's cell centred a block by its auto margins in that room

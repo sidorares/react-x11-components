@@ -2253,6 +2253,18 @@ browser. **Anything that looks for an element's generated box goes through
 not have: a read, `getAnimations()`, a lift and a frame's comparison each found
 none, and a frame that moved one repainted nothing.
 
+**`margin-trim` trims at the edges the flow already collapses at** (CSS
+Box 4, 3.3; `marginTrimOf`, read from the style's passive record). A block
+container that trims its start drops the collapsed top margin of each child
+in flow until one its margins do not collapse through, and lets no margin
+up through its top (`topOpen`); one that trims its end drops the margin left
+hanging after its last child, puts the empty blocks after that child where
+it ends, and is walked by `absorbChildren` as giving up every child's margin
+that reaches its top through its bottom. A multicol container trims a
+spanner's margin at either edge (`layoutRows`). **Anything new that collapses
+margins at a container's content edge honours it there**, or a trimmed margin
+comes back by another route. Flex and grid containers do not trim yet.
+
 **A button's content is centred in whatever height the button comes to.**
 HTML's button layout (15.5.5) puts it in a box of its own, centred down the
 button, and `centreButton` (`layout/block.ts`) moves it there when the

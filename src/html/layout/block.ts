@@ -218,7 +218,7 @@ import type {
   InlineResult,
 } from './inline.js';
 import { overEdge, underEdge } from '../css/text-box.js';
-import { passiveValue } from '../css/passive-properties.js';
+import { marginTrimOf, passiveValue } from '../css/passive-properties.js';
 import type { TextRun } from '../../richtext/index.js';
 import { forgetGridItem } from './css-grid.js';
 import {
@@ -2543,6 +2543,17 @@ function absorbChildren(
   width: number,
   margin: MarginStrut,
 ): MarginStrut {
+  // a box that trims its end trims what adjoins it there: where its
+  // margins collapse through it, every child's, which reach its top only
+  // by way of its bottom (CSS Box 4, 3.3)
+  if (marginTrimOf(at.style.passive) & 2) {
+    const taken = absorbInto(at, width, margin);
+    return throughAll ? margin : taken;
+  }
+  return absorbInto(at, width, margin);
+}
+
+function absorbInto(at: Box, width: number, margin: MarginStrut): MarginStrut {
   let whole = true;
   /** `at`'s content width, worked out when a child first needs it: most
    *  blocks start with text, and never do. */
@@ -2639,7 +2650,10 @@ function topOpen(box: Box): boolean {
     box.kind === 'block' &&
     box.borderTop === 0 &&
     box.padTop === 0 &&
-    !establishesBFC(box)
+    !establishesBFC(box) &&
+    // a box that trims its start lets no margin through its top: what
+    // would collapse up through it is trimmed to none (CSS Box 4, 3.3)
+    !(marginTrimOf(box.style.passive) & 1)
   );
 }
 
@@ -2891,6 +2905,16 @@ function layoutChildren(
   /** The margin left hanging by the previous sibling — or, before the first
    *  child, the one `leading` hands down — for collapsing. */
   let pendingMargin = marginStrut(leading);
+  /** Which edges trim what touches them (`margin-trim`, CSS Box 4, 3.3),
+   *  and whether the start is still trimming: until a child in flow that
+   *  its margins do not collapse through, whatever adjoins the content's
+   *  top edge — the first child's margin, the margins collapsed up into
+   *  it, and those of empty blocks before it — is none. */
+  const trim = marginTrimOf(box.style.passive);
+  let trimStart = (trim & 1) !== 0;
+  /** The empty blocks since the last child that is not, which a trimmed
+   *  end puts where that child ends: their margins are none. */
+  let trailing: Box[] | null = null;
   /** How many floats were placed before this box's content began, while
    *  nothing has yet fixed where the content is: a margin that collapses
    *  up through its top edge would take the ones placed since down with
@@ -3064,9 +3088,14 @@ function layoutChildren(
     // collapsed with its first descendants' where nothing parts them.
     let absorbed = child.topAbsorbed;
     if (absorbed !== 0 && !(open ??= topOpen(box))) absorbed = 0;
-    const top = absorbed
+    let top = absorbed
       ? NO_MARGIN
       : collapsedTopMargin(child, contentWidth, floats, y, pendingMargin);
+    if (trimStart) {
+      // the walk still marks what it took, which no layout adds again
+      top = NO_MARGIN;
+      pendingMargin = NO_MARGIN;
+    }
     const collapsed = joinStruts(pendingMargin, top);
     // After an empty block cleared past a float, what collapses with its
     // margins is placed from its top border edge, less its own top
@@ -3127,6 +3156,7 @@ function layoutChildren(
       !(columned.any && (inColumnsFlow ??= inMulticol(box)));
     const stand = standable ? standFor(child, ctx, contentWidth) : null;
     if (stand !== null) {
+      trimStart = false;
       STOOD.set(child, stand);
       stoodAny = true;
       standsTaken += 1;
@@ -3223,7 +3253,10 @@ function layoutChildren(
         continue;
       }
       open = false;
-      pendingMargin = joinStruts(collapsed, bottomOf(child));
+      if (trim & 2) (trailing ??= []).push(child);
+      pendingMargin = trimStart
+        ? NO_MARGIN
+        : joinStruts(collapsed, bottomOf(child));
       if (cleared) {
         afterClear = joinStruts(joinStruts(afterClear, top), bottomOf(child));
       }
@@ -3231,6 +3264,8 @@ function layoutChildren(
       continue;
     }
     open = false;
+    trimStart = false;
+    trailing = null;
     y = child.y + child.height;
     pendingMargin = bottomOf(child);
     openFloats = Infinity;
@@ -3244,6 +3279,18 @@ function layoutChildren(
     }
   }
 
+  // what adjoins the content's bottom edge is trimmed away where it says
+  // so: the last child's margin, those collapsed into it from inside it,
+  // and the empty blocks' after it
+  if (trim & 2) {
+    pendingMargin = NO_MARGIN;
+    afterClear = NO_MARGIN;
+    if (trailing) {
+      for (const empty of trailing) {
+        if (empty.y !== y) translate(empty, 0, y - empty.y);
+      }
+    }
+  }
   // The last child's bottom margin collapses through the parent's bottom
   // edge unless a border, padding, a specified height or a formatting
   // context of its own stops it — which is why a `<div>` around a `<p>` is
@@ -4686,6 +4733,7 @@ function layoutRows(
 ): number {
   const limit = columnLimit(box);
   const top = box.contentY;
+  const trim = marginTrimOf(box.style.passive);
   let y = top;
   /** The bottom margin of the spanner just before, which the next thing
    *  comes under: all of it, or what the next spanner's does not cover. */
@@ -4771,6 +4819,10 @@ function layoutRows(
       const child = spanners[r];
       if (!child) break;
       resolveEdges(child, contentWidth);
+      // a spanner at the container's start, nothing set before it, has its
+      // top margin trimmed where the container trims its start (CSS Box 4,
+      // 3.3)
+      if (trim & 1 && margin === null && y === top) child.marginTop = 0;
       y +=
         margin === null ? child.marginTop : Math.max(margin, child.marginTop);
       layoutBlockLevel(
@@ -4844,6 +4896,11 @@ function layoutRows(
       );
     }
     COLUMN_PIECES.set(b, pieces);
+  }
+  // and one at its end, nothing set after it, its bottom margin
+  if (trim & 2 && margin !== null) {
+    spanners[spanners.length - 1].marginBottom = 0;
+    margin = 0;
   }
   return y + (margin ?? 0) - top;
 }
