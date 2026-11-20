@@ -1612,3 +1612,32 @@ test('an item margin that makes a flex box taller is dropped at a break', async 
   );
   assert.deepStrictEqual(at(view(node), 'b', 'm'), [50, 0, 50, 100]);
 });
+
+test("a flex box's row gap that a column break falls in has no rule, however narrow the rule", async () => {
+  // multi-line-row-flex-fragmentation-094: three lines 50px tall spread
+  // over 180px, so 15px between them, in columns 60px tall. The second
+  // gap runs from 50px to 65px down the second column, and the break at
+  // 60px takes it away, though the 5px rule at its middle, 55px to 60px,
+  // is wholly in the column
+  const items = '<div style="width:70px;height:50px"></div>'.repeat(6);
+  const doc = (rule: string) =>
+    '<div style="columns:2;height:60px;width:290px;gap:10px">' +
+    '<div style="display:flex;flex-wrap:wrap;width:140px;height:180px;' +
+    `align-content:space-between;${rule}">${items}</div></div>`;
+  assert.deepStrictEqual(
+    await rulesIn(doc('row-rule:5px solid #ffd700'), '#ffd700'),
+    [],
+  );
+  // and a gap no break reaches keeps it
+  assert.deepStrictEqual(
+    await rulesIn(
+      '<div style="columns:2;column-fill:auto;height:100px;width:290px;' +
+        'gap:10px"><div style="display:flex;flex-wrap:wrap;width:140px;' +
+        'height:80px;row-gap:20px;row-rule:4px solid #ffd700">' +
+        '<div style="width:140px;height:30px"></div>'.repeat(2) +
+        '</div></div>',
+      '#ffd700',
+    ),
+    [[0, 38, 140, 4]],
+  );
+});

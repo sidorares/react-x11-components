@@ -33,6 +33,10 @@ export interface RuleSegment {
   /** Whether `start` is at `to`: a piece drawn mirrored, which runs from
    *  its far physical end, as a rule in a right-to-left grid's rows does. */
   flipped?: boolean;
+  /** How far across the gap itself reaches, where it is wider than the
+   *  rule: a break that falls anywhere in it takes the rule away (CSS Gap
+   *  Decorations 1, 3.6), not only one that falls in the rule's width. */
+  span?: readonly [number, number];
 }
 
 const CAP: RuleEnd = { junction: false, size: 0, cross: -1, crossOf: 0 };
@@ -203,6 +207,7 @@ function gridRuleSegments(
         end: last === n - 1 ? CAP : endAt(last),
         gap: lane,
         of: gaps,
+        span: [laneOrigin + lanes[lane][1], laneOrigin + lanes[lane + 1][0]],
       });
     };
     let start: number | null = null;
@@ -768,6 +773,7 @@ function flexRuleSegments(
       });
     }
   }
+  for (const piece of across) piece.span = lineGap(piece.gap);
   // a horizontal piece's start is the inline start, its right end in a
   // right-to-left container
   if (style.direction === 'rtl') {

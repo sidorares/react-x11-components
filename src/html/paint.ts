@@ -5553,8 +5553,10 @@ function paintGapRules(
       if (
         within &&
         !down &&
-        (seg.at - width / 2 < within[0] - 0.5 ||
-          seg.at + width / 2 > within[1] + 0.5)
+        (Math.min(seg.at - width / 2, seg.span?.[0] ?? Infinity) <
+          within[0] - 0.5 ||
+          Math.max(seg.at + width / 2, seg.span?.[1] ?? -Infinity) >
+            within[1] + 0.5)
       ) {
         continue;
       }
