@@ -8490,9 +8490,11 @@ out in its grid's axes (CSS Grid 2, 9), and what is in it is orthogonal, or
 not, by its grid's writing mode: a vertical item of a vertical subgrid of a
 horizontal grid draws its text down the page.
 
-Not yet: `text-combine-upright` and its kin, a horizontal block inside a
-`vertical-lr` flow (laid out turned with the flow, which is put back across
-after its layout), the root element in a vertical writing mode scrolled from its
+Not yet: `text-combine-upright` and its kin, a horizontal block, float or
+absolutely positioned box inside a `vertical-lr` flow (laid out turned with
+the flow, which is put back across after its layout; a `vertical-lr` grid's
+items are laid out across the page, as a `vertical-rl` one's are), the root
+element in a vertical writing mode scrolled from its
 block start, the principal writing mode handed from the `<body>` or the root
 element to the viewport (8) — so a vertical body is as wide as the line
 where a browser makes it as wide as its lines and puts it at the right, and

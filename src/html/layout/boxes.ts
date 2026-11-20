@@ -4556,7 +4556,7 @@ class Builder {
       style.writingMode === 'horizontal-tb' &&
       ((kind === 'block' && !style.grid) ||
         (kind === 'flex' && style.grid && !subgridsIn(style, into))) &&
-      holdsTurnBack(flowModeAround(into)) &&
+      holdsTurnBack(flowModeAround(into), style, into) &&
       this._inOrthogonal(into)
     ) {
       // and a horizontal one, a block or a grid, in such a flow's frame,

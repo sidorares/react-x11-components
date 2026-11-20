@@ -8841,9 +8841,16 @@ compares them on the page**, as `clippedAway` does: an anchor in the
 turn-back frame and the scroller around it are in two. And **a scroll
 container's bars are drawn through its frames' turn** (`frameMatrixOf`),
 on the sides the page has at its right and bottom (`scrollBarsOf`): until
-this, a scroller in any vertical flow drew none. A `vertical-lr` flow,
-which `reflectFrame` puts back across after its layout, makes no turn-back
-frame (`holdsTurnBack`).
+this, a scroller in any vertical flow drew none. A `vertical-lr` flow's
+frame, which `reflectFrame` puts back across after its layout, holds them
+too: **`reflectFrame` moves a turn-back root with the rest and goes no
+further into it**, since what is in it is laid out across the page and is
+not to be put back. It had made no turn-back frame, and a horizontal grid
+item in a `vertical-lr` grid was laid out in the grid's axes, as wide as its
+text was tall. Only a grid's items have one there (`holdsTurnBack`): a
+block, a float and a box at its static position in such a flow are placed
+from where the flow was put back across, which a frame of their own does
+not yet follow, and 10 of css-writing-modes' reftests fell with one.
 
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
