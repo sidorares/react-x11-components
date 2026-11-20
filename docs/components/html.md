@@ -6437,7 +6437,8 @@ the lanes, `align-content` (`justify-content` for row lanes) places the
 stacking range as a whole, and an item's own alignment moves it in the hole
 after it, which for the last in a lane runs out to the container's far
 edge, as the engines have it, where the specification stops at the
-stacking range's. Across the lanes, items align as a grid's do, and
+stacking range's; one `stretch` makes as long as that hole is laid out again
+at its new size, and stays stretched across its lane. Across the lanes, items align as a grid's do, and
 `flow-start` and `flow-end` follow the order the lanes fill in. An item's
 negative margin can take back the gap after it, as the engines have it,
 where the specification floors its size at nought first; a lane's running
