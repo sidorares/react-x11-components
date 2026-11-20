@@ -2136,3 +2136,16 @@ test('an inline box that starts at the end of a line with a box out of the flow 
     ],
   );
 });
+
+test('an inline box that starts with a box out of the flow after a forced break has its first fragment on the line after it', async () => {
+  // the newline ends the line before, which holds nothing of the box, so the
+  // box placed against it is placed from the line its text is on (WPT's
+  // css-overflow/line-clamp/line-clamp-with-abspos-016's reference)
+  const { node } = await render(
+    '<style>body{margin:0}div{font:16px/32px serif;white-space:pre}' +
+      'span{position:relative}i{position:absolute;top:0;left:0;width:20px;' +
+      'height:20px}</style><div>Line 1\n<span><i id="a"></i>Line 2</span></div>',
+  );
+  const a = boxOf(view(node), 'a');
+  assert.ok(a.y >= 32, `on the second line, at ${a.y}`);
+});

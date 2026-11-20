@@ -6189,7 +6189,9 @@ strip the columns were cut from had its containing block, an
 inline box's among them, whose fragments are taken where the strip had its
 lines before the columns moved them — its first one at the end of a
 line, holding nothing, where it starts there with a box out of the flow
-and all its text goes on to the next, as Blink keeps it — and is then cut
+and all its text goes on to the next, as Blink keeps it, but not after a
+forced break, which ends the line before with nothing of the box on it —
+and is then cut
 into them as a float with a height is, with what it holds; an anchor it
 refers to in the same columns it sees unbroken, where the strip had it,
 and one outside them the rectangle around the anchor's pieces (CSS Anchor

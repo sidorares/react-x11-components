@@ -11521,6 +11521,31 @@ function brokenInlineRect(
   return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
 }
 
+/** Whether a forced break comes right before an inline box: a `<br>`, or
+ *  a newline its text keeps, in what is before it in its block. Such a box
+ *  starts on the line after the break, and has no fragment on the line
+ *  before. */
+function brokenBefore(inline: Box): boolean {
+  for (let at: Box = inline; at.parent; at = at.parent) {
+    const siblings = at.parent.children;
+    const i = siblings.indexOf(at);
+    for (let j = i - 1; j >= 0; j -= 1) {
+      const before = siblings[j];
+      if (before.outOfFlow) continue;
+      if (before.kind === 'break') return true;
+      if (before.kind !== 'text') return false;
+      const text = before.text ?? '';
+      if (!text) continue;
+      return before.style.whiteSpace !== 'normal' &&
+        before.style.whiteSpace !== 'nowrap'
+        ? text.endsWith('\n')
+        : false;
+    }
+    if (at.parent.kind !== 'inline') return false;
+  }
+  return false;
+}
+
 /** Whether what an inline box holds starts with a box out of the flow,
  *  white space aside. */
 function startsOutOfFlow(inline: Box): boolean {
@@ -11567,7 +11592,14 @@ function inlineContainingBlock(
   // no less its first: the caret where it starts, at most the line's end,
   // as Blink keeps one (CSS 2.1 10.1, item 4; WPT's css-break/out-of-flow-
   // in-multicolumn-057, and -050, whose box starts with text, has none)
-  if (first && block?.lines && startsOutOfFlow(inline)) {
+  // — not where a forced break ends the line before, which a `<br>` or a
+  // kept newline does (WPT's line-clamp-with-abspos-016's reference)
+  if (
+    first &&
+    block?.lines &&
+    startsOutOfFlow(inline) &&
+    !brokenBefore(inline)
+  ) {
     const start = inline.subtreeTextStart;
     const at = block.lines.findIndex(
       (l) => l.textStart <= start && start <= l.textEnd,
