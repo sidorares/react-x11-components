@@ -88,6 +88,8 @@ const INVALID: [string, string][] = [
   ['color', 'color-layers(plus-lighter, red, blue)'],
   ['color', 'rgb(clamp(10, none, 20) 0 0)'],
   ['color', 'rgb(sign(0% - 0px), 0, 0)'],
+  ['color', 'alpha(from red / calc(r * 0.5))'],
+  ['color', 'color-layers(calc(12px + 100%), red, blue)'],
 ];
 
 const VALID: [string, string][] = [
@@ -103,6 +105,13 @@ const VALID: [string, string][] = [
   ['color', 'alpha(from red / 50%)'],
   ['color', 'alpha(from currentcolor / calc(alpha * 0.5))'],
   ['color', 'color-layers(multiply, red, blue)'],
+  ['color', 'rgb(calc(0 / 0), 0, 0)'],
+  [
+    'color',
+    'color(srgb calc(50% * 3) calc(-150% / 3) calc(50%) / calc(-50% * 3))',
+  ],
+  ['color', '/**/transparent'],
+  ['color', 'rgb(0\t,  51 ,255)'],
   ['caret-color', 'auto'],
   ['background-image', 'url("a.png"), linear-gradient(red, blue)'],
   ['box-shadow', 'inset 1px 2px 3px 4px red, 0 0 1px'],

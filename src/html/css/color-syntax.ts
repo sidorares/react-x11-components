@@ -153,7 +153,12 @@ function channel(token: string, hue: boolean, keywords: string[]): Verdict {
   const words = keywords.length
     ? new RegExp(`(?<![\\w.-])(?:${keywords.join('|')})(?![\\w(-])`, 'gi')
     : null;
-  const kind = mathKind(words ? token.replace(words, '1') : token);
+  const read = words ? token.replace(words, '1') : token;
+  // a name no channel has, and no constant of a calculation
+  for (const m of read.matchAll(/(?<![\w.-])([a-z][a-z-]*)(?![\w(-])/gi)) {
+    if (!/^(?:e|pi|infinity|nan)$/i.test(m[1])) return false;
+  }
+  const kind = mathKind(read);
   if (kind === undefined) return undefined;
   return kind === 'number' || kind === 'percent' || (hue && kind === 'angle');
 }
@@ -161,7 +166,9 @@ function channel(token: string, hue: boolean, keywords: string[]): Verdict {
 /** A calculation in an absolute colour's channel: one whose types go
  *  together as a channel's, and none with `none` in it. */
 function absoluteChannels(body: string): Verdict {
-  const tokens = split(body.replace(/[,/]/g, ' '), ' ');
+  const tokens = split(body, ',')
+    .flatMap((part) => split(part, '/'))
+    .flatMap((part) => split(part, ' '));
   return all(
     tokens
       .filter((token) => MATH.test(token))
@@ -276,8 +283,10 @@ function layers(body: string): Verdict {
 function color(text: string): Verdict {
   const t = text.trim();
   if (!t) return false;
+  // an escape is the cascade's to read
+  if (t.includes('\\')) return undefined;
   // a named colour's letters are ASCII's, which no other letter folds to
-  if (!/^[\x20-\x7e]*$/.test(t)) return false;
+  if (!/^[\t\n\f\r\x20-\x7e]*$/.test(t)) return false;
   if (t[0] === '#') return colorSpecified(t) !== null;
   if (/^[a-z][a-z-]*$/i.test(t)) {
     const lower = t.toLowerCase();
@@ -288,6 +297,7 @@ function color(text: string): Verdict {
       rgbaOf(lower) !== null
     );
   }
+  if (MATH.test(t)) return false;
   const fn = functionOf(t);
   if (!fn) return false;
   const { name, body } = fn;
@@ -323,7 +333,7 @@ function color(text: string): Verdict {
 /** Whether a colour property's value is a colour; undefined where this
  *  cannot say. */
 export function colorValid(value: string): Verdict {
-  return color(value);
+  return color(value.replace(/\/\*[\s\S]*?\*\//g, ' '));
 }
 
 /** A `color-layers()` value as all three write it back: its blend mode in
