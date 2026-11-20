@@ -25,7 +25,7 @@
 //   such as `onload` on an element — is recorded as `script` and not
 //   rendered: the component never executes one, by design.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { dirname, extname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import React from 'react';
 import { createRoot, loadFont, ThemeProvider } from 'react-x11';
 import { WindowNode } from 'react-x11/node';
@@ -33,7 +33,11 @@ import { act, renderX11 } from 'react-x11/test';
 import type { RenderX11Result } from 'react-x11/test';
 
 import { Html } from '../../src/html/index.js';
-import type { ResourceRequest, ResourceResult } from '../../src/html/index.js';
+import type {
+  EmbeddedRect,
+  ResourceRequest,
+  ResourceResult,
+} from '../../src/html/index.js';
 
 const h = React.createElement;
 
@@ -205,6 +209,24 @@ function resourcesFor(docPath: string) {
     if (data instanceof Uint8Array) bytes = data;
     else {
       const file = fileFor(request.url, docPath);
+      // a page where an image was asked for is a document, which an
+      // `<object>` or an `<embed>` shows as a frame and not as its fallback,
+      // as `HtmlNetwork` answers one (`renderEmbedded` draws it)
+      if (
+        file &&
+        request.kind === 'image' &&
+        (/\.(?:html?|xht|xhtml|xml)$/i.test(file) ||
+          existsSync(`${file}.headers`))
+      ) {
+        const type = servedType(file);
+        if (
+          type === 'text/html' ||
+          type === 'application/xhtml+xml' ||
+          (type.endsWith('xml') && type !== 'image/svg+xml')
+        ) {
+          return { kind: 'document' };
+        }
+      }
       if (file) bytes = readFileSync(file);
     }
     if (!bytes) return null;
@@ -322,6 +344,61 @@ let serial = 0;
  *  test — a pass of nothing, or a fail of a reference with no image. */
 let loaded = false;
 
+/** A file a frame shows as an image document. */
+const IMAGE_FILE = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
+
+/** How deep frames in frames are drawn: past it, an empty box. */
+const FRAME_DEPTH = 4;
+
+/**
+ * What the runner shows in a document's `<iframe>`, `<object>` and
+ * `<embed>`: another `<Html>` with the file it names, resolved against the
+ * document that names it, or its `srcdoc`, as WPT's server would serve
+ * them. `<Html>` loads and draws nothing for one itself (`renderEmbedded`),
+ * so the 55 or so reftests that put a document in a frame drew an empty box
+ * on one side. A `<canvas>` and a frame of no file stay empty, as before.
+ */
+function embeddedFor(path: string, depth: number) {
+  return (rect: EmbeddedRect): React.ReactNode => {
+    if (rect.kind === 'canvas' || depth >= FRAME_DEPTH) return null;
+    const attribs = rect.element.attribs;
+    const srcdoc = rect.kind === 'iframe' ? attribs.srcdoc : undefined;
+    const src = rect.kind === 'object' ? attribs.data : attribs.src;
+    const file = srcdoc === undefined && src ? fileFor(src, path) : null;
+    if (srcdoc === undefined && !file) return null;
+    // a frame of an image is an image document, as a browser makes one:
+    // the image alone, at its size, its EXIF orientation applied (WPT's
+    // image-orientation-none-image-document)
+    const image = file !== null && IMAGE_FILE.test(file);
+    const page = image
+      ? {
+          text:
+            '<!DOCTYPE html><body style="margin:0">' +
+            `<img src="${encodeURI(basename(file))}" style="display:block"></body>`,
+          charset: 'utf-8',
+        }
+      : file
+        ? pageOf(file)
+        : { text: srcdoc!, charset: 'utf-8' };
+    // a frame's document is resolved against its own file, or, as srcdoc,
+    // against the document around it
+    const base = file ?? path;
+    return h(Html, {
+      source: page.text,
+      contentType: file && !image ? servedType(file) : 'text/html',
+      charset: page.charset,
+      partial: false,
+      selectable: false,
+      fontSize: 16,
+      fontFamily: 'serif',
+      monoFamily: 'monospace',
+      onResource: resourcesFor(base),
+      renderEmbedded: embeddedFor(base, depth + 1),
+      style: { flexGrow: 1 },
+    });
+  };
+}
+
 function tree(path: string): React.ReactElement {
   const page = pageOf(path);
   loaded = false;
@@ -350,6 +427,7 @@ function tree(path: string): React.ReactElement {
         fontFamily: 'serif',
         monoFamily: 'monospace',
         onResource: resourcesFor(path),
+        renderEmbedded: embeddedFor(path, 0),
         onLoaded: () => {
           loaded = true;
         },
