@@ -8590,8 +8590,9 @@ run up the page in `sideways-lr`, whose lines start on a whole pixel down
 the page however long their text comes to, so that they are across it
 where a line in any other vertical mode would be. Its lines are as long as
 its containing block is tall where that is definite, else as its
-containing block's definite `max-height` lets them be, else as the viewport
-is tall (7.3.1), and no longer than their content. An absolute box at its static position in
+containing block's definite `max-height` lets them be, raised to its
+`min-height` where that is more and held to the viewport's height, else as
+the viewport is tall (7.3.1), and no longer than their content. An absolute box at its static position in
 `vertical-lr` starts at the left, where the flow it would have been in
 starts: laid out after the flow, which is laid out as `vertical-rl`'s and
 put back across, it is put back by its own size once it has one, and what

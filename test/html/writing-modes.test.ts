@@ -1334,3 +1334,24 @@ test('an orthogonal flow in a block of no height but a max-height is as long as 
   assert.ok(v.height <= 100, `${v.height} no taller than the max-height`);
   assert.ok(v.height > 50, `${v.height} as tall as it lets it be`);
 });
+
+test("an orthogonal flow's line is no longer than the viewport, and its containing block's min-height raises its max-height", async () => {
+  // 7.3.1, step 2: the greater of a definite `max-height` and the
+  // `min-height` that wins over it, held to the initial containing
+  // block's size (WPT's css-writing-modes/available-size-015: a
+  // `max-height: 40vh` under `min-height: 120vh` is the viewport)
+  const { node } = await render(
+    '<style>body{margin:0}#p{max-height:20px;min-height:100000px;' +
+      'overflow:hidden}#v{writing-mode:vertical-rl}</style>' +
+      '<div id="p"><div id="v">' +
+      'aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm ' +
+      'nnnn oooo pppp qqqq rrrr ssss tttt uuuu vvvv wwww xxxx yyyy zzzz ' +
+      'aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm ' +
+      'nnnn oooo pppp qqqq rrrr ssss tttt uuuu vvvv wwww xxxx yyyy zzzz' +
+      '</div></div>',
+  );
+  const v = boxOf(view(node), 'v');
+  // the harness's window is 600 tall
+  assert.ok(v.height <= 600, `${v.height} no taller than the viewport`);
+  assert.ok(v.height > 100, `${v.height} past the max-height`);
+});
