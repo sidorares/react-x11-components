@@ -2478,3 +2478,43 @@ test('a percentage of letter- and word-spacing is of each element’s own font s
   assert.strictEqual(style('b')['letter-spacing'], '10%');
   assert.strictEqual(style('b')['word-spacing'], 'calc(50% + 2px)');
 });
+
+metric(
+  'text-decoration-skip-spaces leaves the spaces at a line’s ends, or all of them, out of its underline',
+  async () => {
+    // CSS Text Decoration 4, 2.4: `start end` is the initial value, so kept
+    // spaces at a line's ends draw no underline; `all` leaves out every one;
+    // `none` underlines all of them (WPT's
+    // css-text-decor/text-decoration-skip-spaces-002 and -007)
+    const { node } = await render(
+      '<style>body{margin:0;font:20px serif}div{white-space:pre;' +
+        'text-decoration:underline}#a{color:#ff0000}#b{color:#0000ff;' +
+        'text-decoration-skip-spaces:all}#c{color:#00ff00;' +
+        'text-decoration-skip-spaces:none}</style>' +
+        '<div id="a">    AB    </div><div id="b">A B</div>' +
+        '<div id="c">    AB    </div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const fills = await fillsOf(el);
+    const rules = (color: string) =>
+      fills
+        .filter((f) => f.style === parseColor(color) && f.h <= 2)
+        .map((f) => [f.x, f.x + f.w]);
+    const span = (color: string): number => {
+      const r = rules(color);
+      assert.ok(r.length > 0, `an underline in ${color}`);
+      return Math.max(...r.map((x) => x[1])) - Math.min(...r.map((x) => x[0]));
+    };
+    // the first is as wide as AB, the third as wide as the whole line
+    assert.ok(
+      span('#ff0000') < span('#00ff00') / 2,
+      `${span('#ff0000')} under AB alone, of ${span('#00ff00')}`,
+    );
+    // and the second has a gap where its space is
+    const b = rules('#0000ff').sort((p, q) => p[0] - q[0]);
+    const gap = b.some((r, i) => i > 0 && r[0] - b[i - 1][1] > 2);
+    assert.ok(gap, `a gap under the space: ${JSON.stringify(b)}`);
+  },
+);

@@ -474,6 +474,16 @@ export function faceLineHeight(m: FaceMetrics): number {
  */
 const LAYOUT_RUNS = new WeakMap<TextLayoutLike, TextRun[] | number[]>();
 
+/** The text a layout was set from, in its own code units, where it was
+ *  set from runs this module kept; null for one it was not. */
+export function layoutTextOf(layout: TextLayoutLike): string | null {
+  const held = LAYOUT_RUNS.get(layout);
+  if (!held || (held.length > 0 && typeof held[0] === 'number')) return null;
+  let text = '';
+  for (const run of held as TextRun[]) text += run.text;
+  return text;
+}
+
 const WIDEST_WORD = new WeakMap<TextLayoutLike, number>();
 
 /**

@@ -8294,7 +8294,13 @@ overlines). A dotted rule over three pixels thick is round dots spread from
 one end of it to the other, and squares under that; a dashed one's dashes
 are three times its thickness long and two apart, twice and one from three
 pixels thick, the first at its start and the last at its end; and the two
-lines of a double one are a pixel apart. `text-decoration-inset` (CSS Text
+lines of a double one are a pixel apart. `text-decoration-skip-spaces`
+(CSS Text Decoration 4, 2.4) leaves spaces out of an underline and a line
+through: by its initial `start end`, the spaces at a line's start and end,
+one run of them whichever elements they are in; under `all`, every one;
+under `none`, none. A space is any of Unicode's, and a plain space, tab or
+line feed at the very edge of a line whose white space collapses is the line
+breaker's, which hangs it and draws no rule there already. `text-decoration-inset` (CSS Text
 Decoration 4, 2.6) moves an underline's and a line through's ends in from
 the start and the end of the element that set them, or out where it is
 negative: at the line holding its first character and the line holding

@@ -93,6 +93,7 @@ import {
   WILL_STACK_Z,
 } from './css/style.js';
 import { LARGEST } from './css/calc.js';
+import { passiveValue } from './css/passive-properties.js';
 import { cornerInset, cornerReach } from './css/corner-shape.js';
 import { pathPolygons, shapePolygons, strokeBands } from './css/basic-shape.js';
 import type { FillRule } from './css/basic-shape.js';
@@ -195,6 +196,7 @@ import {
   inklessLayout,
   layoutOffsetOf,
   layoutOffsets,
+  layoutTextOf,
   ruleRun,
   EMPHASIS_MARKS,
 } from './layout/inline.js';
@@ -16035,8 +16037,26 @@ function paintRules(
         whole && ranges
           ? ruleInsets(text, paragraph, lines, whole, ranges, scale)
           : undefined;
-      for (const laid of [natural, trailOf(text, natural)]) {
-        if (!laid) continue;
+      const spaces = paragraph.style.passiveInherited
+        ? passiveValue(
+            paragraph.style.passiveInherited,
+            'text-decoration-skip-spaces',
+          )
+        : 'start end';
+      for (const whole of [natural, trailOf(text, natural)]) {
+        if (!whole) continue;
+        const laid =
+          whole === natural
+            ? skippingSpaces(
+                text,
+                natural,
+                spaces,
+                lineEnds(line, text),
+                paragraph.style.whiteSpace !== 'normal' &&
+                  paragraph.style.whiteSpace !== 'nowrap' &&
+                  paragraph.style.whiteSpace !== 'pre-line',
+              )
+            : whole;
         paintRunRules(
           ctx,
           laid,
@@ -16049,6 +16069,125 @@ function paintRules(
       }
     }
   }
+}
+
+/** Whether a text is at its line's start, and at its end, by where in the
+ *  document each text is: no text but spaces before it on the line, and
+ *  none after it, since the spaces at a line's ends are one run whichever
+ *  elements they are in. */
+function lineEnds(line: LineBox, text: LineText): readonly [boolean, boolean] {
+  let first = true;
+  let last = true;
+  for (const other of line.texts) {
+    if (other === text) continue;
+    if (other.textStart < text.textStart && !allSpaces(other)) first = false;
+    if (other.textEnd > text.textEnd && !allSpaces(other)) last = false;
+  }
+  return [first, last];
+}
+
+/** Whether all a text's fragment holds is white space. */
+function allSpaces(text: LineText): boolean {
+  const natural = text.layout.lines[text.layoutLine];
+  const all = layoutTextOf(text.layout);
+  if (!natural || all === null) return false;
+  const chars = all.slice(natural.start, natural.end);
+  for (const ch of chars) if (!SKIPPED_SPACE.test(ch)) return false;
+  return true;
+}
+
+/** White space a document's white-space rules collapse. */
+const COLLAPSIBLE = /[ \t\n\r]/;
+
+/** A white space character, of any of Unicode's kinds. */
+const SKIPPED_SPACE = /\s/u;
+
+/**
+ * A line's runs as `text-decoration-skip-spaces` leaves them to be ruled
+ * (CSS Text Decoration 4, 2.4): cut to the stretches between the spaces it
+ * skips — those at the line's start and its end for `start` and `end`,
+ * every one for `all` — so the rules are drawn under what is between them
+ * alone. The line as it was where it skips none, or none is there.
+ */
+function skippingSpaces(
+  text: LineText,
+  line: LineText['layout']['lines'][number],
+  skip: string,
+  /** Whether this text starts its line and whether it ends it: a line of
+   *  several texts skips the spaces at its own ends, and none between. */
+  ends: readonly [boolean, boolean],
+  /** Whether the text keeps its spaces (`white-space: pre` and its
+   *  kin). */
+  keepsSpaces: boolean,
+): LineText['layout']['lines'][number] {
+  if (skip === 'none') return line;
+  if (skip !== 'all' && !ends[0] && !ends[1]) return line;
+  const all = layoutTextOf(text.layout);
+  if (all === null) return line;
+  // a space, a tab or a line feed white space collapses is the line
+  // breaker's: at a line's ends it hangs, and draws no rule there already
+  const kept = keepsSpaces;
+  const skips = (ch: string, at: number, length: number): boolean =>
+    SKIPPED_SPACE.test(ch) &&
+    (kept || !COLLAPSIBLE.test(ch) || (at > 0 && at < length - 1));
+  const from = line.start;
+  const to = line.end;
+  const chars = all.slice(from, to);
+  if (![...chars].some((ch, k) => skips(ch, k, chars.length))) return line;
+  const start = skip === 'all' || (ends[0] && skip.includes('start'));
+  const end = skip === 'all' || (ends[1] && skip.includes('end'));
+  // the spaces skipped, in code units of the layout's text
+  const skipped: number[] = [];
+  if (skip === 'all') {
+    for (let k = 0; k < chars.length; k += 1) {
+      if (skips(chars[k], k, chars.length)) skipped.push(from + k);
+    }
+  } else {
+    // past every space at the ends, skipping those it may
+    let a = 0;
+    let b = chars.length;
+    if (start) {
+      for (; a < b && SKIPPED_SPACE.test(chars[a]); a += 1) {
+        if (skips(chars[a], a, chars.length)) skipped.push(from + a);
+      }
+    }
+    if (end) {
+      for (; b > a && SKIPPED_SPACE.test(chars[b - 1]); b -= 1) {
+        if (skips(chars[b - 1], b - 1, chars.length)) {
+          skipped.push(from + b - 1);
+        }
+      }
+    }
+  }
+  if (!skipped.length) return line;
+  // where each is across the line, from the layout's origin: between the
+  // caret's place before it and after it, which the engine asks in code
+  // points — one space at a time, since in text of both directions the
+  // ends of a stretch of them are no ends of the line's
+  const point = (unit: number): number => Array.from(all.slice(0, unit)).length;
+  const holes = skipped.map((unit) => {
+    // a caret's place is the layout's, and a run's the line's
+    const x1 = text.layout.caretPosition(point(unit)).x - line.x;
+    const x2 = text.layout.caretPosition(point(unit + 1)).x - line.x;
+    return [Math.min(x1, x2), Math.max(x1, x2)] as const;
+  });
+  let runs: (typeof line.runs)[number][] = line.runs.slice();
+  for (const [x1, x2] of holes) {
+    if (!(x2 > x1)) continue;
+    const next: typeof runs = [];
+    for (const run of runs) {
+      const a = run.x;
+      const b = run.x + run.width;
+      if (x2 <= a || x1 >= b) {
+        next.push(run);
+        continue;
+      }
+      if (x1 > a) next.push({ ...run, width: x1 - a });
+      if (x2 < b) next.push({ ...run, x: x2, width: b - x2 });
+    }
+    runs = next;
+  }
+  return { ...line, runs };
 }
 
 /**
