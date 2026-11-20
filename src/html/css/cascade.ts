@@ -8523,6 +8523,22 @@ export class Cascade {
     this._matchInto(index, el, candidates);
     if (!candidates.some(setsContent)) return null;
     candidates.sort(byCascade);
+    // a button, with a button's look: the palette's, where the page leaves
+    // its look alone, and the web's where it styles it, as for a `<button>`
+    // (`dropPaletteChrome`; WPT's scroll-buttons-appearance)
+    if (stylesControl(el, candidates)) {
+      let kept = 0;
+      for (const c of candidates) {
+        if (
+          c.origin === Origin.UserAgent &&
+          PALETTE_CHROME.has(c.declarations)
+        ) {
+          continue;
+        }
+        candidates[kept++] = c;
+      }
+      candidates.length = kept;
+    }
     const style = this._computeStyle(
       el,
       elementStyle,

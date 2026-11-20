@@ -6137,7 +6137,11 @@ formatting context of its own, a `flow-root` say, breaks as any block does;
 only one that scrolls or clips, a multicol container, a clamp and an
 orthogonal flow go to a column whole, as does a box whose only content is a
 float that cannot be cut. A forced break before the first child of a box
-with layout containment is none, since it would be the box's own. A box
+with layout containment is none, since it would be the box's own. A break
+`break-before` or `break-after` avoids (`avoid`, `avoid-column`), on a box
+or on what is about it, a flex item's included, goes to the last break
+before it in the column that is not avoided and has something with a height
+before it, and falls where it would where there is none. A box
 taller than its content, by a height of its own or one a column flex box
 gave it, that a break falls inside uses up the rest of that column, as
 Blink counts it: its height is not pushed on by what the break left at the
@@ -8291,14 +8295,15 @@ start tag is dropped, as HTML's parser drops it) and CSS Text 4's halves
 of it, `white-space-collapse` and `text-wrap-mode`, `text-wrap` (Tailwind
 4's `text-nowrap`, and `text-balance`: a heading of up to six lines broken
 at the narrowest width that keeps as many of them, and set in its whole
-width, as Chrome does it; and `text-pretty`, a paragraph's last word kept
+width, as Chrome does it, under a clamp the lines the clamp keeps, with
+room for its ellipsis on the last; and `text-pretty`, a paragraph's last word kept
 off a line of its own where Chrome keeps it off — see
 [the decisions](#the-decisions)), `line-clamp`
 (CSS Overflow 4: a line-clamp container shows the first lines of its
 formatting context, counted through the blocks in it, and is as tall as
 they are; what comes after them is invisible and takes no room, and the
 last line ends in an ellipsis where more follows, placed after the words
-that fit beside it. Tailwind's `line-clamp-2` writes it as
+that fit beside it, or alone on the line it displaced where none do. Tailwind's `line-clamp-2` writes it as
 `-webkit-line-clamp` on a vertical `-webkit-box`, the one place that form
 clamps, as in a browser, and that form's ellipsis cuts inside a word where
 the line has no room for it, as `text-overflow`'s does — as Chrome, Firefox
@@ -9869,8 +9874,11 @@ to right has them, siblings after the element and its `::after` and before
 a group placed after it, in the order block-start, inline-start,
 inline-end, block-end, and items blockified where what holds them is a flex
 box or a grid, each holding what its `content` says, text, counters and
-images, as a `::before` does. Blink makes them whether or not the element
-scrolls, and so does this. A button is `:enabled` where its element is a scroll container
+images, as a `::before` does, and each with a button's look: the user
+agent's rules for a `<button>` are a `::scroll-button()`'s too, the
+palette's chrome where the page leaves its look alone, and the web's
+outset frame where it styles it (`stylesControl`), as for a `<button>`.
+Blink makes them whether or not the element scrolls, and so does this. A button is `:enabled` where its element is a scroll container
 that can scroll its way from where it is, by its writing mode and direction,
 and `:disabled` otherwise: the view works that out after each layout and
 each scroll, and tells a change as one of `-rx-scroll-buttons`, an attribute

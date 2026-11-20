@@ -1595,6 +1595,45 @@ test('a box of a height of its own that a break falls inside uses up the rest of
   }
 });
 
+test('a break avoided before a box goes before the box before it, where something stands before that in its column', async () => {
+  // single-line-column-flex-fragmentation-016 and -017, and the same in
+  // blocks: the break before the tall third box is avoided, so the second
+  // goes on to the next column with it
+  for (const [second, third] of [
+    ['', 'break-before:avoid'],
+    ['break-after:avoid', ''],
+  ]) {
+    for (const flex of ['display:flex;flex-direction:column', '']) {
+      const { node } = await render(
+        COLS +
+          `<div class="m" id="m"><div style="${flex};width:25px">` +
+          '<div id="a" style="height:50px"></div>' +
+          `<div id="b" style="height:50px;${second}"></div>` +
+          `<div id="c" style="height:300px;${third}"></div></div></div>`,
+        200,
+      );
+      const el = view(node);
+      const label = `${flex || 'block'} ${second || third}`;
+      assert.deepStrictEqual(at(el, 'a', 'm'), [0, 0, 25, 50], label);
+      assert.deepStrictEqual(at(el, 'b', 'm'), [25, 0, 25, 50], label);
+      assert.deepStrictEqual(
+        piecesAt(el, 'c', 'm')[0],
+        [25, 50, 25, 50],
+        label,
+      );
+    }
+  }
+  // where nothing with a height comes before it in the column, the break
+  // falls before it after all
+  const { node } = await render(
+    COLS +
+      '<div class="m" id="m"><div id="a" style="height:100px"></div>' +
+      '<div id="c" style="height:300px;break-before:avoid"></div></div>',
+    200,
+  );
+  assert.deepStrictEqual(piecesAt(view(node), 'c', 'm')[0], [25, 0, 25, 100]);
+});
+
 test('a forced break inside a box size containment makes monolithic is none', async () => {
   // monolithic-content-with-forced-break-001
   const { node } = await render(

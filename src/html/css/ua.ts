@@ -289,7 +289,7 @@ col { display: table-column; }
    none round a field, a select, a button or a text area, each on its line's
    baseline — a field's text on the text beside it (\`CONTROL_BASELINES\`) —
    and a meter or a progress bar a fifth of an em under it. */
-input, button, select, textarea, meter, progress {
+input, button, select, textarea, meter, progress, ::scroll-button(*) {
   display: inline-block;
   vertical-align: baseline;
   margin: 0;
@@ -306,7 +306,7 @@ progress { width: 10em; }
    it draws. A <textarea> is then \`monospace\` in Chrome, the sheet's code
    face here; a <meter> and a <progress> keep their parent's font, as they
    do in Chrome. */
-input, button, select, textarea {
+input, button, select, textarea, ::scroll-button(*) {
   font-family: ${look.controlFontFamily ?? look.fontFamily};
   font-size: ${look.controlFontSize ?? look.fontSize}px;
 }
@@ -315,12 +315,12 @@ textarea { font-family: ${mono}; }
    spacing, the line height, the case or the indent of the text around it.
    A button in a paragraph of 'line-height: 1.5' is its own font's line
    tall, as it is in a browser. */
-input, button, textarea {
+input, button, textarea, ::scroll-button(*) {
   letter-spacing: initial;
   word-spacing: initial;
   line-height: initial;
 }
-input, select, button, textarea {
+input, select, button, textarea, ::scroll-button(*) {
   text-transform: initial;
   text-indent: initial;
   text-shadow: initial;
@@ -417,7 +417,8 @@ select:focus option:checked { background-color: SelectedItem; color: SelectedIte
    is the palette's control instead, below the rest of this sheet. An input
    button the page styles is drawn as one, its label in its box; one left
    alone is the palette's button widget. */
-button, input[type=button], input[type=submit], input[type=reset] {
+button, input[type=button], input[type=submit], input[type=reset],
+::scroll-button(*) {
   vertical-align: baseline;
   box-sizing: border-box;
   padding: 1px 6px;
@@ -429,7 +430,7 @@ button, input[type=button], input[type=submit], input[type=reset] {
 /* an input button's label is one line, which it does not wrap */
 input[type=button], input[type=submit], input[type=reset] { white-space: pre; }
 button[disabled], input[type=button][disabled], input[type=submit][disabled],
-input[type=reset][disabled] { color: GrayText; }
+input[type=reset][disabled], ::scroll-button(*):disabled { color: GrayText; }
 fieldset {
   margin-inline: 2px;
   padding-block: 0.35em 0.6em;
@@ -442,7 +443,8 @@ legend { display: block; padding-inline: 2px; }
    clicked or dragged as a whole, an I-beam over what takes text, and an
    arrow again over a text field that is disabled. \`cursor\` inherits, so
    these keep a control from taking the page's. */
-label, select, option, optgroup, button, input, ::file-selector-button { cursor: default; }
+label, select, option, optgroup, button, input, ::file-selector-button,
+::scroll-button(*) { cursor: default; }
 textarea, input:not([type=hidden i], [type=checkbox i], [type=radio i], [type=button i], [type=submit i], [type=reset i], [type=color i], [type=file i], [type=image i], [type=range i], [type=date i], [type=datetime-local i], [type=month i], [type=time i], [type=week i]) { cursor: text; }
 textarea:disabled, input:disabled { cursor: default; }
 input[type=image i]:enabled, area[href] { cursor: pointer; }
@@ -608,7 +610,7 @@ embed[hidden] { display: inline; height: 0; width: 0; }
  */
 function chromeText(look: RootLook): string {
   return `
-button {
+button, ::scroll-button(*) {
   padding: ${look.controlPadY}px 0.75em;
   border: ${look.controlBorder}px solid ButtonBorder;
   border-radius: ${look.controlRadius}px;
