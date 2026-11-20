@@ -1857,8 +1857,9 @@ test('a ::scroll-marker-group no rule styles is made, a block, and holds its pos
       'top:0;left:0;width:10px;height:10px}</style>' +
       '<div id="s"><div></div></div>',
   );
-  const scroller = boxOf(view(node), 's');
-  const siblings = scroller.parent!.children;
+  type Laid = LaidBox & { parent: Laid | null; kind?: string };
+  const scroller = boxOf(view(node), 's') as Laid;
+  const siblings = scroller.parent!.children as Laid[];
   const group = siblings[siblings.indexOf(scroller) + 1];
   assert.strictEqual(group?.pseudo, 'scroll-marker-group', 'after it');
   assert.strictEqual(group.kind, 'block', 'blockified');
