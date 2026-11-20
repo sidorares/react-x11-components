@@ -6147,7 +6147,7 @@ edge at the break. Under `box-decoration-break: clone` each piece is a box of
 its own, with its borders, padding, shadows and outline all round it, and
 the edges take room: the column before a break keeps the end edges of every
 cloned box the break falls inside at its foot, and the one after starts
-below their start edges, as Blink sets them. A box with nothing in it whose
+below their start edges, as Blink sets them. A float a break cuts steers clear of the edges cloned of the boxes it is in: it stops above their end edges at a column's foot and goes on below their start edges at the next column's head. A box with nothing in it whose
 height is its border box's shares its cloned edges out of that height,
 adding none. What is out of the flow is cut as before, taking no room for
 cloned edges. `elementRect` answers the rectangle that takes in all of

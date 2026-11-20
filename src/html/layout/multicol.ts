@@ -1690,8 +1690,27 @@ function cutFloat(float: Box, to: Placing): void {
     width: float.width,
     height: float.height,
   };
-  if (at + was.height <= height + EPS || !(height >= 1)) {
-    moveTo(float, was.x + to.dx(c), tops[0] + at);
+  /** The edges a break clones of the boxes the float is in: it steers
+   *  clear of them, at the head of the column after the break and at the
+   *  foot of the one before (WPT's
+   *  css-break/box-decoration-break-clone-006). */
+  const cloned = (k: number, side: 'start' | 'end'): number => {
+    let total = 0;
+    for (const open of to.breaks?.[k]?.open ?? []) {
+      if (within(float, open.box)) total += open[side];
+    }
+    return total;
+  };
+  /** And of all the boxes a break clones, which move the column's content
+   *  down from its top. */
+  const lifted = (k: number): number => {
+    let total = 0;
+    for (const open of to.breaks?.[k]?.open ?? []) total += open.start;
+    return total;
+  };
+  const room = (k: number): number => height - cloned(k + 1, 'end');
+  if (at + lifted(c) + was.height <= room(c) + EPS || !(height >= 1)) {
+    moveTo(float, was.x + to.dx(c), tops[0] + at + lifted(c));
     return;
   }
   const pieces: ColumnPiece[] = [];
@@ -1701,8 +1720,14 @@ function cutFloat(float: Box, to: Placing): void {
   let y2 = -Infinity;
   const head = tops[0];
   for (let k = c; taken < was.height - EPS; k += 1) {
-    const from = k === c ? at : 0;
-    const part = Math.min(was.height - taken, height - from);
+    // where the column's room for it starts, from the column's top: where
+    // the strip has it, moved down with the column's content, and in a
+    // column after, below the start edges cloned of the boxes it is in
+    const from = k === c ? at + lifted(c) : cloned(k, 'start');
+    const part = Math.max(
+      0,
+      Math.min(was.height - taken, Math.max(from, room(k)) - from),
+    );
     const x = was.x + to.dx(k);
     pieces.push({
       x,
@@ -1721,7 +1746,7 @@ function cutFloat(float: Box, to: Placing): void {
   COLUMN_PIECES.set(float, pieces);
   columned.any = true;
   float.x = x1;
-  float.y = Math.min(head + at, head);
+  float.y = Math.min(head + at + lifted(c), head);
   float.width = x2 - x1;
   float.height = y2 - float.y;
 }
