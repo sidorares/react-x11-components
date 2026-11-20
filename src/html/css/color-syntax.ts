@@ -68,9 +68,10 @@ function functionOf(text: string): { name: string; body: string } | null {
   };
 }
 
-const NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
-const PERCENT = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%$/i;
-const ANGLE = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:deg|grad|rad|turn)$/i;
+const NUMBER = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?$/i;
+const PERCENT = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?%$/i;
+const ANGLE =
+  /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?(?:deg|grad|rad|turn)$/i;
 /** A math function's name, which a channel may be. */
 const MATH =
   /^(?:calc|min|max|clamp|round|mod|rem|sin|cos|tan|asin|acos|atan2|atan|pow|sqrt|hypot|log|exp|abs|sign|progress)\(/i;
