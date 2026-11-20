@@ -843,6 +843,8 @@ type PseudoElement =
   | 'slider-track'
   | 'file-selector-button'
   | 'backdrop'
+  | 'scroll-marker'
+  | 'scroll-marker-group'
   | 'details-content'
   | 'column';
 
@@ -870,7 +872,7 @@ interface KeptPart {
  *  `::-webkit-slider-runnable-track` are a range's, which only Chrome's and
  *  Safari's names reach, and every page that draws one writes. */
 const PSEUDO_ELEMENT =
-  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|file-selector-button|backdrop|details-content|column|target-text|spelling-error|grammar-error|-webkit-input-placeholder|-webkit-file-upload-button|-webkit-scrollbar|-webkit-slider-thumb|-webkit-slider-runnable-track)$|::highlight\(\s*((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f]|[^\s()\\])+)\s*\)$/i;
+  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|file-selector-button|backdrop|scroll-marker|scroll-marker-group|details-content|column|target-text|spelling-error|grammar-error|-webkit-input-placeholder|-webkit-file-upload-button|-webkit-scrollbar|-webkit-slider-thumb|-webkit-slider-runnable-track)$|::highlight\(\s*((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f]|[^\s()\\])+)\s*\)$/i;
 
 /** The pseudo-elements WebKit named, under what their rules are kept by. */
 const VENDOR_PSEUDO_ELEMENTS: Readonly<Record<string, PseudoElement>> = {
@@ -4427,6 +4429,8 @@ export class Cascade {
     'slider-track': new RuleIndex(true),
     'file-selector-button': new RuleIndex(true),
     backdrop: new RuleIndex(true),
+    'scroll-marker': new RuleIndex(true),
+    'scroll-marker-group': new RuleIndex(true),
     'details-content': new RuleIndex(true),
     column: new RuleIndex(true),
   };
@@ -8356,6 +8360,45 @@ export class Cascade {
     if (!candidates.length) return null;
     candidates.sort(byCascade);
     return this._computeStyle(el, elementStyle, false, candidates, false, null);
+  }
+
+  /**
+   * The style of a scroll container's `::scroll-marker-group`, or of an
+   * element's `::scroll-marker` (CSS Overflow 5, 3): what the rules for it
+   * make of it, inheriting from the element, blockified as a box beside the
+   * scroller is. Null where no rule reaches it, and for a marker where none
+   * gives it a `content`, which makes no box as a `::before` makes none.
+   */
+  scrollMarkerStyleFor(
+    el: Element,
+    which: 'scroll-marker' | 'scroll-marker-group',
+    elementStyle: ComputedStyle,
+  ): ComputedStyle | null {
+    const index = this._pseudo[which];
+    const candidates: Candidate[] = [];
+    if (index.size > 0 && index.reaches(el)) {
+      this._matchInto(index, el, candidates);
+    }
+    if (this._scoped && this._scopedPseudos.has(which)) {
+      this._scopedInto(el, which, candidates);
+    }
+    if (!candidates.length) return null;
+    if (which === 'scroll-marker' && !candidates.some(setsContent)) return null;
+    candidates.sort(byCascade);
+    const style = this._computeStyle(
+      el,
+      elementStyle,
+      false,
+      candidates,
+      false,
+      null,
+    );
+    if (which === 'scroll-marker') {
+      if (style.content === 'normal' || style.content === 'none') return null;
+      return style;
+    }
+    if (style.display === 'inline') blockify(style, false);
+    return style;
   }
 
   backdropStyleFor(el: Element, elementStyle: ComputedStyle): ComputedStyle {

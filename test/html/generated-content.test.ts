@@ -1815,3 +1815,31 @@ metric(
     assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
   },
 );
+
+test("a scroll container's ::scroll-marker-group is a box beside it, holding the ::scroll-marker of each element in it", async () => {
+  // CSS Overflow 5, 3: `scroll-marker-group: before` puts the group before
+  // the scroller, and each element in it with a marker of some `content`
+  // has one in the group, in the order of the tree; one with none has none
+  // (WPT's css-overflow/scroll-markers/scroll-marker-002)
+  const { node } = await render(
+    '<style>body{margin:0}#s{width:200px;height:50px;overflow:scroll;' +
+      'scroll-marker-group:before}#s::scroll-marker-group{display:flex;' +
+      'height:10px}#s div{height:50px}#s div::scroll-marker{content:"";' +
+      'width:10px;height:10px}#s #none::scroll-marker{content:none}</style>' +
+      '<div id="s"><div id="a"></div><div id="none"></div><div id="b"></div>' +
+      '</div>',
+  );
+  const scroller = boxOf(view(node), 's');
+  const siblings = scroller.parent!.children;
+  const group = siblings[siblings.indexOf(scroller) - 1];
+  assert.strictEqual(group?.pseudo, 'scroll-marker-group', 'before it');
+  assert.deepStrictEqual(
+    group.children.map((m) => [m.pseudo, m.x - group.x, m.width, m.height]),
+    [
+      ['scroll-marker', 0, 10, 10],
+      ['scroll-marker', 10, 10, 10],
+    ],
+    'a marker each for a and b, blockified as flex items',
+  );
+  assert.strictEqual(scroller.y, group.y + group.height, 'the group above');
+});

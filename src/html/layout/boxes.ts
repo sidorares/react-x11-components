@@ -77,6 +77,8 @@ import {
   CONTAIN_STYLE,
   FIRST_LINE_INHERITED,
   NO_MASK,
+  blockify,
+  holdsItems,
   copyStyle,
   densityOf,
   firstLineParent,
@@ -499,6 +501,8 @@ export class Box {
     | 'after'
     | 'first-letter'
     | 'backdrop'
+    | 'scroll-marker'
+    | 'scroll-marker-group'
     | 'details-content'
     | 'view-transition'
     | null = null;
@@ -4786,6 +4790,7 @@ class Builder {
       this._pseudo(el, 'before', style, box);
       this._children(el, box, style, childInFlex, el, key);
       this._pseudo(el, 'after', style, box);
+      this._scrollMarkers(el, style, box, into);
       if (
         this._options.transition &&
         ((el.parent &&
@@ -4991,6 +4996,74 @@ class Builder {
         width: 0,
         height: 0,
       });
+    }
+  }
+
+  /**
+   * A scroll container's `::scroll-marker-group` (CSS Overflow 5, 3.1), where
+   * its `scroll-marker-group` says `before` or `after`: a box of its own,
+   * the scroller's sibling before or after it, holding the
+   * `::scroll-marker` of each element in the scroller that has one, in the
+   * order of the tree. Each is its element's to the pointer and to its
+   * images (`GENERATED_FROM`). A marker's `content` makes its box and no
+   * text yet, and nothing marks the marker of what is scrolled to.
+   */
+  private _scrollMarkers(
+    el: Element,
+    style: ComputedStyle,
+    box: Box,
+    into: Box,
+  ): void {
+    const side = style.passive['scroll-marker-group'];
+    if (side !== 'before' && side !== 'after') return;
+    if (style.overflowX === 'visible' && style.overflowY === 'visible') return;
+    const cascade = this._options.cascade;
+    const groupStyle = cascade.scrollMarkerStyleFor(
+      el,
+      'scroll-marker-group',
+      style,
+    );
+    if (!groupStyle || groupStyle.display === 'none') return;
+    const group = new Box(boxKindFor(groupStyle.display), null, groupStyle);
+    group.pseudo = 'scroll-marker-group';
+    GENERATED_FROM.set(group, el);
+    if (namesImages(groupStyle)) this._backgrounds.push(group);
+    const visit = (at: Element): void => {
+      for (const child of at.children) {
+        if (!('attribs' in child)) continue;
+        const own = this._styles.get(child as Element)?.style;
+        if (!own || own.display === 'none') continue;
+        const markerStyle = cascade.scrollMarkerStyleFor(
+          child as Element,
+          'scroll-marker',
+          own,
+        );
+        // an item of a flex or grid group is blockified, as a child's is
+        if (markerStyle && holdsItems(groupStyle)) {
+          blockify(markerStyle, true);
+        }
+        if (markerStyle && markerStyle.display !== 'none') {
+          const marker = new Box(
+            boxKindFor(markerStyle.display),
+            null,
+            markerStyle,
+          );
+          marker.pseudo = 'scroll-marker';
+          GENERATED_FROM.set(marker, child as Element);
+          group.append(marker);
+          placeInFlow(marker, markerStyle, group);
+          if (namesImages(markerStyle)) this._backgrounds.push(marker);
+        }
+        visit(child as Element);
+      }
+    };
+    visit(el);
+    into.append(group);
+    placeInFlow(group, groupStyle, into);
+    if (side === 'before') {
+      // the scroller's sibling before it
+      into.children.pop();
+      into.children.splice(into.children.indexOf(box), 0, group);
     }
   }
 

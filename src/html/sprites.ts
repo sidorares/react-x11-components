@@ -389,6 +389,8 @@ export function overLiftOf(host: SpriteHost, box: Box): Lift | null {
   if (
     which === 'first-letter' ||
     which === 'backdrop' ||
+    which === 'scroll-marker' ||
+    which === 'scroll-marker-group' ||
     which === 'details-content' ||
     which === 'view-transition'
   ) {
