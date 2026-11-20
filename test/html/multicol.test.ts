@@ -1815,3 +1815,34 @@ test('a relative offset in a box columns broke is a percentage of the column it 
   assert.deepStrictEqual(at('i'), [0, 50, 100]);
   assert.deepStrictEqual(at('r'), [20, 70, 120]);
 });
+
+test('a float in a box that clones its edges steers clear of those a break clones', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      // two columns of a box 40px at either edge: the float has 20px of the
+      // first, between the edges, and in the second goes on under the start
+      // edge and over the box's own end edge, which is no cloned one
+      // (WPT's css-break/box-decoration-break-clone-006)
+      '<div style="columns:4;column-fill:auto;gap:0;width:100px;height:100px">' +
+      '<div id="c" style="box-decoration-break:clone;border:solid;' +
+      'border-width:40px 0;height:40px">' +
+      '<div id="f" style="float:left;width:100%;height:280px"></div>' +
+      '</div></div>',
+    300,
+  );
+  const el = view(node);
+  const top = boxOf(el, 'c').y;
+  assert.deepStrictEqual(
+    COLUMN_PIECES.get(boxOf(el, 'f') as never)?.map((p) => [
+      p.x,
+      p.y - top,
+      p.height,
+    ]),
+    [
+      [0, 40, 20],
+      [25, 40, 60],
+      [50, 0, 100],
+      [75, 0, 100],
+    ],
+  );
+});
