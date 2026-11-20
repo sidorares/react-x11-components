@@ -6141,7 +6141,12 @@ with layout containment is none, since it would be the box's own. A break
 `break-before` or `break-after` avoids (`avoid`, `avoid-column`), on a box
 or on what is about it, a flex item's included, goes to the last break
 before it in the column that is not avoided and has something with a height
-before it, and falls where it would where there is none. The
+before it, and falls where it would where there is none. A box
+taller than its content, by a height of its own or one a column flex box
+gave it, that a break falls inside uses up the rest of that column, as
+Blink counts it: its height is not pushed on by what the break left at the
+column's foot, down to the height its content needs, and what follows it
+starts that much higher. A row flex box's items are not taken so yet. The
 columns balance, and CSS leaves how to the user agent; this does as Blink
 does — the content's height shared out between the columns, no less than
 the tallest thing that cannot break, then as much
