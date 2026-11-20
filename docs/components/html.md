@@ -5855,7 +5855,11 @@ Where nothing scrolls the element it is placed at rest, where a browser
 starts it, against the viewport's `top` and start side alone. A float, an inline-block and an absolute box of `width: auto`
 shrink to fit the room their margins leave, and an absolute box the room
 its offset or its static position leaves: at `left: 50%` it has half the
-width. None is narrower than its longest word. A relatively positioned inline box moves its text, its
+width. None is narrower than its longest word. An absolute box with both offsets
+down and `height: auto` has the height they leave it as a definite one, so a
+percentage height in it is of that height, a canvas or an image at
+`height: 100%` takes its ratio's width from it, and the box shrinks to that.
+A relatively positioned inline box moves its text, its
 background and borders and any block inside it, and leaves its lines where
 they were, which is how Tailwind's preflight and normalize.css raise a
 `<sup>`; a paragraph with one is laid out a line at a time, as one with an
@@ -7976,8 +7980,12 @@ again, where most changes are taken in place.
 chooses ([Image sets](#image-sets)), and `src("a.png")` and `image("a.png")`
 as the url they name, or an `image(red)` as the colour all over, and a
 `filter()` of a gradient through colour functions alone as that gradient
-with each stop's colour filtered (a filter of an image, or with a blur or a
-shadow in it, is not drawn, and the declaration goes); a string
+with each stop's colour filtered, and a `filter()` of an image as its pixels
+put through the list — colour functions, blurs and drop shadows in the order
+written — at the size it is drawn, so a shadow's offset is the page's
+pixels and not the image's (a gradient with a blur or a shadow in it is not
+drawn, and the declaration goes; a border image or a `content` of one draws
+nothing); a string
 alone is no image — with `background-repeat`, `space` and
 `round` among it and each axis its own, and `background-position`, placed
 in the box `background-origin` names — the
@@ -8580,7 +8588,10 @@ orthogonal flow (7.3): its lines run down the page and stack right to left
 in `vertical-rl` and `sideways-rl` and left to right in `vertical-lr`, and
 run up the page in `sideways-lr`, whose lines start on a whole pixel down
 the page however long their text comes to, so that they are across it
-where a line in any other vertical mode would be. A frame is drawn through its
+where a line in any other vertical mode would be. Its lines are as long as
+its containing block is tall where that is definite, else as its
+containing block's definite `max-height` lets them be, else as the viewport
+is tall (7.3.1), and no longer than their content. A frame is drawn through its
 turn at a whole translation, the fraction moved into where what it holds is
 painted from, so what is in it is snapped to the pixels the page would snap
 it to, its lines' edges included. An absolute box at its static position in

@@ -4676,6 +4676,10 @@ function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
   // the initial containing block's, which is the viewport's height, read
   // as a percentage height on the root reads it (`readsViewportHeight`)
   let base = box.percentHeightBase;
+  // else its containing block's greatest height, where that is definite
+  // (CSS Writing Modes 4, 7.3.1, step 2: WPT's
+  // css-writing-modes/available-size-001)
+  if (!Number.isFinite(base)) base = maxContentHeightOf(box.parent);
   if (!Number.isFinite(base)) {
     base = ctx.viewportHeight;
     ctx.readViewportHeight = true;
@@ -4715,6 +4719,22 @@ function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
   }
   // within its own `min-height` and `max-height`
   return clampHeight(box, size + box.verticalExtra) - box.verticalExtra;
+}
+
+/** The most a block's content box may be tall, where its `max-height`
+ *  says so definitely: a length, or a percentage of a height it has to be
+ *  one of; NaN where it says nothing definite. An anonymous block is no
+ *  containing block, and hands on its parent's. */
+function maxContentHeightOf(box: Box | null): number {
+  while (box && !box.el && !box.pseudo && box.parent) box = box.parent;
+  if (!box || box.style.maxHeight === 'none' || box.style.maxHeightKeyword) {
+    return NaN;
+  }
+  const max = resolveOrNull(box.style.maxHeight, box.percentHeightBase);
+  if (max === null || !Number.isFinite(max)) return NaN;
+  return box.style.boxSizing === 'border-box'
+    ? Math.max(0, max - box.verticalExtra)
+    : Math.max(0, max);
 }
 
 /** Move a line and what is on it down by `dy`, as `translate` moves a
@@ -5335,6 +5355,8 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
 export function percentBaseInside(box: Box): number {
   const flexed = FLEXED_HEIGHT.get(box);
   if (flexed !== undefined) return flexed;
+  const inset = INSET_HEIGHT.get(box);
+  if (inset !== undefined) return inset;
   if (!box.el && !box.pseudo) return box.percentHeightBase;
   const resolved = specifiedHeight(box);
   if (resolved === null) {
@@ -5353,6 +5375,17 @@ export function percentBaseInside(box: Box): number {
       : set + box.verticalExtra;
   return Math.max(0, clampHeight(box, borderBox) - box.verticalExtra);
 }
+
+/**
+ * The content height an absolute box's offsets leave it, where both down
+ * are set and its height is `auto`: definite, as a height of its own is
+ * (CSS Position 3, 4.1; CSS Sizing 3, 3.1), so a percentage in it resolves
+ * against it — a canvas `height: 100%` in it is as tall as it and as wide
+ * as its ratio makes that, and the box shrinks to fit that width (WPT's
+ * css-sizing/intrinsic-percent-replaced-007). Set as the box is placed,
+ * before its width is measured.
+ */
+const INSET_HEIGHT = new WeakMap<Box, number>();
 
 /** Whether anything in a box takes a percentage of a height: what a height
  *  a flex or grid layout makes definite changes. Kept for the tree's life. */
@@ -10421,6 +10454,19 @@ function positionedIn(
           ? cbX + cbWidth - (at.from.x + at.right)
           : at.from.x + at.x - cbX));
 
+  // the height its offsets leave it, which what it holds takes percentages
+  // of before its width is measured (`INSET_HEIGHT`)
+  if (
+    style.height === AUTO &&
+    !style.heightKeyword &&
+    !style.heightSize &&
+    Number.isFinite(fill)
+  ) {
+    INSET_HEIGHT.set(
+      box,
+      Math.max(0, clampHeight(box, fill) - box.verticalExtra),
+    );
+  } else INSET_HEIGHT.delete(box);
   let width: number;
   let stretched = NaN;
   if (style.width !== AUTO) {

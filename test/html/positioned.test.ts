@@ -4192,3 +4192,21 @@ test('a positioned box too big for all it can be in starts at the inline start, 
   };
   assert.deepStrictEqual([await at('ltr'), await at('rtl')], [50, 40]);
 });
+
+test('a percentage height in an absolute box its offsets size is of that height, and the box shrinks to what it makes', async () => {
+  // both offsets down set and `height: auto`: the box's height is definite,
+  // so a canvas `height: 100%` in it is as tall, as wide as its ratio
+  // makes that, and the box is as wide as the canvas (WPT's
+  // css-sizing/intrinsic-percent-replaced-007)
+  const { node } = await render(
+    '<style>body{margin:0}#c{position:relative;height:200px}' +
+      '#a{position:absolute;top:0;bottom:100px}canvas{height:100%}</style>' +
+      '<div id="c"><div id="a"><canvas id="v" width="10" height="10">' +
+      '</canvas></div></div>',
+  );
+  const el = view(node);
+  const a = boxOf(el, 'a');
+  const v = boxOf(el, 'v');
+  assert.deepStrictEqual([v.width, v.height], [100, 100]);
+  assert.deepStrictEqual([a.width, a.height], [100, 100]);
+});
