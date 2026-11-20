@@ -15,7 +15,7 @@ import type { UnitContext } from './values.js';
 
 const CHECK: UnitContext = { em: 16, rem: 16, vw: 1, vh: 1, scale: 1 };
 
-const NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
+const NUMBER = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?$/i;
 const MATH = /^[a-z-]+\(/i;
 
 /** A number as CSSOM serializes one. */
@@ -204,8 +204,10 @@ const SHIFTS = new Set(['sub', 'super', 'top', 'center', 'bottom']);
  *  anything else. A plain 0 is a length. */
 function lengthPercentage(word: string): string | null {
   if (MATH.test(word)) return word;
-  if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%$/i.test(word)) return word;
-  const m = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)([a-z]*)$/i.exec(word);
+  if (/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?%$/i.test(word)) return word;
+  const m = /^([+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?)([a-z]*)$/i.exec(
+    word,
+  );
   if (!m) return null;
   if (!m[2]) return Number(m[1]) === 0 ? '0px' : null;
   return parseLength(`1${m[2]}`, CHECK) === null ? null : word;
@@ -309,7 +311,7 @@ function display(word: string): string | null | undefined {
 function opacity(word: string): string | null | undefined {
   if (MATH.test(word)) return undefined;
   if (NUMBER.test(word)) return numberText(word);
-  const pct = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)%$/i.exec(word);
+  const pct = /^([+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?)%$/i.exec(word);
   return pct ? String(Number(pct[1]) / 100) : null;
 }
 

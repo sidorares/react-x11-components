@@ -215,6 +215,7 @@ test('a keyword property takes its keywords each at most once, as the three brow
     ['opacity', '50%', '0.5'],
     ['opacity', '2.5e-1', '0.25'],
     ['opacity', 'auto', ''],
+    ['opacity', '1.', ''],
     ['image-orientation', 'from-image', 'from-image'],
     ['image-orientation', '30deg', ''],
     ['caret-color', 'auto auto', ''],
