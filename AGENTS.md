@@ -7725,6 +7725,19 @@ premultiplied, where canvas — and CoreGraphics — mixes them straight, and
 a stop of no alpha faded a colour through grey. Anything new that adds
 colour stops to a context's gradient goes through it.
 
+**A gradient mixed in another space is made of many stops as it is parsed**
+(`parseStops`, `expandStops`, CSS Images 4, 3.5.2). The space its
+interpolation method names, or oklab where a stop is no legacy colour, and
+the hints between stops, are worked into `MIX_STEPS` straight runs per
+transition, their positions kept as a percentage and a length so no box is
+needed. Every way a gradient is drawn then draws ordinary sRGB stops, so
+**anything new that reads a gradient's stops reads them as many**, and a
+gradient in sRGB with no hints keeps the stops it was written with, which is
+what keeps the common case as cheap as it was. Stop colours are sRGB strings
+clipped as they are read, so a transition outside the gamut is drawn through
+the clipped colours; keeping them unclipped is the follow-up. Conic
+gradients are not drawn.
+
 **A repeating gradient is unrolled where its box is known** (`unrolled`):
 its stops laid down again along a linear one's line or out to a radial
 one's farthest corner, as the gradient that draws the same there, which

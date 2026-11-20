@@ -82,6 +82,7 @@ import {
   SYSTEM_COLOR,
   colorSchemeKeywords,
   lightDark,
+  mixIn,
   systemColors,
   usedColorScheme,
 } from './color.js';
@@ -7845,7 +7846,7 @@ function parseLinearGradient(
       from = 1;
     }
   }
-  const stops = parseStops(args.slice(from), ctx);
+  const stops = parseStops(args.slice(from), ctx, interpolationOf(args[0]));
   if (!stops) return null;
   out.stops = stops;
   return out;
@@ -7858,8 +7859,8 @@ function parseLinearGradient(
  * circle's radius, or two lengths or percentages for an ellipse's — then
  * `at` and its centre, a position as `background-position` writes one;
  * each of the three may be left out, for an ellipse through the farthest
- * corner from the middle of the box. A colour interpolation method is read
- * and not honoured, and the stops are a linear gradient's, spaced along
+ * corner from the middle of the box. Its stops, and the space they mix
+ * in, are a linear gradient's (`parseStops`), spaced along
  * the ray from the centre to the shape's edge.
  */
 function parseRadialGradient(
@@ -7928,7 +7929,7 @@ function parseRadialGradient(
       out.extent ??= 'farthest-corner';
     }
   }
-  const stops = parseStops(args.slice(from), ctx);
+  const stops = parseStops(args.slice(from), ctx, interpolationOf(args[0]));
   if (!stops) return null;
   out.stops = stops;
   return out;
@@ -7943,7 +7944,7 @@ const RADIAL_EXTENTS = new Set([
 
 /** A gradient's first argument, lower-cased, without the colour
  *  interpolation method CSS Images 4 adds to it (`in oklab`, which
- *  Tailwind 4 writes): read, and not honoured. */
+ *  Tailwind 4 writes), which `interpolationOf` reads. */
 function withoutInterpolation(arg: string): string {
   return arg
     .toLowerCase()
@@ -7954,26 +7955,184 @@ function withoutInterpolation(arg: string): string {
     .trim();
 }
 
-/** A gradient's colour stops, at least two, each with no position, one or
- *  two; a bare length between two stops, a hint, is passed over. Null
- *  where an argument is none of those. */
-function parseStops(args: string[], ctx: UnitContext): GradientStop[] | null {
+/** A gradient's colour interpolation method, as its first argument writes
+ *  it (`in oklch longer hue`), or null where it names none. */
+function interpolationOf(arg: string): { space: string; hue: string } | null {
+  const m =
+    /(?:^|\s)in\s+([a-z0-9-]+)(?:\s+(shorter|longer|increasing|decreasing)\s+hue)?(?:\s|$)/i.exec(
+      arg,
+    );
+  if (!m) return null;
+  return { space: m[1].toLowerCase(), hue: (m[2] ?? 'shorter').toLowerCase() };
+}
+
+/** A colour CSS Color 4 calls legacy: one sRGB had before it, which a
+ *  gradient with nothing else mixes in sRGB (CSS Images 4, 3.5.2). */
+const MODERN_COLOR =
+  /^(?:lab|lch|oklab|oklch|color|hwb|color-mix|light-dark|contrast-color)\(/i;
+
+/**
+ * A gradient's colour stops, each with no position, one or two, and the
+ * hints between them; a single stop is a gradient of that one colour (CSS
+ * Images 4, 3.5). Null where an argument is none of those. Where the
+ * gradient mixes its colours in another space than sRGB — the one it
+ * names, or oklab where a colour is no legacy one — or a hint moves a
+ * transition's middle, the stops are made many: each transition is cut
+ * into `MIX_STEPS` straight runs, the colours between worked out in that
+ * space and with that hint, which is what every way a gradient is drawn
+ * then draws (`expandStops`).
+ */
+function parseStops(
+  args: string[],
+  ctx: UnitContext,
+  method: { space: string; hue: string } | null = null,
+): GradientStop[] | null {
   const stops: GradientStop[] = [];
+  /** The hint before each stop, by the stop's index. */
+  const hints: (Len | null)[] = [];
+  let modern = false;
+  let pendingHint: Len | null = null;
   for (const arg of args) {
     const parts = splitValue(arg);
     const color = parseColor(parts[0] ?? '');
     if (color === null) {
-      // a hint, the midpoint of the transition, which this does not move
-      if (parts.length === 1 && parseLength(parts[0], ctx) !== null) continue;
+      // a hint, the midpoint of the transition between two stops
+      if (parts.length === 1) {
+        const hint = parseLength(parts[0], ctx);
+        if (hint !== null && hint !== AUTO) {
+          if (!stops.length || pendingHint !== null) return null;
+          pendingHint = hint;
+          continue;
+        }
+      }
       return null;
     }
     if (parts.length > 3) return null;
+    // a colour of CSS Color 4's own, a relative one, or one with a
+    // component it leaves out (`rgb(none 255 0)`), is no legacy one, and
+    // takes the gradient to oklab; `rgb()` and `hsl()` without either are
+    // legacy in any syntax (WPT's legacy-color-with-calc-gradient)
+    if (
+      MODERN_COLOR.test(parts[0]) ||
+      /\(\s*from\s/i.test(parts[0]) ||
+      /(?:^|[\s(,/])none(?=[\s),/])/i.test(parts[0])
+    ) {
+      modern = true;
+    }
     const at = parts.slice(1).map((p) => parseLength(p, ctx));
     if (at.some((p) => p === null || p === AUTO)) return null;
-    if (!at.length) stops.push({ color, at: null });
-    for (const p of at) stops.push({ color, at: p as Len });
+    if (!at.length) {
+      hints[stops.length] = pendingHint;
+      stops.push({ color, at: null });
+    }
+    for (const [k, p] of at.entries()) {
+      hints[stops.length] = k === 0 ? pendingHint : null;
+      stops.push({ color, at: p as Len });
+    }
+    pendingHint = null;
   }
-  return stops.length >= 2 ? stops : null;
+  // a hint must stand between two stops
+  if (pendingHint !== null || !stops.length) return null;
+  // one stop is that colour all the way
+  if (stops.length === 1) stops.push({ color: stops[0].color, at: null });
+  const space = method?.space ?? (modern ? 'oklab' : 'srgb');
+  const hue = method?.hue ?? 'shorter';
+  if (space === 'srgb' && !hints.some((h) => h != null)) return stops;
+  return expandStops(stops, hints, space, hue) ?? stops;
+}
+
+/** How many straight runs a transition mixed in another space is drawn
+ *  as: enough that what lies between them is within a level of the curve. */
+const MIX_STEPS = 64;
+
+/** A position as a percentage and a length added to it, or null for one
+ *  that is neither (`min()`, `max()`). */
+function pctPx(len: Len): [number, number] | null {
+  if (typeof len === 'number') return [0, len];
+  if (len === AUTO || len.of) return null;
+  return [len.pct, len.px ?? 0];
+}
+
+/**
+ * The stops of a gradient made many (`parseStops`): positions spread as
+ * `stopOffsets` spreads them, worked out as a percentage and a length
+ * where the box is not known yet, and between each two of them the colours
+ * of the transition, in `space`, eased by its hint. Null where a position
+ * is one that cannot be spread so, which draws as before.
+ */
+function expandStops(
+  stops: GradientStop[],
+  hints: (Len | null)[],
+  space: string,
+  hue: string,
+): GradientStop[] | null {
+  const at: ([number, number] | null)[] = [];
+  for (const stop of stops) {
+    if (stop.at === null) at.push(null);
+    else {
+      const p = pctPx(stop.at);
+      if (!p) return null;
+      at.push(p);
+    }
+  }
+  at[0] ??= [0, 0];
+  at[at.length - 1] ??= [100, 0];
+  for (let i = 1; i < at.length; i += 1) {
+    if (at[i] !== null) continue;
+    let j = i;
+    while (at[j] === null) j += 1;
+    const from = at[i - 1]!;
+    const to = at[j]!;
+    for (let k = i; k < j; k += 1) {
+      const f = (k - i + 1) / (j - i + 1);
+      at[k] = [
+        from[0] + (to[0] - from[0]) * f,
+        from[1] + (to[1] - from[1]) * f,
+      ];
+    }
+  }
+  const lenOf = ([pct, px]: [number, number]): Len =>
+    pct === 0 ? px : { pct, px };
+  const out: GradientStop[] = [{ color: stops[0].color, at: lenOf(at[0]!) }];
+  for (let i = 1; i < stops.length; i += 1) {
+    const a = at[i - 1]!;
+    const b = at[i]!;
+    const c0 = stops[i - 1].color;
+    const c1 = stops[i].color;
+    const hint = hints[i] ? pctPx(hints[i]!) : null;
+    // where the hint is along the transition: a fraction only where its
+    // ends and it are all of one kind, percentages or lengths
+    let middle = 0.5;
+    if (hint) {
+      const span = (k: 0 | 1): number => b[k] - a[k];
+      const k = span(0) !== 0 || hint[0] !== 0 ? 0 : 1;
+      const other = k === 0 ? 1 : 0;
+      if (a[other] === b[other] && hint[other] === a[other] && span(k) !== 0) {
+        middle = (hint[k] - a[k]) / span(k);
+      }
+    }
+    const eased = (t: number): number => {
+      if (!hint || middle === 0.5) return t;
+      if (middle <= 0) return 1;
+      if (middle >= 1) return 0;
+      return Math.pow(t, Math.log(0.5) / Math.log(middle));
+    };
+    const plain = space === 'srgb' && (!hint || middle === 0.5);
+    const mixable = !plain && c0 !== c1 && !/currentcolor/i.test(c0 + c1);
+    if (mixable || (hint && c0 !== c1 && !/currentcolor/i.test(c0 + c1))) {
+      for (let k = 1; k < MIX_STEPS; k += 1) {
+        const t = k / MIX_STEPS;
+        const color = mixIn(c0, c1, eased(t), space, hue) ?? null;
+        if (color === null) break;
+        out.push({
+          color,
+          at: lenOf([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]),
+        });
+      }
+    }
+    out.push({ color: c1, at: lenOf(b) });
+  }
+  return out;
 }
 
 /** A gradient function's image, where it is one this draws. */

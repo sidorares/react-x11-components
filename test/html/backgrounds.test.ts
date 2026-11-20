@@ -416,10 +416,16 @@ test('a linear gradient is drawn over the colour, across the box', async () => {
     across.line!.map((v) => Math.round(v)),
     [0, 50, 200, 50],
   );
-  assert.deepStrictEqual(
-    across.stops!.map(([at]) => at),
-    [0, 0.4, 1],
+  // mixed in oklab, so drawn as many straight runs (CSS Images 4, 3.5.2),
+  // through the stops it was written with
+  const at = across.stops!.map(([t]) => t);
+  assert.strictEqual(at[0], 0);
+  assert.ok(
+    at.some((t) => Math.abs(t - 0.4) < 1e-9),
+    'the 40% stop',
   );
+  assert.strictEqual(at[at.length - 1], 1);
+  assert.ok(at.length > 3, `${at.length} stops`);
   // a corner's line is the square's diagonal, its first stop 20px along it
   const [x0, y0, x1, y1] = corner.line!;
   assert.ok(Math.abs(x1 - x0 - 100) < 1e-6 && Math.abs(y0 - y1 - 100) < 1e-6);
@@ -427,6 +433,58 @@ test('a linear gradient is drawn over the colour, across the box', async () => {
   // and the white is painted under the first one
   assert.ok(fills.some((f) => f.style === parseColor('#ffffff')));
 });
+
+test("a gradient's colours mix in the space it names, or oklab for a colour no legacy one, eased by its hints; one stop is that colour", async () => {
+  // CSS Images 4, 3.5: each transition of a gradient mixed in another
+  // space than sRGB is drawn as straight runs between colours worked out in
+  // it, a hint eases the transition, and a single stop fills the box
+  const { node } = await render(
+    '<style>body{margin:0}div{width:100px;height:10px}</style>' +
+      '<div style="background-image:linear-gradient(to right,#ff0000,#0000ff)"></div>' +
+      '<div style="background-image:linear-gradient(to right in hsl longer hue,#ff0000,#0000ff)"></div>' +
+      '<div style="background-image:linear-gradient(to right,#ff0000,oklch(0.5 0.2 250))"></div>' +
+      '<div style="background-image:linear-gradient(to right,#ff0000,25%,#0000ff)"></div>' +
+      '<div style="background-image:linear-gradient(#00ff00)"></div>',
+  );
+  const fills = await fillsOf(view(node));
+  const gradients = fills
+    .map((f) => f.style as { line?: number[]; stops?: [number, string][] })
+    .filter((g) => g && g.line);
+  const [plain, longer, modern, hinted, single] = gradients;
+  // sRGB and no hint: drawn as written
+  assert.strictEqual(plain.stops!.length, 2);
+  // hsl the long way round from red to blue is through yellow and green,
+  // not through magenta: the middle is green
+  const middle = (g: { stops?: [number, string][] }): string =>
+    g.stops!.reduce((best, s) =>
+      Math.abs(s[0] - 0.5) < Math.abs(best[0] - 0.5) ? s : best,
+    )[1];
+  const [r, gr, b] = parseRgb(middle(longer));
+  assert.ok(gr > r && gr > b, `longer hue's middle ${middle(longer)}`);
+  // an oklch() colour mixes in oklab by default
+  assert.ok(modern.stops!.length > 2, 'oklab, by default');
+  // a hint at 25% puts the transition's middle there
+  const at25 = hinted.stops!.reduce((best, s) =>
+    Math.abs(s[0] - 0.25) < Math.abs(best[0] - 0.25) ? s : best,
+  );
+  const [hr, , hb] = parseRgb(at25[1]);
+  assert.ok(Math.abs(hr - hb) < 40, `half way at the hint: ${at25[1]}`);
+  // one stop: its colour all the way
+  assert.deepStrictEqual(
+    single.stops!.map(([, c]) => c.toLowerCase()),
+    ['#00ff00', '#00ff00'],
+  );
+});
+
+/** A colour's channels, 0 to 255, from a hex or an rgb()/rgba() string. */
+function parseRgb(color: string): number[] {
+  const hex = /^#([0-9a-f]{6})$/i.exec(color);
+  if (hex) {
+    const n = parseInt(hex[1], 16);
+    return [n >> 16, (n >> 8) & 255, n & 255];
+  }
+  return (color.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+}
 
 metric(
   'a repeating gradient lays its stops down again along its whole line',
