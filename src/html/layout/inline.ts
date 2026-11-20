@@ -1056,7 +1056,7 @@ function linesOf(
   // that each can be put back across the frame alone (`reflectFrame`)
   const vertical =
     framed.any && block.style.writingMode !== 'horizontal-tb' && inFrame(block);
-  if (vertical) uprightItems(items, fonts);
+  if (vertical) uprightItems(items, fonts, block.style.writingMode);
   const apart = vertical && block.style.writingMode === 'vertical-lr';
   // A block that does not wrap holding text that does (CSS Text 3, 5.1:
   // whether a line breaks between two characters is the call of the
@@ -6534,12 +6534,18 @@ function smallCapsPieces(
  * same run (`TextLayoutCache`). The glyph each is drawn from, upright, is
  * laid out once for its face and character (`setUpright`).
  */
-function uprightItems(items: Item[], fonts: FontsLike): void {
+function uprightItems(
+  items: Item[],
+  fonts: FontsLike,
+  /** The block container's writing mode, which its lines are set in: an
+   *  inline box's own does not apply (CSS Writing Modes 4, 2.1), so a
+   *  `vertical-lr` span in a `sideways-lr` block is set sideways. */
+  mode: ComputedStyle['writingMode'],
+): void {
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     if (item.kind !== 'text' || item.control) continue;
     const style = item.box.style;
-    const mode = style.writingMode;
     if (
       mode === 'horizontal-tb' ||
       mode === 'sideways-rl' ||

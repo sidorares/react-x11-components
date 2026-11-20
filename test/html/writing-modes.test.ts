@@ -199,6 +199,33 @@ test('logical properties map by the writing mode, wherever it is declared', asyn
   );
 });
 
+test("the root element is laid out in its body's writing mode, and hands its own to what it holds", async () => {
+  // CSS Writing Modes 4, 8: the principal writing mode is the body's; the
+  // root takes it as its used value, and no orthogonal flow is made
+  // between the two (WPT css-writing-modes/wm-propagation-body-*)
+  const { node } = await render(
+    '<html id="root"><style>html{writing-mode:vertical-lr}body{margin:0;' +
+      'writing-mode:horizontal-tb}html::after{content:"a b c";display:block}' +
+      '</style><div id="d" style="height:20px">x</div>',
+  );
+  const el = view(node);
+  const d = rectOf(el, 'd');
+  // the body fills the line, across the page
+  assert.strictEqual(d.width, 400);
+  assert.strictEqual(computed(el, 'd')['writing-mode'], 'horizontal-tb');
+  // and the root's own writing mode is what it computes to
+  assert.strictEqual(computed(el, 'root')['writing-mode'], 'vertical-lr');
+  cleanup();
+  // a vertical body puts its first block where its lines start: the right
+  // of the page for vertical-rl
+  const turned = await render(
+    '<html><style>body{margin:0;writing-mode:vertical-rl}</style>' +
+      '<body><div id="d" style="width:20px;height:20px"></div></body></html>',
+  );
+  const r = rectOf(view(turned.node), 'd');
+  assert.strictEqual(r.x + r.width, 400, `at the right: ${r.x}`);
+});
+
 test("the user agent's margins and paddings are logical, and an element's own dir maps them", async () => {
   // HTML 15.3.3, 15.3.7, 15.3.8: a paragraph's margins are along its
   // block axis, a list's indent and a quotation's rule before its lines
