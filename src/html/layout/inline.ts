@@ -81,6 +81,14 @@ import {
 } from './writing.js';
 import { tableGrid } from './grid.js';
 import { endsShort, prettyBreaks, shortLine, spacedWords } from './pretty.js';
+import {
+  CJK_HYPHENS,
+  SMALL_KANA,
+  breakOpportunities,
+  movesBreaks,
+} from './word-break.js';
+import { languageOf } from '../css/cascade.js';
+import type { BreakAt, BreakRule } from './word-break.js';
 import type { PrettySetting } from './pretty.js';
 
 /** How a paragraph's lines are fitted to their width, and measured: as a
@@ -956,6 +964,44 @@ function linesOf(
       fonts,
       keepsSpaces,
       pretty,
+    );
+    if (laid && !shortOfStrut(laid.lines, strut, firstStrut)) return laid;
+    if (laid) strutted = true;
+  }
+
+  // Text that breaks where UAX #14 does not say, in text that is all the
+  // paragraph holds: a line at a time (`layoutOwnBreaks`).
+  if (
+    fonts &&
+    wraps(style) &&
+    !hasAtomics &&
+    !hasEdges &&
+    !raised &&
+    !floated &&
+    !indented &&
+    !alignedApart &&
+    !restyled &&
+    !strutted &&
+    !apart &&
+    !options.clamp &&
+    style.textAlign !== 'justify' &&
+    lastAlign !== 'justify' &&
+    cutOf(style, options.clamp, options.width, over) === null &&
+    breaksOwnWay(items) &&
+    !hasControls(items) &&
+    movesBreaks(
+      breakRulesOf(items as Extract<Item, { kind: 'text' }>[]),
+      textOfItems(items),
+    )
+  ) {
+    const laid = layoutOwnBreaks(
+      items as Extract<Item, { kind: 'text' }>[],
+      base,
+      style,
+      options.width,
+      lineHeightMul,
+      align,
+      fonts,
     );
     if (laid && !shortOfStrut(laid.lines, strut, firstStrut)) return laid;
     if (laid) strutted = true;
@@ -2626,6 +2672,282 @@ function layoutBreakSpaces(
   }
   return { lines, height: y, width: widest };
 }
+
+/** Whether a text of a paragraph breaks where UAX #14 does not say: the
+ *  question every paragraph is asked, so it allocates nothing. */
+function breaksOwnWay(items: readonly Item[]): boolean {
+  for (const item of items) {
+    if (item.kind !== 'text') continue;
+    const style = item.box.style;
+    if (
+      style.lineBreakAnywhere ||
+      style.wordBreak === 'break-all' ||
+      style.wordBreak === 'keep-all' ||
+      style.lineBreak === 'loose' ||
+      (style.lineBreak !== 'strict' && SMALL_KANA.test(item.run.text))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Whether a box's text is Chinese or Japanese by its content language. */
+function writtenInCjk(box: Box): boolean {
+  for (let at: Box | null = box; at; at = at.parent) {
+    if (at.el) return /^(ja|zh)(-|$)/i.test(languageOf(at.el));
+  }
+  return false;
+}
+
+/** The joined text of a paragraph's text items. */
+function textOfItems(items: readonly Item[]): string {
+  let text = '';
+  for (const item of items) if (item.kind === 'text') text += item.run.text;
+  return text;
+}
+
+/** The rules each text of a paragraph breaks by (`breakOpportunities`). */
+function breakRulesOf(
+  items: readonly Extract<Item, { kind: 'text' }>[],
+): BreakRule[] {
+  const rules: BreakRule[] = [];
+  let at = 0;
+  for (const item of items) {
+    const style = item.box.style;
+    const end = at + item.run.text.length;
+    rules.push({
+      start: at,
+      end,
+      wordBreak: style.wordBreak,
+      anywhere: style.lineBreakAnywhere,
+      wraps: !item.control && wraps(style),
+      lineBreak: style.lineBreak,
+      cjk: CJK_HYPHENS.test(item.run.text) && writtenInCjk(item.box),
+      keepsSpaces: style.whiteSpace === 'pre-wrap',
+      breakSpaces: keepsBreakSpaces(item),
+    });
+    at = end;
+  }
+  return rules;
+}
+
+/**
+ * A paragraph whose text breaks where UAX #14 does not say (CSS Text 3, 5.2
+ * and 5.3): `word-break: break-all` between any two letters, `keep-all`
+ * nowhere between two, `line-break: anywhere` between any two clusters.
+ * Neither engine reads either property, and handed `overflow-wrap` in its
+ * place one breaks a word only where no line holds it whole: `Latin latin`
+ * a pixel narrower than it is broke at the space, where a browser fills the
+ * line and carries the last letter down. So the places are worked out here
+ * (`breakOpportunities`), the text laid out on one line to measure where
+ * each is (`caretPosition`), and each line ends at the last that fits —
+ * past the room at the first where none does — and is laid out alone, as a
+ * `break-spaces` line is. Left to right only: a caret's place says nothing
+ * of a line's width where the text is reordered.
+ */
+function layoutOwnBreaks(
+  items: Extract<Item, { kind: 'text' }>[],
+  base: Record<string, unknown>,
+  style: ComputedStyle,
+  width: number,
+  lineHeightMul: number,
+  align: string,
+  fonts: FontsLike,
+): InlineResult | null {
+  const runs: TextRun[] = [];
+  let text = '';
+  for (const item of items) {
+    runs.push(item.run);
+    text += item.run.text;
+  }
+  // nothing that reorders a line, whose width no caret says
+  if (style.direction === 'rtl' || RTL_TEXT.test(text)) return null;
+  const starts = runStarts(runs);
+  const rules = breakRulesOf(items);
+  const breaks = breakOpportunities(text, rules);
+  const forced = new Set(breaks.filter((k) => k.required).map((k) => k.at));
+  const keepsSpaces = rules.some((r) => r.keepsSpaces && !r.breakSpaces);
+  const breakSpacesAt = (at: number): boolean =>
+    !!rules[runIndexAt(starts, at)].breakSpaces;
+  const options = {
+    maxWidth: width,
+    lineHeight: lineHeightMul,
+    direction: style.direction,
+    fit: PARAGRAPH_FIT,
+  };
+  // Where all that moves the places is a small kana `normal` lets a line
+  // break before, the engine's own lines stand unless one of them would
+  // end at such a place: Japanese is full of small kana and seldom ends a
+  // line at one, and every paragraph of it would be laid out a line at a
+  // time for nothing.
+  if (
+    rules.every(
+      (r) =>
+        !r.anywhere &&
+        !r.breakSpaces &&
+        r.wordBreak !== 'break-all' &&
+        r.wordBreak !== 'keep-all' &&
+        r.lineBreak !== 'loose',
+    ) &&
+    !kanaMovesALine(fonts.layout(runs, base, options), breaks, width, text)
+  ) {
+    return null;
+  }
+  // The paragraph on one line a forced break at a time, which says where
+  // each place is: where a run starts or ends, which is where nearly every
+  // place a line may break is, and a caret's place for the rest. One layout
+  // a paragraph, which the engine keeps, and a few looks a line.
+  const total = text.length;
+  // with no width at all, which is what keeps it on one line on an engine
+  // that reads no `wrap` (CoreText)
+  const one = fonts.layout(runs, base, {
+    ...options,
+    maxWidth: undefined,
+    wrap: false,
+  });
+  const xs = new Map<number, number>();
+  const lineOf = new Map<number, number>();
+  for (let l = 0; l < one.lines.length; l += 1) {
+    for (const run of one.lines[l].runs) {
+      if (!xs.has(run.start)) xs.set(run.start, run.x);
+      if (!xs.has(run.end)) xs.set(run.end, run.x + run.width);
+    }
+    lineOf.set(one.lines[l].start, l);
+  }
+  let offsets: number[] | null = null;
+  const xAt = (at: number): number => {
+    const x = xs.get(at);
+    if (x !== undefined) return x;
+    offsets ??= codeUnitOffsets(text);
+    return one.caretPosition(codePointAtOffset(offsets, at)).x;
+  };
+  // the white space a line ends on hangs past it, but for the spaces
+  // `break-spaces` keeps, which take room
+  const inkEnd = (at: number, from: number): number => {
+    let end = at;
+    while (
+      end > from &&
+      /[ \t\n]/.test(text[end - 1]) &&
+      !(text[end - 1] === ' ' && breakSpacesAt(end - 1))
+    ) {
+      end -= 1;
+    }
+    return end;
+  };
+  // A word wider than the room, which `overflow-wrap` cuts: the engine's
+  // to cut, whose layout of the whole paragraph is what a min-content
+  // width reads the word off, where a line of it cut here would say the
+  // word is as wide as the piece on it (CSS Text 3, 5.5: those cuts are no
+  // part of a min-content width)
+  const cuts = overflowWrapOf(style, items) === 'break-word';
+  // where a line ends: the last place that fits from `from`, the first past
+  // the room where none does, and a forced break wherever it comes
+  let b = 0;
+  const endFrom = (from: number): number => {
+    while (b < breaks.length && breaks[b].at <= from) b += 1;
+    if (b >= breaks.length) return total;
+    // up to the next forced break, which ends the line wherever it fits
+    let last = b;
+    while (last < breaks.length - 1 && !breaks[last].required) last += 1;
+    // a forced break starts a line of its own in the measuring layout
+    const x0 = lineOf.has(from) ? 0 : xAt(from);
+    const fits = (k: number): boolean =>
+      xAt(inkEnd(breaks[k].at, from)) - x0 <= width + FIT_SLACK;
+    if (!fits(b)) return cuts ? -1 : breaks[b].at;
+    let lo = b;
+    let hi = last;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (fits(mid)) lo = mid;
+      else hi = mid - 1;
+    }
+    return breaks[lo].at;
+  };
+  const lines: LineBox[] = [];
+  let widest = 0;
+  let y = 0;
+  for (let from = 0; from < total;) {
+    let to = endFrom(from);
+    if (to < 0) return null;
+    if (to <= from) to = total;
+    const own = sliceRuns(runs, from, to).slice();
+    const spans = new SpanMap();
+    let piece = 0;
+    for (let k = 0; k < items.length; k += 1) {
+      const start = starts[k];
+      const end = start + runs[k].text.length;
+      if (end <= from || start >= to) continue;
+      const lo = Math.max(start, from);
+      spans.add(
+        items[k].start + (lo - start),
+        Math.min(end, to) - lo,
+        items[k].control ? null : items[k].box,
+      );
+      // the spaces `break-spaces` keeps as no-break spaces, which an
+      // engine measures, aligns and never hangs (`layoutBreakSpaces`)
+      if (rules[k].breakSpaces) {
+        const run = own[piece];
+        own[piece] = { ...run, text: run.text.replace(/ /g, '\u00a0') };
+      }
+      piece += 1;
+    }
+    // a layout of its own, as a `break-spaces` line is
+    let layout = fonts.layout(own, base, {
+      ...options,
+      maxWidth: width + lines.length * 1e-6,
+      align,
+      wrap: false,
+    });
+    // a line wider than its room starts at its start edge (CSS Text 3,
+    // 7.1), and an engine that reads no `wrap` would break it again
+    if (layout.lines.length > 1 && !forced.has(to)) {
+      layout = fonts.layout(own, base, { ...options, maxWidth: undefined });
+    }
+    LAYOUT_RUNS.set(layout, own);
+    const first = lines.length;
+    widest = Math.max(widest, emitLayout(layout, spans, 0, y, lines));
+    // the spaces `pre-wrap` keeps that the line hangs, drawn past its end
+    if (keepsSpaces) hangLines(lines, first, own, fonts, false);
+    y += layout.height;
+    from = to;
+  }
+  return { lines, height: y, width: widest };
+}
+
+/**
+ * Whether a line the engine broke ends before a place `breaks` has and the
+ * engine has not, which the text after it up to that place would fit: the
+ * engine's next line starts with the text up to there, where a small kana
+ * glued it to what is before it.
+ */
+function kanaMovesALine(
+  layout: TextLayoutLike,
+  breaks: readonly BreakAt[],
+  width: number,
+  text: string,
+): boolean {
+  const lines = layout.lines;
+  const offsets = codeUnitOffsets(text);
+  let k = 0;
+  for (let i = 0; i + 1 < lines.length; i += 1) {
+    const end = lines[i].end;
+    const next = lines[i + 1];
+    while (k < breaks.length && breaks[k].at <= end) k += 1;
+    if (k >= breaks.length) return false;
+    const at = breaks[k].at;
+    if (at >= next.end) continue;
+    const used = lines[i].advance ?? lines[i].width;
+    const more =
+      layout.caretPosition(codePointAtOffset(offsets, at)).x -
+      layout.caretPosition(codePointAtOffset(offsets, next.start)).x;
+    if (used + more <= width + FIT_SLACK) return true;
+  }
+  return false;
+}
+
+/** A character of a right-to-left script, or a control that embeds one. */
+const RTL_TEXT = /[֐-ࣿיִ-﷿ﹰ-﻿‏‫‮⁧]|\uD802[\uDC00-\uDFFF]|\uD83A/;
 
 /** Whether a text keeps its spaces as `break-spaces` does where its lines
  *  wrap (`layoutBreakSpaces`). */

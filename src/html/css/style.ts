@@ -946,6 +946,11 @@ export interface ComputedStyle {
    *  letters, which the engines come nearest to by cutting a word where
    *  its line runs out; the other values are the engine's own breaking. */
   lineBreakAnywhere: boolean;
+  /** The rest of `line-break` (CSS Text 3, 5.3): how strictly CJK text
+   *  breaks. `strict` keeps small kana (UAX #14's CJ) with what is before
+   *  them, and `normal` and `auto` do not; `loose` also breaks before
+   *  iteration marks, prolonged sound marks and the CJK hyphens. */
+  lineBreak: 'auto' | 'loose' | 'normal' | 'strict';
   /** `text-wrap-style` (CSS Text 4, 6.2): `balance` evens a short
    *  paragraph's lines out, `pretty` keeps its last word off a line of its
    *  own as Chrome does (`layout/pretty.ts`); `stable` wraps as `auto`
@@ -1874,6 +1879,7 @@ export const INHERITED = [
   'overflowWrap',
   'wordBreak',
   'lineBreakAnywhere',
+  'lineBreak',
   'textWrapStyle',
   'direction',
   'writingMode',
@@ -2056,6 +2062,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     overflowWrap: 'normal',
     wordBreak: 'normal',
     lineBreakAnywhere: false,
+    lineBreak: 'auto',
     textWrapStyle: 'auto',
     direction: 'ltr',
     writingMode: 'horizontal-tb',
@@ -2497,6 +2504,7 @@ export function inherit(
   out.overflowWrap = parent.overflowWrap;
   out.wordBreak = parent.wordBreak;
   out.lineBreakAnywhere = parent.lineBreakAnywhere;
+  out.lineBreak = parent.lineBreak;
   out.textWrapStyle = parent.textWrapStyle;
   out.direction = parent.direction;
   out.writingMode = parent.writingMode;
@@ -4927,6 +4935,7 @@ export function applyDeclaration(
         v === 'anywhere'
       ) {
         style.lineBreakAnywhere = v === 'anywhere';
+        style.lineBreak = v === 'anywhere' ? 'auto' : v;
       }
       return;
     }
@@ -10693,7 +10702,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'overflow-wrap': ['overflowWrap'],
   'word-wrap': ['overflowWrap'],
   'word-break': ['wordBreak'],
-  'line-break': ['lineBreakAnywhere'],
+  'line-break': ['lineBreakAnywhere', 'lineBreak'],
   'white-space-collapse': ['whiteSpace', 'breakSpaces'],
   'text-wrap': ['whiteSpace', 'textWrapStyle'],
   'text-wrap-mode': ['whiteSpace'],
