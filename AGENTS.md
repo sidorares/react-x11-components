@@ -8370,6 +8370,32 @@ across rows**: a block is laid out once a row with other children, so
 nothing in a multicol container is kept (`inMulticol`), which this stands
 on.
 
+**A flex box and a grid in columns break between their lines and rows,
+and inside their items, by being gathered into as a block is**
+(`src/html/layout/multicol.ts`: `whole`, `monolithic`, `groupsOf`; CSS
+Flexbox 1, 10; CSS Grid 1, 12). The strip is still laid out once and moved
+a piece at a time. Their items stand side by side down it, so what no
+break may fall inside is grouped by overlap as before, and what may be cut
+anywhere — an item with a height and nothing in it, room a box is taller
+than its content by — is never grouped with it: it is cut in whatever of
+the strip the solid groups leave, and a unit knows the group it starts in
+and the one it ends in (`group`, `ends`). Four things are load-bearing.
+**A break is at one place down the strip for everything beside it**, where
+a browser breaks each item on its own account: a line that does not fit
+in one item takes the others' content with it to the next column, which
+is the case to build next, and it needs the strip's offsets by flow and
+not by column alone. **What overflows a flex container or an item takes no
+part in where the columns break** (`clipped`, `below`): a box of a height
+of its own holds what follows it to that height, and content past it
+grouped with what follows would push it a column on. **A flex box its
+items size has no room to cut below them** (`sizedByItems`): that is their
+margins and its padding, which a break drops. And **forced breaks are read
+from the passive record** (`forces`, `style.passive['break-before']`): a
+break before a box's first unit is one before every box it is first in, a
+break after its last is one before the next sibling of each it is last
+in, and a forced break inside a box that cannot break is none. Size
+containment is monolithic (`whole`), as CSS Containment 2, 3.1 has it.
+
 **A view transition's tree is boxes in the top layer, and what it
 captured is a hole** (`src/html/transition.ts`). The page's realm runs
 the transition's steps and asks the element to capture each state; the
