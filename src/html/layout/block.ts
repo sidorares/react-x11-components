@@ -3621,9 +3621,24 @@ function closingBelow(box: Box, container: Box): number {
 function followsInFlow(box: Box, container: Box): boolean {
   for (let at = box; at !== container && at.parent; at = at.parent) {
     const siblings = at.parent.children;
+    // how far the margin after the lines reaches, which an empty block
+    // collapsing into it reaches no further than
+    let beyond = false;
     for (let i = siblings.indexOf(at) + 1; i < siblings.length; i += 1) {
       const next = siblings[i];
-      if (next.outOfFlow || next.isFloat || makesNothing(next)) continue;
+      if (next.outOfFlow || next.isFloat) continue;
+      // an element's empty block whose margins collapse into the one before
+      // it, reaching no further, puts the clamp point after itself, and the
+      // last thing before it is then no line, which ends in no ellipsis
+      // (WPT's `line-clamp-auto-031`, `-032` and `-039`); a block of
+      // phantom lines is nothing
+      if (makesNothing(next)) {
+        if (!(next.el && next.kind === 'block')) continue;
+        if (Math.max(next.marginTop, next.marginBottom) > at.marginBottom) {
+          beyond = true;
+        } else if (!beyond) return false;
+        continue;
+      }
       return true;
     }
   }

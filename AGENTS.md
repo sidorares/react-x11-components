@@ -2369,6 +2369,24 @@ cut so tells an intrinsic width it was** (`CUT_LINES`, beside the engine's
 `truncated`), as one the engine cut does: it is wider than it was drawn,
 and what a probe measured of it is of what was drawn.
 
+**Only one line that does not wrap, ending in `…`, is the engine's to
+cut** (`cutOf`, `linesCut`, `cutApart`). The engines draw no ellipsis but
+their own and cut no line they wrap, so a block whose lines wrap and a
+`text-overflow: "<string>"` (`textOverflowMark`) are laid out a piece at a
+time and cut by `ellipsizeLines`, each line at its own band's end, which a
+float moves in. A clamp's lines are cut the same way, the clamp's own
+ellipsis (`blockEllipsisMark`) aside: `ellipsized` in the one-layout path,
+and `ellipsizeLine`'s `always` on the last line it leaves in the
+line-at-a-time path, which drew none before. Three things are load-bearing.
+**Paint draws a layout once, whole** (`paintLinePart`), so a line of a
+one-layout paragraph cut in place leaves the layout drawing it uncut under
+the cut: `detachUncut` lays the paragraph's other lines out on their own
+wherever one was cut. **An engine counts no lines it does not wrap**: a
+clamp over `white-space: pre` lays them out whole (`wrap: false`), and its
+lines past the clamp are cut off its runs by hand. And **a mark is laid out
+in the paragraph's direction**, or a string whose first strong letter is
+Hebrew turns round in a left-to-right line.
+
 **An anonymous block's lines are cut by its container's `text-overflow`**
 (`overflowStyleOf`). Neither `text-overflow` nor `overflow` inherits, so
 an anonymous block's own say `clip` and `visible`, and the fix-up makes one

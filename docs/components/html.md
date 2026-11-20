@@ -8171,11 +8171,26 @@ clamps, as in a browser, and that form's ellipsis cuts inside a word where
 the line has no room for it, as `text-overflow`'s does — as Chrome, Firefox
 and WebKit cut it, where the newer property keeps whole words; `line-clamp: auto` shows as many lines as the
 box's `height` or `max-height` holds, and `max-lines`, `continue` and
-`block-ellipsis` are read. A block laid out a line at a time, around an
-image or a float, is cut with no ellipsis),
-`text-overflow: ellipsis` on a `nowrap` block that clips (`truncate`: each
-line cut where the box ends, inside a word if need be, with an ellipsis, as
-a browser cuts it — which is how the line is drawn, and no part of how wide
+`block-ellipsis` are read, a string in `line-clamp` or `block-ellipsis`
+drawn in place of the `…`. A block laid out a line at a time, around an
+image or a float, ends in the ellipsis as one laid out at once does. Where
+the last line's first word is too wide to leave the ellipsis room, a line
+of text that wraps is displaced whole and shows the ellipsis alone, as the
+non-tentative WPT tests, Edge and Safari have it; Chrome's experimental
+builds remove characters instead, as `block-ellipsis-043.tentative` asks,
+which this does only where the text does not wrap. An element's empty block
+right after the last line, whose margins reach no further than the line's
+block's, puts the clamp point after itself, and the last line then has no
+ellipsis, as Chrome and Safari have it),
+`text-overflow` on a block that clips (`truncate`: each line that runs past
+the box's end — or a float's, beside it — cut there, inside a word if need
+be but never inside a grapheme cluster, with an ellipsis, as a browser cuts
+it; a word too long for a line that wraps is cut the same way, and so are
+the lines a clamp leaves. `text-overflow: "<string>"` draws the string in
+the ellipsis's place, in the paragraph's direction, a run of forced breaks
+in it made one space, or nothing between two wide characters, and a line's
+first character stays, clipped, where the string leaves it no room. It is
+how the line is drawn, and no part of how wide
 it is: a table cell or a flex item holding the block is sized by the whole
 line, so a button whose label is a `truncate` span is cut only where
 something lets it shrink, as `min-w-0` does), `overflow-wrap` (a word too long for

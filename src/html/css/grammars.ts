@@ -33,7 +33,9 @@ function numberOf(word: string): string | null {
 
 /** The text of a CSS string at the start of `text`, its escapes read, and
  *  where it ends; null where `text` starts with none or it is not closed. */
-function readString(text: string): { value: string; end: number } | null {
+export function readString(
+  text: string,
+): { value: string; end: number } | null {
   const quote = text[0];
   if (quote !== '"' && quote !== "'") return null;
   let value = '';

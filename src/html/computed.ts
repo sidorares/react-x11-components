@@ -1330,7 +1330,10 @@ function cssomAt(
       (style.textIndentHanging ? ' hanging' : '') +
       (style.textIndentEachLine ? ' each-line' : ''),
     'text-justify': style.textJustify,
-    'text-overflow': style.textOverflow,
+    'text-overflow':
+      style.textOverflowMark === '\u2026'
+        ? style.textOverflow
+        : `"${style.textOverflowMark.replace(/["\\]/g, '\\$&')}"`,
     'tab-size': style.tabSizeIsLength
       ? px(style.tabSize, scale)
       : num(style.tabSize),
