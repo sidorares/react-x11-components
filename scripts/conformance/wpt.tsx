@@ -25,7 +25,7 @@
 //   such as `onload` on an element — is recorded as `script` and not
 //   rendered: the component never executes one, by design.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { dirname, extname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import React from 'react';
 import { createRoot, loadFont, ThemeProvider } from 'react-x11';
 import { WindowNode } from 'react-x11/node';
@@ -344,6 +344,9 @@ let serial = 0;
  *  test — a pass of nothing, or a fail of a reference with no image. */
 let loaded = false;
 
+/** A file a frame shows as an image document. */
+const IMAGE_FILE = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
+
 /** How deep frames in frames are drawn: past it, an empty box. */
 const FRAME_DEPTH = 4;
 
@@ -363,13 +366,26 @@ function embeddedFor(path: string, depth: number) {
     const src = rect.kind === 'object' ? attribs.data : attribs.src;
     const file = srcdoc === undefined && src ? fileFor(src, path) : null;
     if (srcdoc === undefined && !file) return null;
-    const page = file ? pageOf(file) : { text: srcdoc!, charset: 'utf-8' };
+    // a frame of an image is an image document, as a browser makes one:
+    // the image alone, at its size, its EXIF orientation applied (WPT's
+    // image-orientation-none-image-document)
+    const image = file !== null && IMAGE_FILE.test(file);
+    const page = image
+      ? {
+          text:
+            '<!DOCTYPE html><body style="margin:0">' +
+            `<img src="${encodeURI(basename(file))}" style="display:block"></body>`,
+          charset: 'utf-8',
+        }
+      : file
+        ? pageOf(file)
+        : { text: srcdoc!, charset: 'utf-8' };
     // a frame's document is resolved against its own file, or, as srcdoc,
     // against the document around it
     const base = file ?? path;
     return h(Html, {
       source: page.text,
-      contentType: file ? servedType(file) : 'text/html',
+      contentType: file && !image ? servedType(file) : 'text/html',
       charset: page.charset,
       partial: false,
       selectable: false,
