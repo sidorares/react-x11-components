@@ -81,6 +81,8 @@ import {
 } from './writing.js';
 import { tableGrid } from './grid.js';
 import { endsShort, prettyBreaks, shortLine, spacedWords } from './pretty.js';
+import { breakOpportunities, movesBreaks } from './word-break.js';
+import type { BreakRule } from './word-break.js';
 import type { PrettySetting } from './pretty.js';
 
 /** How a paragraph's lines are fitted to their width, and measured: as a
@@ -994,6 +996,41 @@ function linesOf(
     );
     if (!shortOfStrut(laid.lines, strut, firstStrut)) return laid;
     strutted = true;
+  }
+
+  // Text that breaks where UAX #14 does not say, in text that is all the
+  // paragraph holds: a line at a time (`layoutOwnBreaks`).
+  if (
+    fonts &&
+    wraps(style) &&
+    !hasAtomics &&
+    !hasEdges &&
+    !raised &&
+    !floated &&
+    !indented &&
+    !alignedApart &&
+    !restyled &&
+    !strutted &&
+    !apart &&
+    !options.clamp &&
+    style.textAlign !== 'justify' &&
+    lastAlign !== 'justify' &&
+    cutOf(style, options.clamp, options.width, over) === null &&
+    breaksOwnWay(items) &&
+    !hasControls(items) &&
+    movesBreaks(breakRulesOf(items as Extract<Item, { kind: 'text' }>[]))
+  ) {
+    const laid = layoutOwnBreaks(
+      items as Extract<Item, { kind: 'text' }>[],
+      base,
+      style,
+      options.width,
+      lineHeightMul,
+      align,
+      fonts,
+    );
+    if (laid && !shortOfStrut(laid.lines, strut, firstStrut)) return laid;
+    if (laid) strutted = true;
   }
 
   // The text-only, float-free, unindented case: one call, every line — or
@@ -2626,6 +2663,156 @@ function layoutBreakSpaces(
   }
   return { lines, height: y, width: widest };
 }
+
+/** Whether a text of a paragraph breaks where UAX #14 does not say: the
+ *  question every paragraph is asked, so it allocates nothing. */
+function breaksOwnWay(items: readonly Item[]): boolean {
+  for (const item of items) {
+    if (item.kind !== 'text') continue;
+    const style = item.box.style;
+    if (
+      style.lineBreakAnywhere ||
+      style.wordBreak === 'break-all' ||
+      style.wordBreak === 'keep-all'
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** The rules each text of a paragraph breaks by (`breakOpportunities`). */
+function breakRulesOf(
+  items: readonly Extract<Item, { kind: 'text' }>[],
+): BreakRule[] {
+  const rules: BreakRule[] = [];
+  let at = 0;
+  for (const item of items) {
+    const style = item.box.style;
+    const end = at + item.run.text.length;
+    rules.push({
+      start: at,
+      end,
+      wordBreak: style.wordBreak,
+      anywhere: style.lineBreakAnywhere,
+      wraps: !item.control && wraps(style),
+    });
+    at = end;
+  }
+  return rules;
+}
+
+/** How much of a paragraph is laid out on one line to measure where its
+ *  next line may end (`layoutOwnBreaks`), at first. */
+const OWN_BREAKS_WINDOW = 1024;
+
+/**
+ * A paragraph whose text breaks where UAX #14 does not say (CSS Text 3, 5.2
+ * and 5.3): `word-break: break-all` between any two letters, `keep-all`
+ * nowhere between two, `line-break: anywhere` between any two clusters.
+ * Neither engine reads either property, and handed `overflow-wrap` in its
+ * place one breaks a word only where no line holds it whole: `Latin latin`
+ * a pixel narrower than it is broke at the space, where a browser fills the
+ * line and carries the last letter down. So the places are worked out here
+ * (`breakOpportunities`), the text laid out on one line to measure where
+ * each is (`caretPosition`), and each line ends at the last that fits —
+ * past the room at the first where none does — and is laid out alone, as a
+ * `break-spaces` line is. Left to right only: a caret's place says nothing
+ * of a line's width where the text is reordered.
+ */
+function layoutOwnBreaks(
+  items: Extract<Item, { kind: 'text' }>[],
+  base: Record<string, unknown>,
+  style: ComputedStyle,
+  width: number,
+  lineHeightMul: number,
+  align: string,
+  fonts: FontsLike,
+): InlineResult | null {
+  const runs: TextRun[] = [];
+  let text = '';
+  for (const item of items) {
+    runs.push(item.run);
+    text += item.run.text;
+  }
+  // nothing that reorders a line, whose width no caret says
+  if (style.direction === 'rtl' || RTL_TEXT.test(text)) return null;
+  const starts = runStarts(runs);
+  const breaks = breakOpportunities(text, breakRulesOf(items));
+  const options = {
+    maxWidth: width,
+    lineHeight: lineHeightMul,
+    direction: style.direction,
+    fit: PARAGRAPH_FIT,
+  };
+  // where a line ends: the last place that fits from `from`, the first past
+  // the room where none does, and a forced break wherever it comes
+  const total = text.length;
+  let b = 0;
+  const endFrom = (from: number): number => {
+    while (b < breaks.length && breaks[b].at <= from) b += 1;
+    let window = OWN_BREAKS_WINDOW;
+    for (;;) {
+      const to = Math.min(total, from + window);
+      const probe = sliceRuns(runs, from, to);
+      const one = fonts.layout(probe, base, { ...options, wrap: false });
+      const offsets = codeUnitOffsets(text.slice(from, to));
+      const x0 = one.caretPosition(0).x;
+      const xAt = (at: number): number =>
+        one.caretPosition(codePointAtOffset(offsets, at - from)).x - x0;
+      let fit = -1;
+      for (let k = b; k < breaks.length && breaks[k].at <= to; k += 1) {
+        const at = breaks[k].at;
+        // the white space a line ends on hangs past it
+        let end = at;
+        while (end > from && /[ \t\n]/.test(text[end - 1])) end -= 1;
+        if (fit >= 0 && xAt(end) > width + FIT_SLACK) return fit;
+        if (fit < 0 && xAt(end) > width + FIT_SLACK) return at;
+        fit = at;
+        if (breaks[k].required) return at;
+      }
+      // every place laid out fits: the line may reach further
+      if (to >= total) return fit >= 0 ? fit : total;
+      window *= 2;
+    }
+  };
+  const lines: LineBox[] = [];
+  let widest = 0;
+  let y = 0;
+  for (let from = 0; from < total;) {
+    let to = endFrom(from);
+    if (to <= from) to = total;
+    const own = sliceRuns(runs, from, to).slice();
+    const spans = new SpanMap();
+    for (let k = 0; k < items.length; k += 1) {
+      const start = starts[k];
+      const end = start + runs[k].text.length;
+      if (end <= from || start >= to) continue;
+      const lo = Math.max(start, from);
+      spans.add(
+        items[k].start + (lo - start),
+        Math.min(end, to) - lo,
+        items[k].control ? null : items[k].box,
+      );
+    }
+    // a layout of its own, as a `break-spaces` line is
+    const layout = fonts.layout(own, base, {
+      ...options,
+      maxWidth: width + lines.length * 1e-6,
+      align,
+      wrap: false,
+    });
+    LAYOUT_RUNS.set(layout, own);
+    widest = Math.max(widest, emitLayout(layout, spans, 0, y, lines));
+    y += layout.height;
+    from = to;
+  }
+  return { lines, height: y, width: widest };
+}
+
+/** A character of a right-to-left script, or a control that embeds one. */
+const RTL_TEXT =
+  /[֐-ࣿיִ-﷿ﹰ-﻿‏‫‮⁧]|\uD802[\uDC00-\uDFFF]|\uD83A/;
 
 /** Whether a text keeps its spaces as `break-spaces` does where its lines
  *  wrap (`layoutBreakSpaces`). */
