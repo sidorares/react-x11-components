@@ -6117,7 +6117,11 @@ one that says `break-inside: avoid` (`page-break-inside` too), with
 `orphans` and `widows` lines of a block kept at either side of a break, two
 of each unless they say otherwise, and a margin at a break dropped. A box
 with a height and nothing in it, a float among them, is cut wherever a
-column ends and goes on at the head of the next. The
+column ends and goes on at the head of the next. A block that is a
+formatting context of its own, a `flow-root` say, breaks as any block does;
+only one that scrolls or clips, a multicol container, a clamp and an
+orthogonal flow go to a column whole, as does a box whose only content is a
+float that cannot be cut. The
 columns balance, and CSS leaves how to the user agent; this does as Blink
 does — the content's height shared out between the columns, no less than
 the tallest thing that cannot break, then as much
