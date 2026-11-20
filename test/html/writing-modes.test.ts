@@ -1447,3 +1447,29 @@ test('a vertical-rl block in a vertical-lr flow keeps its own lines right to lef
   );
   assert.ok(at('m') < at('n'), 'and the flow still runs left to right');
 });
+
+test('an edge on half a pixel across a vertical-rl frame is drawn on the column the page draws it on', async () => {
+  // the frame's turn runs its block axis backwards across the page, so a
+  // half it rounds up the page rounds down, and the box came out a column
+  // to the left of the same box laid out across (WPT's css-grid
+  // grid-self-baseline-vertical-rl-004)
+  const { result, node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="writing-mode:vertical-rl;width:100px;height:20px">' +
+      '<div style="width:10.5px"></div>' +
+      '<div style="width:10px;background:#0f0"></div></div>' +
+      '<div style="position:absolute;top:30px;left:79.5px;width:10px;' +
+      'height:20px;background:#0f0"></div>',
+  );
+  await act();
+  const { abs } = view(node) as unknown as DrawnNode;
+  const row = async (y: number) => {
+    let columns = '';
+    for (let x = 76; x < 94; x += 1) {
+      const p = await pixelAt(result.ctx, abs.x + x, abs.y + y);
+      columns += p[1] === 255 && p[0] === 0 ? '#' : '.';
+    }
+    return columns;
+  };
+  assert.strictEqual(await row(10), await row(40));
+});

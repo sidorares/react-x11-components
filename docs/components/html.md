@@ -8624,7 +8624,9 @@ to the viewport's height too, else as the viewport is tall (7.3.1), and no
 longer than their content. A frame is drawn through its
 turn at a whole translation, the fraction moved into where what it holds is
 painted from, so what is in it is snapped to the pixels the page would snap
-it to, its lines' edges included. An absolute box at its static position in
+it to, its lines' edges included. Along an axis its turn runs backwards, the origin is moved
+back a millionth of a pixel, so an edge on half a pixel rounds the way the
+page rounds it. An absolute box at its static position in
 `vertical-lr` starts at the left, where the flow it would have been in
 starts: laid out after the flow, which is laid out as `vertical-rl`'s and
 put back across, it is put back by its own size once it has one, and what
