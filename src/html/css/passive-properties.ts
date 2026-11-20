@@ -159,6 +159,9 @@ export const PASSIVE: Record<string, PassiveProperty> = Object.assign(
       if (/^(?:sub|super|baseline|top|center|bottom)$/.test(w)) return w;
       return lengthOf(w, true);
     }),
+    // read by the columns as well, for a forced break (`forces` in
+    // layout/multicol.ts): a change of one is a change of the style, which
+    // lays the columns out again as any other does
     'break-after': own('auto', BREAKS),
     'break-before': own('auto', BREAKS),
     'column-height': own('auto', (v) =>

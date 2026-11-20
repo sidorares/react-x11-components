@@ -1466,3 +1466,149 @@ test('what a block is taller than its content is room a column break falls in, a
   const s = boxOf(el, 's');
   assert.deepStrictEqual([Math.round(s.x), s.y, s.height], [103, 10, 80]);
 });
+
+// Flex containers and grids break between their lines and rows and inside
+// their items (CSS Flexbox 1, 10; CSS Grid 1, 12), where they went to a
+// column whole. Each case is one of WPT's css-break green squares, and the
+// numbers are where Chrome draws it.
+const COLS =
+  '<style>body{margin:0}.m{columns:4;column-fill:auto;gap:0;width:100px;' +
+  'height:100px}</style>';
+
+const piecesAt = (el: ReturnType<typeof view>, id: string, from: string) => {
+  const base = boxOf(el, from);
+  return (COLUMN_PIECES.get(boxOf(el, id) as never) ?? []).map(
+    (p: { x: number; y: number; width: number; height: number }) => [
+      p.x - base.x,
+      p.y - base.y,
+      p.width,
+      p.height,
+    ],
+  );
+};
+
+test('a column flex box breaks between its items, and inside one', async () => {
+  // single-line-column-flex-fragmentation-001
+  const { node } = await render(
+    COLS +
+      '<div class="m" id="m"><div style="display:flex;flex-direction:column;' +
+      'height:400px;width:25px" id="f"><div id="a" style="height:50px"></div>' +
+      '<div id="b" style="height:350px"></div></div></div>',
+    200,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(at(el, 'a', 'm'), [0, 0, 25, 50], 'whole, first');
+  assert.deepStrictEqual(
+    piecesAt(el, 'b', 'm'),
+    [
+      [0, 50, 25, 50],
+      [25, 0, 25, 100],
+      [50, 0, 25, 100],
+      [75, 0, 25, 100],
+    ],
+    'the second item down the rest of the columns',
+  );
+  assert.strictEqual(piecesAt(el, 'f', 'm').length, 4, 'and the box with it');
+});
+
+test('the items of a flex row are each cut where the columns end', async () => {
+  // single-line-row-flex-fragmentation: two items side by side, one taller
+  const { node } = await render(
+    COLS +
+      '<div class="m" id="m"><div style="display:flex;align-items:start;' +
+      'width:25px"><div id="a" style="width:10px;height:150px"></div>' +
+      '<div id="b" style="width:15px;height:250px"></div></div></div>',
+    200,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(piecesAt(el, 'a', 'm'), [
+    [0, 0, 10, 100],
+    [25, 0, 10, 50],
+  ]);
+  assert.deepStrictEqual(piecesAt(el, 'b', 'm'), [
+    [10, 0, 15, 100],
+    [35, 0, 15, 100],
+    [60, 0, 15, 50],
+  ]);
+});
+
+test('a grid breaks between its rows', async () => {
+  // grid-item-fragmentation: the second row does not fit after the first
+  const { node } = await render(
+    COLS +
+      '<div class="m" id="m"><div style="display:grid;width:25px;' +
+      'grid-template-columns:10px 15px"><div id="a" style="height:60px">' +
+      '<div style="height:60px;overflow:hidden"></div></div>' +
+      '<div style="height:60px;overflow:hidden"></div>' +
+      '<div id="c" style="height:60px;overflow:hidden"></div></div></div>',
+    200,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(at(el, 'a', 'm'), [0, 0, 10, 60], 'the first row');
+  assert.deepStrictEqual(at(el, 'c', 'm'), [25, 0, 10, 60], 'the next column');
+});
+
+test('a forced break goes before the box it is on, and keeps its margin', async () => {
+  // single-line-row-flex-fragmentation-015: the first item's break before
+  // is the flex box's
+  const { node } = await render(
+    COLS +
+      '<div class="m" id="m"><div style="height:50px"></div>' +
+      '<div style="display:flex" id="f"><div><div id="a" ' +
+      'style="height:100px;width:25px;break-before:column"></div></div>' +
+      '</div><div id="b" style="margin-top:10px;height:20px;' +
+      'break-before:column"></div></div>',
+    200,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(at(el, 'a', 'm'), [25, 0, 25, 100], 'a column on');
+  assert.deepStrictEqual(at(el, 'b', 'm'), [50, 10, 25, 20], 'margin kept');
+});
+
+test('a forced break inside a box size containment makes monolithic is none', async () => {
+  // monolithic-content-with-forced-break-001
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="m" style="columns:2;gap:0;width:100px">' +
+      '<div style="contain:size;height:50px;width:50px">' +
+      '<div style="height:50px;break-after:column"></div></div>' +
+      '<div id="b" style="width:50px;height:150px"></div></div>',
+    200,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(piecesAt(el, 'b', 'm'), [
+    [0, 50, 50, 50],
+    [50, 0, 50, 100],
+  ]);
+});
+
+test('what overflows a flex item takes no part in where the columns break', async () => {
+  // single-line-row-flex-fragmentation-008: the item is 100px tall, its
+  // lines 150px, and what follows the flex box starts the next column
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="m" style="columns:2;gap:0;width:100px;height:100px">' +
+      '<div style="display:flex;height:100px"><div id="i" ' +
+      'style="line-height:0"><div style="display:inline-block;width:50px;' +
+      'height:50px"></div><div style="display:inline-block;width:50px;' +
+      'height:100px"></div></div></div>' +
+      '<div id="b" style="width:50px;height:100px"></div></div>',
+    200,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(at(el, 'i', 'm'), [0, 0, 50, 100], 'whole');
+  assert.deepStrictEqual(at(el, 'b', 'm'), [50, 0, 50, 100], 'the next column');
+});
+
+test('an item margin that makes a flex box taller is dropped at a break', async () => {
+  // single-line-row-flex-fragmentation-040
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="m" style="columns:2;column-fill:auto;gap:0;width:100px;' +
+      'height:100px"><div style="display:flex"><div style="margin-bottom:' +
+      '150px"><div style="height:50px;width:50px"></div></div></div>' +
+      '<div id="b" style="height:100px;width:50px"></div></div>',
+    200,
+  );
+  assert.deepStrictEqual(at(view(node), 'b', 'm'), [50, 0, 50, 100]);
+});
