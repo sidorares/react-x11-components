@@ -145,6 +145,25 @@ test('writing-mode and text-orientation are read, by their old names and values 
   ]);
 });
 
+test('a ch in a vertical line set upright is an em, the advance a glyph stands in there', async () => {
+  // CSS Values 4, 6.1.1: the advance of the "0" along the inline axis
+  // (WPT css-writing-modes/ch-units-vrl-*)
+  const { node } = await render(
+    '<style>div{font-size:20px;height:5ch;width:5ch}</style>' +
+      '<div id="up" style="writing-mode:vertical-rl;text-orientation:upright"></div>' +
+      '<div id="side" style="writing-mode:vertical-rl"></div>' +
+      '<div id="flat"></div>',
+  );
+  const el = view(node);
+  assert.deepStrictEqual(
+    [rectOf(el, 'up').width, rectOf(el, 'up').height],
+    [100, 100],
+  );
+  // not where the text is turned, which is the "0"'s width
+  assert.notStrictEqual(rectOf(el, 'side').width, 100);
+  assert.strictEqual(rectOf(el, 'side').width, rectOf(el, 'flat').width);
+});
+
 test('logical properties map by the writing mode, wherever it is declared', async () => {
   // CSS Writing Modes 4, 6.4: the block axis starts at the right of
   // vertical-rl and at the left of vertical-lr and sideways-lr, and the
