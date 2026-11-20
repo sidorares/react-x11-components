@@ -12,6 +12,7 @@ import type {
 } from '../../src/html/layout/pretty.js';
 import type { TextRun } from '../../src/richtext/index.js';
 import { parseColor } from '../../src/html/css/values.js';
+import { textOverflowMarkOf } from '../../src/html/css/style.js';
 import {
   boxOf,
   extentOf,
@@ -2008,6 +2009,40 @@ metric(
 );
 
 metric(
+  'a clamp ends in the string it names, and a line laid out a piece at a time takes it too',
+  async () => {
+    // CSS Overflow 4, 5.4: `line-clamp: 2 "…more"` draws its string where
+    // the ellipsis would be; a block whose lines are laid out a piece at a
+    // time — an inline-block on one — had no ellipsis at all; and a last
+    // line whose one word is too wide to leave the ellipsis room is
+    // displaced whole, the ellipsis alone on it (WPT's `block-ellipsis-025`)
+    const words =
+      'Boost your conversion rate with a layout that keeps cards even.';
+    const { node } = await render(
+      '<style>body{margin:0} p{margin:0;width:160px;line-height:20px;' +
+        'font:16px monospace}</style>' +
+        `<p id="a" style="line-clamp:2 ' more'">${words} ${words}</p>` +
+        `<p id="b" style="line-clamp:2">${words} ` +
+        '<span style="display:inline-block;width:10px;height:10px"></span> ' +
+        `${words}</p>` +
+        '<p id="c" style="line-clamp:1;width:80px">' +
+        'Supercalifragilistic and more</p>',
+    );
+    const el = view(node);
+    const a = linesOf(el, 'a');
+    assert.strictEqual(a.length, 2);
+    assert.strictEqual(lastRunText(a[1]), ' more');
+    assert.ok(a[1].width <= 160 + 0.01, `within the box: ${a[1].width}`);
+    const b = linesOf(el, 'b');
+    assert.strictEqual(b.length, 2);
+    assert.strictEqual(lastRunText(b[1]), '\u2026');
+    const [c] = linesOf(el, 'c');
+    assert.strictEqual(lastRunText(c), '\u2026');
+    assert.strictEqual(c.texts.length, 1, 'the ellipsis alone');
+  },
+);
+
+metric(
   '-webkit-line-clamp ends its last line in an ellipsis inside a word, as every engine does',
   async () => {
     // `line-clamp` gives the words that do not fit beside the ellipsis to
@@ -2139,6 +2174,58 @@ metric('a truncated block cuts each of its lines, and loses none', async () => {
   assert.strictEqual(pre.length, 2);
   assert.deepStrictEqual(pre.map(truncated), [true, false]);
 });
+
+test('a text-overflow or block-ellipsis string reads as one line', () => {
+  // CSS Overflow 4, 4.1 and 5.4: a run of forced breaks in the string is a
+  // segment break, a space, or nothing between two wide characters
+  assert.strictEqual(textOverflowMarkOf('"123"'), '123');
+  assert.strictEqual(textOverflowMarkOf('"Hi\\A\\A\\AHi"'), 'Hi Hi');
+  assert.strictEqual(textOverflowMarkOf('"Hi\\2028 \\2029 Hi"'), 'Hi Hi');
+  assert.strictEqual(textOverflowMarkOf('"こん\\Aにちは"'), 'こんにちは');
+  assert.strictEqual(textOverflowMarkOf('"你好\\A🟢"'), '你好 🟢');
+  assert.strictEqual(textOverflowMarkOf('ellipsis'), null);
+  assert.strictEqual(textOverflowMarkOf('"a" "b"'), null);
+});
+
+metric(
+  'a text-overflow string ends a line that overflows, wrapped or not',
+  async () => {
+    // CSS Overflow 4, 4.1: the string is drawn where the ellipsis would
+    // be, and a word too long for a line that wraps overflows as much as a
+    // line that does not. The line's first character stays, clipped, where
+    // the string leaves no room for it (CSS Overflow 3, 5.1)
+    const { node } = await render(
+      '<style>body{margin:0} div{width:80px;overflow:hidden;' +
+        'font:16px monospace}</style>' +
+        '<div id="a" style="text-overflow:\'123\'">' +
+        'Supercalifragilistic</div>' +
+        '<div id="b" style="text-overflow:\'123\';white-space:nowrap">' +
+        'a b c d e f g h i j k l</div>' +
+        '<div id="c" style="text-overflow:ellipsis">' +
+        'Supercalifragilistic</div>' +
+        '<div id="d" style="text-overflow:\'0123456789ab\'">' +
+        'Supercalifragilistic</div>' +
+        '<div id="e" style="text-overflow:\'123\'">fits</div>',
+    );
+    const el = view(node);
+    for (const [id, mark] of [
+      ['a', '123'],
+      ['b', '123'],
+      ['c', '\u2026'],
+    ]) {
+      const [line] = linesOf(el, id);
+      assert.strictEqual(lastRunText(line), mark, id);
+      assert.ok(line.width <= 80 + 0.01, `${id} within the box: ${line.width}`);
+    }
+    // the first character is kept, the string after it, clipped by the box
+    const [d] = linesOf(el, 'd');
+    assert.strictEqual(d.texts.length, 2);
+    assert.strictEqual(d.texts[0].textEnd - d.texts[0].textStart, 1);
+    assert.strictEqual(lastRunText(d), '0123456789ab');
+    const [e] = linesOf(el, 'e');
+    assert.strictEqual(e.texts.length, 1, 'a line that fits is left whole');
+  },
+);
 
 metric(
   'a truncated line with an inline-block on it ends in an ellipsis too',

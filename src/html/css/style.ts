@@ -46,6 +46,7 @@ import { CALC_SIZE, calcSizeOf } from './calc-size.js';
 import { parseMath, parseMathNumberWith } from './calc.js';
 import { crossFadeSyntax, gradientSyntax } from './gradient-syntax.js';
 import { joinFamilies, parseUrl, readFamilies } from './parse.js';
+import { readString } from './grammars.js';
 import type { FamilyName } from './parse.js';
 import { decodesImageType } from '../image-types.js';
 import { pick } from '../srcset.js';
@@ -1174,6 +1175,10 @@ export interface ComputedStyle {
   /** `block-ellipsis`, inherited: whether the line before a clamp point
    *  ends in an ellipsis. */
   blockEllipsis: boolean;
+  /** What the clamp's ellipsis is drawn as: `…`, or the string
+   *  `block-ellipsis` or `line-clamp` names, as `textOverflowMarkOf` reads
+   *  it. Inherited with `blockEllipsis`. */
+  blockEllipsisMark: string;
   /** `display: -webkit-box` (`block`) or `-webkit-inline-box`, as
    *  specified: the legacy flexible box, a flex box whose direction is
    *  `-webkit-box-orient`'s, or where it clamps its lines vertically, a
@@ -1214,6 +1219,10 @@ export interface ComputedStyle {
   columnSpan: boolean;
   /** How a line cut by `overflow` ends: `clip`, or with an ellipsis. */
   textOverflow: 'clip' | 'ellipsis';
+  /** What an ellipsis is drawn as: `…`, or the string `text-overflow`
+   *  names (CSS Overflow 4, 4.1), its forced breaks made a space as
+   *  `textOverflowMarkOf` has it. `textOverflow` is `ellipsis` for both. */
+  textOverflowMark: string;
   /** `aspect-ratio`: a box's width over its height, where its height is
    *  `auto`; `auto` beside it, as `auto 16 / 9`, gives a replaced element
    *  its own where it has one. Null for `auto` alone. */
@@ -1869,6 +1878,7 @@ export const INHERITED = [
   'textAlignLast',
   'textJustify',
   'blockEllipsis',
+  'blockEllipsisMark',
   'alignBlocks',
   'textIndent',
   'textIndentHanging',
@@ -2164,6 +2174,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     maxLines: null,
     clampContinue: 'auto',
     blockEllipsis: false,
+    blockEllipsisMark: '\u2026',
     webkitBox: null,
     webkitBoxOrient: 'horizontal',
     webkitBoxDirection: 'normal',
@@ -2180,6 +2191,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     columnFill: 'balance',
     columnSpan: false,
     textOverflow: 'clip',
+    textOverflowMark: '\u2026',
     aspectRatio: null,
     objectFit: 'fill',
     imageRendering: 'auto',
@@ -2497,6 +2509,7 @@ export function inherit(
   out.textAlignLast = parent.textAlignLast;
   out.textJustify = parent.textJustify;
   out.blockEllipsis = parent.blockEllipsis;
+  out.blockEllipsisMark = parent.blockEllipsisMark;
   out.alignBlocks = parent.alignBlocks;
   out.textIndent = parent.textIndent;
   out.textIndentHanging = parent.textIndentHanging;
@@ -3240,6 +3253,7 @@ export function applyDeclaration(
       }
       let lines: number | null = null;
       let ellipsis: boolean | null = null;
+      let mark = '\u2026';
       let legacy = false;
       for (const part of parts) {
         const v = part.toLowerCase();
@@ -3248,13 +3262,17 @@ export function applyDeclaration(
         else if (ellipsis === null && (v === 'auto' || v === 'no-ellipsis')) {
           ellipsis = v === 'auto';
         } else if (ellipsis === null && /^(["']).*\1$/s.test(part)) {
-          ellipsis = part.length > 2;
+          const read = textOverflowMarkOf(part);
+          if (read === null) return;
+          ellipsis = read !== '';
+          if (read) mark = read;
         } else return;
       }
       if (lines === 0 || (lines === null && ellipsis === null)) return;
       style.maxLines = lines;
       style.clampContinue = legacy ? 'legacy' : 'collapse';
       style.blockEllipsis = ellipsis ?? true;
+      style.blockEllipsisMark = mark;
       return;
     }
     case '-webkit-line-clamp': {
@@ -3265,10 +3283,12 @@ export function applyDeclaration(
         style.maxLines = null;
         style.clampContinue = 'auto';
         style.blockEllipsis = true;
+        style.blockEllipsisMark = '\u2026';
       } else if (/^\d+$/.test(v) && Number(v) >= 1) {
         style.maxLines = Number(v);
         style.clampContinue = 'legacy';
         style.blockEllipsis = true;
+        style.blockEllipsisMark = '\u2026';
       }
       return;
     }
@@ -3291,14 +3311,30 @@ export function applyDeclaration(
       const lower = v.toLowerCase();
       if (lower === 'auto' || lower === 'no-ellipsis') {
         style.blockEllipsis = lower === 'auto';
-      } else if (/^(["']).*\1$/s.test(v)) style.blockEllipsis = v.length > 2;
+        style.blockEllipsisMark = '\u2026';
+        return;
+      }
+      const read = textOverflowMarkOf(v);
+      if (read !== null) {
+        style.blockEllipsis = read !== '';
+        style.blockEllipsisMark = read || '\u2026';
+      }
       return;
     }
     case 'text-overflow': {
       // the end a line is cut at; the two values CSS Overflow 3 has, for
       // either end, are Firefox's alone
       const v = value.trim().toLowerCase();
-      if (v === 'clip' || v === 'ellipsis') style.textOverflow = v;
+      if (v === 'clip' || v === 'ellipsis') {
+        style.textOverflow = v;
+        style.textOverflowMark = '\u2026';
+        return;
+      }
+      const mark = textOverflowMarkOf(value.trim());
+      if (mark !== null) {
+        style.textOverflow = 'ellipsis';
+        style.textOverflowMark = mark;
+      }
       return;
     }
     case 'box-sizing': {
@@ -8415,6 +8451,32 @@ const EAST_ASIAN_FEATURES: Readonly<Record<string, string>> = {
   ruby: 'ruby=1',
 };
 
+/** Characters a segment break between two of is removed rather than made
+ *  a space (CSS Text 4, 4.1.3): East Asian wide and fullwidth letters, not
+ *  Hangul. An emoji is wide too and keeps its space, as Chromium has it. */
+const SEGMENT_WIDE =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\u3000-\u303f\uff01-\uff60\uffe0-\uffe6]/u;
+
+/** Forced breaks a `text-overflow` string may hold: each run of them is one
+ *  segment break, drawn on the one line an ellipsis is. */
+const FORCED_BREAKS = /[\n\r\f\v\u0085\u2028\u2029]+/g;
+
+/**
+ * The string a `text-overflow: "<string>"` draws (CSS Overflow 4, 4.1), or
+ * null where the value is no one string. An ellipsis is on one line, so a
+ * run of forced breaks in it is a segment break: a space, or nothing
+ * between two wide characters (WPT's `text-overflow-string-0xx`).
+ */
+export function textOverflowMarkOf(value: string): string | null {
+  const read = readString(value);
+  if (!read || read.end !== value.length) return null;
+  return read.value.replace(FORCED_BREAKS, (_, at: number, all: string) => {
+    const before = [...all.slice(0, at)].pop() ?? '';
+    const after = [...all.slice(at).replace(FORCED_BREAKS, '')][0] ?? '';
+    return SEGMENT_WIDE.test(before) && SEGMENT_WIDE.test(after) ? '' : ' ';
+  });
+}
+
 function eastAsianFeatures(value: string): string {
   const out: string[] = [];
   for (const word of splitValue(value)) {
@@ -10905,11 +10967,21 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'rule-inset': ['columnRule', 'rowRule'],
   'rule-overlap': ['ruleOverlap'],
   'text-shadow': ['textShadow'],
-  'line-clamp': ['maxLines', 'clampContinue', 'blockEllipsis'],
-  '-webkit-line-clamp': ['maxLines', 'clampContinue', 'blockEllipsis'],
+  'line-clamp': [
+    'maxLines',
+    'clampContinue',
+    'blockEllipsis',
+    'blockEllipsisMark',
+  ],
+  '-webkit-line-clamp': [
+    'maxLines',
+    'clampContinue',
+    'blockEllipsis',
+    'blockEllipsisMark',
+  ],
   'max-lines': ['maxLines'],
   continue: ['clampContinue'],
-  'block-ellipsis': ['blockEllipsis'],
+  'block-ellipsis': ['blockEllipsis', 'blockEllipsisMark'],
   '-webkit-box-orient': ['webkitBoxOrient'],
   '-webkit-box-direction': ['webkitBoxDirection'],
   '-webkit-box-pack': ['webkitBoxPack'],
@@ -10925,7 +10997,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'column-span': ['columnSpan'],
   '-webkit-column-span': ['columnSpan'],
   'page-break-inside': ['breakInside'],
-  'text-overflow': ['textOverflow'],
+  'text-overflow': ['textOverflow', 'textOverflowMark'],
   // a flex box's and its items', and a grid's
   'flex-direction': ['flexDirection'],
   'flex-wrap': ['flexWrap'],

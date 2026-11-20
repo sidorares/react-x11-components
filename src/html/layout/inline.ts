@@ -935,7 +935,13 @@ function cutOf(
   over: ComputedStyle = style,
 ): Cut | null {
   // the ellipsis a clamp ends in is placed apart (`ellipsized`)
-  if (clamp) return { maxLines: clamp.lines, overflow: 'clip' };
+  // and lines that do not wrap stay whole under it, each as long as its
+  // text, for `text-overflow` to cut (`ellipsizeLines`)
+  if (clamp) {
+    return wraps(style)
+      ? { maxLines: clamp.lines, overflow: 'clip' }
+      : { maxLines: clamp.lines, overflow: 'clip', wrap: false };
+  }
   // `text-overflow` is how the line is drawn where it runs out of its
   // box, and no part of how wide it is (CSS Overflow 3, 5.1): in a box of
   // no width, which shows none of it and is what the box's content is
@@ -943,14 +949,43 @@ function cutOf(
   // whole. Cut there, ntk left the ellipsis alone, and a button whose
   // label is a `truncate` span was measured as wide as one
   if (
-    over.textOverflow === 'ellipsis' &&
+    linesCut(over, width) &&
     !wraps(style) &&
-    over.overflowX !== 'visible' &&
-    width > 0
+    over.textOverflowMark === '\u2026'
   ) {
     return { maxLines: 1, overflow: 'ellipsis', wrap: false };
   }
   return null;
+}
+
+/**
+ * Whether a block's lines that run past its end edge end in an ellipsis
+ * (CSS Overflow 3, 5.1): any line, wrapped or not — a word too long for its
+ * line overflows as much as a line that does not wrap. The engine cuts one
+ * line that does not wrap with its own `…` (`cutOf`); a line that wraps,
+ * and a string `text-overflow` names, are cut a piece at a time
+ * (`ellipsizeLines`), since an engine cuts no line it wraps and draws no
+ * ellipsis but its own.
+ */
+function linesCut(over: ComputedStyle, width: number): boolean {
+  return (
+    over.textOverflow === 'ellipsis' &&
+    over.overflowX !== 'visible' &&
+    width > 0
+  );
+}
+
+/** Whether the lines are cut by `text-overflow` where no one layout can:
+ *  they wrap, or the ellipsis is a string (`linesCut`). */
+function cutApart(
+  style: ComputedStyle,
+  over: ComputedStyle,
+  width: number,
+): boolean {
+  return (
+    linesCut(over, width) &&
+    (wraps(style) || over.textOverflowMark !== '\u2026')
+  );
 }
 
 /**
@@ -1213,12 +1248,22 @@ function linesOf(
     (item) =>
       item.kind === 'text' && (item.run as DocumentRun).emphasis !== undefined,
   );
-  let strutted = emphasized;
+  // lines `text-overflow` cuts where no one layout can (`cutApart`)
+  const cutsApart = !options.clamp && cutApart(style, over, options.width);
+  let strutted = emphasized || cutsApart;
 
   // Inline boxes' edges as spacers in one layout, where the engine left
   // every edge on the line of the content it belongs to (`layoutSpaced`);
   // the lines a piece at a time, below, where it did not.
-  if (spaced && !floated && !indented && !alignedApart && !restyled && !apart) {
+  if (
+    spaced &&
+    !floated &&
+    !indented &&
+    !alignedApart &&
+    !restyled &&
+    !apart &&
+    !cutsApart
+  ) {
     const laid = layoutSpaced(
       items,
       base,
@@ -1436,11 +1481,22 @@ function linesOf(
     // them (CSS Overflow 4, 4.2).
     let clampCut = false;
     if (clamp) {
+      // lines that do not wrap are laid out whole (`cutOf`), and an engine
+      // counts no lines it does not wrap: the clamp's are cut here
+      let past = false;
+      if (layout.lines.length > clamp.lines) {
+        const end = layout.lines[clamp.lines - 1].end;
+        past = inkBeyond(runs, end);
+        runs = sliceRuns(runs, 0, end);
+        layout = fonts.layout(runs, base, layoutOptions);
+        LAYOUT_RUNS.set(layout, runs);
+      }
       const shown = layout.lines.length;
       clampCut =
         shown > 0 &&
         shown >= clamp.lines &&
-        (layout.truncated ?? inkBeyond(runs, layout.lines[shown - 1].end));
+        (past ||
+          (layout.truncated ?? inkBeyond(runs, layout.lines[shown - 1].end)));
       if (
         clamp.ellipsis &&
         shown > 0 &&
@@ -1521,14 +1577,29 @@ function linesOf(
           : null,
     );
     if (keepsSpaces) hangLines(lines, 0, runs, fonts, rtl);
+    // a clamp's lines that run past the box are cut by `text-overflow`
+    // too, each but where the clamp's own ellipsis left room
+    let clampWidest = widest;
+    if (clamp && !rtl && linesCut(over, options.width)) {
+      clampWidest = ellipsizeLines(
+        lines,
+        style,
+        over,
+        options,
+        fonts,
+        base,
+        lineHeightMul,
+      );
+      detachUncut(lines, layout, style, fonts, base, lineHeightMul);
+    }
     // a clamp and a cut are the one layout's to make
     if (!clamp && !cut && shortOfStrut(lines, strut, firstStrut)) {
       strutted = true;
       break fast;
     }
     return clampCut
-      ? { lines, height: layout.height, width: widest, cut: true }
-      : { lines, height: layout.height, width: widest };
+      ? { lines, height: layout.height, width: clampWidest, cut: true }
+      : { lines, height: layout.height, width: clampWidest };
   }
 
   // --- the general case: line at a time -------------------------------------
@@ -2234,10 +2305,7 @@ function linesOf(
   placeDeferred();
   // `text-overflow` on what the lines a piece at a time hold, which the
   // one-layout paths above leave to the engine
-  if (
-    ellipsizes.any ||
-    (!rtl && !options.clamp && cutOf(style, undefined, options.width, over))
-  ) {
+  if (ellipsizes.any || (!rtl && linesCut(over, options.width))) {
     widest = ellipsizeLines(
       lines,
       style,
@@ -2247,6 +2315,31 @@ function linesOf(
       base,
       lineHeightMul,
     );
+  }
+  // and a clamp's ellipsis at the end of the last line it leaves, where it
+  // cut the text short or more of the container follows (CSS Overflow 4,
+  // 4.2), as the one-layout paths have it (`ellipsized`)
+  const clamping = options.clamp;
+  if (
+    clamping?.ellipsis &&
+    !rtl &&
+    lines.length >= clamping.lines &&
+    (lines.length > clamping.lines || clamping.follows)
+  ) {
+    const last = lines[clamping.lines - 1];
+    if (!CUT_LINES.has(last)) {
+      ellipsizeLine(
+        last,
+        style,
+        style.blockEllipsisMark,
+        options.width,
+        fonts,
+        base,
+        lineHeightMul,
+        true,
+      );
+      widest = Math.max(widest, last.width);
+    }
   }
 
   if (!floatsPlaced.length) {
@@ -7354,21 +7447,33 @@ function ellipsized(
   style: ComputedStyle,
   legacy = false,
 ): { layout: TextLayoutLike; runs: TextRun[]; spans: SpanMap } {
-  const mark = runFor('\u2026', style);
+  const mark = runFor(style.blockEllipsisMark, style);
   const room = width - fonts.layout([mark], base, {}).width;
   const last = layout.lines[layout.lines.length - 1];
   let end = last.end;
-  if (last.width > room && legacy) {
-    end = last.start + fitted(fonts, runs, last.start, last.end, room, base);
-  } else if (last.width > room) {
-    const probe = fonts.layout(sliceRuns(runs, last.start, last.end), base, {
-      ...options,
-      maxWidth: Math.max(0, room),
-      maxLines: 1,
-      overflow: 'clip',
-      overflowWrap: 'break-word',
-    });
-    end = last.start + (probe.lines[0]?.end ?? 0);
+  if (last.width > room) {
+    // where the line breaks in the room the ellipsis leaves it, at a soft
+    // wrap opportunity: a line of text that wraps and has none that fits,
+    // its first word as wide as the room, is displaced whole, the ellipsis
+    // alone on it (CSS Overflow 4, 5.4; WPT's `block-ellipsis-016`, and
+    // `webkit-line-clamp-036` for the legacy clamp); `overflow-wrap`
+    // makes no opportunity of its own here
+    const probe = (overflowWrap: string) =>
+      fonts.layout(sliceRuns(runs, last.start, last.end), base, {
+        ...options,
+        maxWidth: Math.max(0, room),
+        maxLines: 1,
+        overflow: 'clip',
+        overflowWrap,
+        // the line breaks where the ellipsis leaves it room, whether or not
+        // its text wraps (5.4): "This happens even inside text-wrap: pre"
+        wrap: true,
+      } as Parameters<FontsLike['layout']>[2]);
+    const atWord = wraps(style) ? probe('normal').lines[0] : undefined;
+    if (atWord && atWord.width > room + CUT_SLACK) end = last.start;
+    else if (legacy) {
+      end = last.start + fitted(fonts, runs, last.start, last.end, room, base);
+    } else end = last.start + (probe('break-word').lines[0]?.end ?? 0);
   }
   // the text to the break, less the white space the line ends in — an
   // empty line keeps the break before it, and is the ellipsis alone
@@ -7393,7 +7498,7 @@ function ellipsized(
     left -= length;
     at = item.start + length;
   }
-  spans.add(at, 1, null);
+  spans.add(at, mark.text.length, null);
   kept.push(mark);
   return { layout: fonts.layout(kept, base, options), runs: kept, spans };
 }
@@ -7448,14 +7553,25 @@ function ellipsizeLines(
     }
   }
   const edge = options.width;
-  const cuts =
-    style.direction !== 'rtl' &&
-    !options.clamp &&
-    cutOf(style, undefined, edge, over);
+  // a clamp's lines are cut as any are, the ellipsis the clamp ends in
+  // aside (CSS Overflow 4, 5.3.1): it leaves its line room for itself
+  const cuts = style.direction !== 'rtl' && linesCut(over, edge);
   let widest = 0;
   for (const line of lines) {
-    if (cuts && line.x + line.width > edge + CUT_SLACK) {
-      ellipsizeLine(line, style, edge, fonts, base, lineHeight);
+    // the end of the line box, which a float beside it moves in from the
+    // block's (WPT's `text-overflow-006`)
+    const end = cuts ? bandAt(options, line.y, line.height).right : edge;
+    if (cuts && line.x + line.width > end + CUT_SLACK) {
+      ellipsizeLine(
+        line,
+        // the first line's ellipsis is in its `::first-line` style
+        line === lines[0] ? firstLineMarkStyle(style, options) : style,
+        over.textOverflowMark,
+        end,
+        fonts,
+        base,
+        lineHeight,
+      );
     }
     widest = Math.max(widest, line.width);
   }
@@ -7471,16 +7587,74 @@ function ellipsizeLines(
   return widest;
 }
 
-function ellipsizeLine(
-  line: LineBox,
+/**
+ * The lines of one layout a cut left drawing it (`ellipsizeLines`), each
+ * laid out on its own. Paint draws a layout once, whole (`paintLinePart`),
+ * so where a clamped paragraph's one layout had a line cut a piece at a
+ * time, the layout drew the line uncut under it, and the lines the cut
+ * left still referred to it.
+ */
+function detachUncut(
+  lines: LineBox[],
+  layout: TextLayoutLike,
   style: ComputedStyle,
-  edge: number,
   fonts: FontsLike,
   base: Record<string, unknown>,
   lineHeight: number,
 ): void {
-  const markRuns = [runFor('\u2026', style)];
-  const mark = fonts.layout(markRuns, base, {});
+  const runs = LAYOUT_RUNS.get(layout) as TextRun[] | undefined;
+  if (!runs?.length || !lines.some((line) => CUT_LINES.has(line))) return;
+  for (const line of lines) {
+    for (const text of line.texts) {
+      if (text.layout !== layout) continue;
+      const natural = layout.lines[text.layoutLine];
+      if (natural) {
+        relaidText(
+          text,
+          runs,
+          natural.start,
+          natural.end,
+          style,
+          fonts,
+          base,
+          lineHeight,
+        );
+      }
+    }
+  }
+}
+
+/** The style the first line's ellipsis is drawn in: its `::first-line`
+ *  style, or the block's in the `::first-line` colour, where the block's
+ *  is its text's (`firstLineColour`). */
+function firstLineMarkStyle(
+  style: ComputedStyle,
+  options: InlineOptions,
+): ComputedStyle {
+  if (options.firstLineStyle) return options.firstLineStyle.style;
+  const colour = options.firstLine;
+  if (!colour || colour.from !== style.color) return style;
+  return { ...style, color: colour.color };
+}
+
+function ellipsizeLine(
+  line: LineBox,
+  style: ComputedStyle,
+  /** What the ellipsis is drawn as: `textOverflowMark`. */
+  markText: string,
+  edge: number,
+  fonts: FontsLike,
+  base: Record<string, unknown>,
+  lineHeight: number,
+  /** Set the mark at the line's end where the line leaves it room: a
+   *  clamp's block ellipsis, which ends its line whether or not it ran
+   *  past the box. */
+  always = false,
+): void {
+  // in the paragraph's direction, whatever its own text's first strong
+  // letter says (CSS Overflow 4, 4.1)
+  const markRuns = [runFor(markText, style)];
+  const mark = fonts.layout(markRuns, base, { direction: style.direction });
   const markLine = mark.lines[0];
   if (!markLine) return;
   const room = edge - mark.width;
@@ -7517,16 +7691,31 @@ function ellipsizeLine(
     }
     before = Math.max(before, right);
   }
-  if (at < 0) return;
-  // the text it runs past the room in, as much of it as fits there
-  const crossing = pieces[at].text;
-  const [left] = span(pieces[at]);
-  if (crossing && left < room) {
-    const end = clipText(crossing, room - left, style, fonts, base, lineHeight);
+  if (at < 0 && !always) return;
+  if (at < 0) at = pieces.length;
+  // the text it runs past the room in, as much of it as fits there; and
+  // the line's first character, or its first atomic, is clipped rather
+  // than ellipsed (5.1), where the ellipsis leaves no room for it
+  const crossing = pieces[at]?.text;
+  const [left, right] = pieces[at] ? span(pieces[at]) : [before, before];
+  const first = at === 0 && at < pieces.length;
+  if (crossing && (left < room || first)) {
+    const end = clipText(
+      crossing,
+      room - left,
+      style,
+      fonts,
+      base,
+      lineHeight,
+      first,
+    );
     if (end !== null) {
       before = end;
       at += 1;
     }
+  } else if (first) {
+    before = right;
+    at += 1;
   }
   // then the ellipsis, in the block's style and baseline-aligned in its
   // line (5.1), no text of the document's
@@ -7539,7 +7728,7 @@ function ellipsizeLine(
     }
   }
   const spans = new SpanMap();
-  spans.add(index, 1, null);
+  spans.add(index, markText.length, null);
   LAYOUT_RUNS.set(mark, markRuns);
   pieces.splice(at, 0, {
     text: {
@@ -7585,6 +7774,8 @@ function clipText(
   fonts: FontsLike,
   base: Record<string, unknown>,
   lineHeight: number,
+  /** Keep a character at least: the line's first is clipped, not cut. */
+  least = false,
 ): number | null {
   const natural = text.layout.lines[text.layoutLine];
   const runs = LAYOUT_RUNS.get(text.layout);
@@ -7594,17 +7785,40 @@ function clipText(
   // an ellipsis of its own, which would be in the last run's style
   const from = natural.start;
   // with the spaces it ends in, which stay before the ellipsis
-  const fits = fitted(
-    fonts,
+  const fits =
+    fitted(fonts, runs as TextRun[], from, natural.end, room, base, true) ||
+    (least ? firstCharacter(runs as TextRun[], from, natural.end) : 0);
+  if (!fits) return null;
+  return relaidText(
+    text,
     runs as TextRun[],
     from,
-    natural.end,
-    room,
+    from + fits,
+    style,
+    fonts,
     base,
-    true,
+    lineHeight,
   );
-  if (!fits) return null;
-  const kept = sliceRuns(runs as TextRun[], from, from + fits);
+}
+
+/**
+ * A line's text laid out again on its own, from `from` to `to` of its
+ * layout's runs: the text takes the layout, and keeps its place on the line
+ * and its baseline. Where what is left of it ends on the line, the spaces
+ * it ends on included, or null where the layout has no line.
+ */
+function relaidText(
+  text: LineText,
+  runs: TextRun[],
+  from: number,
+  to: number,
+  style: ComputedStyle,
+  fonts: FontsLike,
+  base: Record<string, unknown>,
+  lineHeight: number,
+): number | null {
+  const natural = text.layout.lines[text.layoutLine];
+  const kept = sliceRuns(runs, from, to);
   const laid = fonts.layout(kept, base, {
     lineHeight,
     align: 'left',
@@ -7652,7 +7866,7 @@ function shiftedSpans(spans: LineText['spans'], by: number): LineText['spans'] {
 
 /** How much of the runs' text from `from` to `to`, in code units, fits in
  *  `room` set on one line: the longest prefix that does, ending between
- *  two code points. With `spaces`, the white space a prefix ends in counts,
+ *  two grapheme clusters. With `spaces`, the white space a prefix ends in counts,
  *  as it does where it stays before an ellipsis (`clipText`). */
 function fitted(
   fonts: FontsLike,
@@ -7667,10 +7881,11 @@ function fitted(
     .map((run) => run.text)
     .join('')
     .slice(from, to);
+  // whole grapheme clusters, never part of one (CSS Overflow 3, 5.1)
   const ends: number[] = [];
-  for (let i = 0; i < text.length;) {
-    i += (text.codePointAt(i) ?? 0) > 0xffff ? 2 : 1;
-    ends.push(i);
+  graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  for (const { index, segment } of graphemes.segment(text)) {
+    ends.push(index + segment.length);
   }
   let lo = 0;
   let hi = ends.length;
@@ -7686,6 +7901,22 @@ function fitted(
     else hi = mid - 1;
   }
   return lo ? ends[lo - 1] : 0;
+}
+
+/** How many code units the first grapheme of the runs' text from `from`
+ *  is, short of `to`: what the first character of a line comes to. */
+function firstCharacter(
+  runs: readonly TextRun[],
+  from: number,
+  to: number,
+): number {
+  const text = runs
+    .map((run) => run.text)
+    .join('')
+    .slice(from, to);
+  graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  const first = graphemes.segment(text)[Symbol.iterator]().next();
+  return first.done ? 0 : first.value.segment.length;
 }
 
 /** The runs' text from one code-unit offset into their joined text to
