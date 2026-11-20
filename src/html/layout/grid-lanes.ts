@@ -903,6 +903,17 @@ export function layoutGridLanes(
         return rows ? [0, 1, from, p.span] : [from, p.span, 0, 1];
       }),
       items: placed.map((p) => p.item.box),
+      stack: {
+        areas: placed.map((p, k) => [
+          p.pos,
+          p.pos + Math.max(0, p.outer) + holesAfter[k],
+        ]),
+        gap: stackGap,
+        range,
+        reverse: fillReverse,
+        shift,
+        mirror: rows && rtl ? mirror : undefined,
+      },
     },
   });
 

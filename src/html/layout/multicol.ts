@@ -926,6 +926,10 @@ export function layoutColumns(
     height,
     lefts: Array.from({ length: used }, (_, c) => origin + across(c)),
     width: columns.width,
+    every: Array.from(
+      { length: Math.max(used, columns.count) },
+      (_, c) => origin + across(c),
+    ),
   });
   // where each column is, for what is out of the flow inside it, which is
   // laid out after all of this, in the strip (`stripOf`, `cutIntoColumns`)

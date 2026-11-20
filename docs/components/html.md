@@ -6606,29 +6606,71 @@ parts, as CSS 2.1 9.10 has it.
 gaps, `column-rule` down its column gaps and `row-rule` across its row
 gaps, each a width, a border style and a colour as `outline` takes them,
 with its `-width`, `-style` and `-color` longhands, and `rule` and its
-longhands setting both. They are painted just above the container's border
-and under what it holds, each on its gap's middle as wide as it says
-whatever the gap's width, and drawn as a border side of its style is —
-dashed, dotted and double included. A multicol container has them between
-the columns that hold something, broken at a box that spans its columns. A
-grid has them along the gaps between its tracks, the grid's length, broken
-as `column-rule-break`, `row-rule-break` or `rule-break` says: `normal` at
-an item that spans the gap, and where a gap the other way goes on to one
-side of it and not the other — a T — and through a gap that crosses it;
-`intersection` at every gap it meets but one items span on both sides of;
-`none` not at all, running behind the items. A piece broken at a gap stops
-where that gap starts and the next starts where it ends, and
-`column-rule-inset`, `row-rule-inset` and `rule-inset` — one length or
-two, the first for a piece's start and the second for its end — take each
-end in further, a percentage of the gap it stops at, none at the
-container's edge. A flex container has them between the items of each
-line, as tall as the line — as the container where it has one line — and
-between its lines, as long as the container: in a row the first are its
-column rules and the second its row rules, and in a column the other way
-round. `rule-overlap: column-over-row` draws the row rules under the column
-rules, where they are over them. Not read: a list of rules, a comma or
-`repeat()`, which leaves the declaration none; the separate cap and
-junction insets; and `rule-visibility-items`.
+longhands setting both. Each takes a list (4.5): a comma between values for
+one gap after another, `repeat(n, …)` that many times over, and one
+`repeat(auto, …)` that fills the gaps the values before and after it leave;
+with no auto repeat the gaps take the list in turn, over and over, and a
+flex container counts its gaps on through every line. The shorthand's list
+is of whole rules. They are painted just above the container's border and
+under what it holds, cut to its padding box where it clips its overflow and
+moved with its content as it scrolls, each on its gap's middle as wide as
+it says whatever the gap's width, and drawn as a border side of its style
+is — dashed, dotted and double included, `groove` and `ridge` as two shaded
+bands, and `inset` and `outset` as `ridge` and `groove`, as a multicol
+rule always was.
+
+A gap's rule is broken as `column-rule-break`, `row-rule-break` or
+`rule-break` says, and a grid's under `normal` only where an item spans
+its gap: it runs on through a gap that crosses it, and along the bar of a
+T, whose stem stops at it. `intersection` breaks it at every gap it meets
+but one items span on both sides of; `none` runs it behind the items. A
+piece broken at a gap ends where that gap starts, and the next starts where
+it ends. Its ends are moved by the insets (3.3): `*-rule-inset-cap-start`
+and `-end` at an end that meets nothing — the container's edge, a spanner,
+a gap the rule is not drawn beside — and `*-rule-inset-junction-start` and
+`-end` at one that meets a gap across that is; `-inset-cap`,
+`-inset-junction`, `-inset-start`, `-inset-end` and `-inset` (a cap's pair,
+then after a slash a junction's, which are the cap's where left out) set
+them together. A percentage is of the size of the gap the end meets, none
+at the container's edge, and `overlap-join` reaches through a junction to
+the middle of the rule crossing it, half the gap and half that rule's width,
+and is nothing at a cap. `*-rule-visibility-items` draws a grid's rule only
+beside the areas that hold items: `around` beside one on either side,
+`between` beside one on both, `all` and `normal` everywhere; an area it is
+not drawn beside breaks the rule, as Chrome breaks it.
+
+A multicol container has its column rules between the columns of each row
+of them, broken at a box that spans its columns, `normal` being
+`intersection` there and `none` running a gap's rule from the first row to
+the last; `normal` visibility is `between` there, between columns that hold
+something, `around` and `all` drawing beside one or none. A grid lanes
+container has its grid-axis rules down the gaps between lanes, the length
+of its stacking track — the content box where its alignment stretches it,
+the items' range where it is aligned — broken a stacking gap before and
+after each item that spans the gap, and with the stacking gaps of the lanes
+on either side as its junctions; its visibility goes by where the items on
+each side are, a lane's stacking gaps counting as filled and the space an
+item is aligned in not, `around` drawing a piece between two junctions
+beside any of it whole. Its stacking-axis rules are each lane's own, one in
+the stacking gap before each item placed after another in the lane — and
+before a spanner in every lane it spans, where any has an item before it —
+across the lane, each lane taking its own list from its placement start,
+and `track-reverse` reverses the order the grid-axis gaps take theirs in. A
+flex container has them between the items of each line, as tall as the
+line — as the container where it has one line — and between its lines, as
+long as the container, broken at the gaps between items of either line only
+under `intersection`: in a row the first are its column rules and the second
+its row rules, and in a column the other way round. `rule-overlap:
+column-over-row` draws the row rules under the column rules, where they are
+over them. A right-to-left container's horizontal rules start at their right.
+
+A grid or a flex container that columns break has its rules drawn in each
+piece, as the whole box has them, where its pieces stand; a row gap a break
+falls in has no rule (3.6). Not here: a grid lanes container that columns
+break, a container in a vertical writing mode, whose rules are drawn as a
+horizontal one's are, and multicol's `column-height` and `column-wrap`,
+whose rows of columns the layout does not make, nor the row rules between
+them.
 
 **Boxes:** `width`/`height` with `min-`/`max-`, `margin` (a negative one
 on an inline box takes its room back from the line), `padding`,

@@ -854,6 +854,22 @@ export interface GridTracks {
     /** The item each area is, which `grid-rows` and `grid-columns` read in
      *  the order their areas are (`inReadingOrder`). */
     items: Box[];
+    /** In a grid lanes container, where the placement put each item down
+     *  its lanes, as the start and end of its area there, its hole after it
+     *  taken in, from the fill start; and how those places are drawn: the
+     *  stacking gap, `range` they are mirrored in where the lanes fill from
+     *  their far edge (`reverse`), the alignment `shift` after that, and
+     *  the width the result is mirrored in where the stacking axis runs
+     *  right to left. What a gap's rules are drawn by (CSS Gap Decorations
+     *  1, 3.1.1). */
+    stack?: {
+      areas: [number, number][];
+      gap: number;
+      range: number;
+      reverse: boolean;
+      shift: number;
+      mirror?: number;
+    };
   };
 }
 export const GRID_TRACKS = new WeakMap<Box, GridTracks>();
@@ -868,6 +884,9 @@ export interface ColumnRow {
   height: number;
   lefts: number[];
   width: number;
+  /** The left of every column of the row, those that hold nothing as
+   *  well, which `rule-visibility-items: all` draws rules between. */
+  every?: number[];
 }
 export const COLUMN_BOXES = new WeakMap<Box, ColumnRow[]>();
 
