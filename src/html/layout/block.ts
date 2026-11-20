@@ -12087,6 +12087,9 @@ export function contained(box: Box, bits: number): boolean {
  * which but `static` holds absolute boxes and none fixed ones.
  */
 export function holdsOutOfFlow(box: Box, fixed: boolean): boolean {
+  // a scroll container's marker group holds its markers, positioned or
+  // fixed (CSS Overflow 5, 3.1; WPT's scroll-marker-group-017 and -018)
+  if (box.pseudo === 'scroll-marker-group') return true;
   // a backdrop filter as a filter does (Filter Effects 2, 2)
   if (box.style.filter !== null || box.style.backdropFilter !== null) {
     return true;
