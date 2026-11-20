@@ -2327,6 +2327,35 @@ metric(
 );
 
 metric(
+  'a right-to-left line made a piece at a time ends in an ellipsis at its left',
+  async () => {
+    // CSS Overflow 3, 5.1: the end edge of a right-to-left line is its
+    // left, where it runs past its box and is cut
+    const icon =
+      '<span id="i" style="display:inline-block;width:16px;' +
+      'height:10px;background:red"></span>';
+    const { node } = await render(
+      '<style>body{margin:0} .t{width:120px;overflow:hidden;' +
+        'text-overflow:ellipsis;white-space:nowrap}</style>' +
+        `<div id="a" class="t" dir="rtl">אבגדה ${icon} אבגדה אבגדה אבגדה אבגדה אבגדה</div>`,
+    );
+    const el = view(node);
+    const [a] = linesOf(el, 'a');
+    assert.ok(a.x >= -0.01, `within the box: ${a.x}`);
+    const mark = a.texts.find(
+      (text) => lastRunText({ ...a, texts: [text] }) === '…',
+    );
+    assert.ok(mark, 'an ellipsis');
+    const [from] = extentOf(mark!);
+    assert.ok(from >= -0.01 && from < 20, `at the left edge: ${from}`);
+    for (const text of a.texts) {
+      if (text === mark) continue;
+      assert.ok(extentOf(text)[0] >= extentOf(mark!)[1] - 0.01, 'right of it');
+    }
+  },
+);
+
+metric(
   "an anonymous block's lines are cut by its container's text-overflow",
   async () => {
     // `text-overflow` does not inherit, and the lines it is for are an
