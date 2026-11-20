@@ -103,6 +103,10 @@ import {
   styleGateOf,
 } from './dom.js';
 import type { Document, HtmlChange, SheetRef } from './dom.js';
+import {
+  SCROLL_BUTTON_BITS,
+  setScrollButtonsEnabled,
+} from './scroll-buttons.js';
 import { directionHolder } from './direction.js';
 import { controlsReached, inputType, legendMovedIn } from './form.js';
 import type { FieldSelection } from './form.js';
@@ -5572,6 +5576,8 @@ export class HtmlViewNode extends Node {
     }
     // what the triggers say of where the layout put their subjects
     this._evaluateTriggers();
+    // and which scroll buttons can scroll their element now
+    this._noteScrollButtons();
     this._scheduleFrame();
   }
 
@@ -11364,6 +11370,45 @@ export class HtmlViewNode extends Node {
    * A container a partial layout set aside keeps the size it had, and one
    * its box takes no size containment of, a table's, has none.
    */
+  /**
+   * Which of each element's `::scroll-button()`s are enabled, worked out
+   * after a layout and a scroll (CSS Overflow 5, 4): a direction its
+   * element, a scroll container, can scroll towards from where it is, by
+   * its writing mode and direction; none of an element that does not
+   * scroll. What changed is told as a change of `-rx-scroll-buttons`, an
+   * attribute nothing has, which `:enabled` and `:disabled` on a button
+   * read (`scrollButtonRules`), a microtask later, out of the pass that
+   * found it. Only a document with a rule for a button pays for the walk.
+   */
+  private _noteScrollButtons(): void {
+    const tree = this._tree;
+    if (!tree || !this._cascade?.hasScrollButtons) return;
+    const hosts = new Set<Element>();
+    const walk = (box: Box): void => {
+      for (const child of box.children) {
+        if (child.pseudo === 'scroll-button') {
+          const el = GENERATED_FROM.get(child);
+          if (el) hosts.add(el);
+        } else walk(child);
+      }
+    };
+    walk(tree.root);
+    const changes: HtmlChange[] = [];
+    for (const el of hosts) {
+      const box = this._boxOf(tree, el);
+      const bits = box ? scrollButtonBits(box) : 0;
+      if (setScrollButtonsEnabled(el, bits)) {
+        changes.push({
+          type: 'attributes',
+          target: el,
+          attributeName: '-rx-scroll-buttons',
+        });
+      }
+    }
+    if (changes.length)
+      void Promise.resolve().then(() => this.touchDocument(changes));
+  }
+
   private _containersMoved(tree: BoxTree): Set<Element> | null {
     const cascade = this._cascade;
     if (!cascade?.readsContainers) return null;
@@ -17176,6 +17221,8 @@ export class HtmlViewNode extends Node {
     this._askScrollStates();
     // and what a trigger whose timeline it scrolls says now
     this._evaluateTriggers();
+    // and which of its scroll buttons are enabled
+    this._noteScrollButtons();
     // and where an animation that runs on its scroll is
     this._restyleScrolled();
     this._props().onElementScroll?.(el);
@@ -24202,4 +24249,39 @@ function capturesInPaintOrder<T extends { el: Element; box: Box }>(
       return p.length - q.length || a.i - b.i;
     })
     .map(({ n }) => n);
+}
+
+/** Which way a box can scroll from where it is, as `SCROLL_BUTTON_BITS`:
+ *  none for a box that does not scroll, and its four ends mapped to the
+ *  logical directions by its writing mode and direction. */
+function scrollButtonBits(box: Box): number {
+  const style = box.style;
+  if (style.overflowX === 'visible' && style.overflowY === 'visible') return 0;
+  const state = scrollStateOf(box);
+  const left = state.x > 0.5;
+  const right = state.x < state.width - state.clientWidth - 0.5;
+  const up = state.y > 0.5;
+  const down = state.y < state.height - state.clientHeight - 0.5;
+  const rtl = style.direction === 'rtl';
+  const mode = style.writingMode;
+  let blockStart = up;
+  let blockEnd = down;
+  let inlineStart = rtl ? right : left;
+  let inlineEnd = rtl ? left : right;
+  if (mode !== 'horizontal-tb') {
+    // the block axis across, from the right in `vertical-rl` and
+    // `sideways-rl`, and the inline axis down, or up in `sideways-lr`
+    const fromRight = mode === 'vertical-rl' || mode === 'sideways-rl';
+    blockStart = fromRight ? right : left;
+    blockEnd = fromRight ? left : right;
+    const upward = mode === 'sideways-lr' ? !rtl : rtl;
+    inlineStart = upward ? down : up;
+    inlineEnd = upward ? up : down;
+  }
+  return (
+    (blockStart ? SCROLL_BUTTON_BITS['block-start'] : 0) |
+    (inlineStart ? SCROLL_BUTTON_BITS['inline-start'] : 0) |
+    (inlineEnd ? SCROLL_BUTTON_BITS['inline-end'] : 0) |
+    (blockEnd ? SCROLL_BUTTON_BITS['block-end'] : 0)
+  );
 }

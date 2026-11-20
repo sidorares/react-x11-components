@@ -1735,6 +1735,9 @@ function isSelector(s: string, supports = false): boolean {
                 !STRUCTURAL.test(readIdent(s, i + 1).value)) ||
               (transition &&
                 asciiLower(readIdent(s, i + 1).value) === 'only-child') ||
+              // a scroll button's state (CSS Overflow 5, 4.1)
+              (endedBy === 'scroll-button' &&
+                /^(?:enabled|disabled)$/i.test(readIdent(s, i + 1).value)) ||
               (supports &&
                 endedBy === 'details-content' &&
                 !STRUCTURAL.test(readIdent(s, i + 1).value))

@@ -1897,3 +1897,40 @@ test('an element has a ::scroll-button() box for each direction a rule gives a c
   );
   assert.strictEqual(siblings[at + 3], boxOf(el, 'after'), 'and no more');
 });
+
+test('a ::scroll-button() is :enabled where its element can scroll its way, and :disabled where not', async () => {
+  // the inline-end button of a box scrolled across: enabled at the start,
+  // disabled at the end, as the scroll tells it (CSS Overflow 5, 4.1; WPT's
+  // scroll-buttons-enabled and -disabled); and the inline-start one the
+  // other way round
+  const { node } = await render(
+    '<style>body{margin:0}#s{width:100px;height:20px;overflow:auto;' +
+      'white-space:nowrap}#s div{display:inline-block;width:100px;' +
+      'height:10px}#s::scroll-button(*){content:"";display:block;' +
+      'height:5px;background:blue}#s::scroll-button(*):enabled{' +
+      'background:gold}#s::scroll-button(*):disabled{background:gray}' +
+      '</style><div id="s"><div></div><div></div></div>',
+  );
+  type Laid = LaidBox & {
+    parent: Laid | null;
+    style: { backgroundColor: unknown };
+  };
+  const el = view(node);
+  const colours = () => {
+    const s = boxOf(el, 's') as Laid;
+    const siblings = s.parent!.children as Laid[];
+    const at = siblings.indexOf(s);
+    return siblings.slice(at + 1, at + 5).map((b) => b.style.backgroundColor);
+  };
+  const [gold, gray] = [parseColor('gold'), parseColor('gray')];
+  await act();
+  assert.deepStrictEqual(
+    colours(),
+    [gray, gray, gold, gray],
+    'block-start, inline-start, inline-end, block-end at the start',
+  );
+  el.scrollElementTo(findById(el.document, 's')!, { x: 100 });
+  await act();
+  await act();
+  assert.deepStrictEqual(colours(), [gray, gold, gray, gray], 'and at the end');
+});
