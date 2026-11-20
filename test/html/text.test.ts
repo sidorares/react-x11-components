@@ -2593,3 +2593,23 @@ test('a relative float on the last line a clamp keeps is cut at the clamp point 
   );
   assert.ok(clips.length > 0, 'cut at the content box foot');
 });
+
+test('a line-clamp container with no clamp point in it neither grows to hold its floats nor shows them past its foot', async () => {
+  // CSS Overflow 4, 5.3.1 has a line-clamp container cut its floats at its
+  // content box's foot whether a clamp point fell in it or not (WPT's
+  // line-clamp-with-floats-016 and -017)
+  const { node } = await render(
+    '<style>body{margin:0}.c{line-clamp:3;font:16px/32px serif;white-space:pre}' +
+      '.f{float:left;width:50px;height:150px}</style>' +
+      '<div class="c" id="b"><div class="f"></div>Line 1\nLine 2</div>',
+  );
+  const el = view(node);
+  const b = boxOf(el, 'b');
+  assert.strictEqual(b.height, 64, 'two lines tall, not the float');
+  const ops: PaintOp[] = [];
+  await fillsOf(el, ops);
+  const clips = ops.filter(
+    (op) => op.op === 'clip' && op.y + op.h === b.y + b.height,
+  );
+  assert.ok(clips.length > 0, 'cut at the content box foot');
+});

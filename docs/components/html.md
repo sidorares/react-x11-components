@@ -6187,7 +6187,9 @@ the columns — or a fixed one whose containing block a transform makes
 there — is laid out as though nothing were broken, against where the
 strip the columns were cut from had its containing block, an
 inline box's among them, whose fragments are taken where the strip had its
-lines before the columns moved them, and is then cut
+lines before the columns moved them — its first one at the end of a
+line, holding nothing, where it starts there with a box out of the flow
+and all its text goes on to the next, as Blink keeps it — and is then cut
 into them as a float with a height is, with what it holds; an anchor it
 refers to in the same columns it sees unbroken, where the strip had it,
 and one outside them the rectangle around the anchor's pieces (CSS Anchor
@@ -7061,7 +7063,10 @@ which is drawn whole and found where it is drawn; a browser cuts that one
 too. `clip-path` shows the part of any box its shape names, and
 of everything in the box — one positioned from outside it too, which a box
 that clips its overflow lets out — and nothing it cuts away is under the
-pointer (CSS Masking 1, 5.1). The shapes are the rectangles of CSS Shapes:
+pointer (CSS Masking 1, 5.1). An inline box's shape is measured in its
+first fragment and placed there, and cuts every fragment where it is, as
+Blink has it: its text is painted apart from its lines, as one an inset
+moves is, under the clip. The shapes are the rectangles of CSS Shapes:
 `inset()`, `rect()` and `xywh()`, with the corners `round` gives them, in
 the box the value names, the border box unless it says; or that box alone,
 rounded as the element is. Insets that meet or pass each other leave
@@ -8298,7 +8303,9 @@ where the lines after a float are one layout, the lines the clamp drops are
 cut from it rather than drawn with the line it keeps. A float the dropped
 lines reach is past the clamp point and hidden with them, and one on a line
 kept is cut at the container's content box foot, the clamp point, and
-nowhere else, a relative one painted as a layer among them. Where
+nowhere else, a relative one painted as a layer among them. A line-clamp
+container with no clamp point in it does the same: it cuts its floats at its
+content box foot and is no taller for them. Where
 the last line's first word is too wide to leave the ellipsis room, a line
 of text that wraps is displaced whole and shows the ellipsis alone, as the
 non-tentative WPT tests, Edge and Safari have it; Chrome's experimental

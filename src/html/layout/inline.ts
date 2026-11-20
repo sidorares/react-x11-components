@@ -5468,7 +5468,7 @@ function hasEdgeOn(box: Box, side: 'start' | 'end'): boolean {
  *  offset moved it (`TEXT_SHIFTS`): the line's end where no text of it
  *  holds the offset. `ending` for the end of what stands before `at`, and
  *  not the start of what stands after it. */
-function caretX(line: LineBox, at: number, ending = true): number {
+export function caretX(line: LineBox, at: number, ending = true): number {
   for (const text of line.texts) {
     if (at < text.textStart) continue;
     if (ending ? at > text.textEnd : at >= text.textEnd) continue;
@@ -6156,7 +6156,9 @@ export function inlineDecoration(
     s.backgroundImages !== null ||
     box.borderTop + box.borderRight + box.borderBottom + box.borderLeft > 0 ||
     s.outlineStyle !== 'none' ||
-    s.boxShadow !== null;
+    s.boxShadow !== null ||
+    // a clip-path is measured in its first fragment (`inlineClipPath`)
+    s.clipPath !== null;
   return !decorated ? null : fonts ? faceExtent(fonts, s) : NO_EXTENT;
 }
 
