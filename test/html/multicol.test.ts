@@ -1688,7 +1688,11 @@ test('a box that clones its edges at a break has them in every column, and they 
       // (clone-003)
       '<div class="m"><div id="e" style="box-decoration-break:clone;' +
       'border-block:15px solid;height:70px">' +
-      '<div style="height:185px"></div></div></div>',
+      '<div style="height:185px"></div></div></div>' +
+      // a sliced box around a cloned one: its pieces reach over the edges
+      // cloned in it, to the column's top and foot (clone-008)
+      '<div class="m"><div id="s"><div style="box-decoration-break:clone;' +
+      'padding:10px 0"><div style="height:160px"></div></div></div></div>',
     300,
   );
   const el = view(node);
@@ -1741,4 +1745,8 @@ test('a box that clones its edges at a break has them in every column, and they 
     [[0, 0, 100, 100, true]],
     'all of it in the first column, its child going on alone',
   );
+  assert.deepStrictEqual(pieces('s'), [
+    [0, 0, 100, 100, false],
+    [100, 0, 100, 100, false],
+  ]);
 });

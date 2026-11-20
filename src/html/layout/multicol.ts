@@ -1609,18 +1609,18 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
       let until = c === last ? end : Math.min(end, to.room(c));
       let y = from + to.dy(c);
       let height = Math.max(0, until - from);
-      if (clone) {
-        // each piece a whole box: its edges at the breaks it is cut at,
-        // round the content it has there
-        const before = to.breaks?.[c];
-        const after = to.breaks?.[c + 1];
+      if (to.breaks) {
+        // a piece reaches over the edges a break clones of the boxes in it,
+        // and a cloned box's own: each of its pieces a whole box, round
+        // the content it has there, where a sliced one runs to the foot
+        const before = to.breaks[c];
+        const after = to.breaks[c + 1];
         if (c > first) y -= cloned(before, 'start');
         if (c < last) {
-          const content = Number.isNaN(after?.end ?? Number.NaN)
-            ? until
-            : Math.min(until, after!.end);
-          until = content;
-          height = content + to.dy(c) + cloned(after, 'end') - y;
+          if (clone && !Number.isNaN(after?.end ?? Number.NaN)) {
+            until = Math.min(until, after!.end);
+          }
+          height = until + to.dy(c) + cloned(after, 'end') - y;
         } else height = until + to.dy(c) - y;
       }
       const piece: ColumnPiece = {
