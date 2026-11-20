@@ -142,6 +142,37 @@ interface Group {
   last: number;
   /** Where a forced break before it starts the next column, if one does. */
   forced?: number;
+  /** The boxes whose room under their content starts with it (`Room`). */
+  rooms?: Room[];
+}
+
+/**
+ * A box taller than its content — a height of its own, or one a column
+ * flex box gave it — and where the room under its content starts. A break
+ * inside it uses up the rest of its column, as Blink counts a fragment's
+ * block size against the box's (CSS Fragmentation 3, 4.4 leaves the room a
+ * break leaves to the user agent): the room is shorter by what the breaks
+ * in it left at the columns' feet, down to nothing, and what follows it
+ * starts that much higher. Its content goes on from where each break fell.
+ */
+interface Room {
+  box: Box;
+  /** Where the box starts and ends down the strip, and its content ends. */
+  top: number;
+  bottom: number;
+  from: number;
+  /** How much of the room is in its content box, which a break may take:
+   *  its padding and border under that are its own. */
+  spare: number;
+}
+
+/** A box's room taken in a column: the column, and where the column's top
+ *  was down the strip for what the box holds, before what follows it was
+ *  moved up by `shift`. */
+interface Taken {
+  box: Box;
+  column: number;
+  top: number;
 }
 
 interface Gathered {
@@ -158,6 +189,12 @@ interface Gathered {
   /** Whether the last box gathered asked for a break after it, which comes
    *  before whatever follows it. */
   after?: boolean;
+  /** Whether what is being gathered stands beside something else down
+   *  the strip, in an item of a flex row or a grid, or a table's cell. */
+  beside?: boolean;
+  /** The room under each box's content where it is taller than its
+   *  content, by the unit that is that room. */
+  rooms?: Map<Unit, Box>;
   /** The boxes a break may fall inside that clone their edges at one
    *  (`box-decoration-break: clone`), in the order they were gathered. */
   cloned: Box[];
@@ -423,6 +460,10 @@ function gather(
   // strip: its first is the one that starts highest, its last the one that
   // ends lowest, which need not be the last in the tree
   const parallel = box.kind === 'flex' || box.kind === 'table-row';
+  // and what stands beside something else down the strip: the items of a
+  // flex row or a grid, and a table row's cells, but not a column flex
+  // box's items, which stand one under another
+  const beside = parallel && !columnFlex(box);
   const reach = (span: [Unit, Unit]): void => {
     if (!first || (parallel && span[0].top < first.top - EPS)) first = span[0];
     if (!last || !parallel || span[1].bottom >= last.bottom - EPS) {
@@ -533,7 +574,10 @@ function gather(
       const repeated = repeatedOf(child);
       if (repeated) (into.repeats ??= new Map()).set(child, repeated);
     }
+    const outside = into.beside;
+    into.beside ||= beside;
     const span = gather(child, into, clip);
+    into.beside = outside;
     // a box `break-inside: avoid` cannot keep whole starts a column, where
     // nothing comes before it in it, and is broken where it must be (CSS
     // Fragmentation 3, 4.4: the break before it is the one to take)
@@ -586,6 +630,9 @@ function gather(
     const bottom = child.y + child.height;
     if (bottom > span[1].bottom + EPS && !sizedByItems(child)) {
       span[1] = clipped(space(span[1].bottom, bottom, null, into), clip);
+      if (!beside && !into.beside) {
+        (into.rooms ??= new Map()).set(span[1], child);
+      }
     }
     into.spans.set(child, span);
     if (child.style.boxDecorationBreak === 'clone') into.cloned.push(child);
@@ -595,6 +642,39 @@ function gather(
   }
   into.after = pending;
   return first && last ? [first, last] : null;
+}
+
+/** How much taller a box's content box is than what it holds needs, its
+ *  last child's bottom margin among that: room no break leaves, and what a
+ *  break may take of (`Room`). None for a box as tall as its content. */
+function spareOf(box: Box, from: number): number {
+  let need = from;
+  const lines = box.lines;
+  if (lines?.length) {
+    const last = lines[lines.length - 1];
+    need = Math.max(need, last.y + last.height);
+  } else {
+    for (const child of box.children) {
+      if (!flows(child)) continue;
+      need = Math.max(
+        need,
+        child.y + child.height + Math.max(0, child.marginBottom),
+      );
+    }
+  }
+  return box.contentY + box.contentHeight - need;
+}
+
+/** Whether a box is a flex container whose items stand one under another:
+ *  a column, and not a grid, which has the same kind. */
+function columnFlex(box: Box): boolean {
+  const style = box.style;
+  return (
+    box.kind === 'flex' &&
+    (style.display === 'flex' || style.display === 'inline-flex') &&
+    (style.flexDirection === 'column' ||
+      style.flexDirection === 'column-reverse')
+  );
 }
 
 /** Whether a flex container or a grid is as tall as its content makes it:
@@ -747,6 +827,8 @@ interface Filled {
   lifts: number[];
   /** Where each break falls, for the boxes it clones the edges of. */
   ats: number[];
+  /** The boxes whose room a break inside them took some of (`Room`). */
+  taken: Taken[];
 }
 
 /**
@@ -834,7 +916,16 @@ function fill(
   /** Where each break inside a group falls for the boxes it clones the
    *  edges of: the column's foot, before the end edges came off it. */
   const ats = [top];
+  /** What each break left at the foot of its column, and how far up what
+   *  follows a box was moved for it (`Room`). */
+  const slacks: { y: number; slack: number }[] = [];
+  const shifts: { y: number; shift: number }[] = [];
+  const taken: Taken[] = [];
+  const roomed = new Set<number>();
   const next = (at: number, from: number, inside: boolean, y = from): void => {
+    if (!inside) {
+      slacks.push({ y: from, slack: Math.max(0, columnTop + height - from) });
+    }
     const lift = clones ? clones.start(at, inside, y) : 0;
     ats.push(y);
     starts.push(at);
@@ -849,6 +940,27 @@ function fill(
   };
   while (i < groups.length) {
     const group = groups[i];
+    if (group.rooms && !roomed.has(i)) {
+      roomed.add(i);
+      for (const room of group.rooms) {
+        // the room a box has under its content is less by what the breaks
+        // inside it left, but what a box in it was moved up by already
+        let left = 0;
+        for (const b of slacks) {
+          if (b.y > room.top + EPS && b.y < room.bottom - EPS) left += b.slack;
+        }
+        for (const t of shifts) {
+          if (t.y > room.top + EPS && t.y <= room.from + EPS) left -= t.shift;
+        }
+        const shift = Math.min(left, room.spare);
+        if (shift <= EPS) continue;
+        const last = tops.length - 1;
+        taken.push({ box: room.box, column: last, top: tops[last] });
+        tops[last] += shift;
+        columnTop += shift;
+        shifts.push({ y: room.from, shift });
+      }
+    }
     if (
       group.forced !== undefined &&
       i !== head &&
@@ -958,7 +1070,7 @@ function fill(
     }
     next(at, groups[at].top, false);
   }
-  return { starts, tops, cut, shortage, over, lifts, ats };
+  return { starts, tops, cut, shortage, over, lifts, ats, taken };
 }
 
 /** The lines of a block that a line is among, in order: the groups about
@@ -1073,6 +1185,19 @@ export function layoutColumns(
     }
   }
   const groups = groupsOf(gathered.units);
+  for (const [unit, room] of gathered.rooms ?? []) {
+    const group = unit.group;
+    if (!group.sliced || group.top < unit.top - EPS) continue;
+    const spare = spareOf(room, unit.top);
+    if (spare <= EPS) continue;
+    (group.rooms ??= []).push({
+      box: room,
+      top: room.y,
+      bottom: room.y + room.height,
+      from: unit.top,
+      spare,
+    });
+  }
   const clones = clonesOf(gathered, groups);
   // as far down as the content goes, past a box with a height it overflows:
   // what stands out of a box takes room in a column as what is in it does
@@ -1429,17 +1554,27 @@ export function layoutColumns(
   // the first column at the start of the line: the right, right to left
   const { lifts } = done;
   const breaks = clones?.breaks(starts, cut, done.ats);
-  place(box, null, {
+  const placing = (at: number[]): Placing => ({
     gathered,
-    tops,
+    tops: at,
     height,
     dx: left,
-    dy: (c) => topOf(c) - tops[c] + lifts[c],
+    dy: (c) => topOf(c) - at[c] + lifts[c],
     geometry,
-    room: (c) =>
-      tops[c] + heightOf(c) - lifts[c] - (breaks?.[c + 1]?.drop ?? 0),
+    room: (c) => at[c] + heightOf(c) - lifts[c] - (breaks?.[c + 1]?.drop ?? 0),
     breaks,
   });
+  const main = placing(tops);
+  // a box whose room a break took some of: what it holds stands where the
+  // column's top was before what follows it was moved up
+  for (const t of done.taken) {
+    const at = tops.slice();
+    at[t.column] = t.top;
+    const own = placing(at);
+    own.holds = main.holds ??= new Map();
+    main.holds.set(t.box, own);
+  }
+  place(box, null, main);
   return answer;
 }
 
@@ -2065,6 +2200,10 @@ interface Placing {
   room(column: number): number;
   /** What the break before each column clones, where any does. */
   breaks?: (Break | undefined)[];
+  /** What places what a box holds, where it is not this: a box whose room
+   *  a break took some of has what follows it moved up in the column its
+   *  content ends in, and not its content (`Room`). */
+  holds?: Map<Box, Placing>;
 }
 
 function shift(box: Box, column: number, to: Placing): void {
@@ -2187,6 +2326,8 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
     return;
   }
   const was = { x: box.x, y: box.y, width: box.width, height: box.height };
+  // what it holds, by its own column tops where its room took some (`Room`)
+  const inner = to.holds?.get(box) ?? to;
   const lines = box.lines;
   // what is out of the flow goes from where it would have stood, which is
   // kept from this box's corner: in the column of the line it would have
@@ -2196,7 +2337,7 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
     const at = child.staticPosition;
     if (!child.outOfFlow || !at || at.from !== box) return;
     const y = was.y + at.y;
-    let c = columnAt(y, to.tops);
+    let c = columnAt(y, inner.tops);
     if (lines?.length) {
       let on = lines[0];
       for (const line of lines) {
@@ -2219,7 +2360,7 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
   } else if (lines?.length) {
     for (const line of lines) {
       const c = gathered.lines.get(line)!.group.column;
-      shiftLine(line, to.dx(c), to.dy(c));
+      shiftLine(line, inner.dx(c), inner.dy(c));
     }
     if (first !== last) {
       COLUMN_LINES.add(lines);
@@ -2228,17 +2369,17 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
     }
     eachAside(box, (aside) => {
       const unit = gathered.boxes.get(aside);
-      if (unit) place(aside, [unit, unit], to);
-      else if (aside.isFloat && !aside.outOfFlow) cutFloat(aside, to);
+      if (unit) place(aside, [unit, unit], inner);
+      else if (aside.isFloat && !aside.outOfFlow) cutFloat(aside, inner);
     });
   } else {
     for (const child of box.children) {
       // a box that goes whole, or is cut where it holds nothing
       const unit = gathered.boxes.get(child);
-      const inner = unit ? ([unit, unit] as [Unit, Unit]) : undefined;
-      const range = inner ?? gathered.spans.get(child);
-      if (range) place(child, range, to);
-      else if (child.isFloat && !child.outOfFlow) cutFloat(child, to);
+      const whole = unit ? ([unit, unit] as [Unit, Unit]) : undefined;
+      const range = whole ?? gathered.spans.get(child);
+      if (range) place(child, range, inner);
+      else if (child.isFloat && !child.outOfFlow) cutFloat(child, inner);
     }
   }
   if (span && first === last) {
@@ -2336,9 +2477,9 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
     const at = child.staticPosition!;
     STRIP_STATIC.set(child, { x: at.x, y: at.y, right: at.right });
     const width = at.right - at.x;
-    at.x = was.x + at.x + to.dx(c) - box.x;
+    at.x = was.x + at.x + inner.dx(c) - box.x;
     at.right = at.x + width;
-    at.y = was.y + at.y + to.dy(c) - box.y;
+    at.y = was.y + at.y + inner.dy(c) - box.y;
   }
 }
 

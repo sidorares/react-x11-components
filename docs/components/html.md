@@ -6137,7 +6137,12 @@ formatting context of its own, a `flow-root` say, breaks as any block does;
 only one that scrolls or clips, a multicol container, a clamp and an
 orthogonal flow go to a column whole, as does a box whose only content is a
 float that cannot be cut. A forced break before the first child of a box
-with layout containment is none, since it would be the box's own. The
+with layout containment is none, since it would be the box's own. A box
+taller than its content, by a height of its own or one a column flex box
+gave it, that a break falls inside uses up the rest of that column, as
+Blink counts it: its height is not pushed on by what the break left at the
+column's foot, down to the height its content needs, and what follows it
+starts that much higher. A row flex box's items are not taken so yet. The
 columns balance, and CSS leaves how to the user agent; this does as Blink
 does — the content's height shared out between the columns, no less than
 the tallest thing that cannot break, then as much

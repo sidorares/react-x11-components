@@ -1566,6 +1566,35 @@ test('a forced break goes before the box it is on, and keeps its margin', async 
   assert.deepStrictEqual(at(el, 'b', 'm'), [50, 10, 25, 20], 'margin kept');
 });
 
+test('a box of a height of its own that a break falls inside uses up the rest of its column', async () => {
+  // as Chrome breaks it (single-line-row-flex-fragmentation-010's item):
+  // 180px in columns 100px tall, its content broken at 80px, is 100px and
+  // 80px, not 100px and 100px, and what follows it starts under it
+  for (const outer of ['', 'display:flex;flex-direction:column;']) {
+    const { node } = await render(
+      COLS +
+        `<div class="m" id="m"><div style="${outer}">` +
+        '<div id="o" style="height:180px;width:25px">' +
+        '<div style="contain:size;height:80px;width:25px"></div>' +
+        '<div id="b" style="contain:size;height:30px;width:25px"></div>' +
+        '</div><div id="n" style="height:10px;width:25px"></div></div></div>',
+      200,
+    );
+    const el = view(node);
+    const label = outer || 'block';
+    assert.deepStrictEqual(
+      piecesAt(el, 'o', 'm').map((p) => p.slice(1)),
+      [
+        [0, 25, 100],
+        [0, 25, 80],
+      ],
+      label,
+    );
+    assert.deepStrictEqual(at(el, 'b', 'm'), [25, 0, 25, 30], label);
+    assert.deepStrictEqual(at(el, 'n', 'm'), [25, 80, 25, 10], label);
+  }
+});
+
 test('a forced break inside a box size containment makes monolithic is none', async () => {
   // monolithic-content-with-forced-break-001
   const { node } = await render(
