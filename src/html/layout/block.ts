@@ -4562,10 +4562,11 @@ function layoutFramed(box: Box, frame: Box, ctx: LayoutContext): void {
   finishHeight(box, inline);
   const room = Number.isFinite(across) ? across : block;
   if (turnsUp(mode)) {
-    // on a whole pixel down: the corner is as far down as the text is long,
-    // and its fraction would be where every line in the frame is across
-    // the page, a pixel this side or that as the text's length went
-    moveTo(frame, box.contentX, Math.round(box.contentY + box.contentHeight));
+    // where the root ends, to the fraction: what the frame holds is snapped
+    // where the page would snap it as it is drawn (`paintTurned`), and a
+    // corner moved to a whole pixel set its lines at another fraction from
+    // the same lines on the page
+    moveTo(frame, box.contentX, box.contentY + box.contentHeight);
   } else moveTo(frame, box.contentX + room, box.contentY);
   if (reflects(mode)) reflectFrame(frame, room, translate, moveLine);
   // top-layer siblings left on the root outside the frame (`makeFrame`):
