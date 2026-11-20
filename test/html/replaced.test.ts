@@ -1506,6 +1506,34 @@ metric(
 );
 
 metric(
+  "a drawing's element clipped to a basic shape is cut to it in its reference box",
+  async () => {
+    // CSS Masking 1, 5.1: `SvgView` cuts to a `<clipPath>` alone, and a
+    // shape of CSS's own clipped nothing; the shape is laid down in the
+    // element's stroke box, or the box it names
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}svg{display:block}.i{clip-path:inset(5px) fill-box}</style>' +
+        // a circle in a 20 by 20 rect: its corners are cut away
+        '<svg width="40" height="20">' +
+        '<rect width="20" height="20" fill="#00ff00" style="clip-path:circle()"/>' +
+        // a rule's inset, in a rect that starts 20 across
+        '<rect class="i" x="20" width="20" height="20" fill="#0000ff"/></svg>' +
+        // and the attribute, a polygon of the left half
+        '<svg width="40" height="20">' +
+        '<rect width="40" height="20" fill="#ff0000" clip-path="polygon(0 0, 50% 0, 50% 100%, 0 100%)"/></svg>',
+      {},
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 10, 10, '#00ff00', { message: 'the circle' });
+    await expectPixel(ctx, 1, 1, '#ffffff', { message: 'its corner cut' });
+    await expectPixel(ctx, 30, 10, '#0000ff', { message: 'inside the inset' });
+    await expectPixel(ctx, 22, 2, '#ffffff', { message: 'the inset cut' });
+    await expectPixel(ctx, 10, 30, '#ff0000', { message: 'the polygon' });
+    await expectPixel(ctx, 30, 30, '#ffffff', { message: 'past it' });
+  },
+);
+
+metric(
   "an SVG's currentcolor and none are paint keywords in any case",
   async () => {
     // CSS Values 4, 2.5: Apple's tab strips draw their arrows with

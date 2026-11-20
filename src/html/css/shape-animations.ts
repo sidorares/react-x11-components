@@ -290,7 +290,7 @@ export class ShapeAnimations {
     ctx: ShapeContext,
     own: Record<string, string> | null,
   ): Matrix {
-    const box = this._referenceBox(el, root, motion.box, own);
+    const box = this.referenceBox(el, root, motion.box, own);
     // lengths were read in device pixels, which a drawing's user units are
     // not: what scales them is the scale it is drawn at
     const scale = ctx.units.scale || 1;
@@ -320,7 +320,7 @@ export class ShapeAnimations {
   /** The box a transform's percentages and origin are of: the element's
    *  own for `fill-box` and `stroke-box`, and the drawing's viewport for
    *  the rest, from its user space's origin (CSS Transforms 1, 4). */
-  private _referenceBox(
+  referenceBox(
     el: Element,
     root: Element,
     which: string | null,
