@@ -2446,6 +2446,18 @@ function paintTransformed(
   if (framed.any && FRAME_ROOTS.has(box)) paintUpright(ctx, box, options);
 }
 
+/** Whether a matrix's linear part is a quarter turn, a half turn or a
+ *  mirror: every entry -1, 0 or 1, one of each row and column nonzero. */
+function axisAligned(a: number, b: number, c: number, d: number): boolean {
+  const unit = (v: number) => v === 0 || v === 1 || v === -1;
+  if (!unit(a) || !unit(b) || !unit(c) || !unit(d)) return false;
+  return (
+    (a !== 0) !== (b !== 0) &&
+    (a !== 0) !== (c !== 0) &&
+    (d !== 0) === (a !== 0)
+  );
+}
+
 /** `paintTransformed`'s box, through its matrix. */
 function paintTurned(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const matrix = placedMatrix(box);
@@ -2483,14 +2495,14 @@ function paintTurned(ctx: PaintContext, box: Box, options: PaintOptions): void {
   // snaps a transformed box's corner before its transform the same way.
   const left = box.x + options.originX;
   const top = box.y + options.originY;
-  const ox = options.originX + Math.round(left) - left;
-  const oy = options.originY + Math.round(top) - top;
+  let ox = options.originX + Math.round(left) - left;
+  let oy = options.originY + Math.round(top) - top;
   if (matrix.length === 9) {
     paintProjected(ctx, box, options, projectionMoved(matrix, ox, oy));
     return;
   }
   const [a, b, c, d] = matrix;
-  const through: Matrix = [
+  let through: Matrix = [
     a,
     b,
     c,
@@ -2498,11 +2510,35 @@ function paintTurned(ctx: PaintContext, box: Box, options: PaintOptions): void {
     matrix[4] + ox - (a * ox + c * oy),
     matrix[5] + oy - (b * ox + d * oy),
   ];
+  let within = options;
+  // A frame of a writing mode is a quarter turn, which maps whole pixels to
+  // whole pixels where its translation is whole. So it is drawn at the
+  // translation that puts what it holds exactly where its turn does, made
+  // whole, with the fraction moved into the origin what it holds is painted
+  // from: what is painted is snapped where the page would snap it, and
+  // nothing is moved. Snapped about a translation with a fraction in it,
+  // or moved by a corner snapped before the turn, an edge across the frame
+  // came out a pixel this side or that of the same edge on the page (WPT's
+  // css-writing-modes/available-size-008, a frame's second line).
+  if (framed.any && FRAME_ROOTS.has(box) && axisAligned(a, b, c, d)) {
+    // where the turn puts the document's origin, exactly
+    const kx = matrix[4] + options.originX;
+    const ky = matrix[5] + options.originY;
+    const tx = Math.round(kx);
+    const ty = Math.round(ky);
+    through = [a, b, c, d, tx, ty];
+    // and what is held painted from Aᵀ · (K − T)
+    within = {
+      ...options,
+      originX: a * (kx - tx) + b * (ky - ty),
+      originY: c * (kx - tx) + d * (ky - ty),
+    };
+  }
   const back = invert(through);
   if (!back) return;
   const damage = options.damage;
   const inside: PaintOptions = {
-    ...options,
+    ...within,
     damage:
       damage && mapRect(back, damage.x, damage.y, damage.width, damage.height),
     matrix: options.matrix ? multiply(options.matrix, through) : through,

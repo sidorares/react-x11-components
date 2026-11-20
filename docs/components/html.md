@@ -8580,7 +8580,10 @@ orthogonal flow (7.3): its lines run down the page and stack right to left
 in `vertical-rl` and `sideways-rl` and left to right in `vertical-lr`, and
 run up the page in `sideways-lr`, whose lines start on a whole pixel down
 the page however long their text comes to, so that they are across it
-where a line in any other vertical mode would be. An absolute box at its static position in
+where a line in any other vertical mode would be. A frame is drawn through its
+turn at a whole translation, the fraction moved into where what it holds is
+painted from, so what is in it is snapped to the pixels the page would snap
+it to, its lines' edges included. An absolute box at its static position in
 `vertical-lr` starts at the left, where the flow it would have been in
 starts: laid out after the flow, which is laid out as `vertical-rl`'s and
 put back across, it is put back by its own size once it has one, and what

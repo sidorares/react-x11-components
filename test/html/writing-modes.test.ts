@@ -6,7 +6,7 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { cleanup, fireEvent, waitFor } from 'react-x11/test';
-import { act } from 'react-x11/test';
+import { act, pixelAt } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import type { HtmlViewNode } from '../../src/html/index.js';
 import {
@@ -1315,5 +1315,38 @@ metric(
     assert.deepStrictEqual(rect('a'), [0, 0, 30, 100], 'stretched down');
     assert.deepStrictEqual(rect('b'), [150, 100, 100, 10], 'stretched across');
     assert.deepStrictEqual(rect('p'), [220, 90, 30, 10], 'at the far corner');
+  },
+);
+
+metric(
+  "a frame's second line is drawn on the columns the page would snap it to",
+  async () => {
+    // a frame of a writing mode is a quarter turn: drawn at a translation
+    // with a fraction in it, or moved by a corner snapped before the turn,
+    // a line a fraction across the frame lost a column the same edge on the
+    // page keeps (WPT's css-writing-modes/available-size-008)
+    const { result, node } = await render(
+      '<style>body{margin:0;font:20px/1.13 monospace}' +
+        '#v{writing-mode:vertical-rl;height:20px}' +
+        'span{display:inline-block;color:transparent}</style>' +
+        '<div><div id="v"><span style="height:20px"></span> ' +
+        '<span id="g" style="background:#00ff00">0</span></div></div>',
+    );
+    await act();
+    const el = view(node);
+    const { abs } = el as unknown as DrawnNode;
+    const g = el.elementRect(findById(el.document, 'g')!)!;
+    const y = Math.round(g.y + g.height / 2);
+    const green = async (x: number) =>
+      (await pixelAt(result.ctx, abs.x + x, abs.y + y))[1] === 255 &&
+      (await pixelAt(result.ctx, abs.x + x, abs.y + y))[0] === 0;
+    const left = Math.round(g.x);
+    const right = Math.round(g.x + g.width);
+    assert.ok(await green(left), `column ${left}, the first of ${g.x}`);
+    assert.ok(
+      await green(right - 1),
+      `column ${right - 1}, the last of ${g.x + g.width}`,
+    );
+    assert.ok(!(await green(right)), `no column ${right} past it`);
   },
 );
