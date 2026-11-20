@@ -183,8 +183,19 @@ interface Taken {
   top: number;
 }
 
+/** A line of a row flex box, whose items stand side by side down the
+ *  strip: where it starts and ends, and each item's units. */
+interface Row {
+  top: number;
+  bottom: number;
+  items: { box: Box; units: Unit[] }[];
+}
+
 interface Gathered {
   units: Unit[];
+  /** The lines of the row flex boxes gathered, which a break may fall in
+   *  each item of at a place of its own (`fill`). */
+  rows?: Row[];
   lines: Map<LineBox, Unit>;
   /** The boxes that go whole. */
   boxes: Map<Box, Unit>;
@@ -203,6 +214,8 @@ interface Gathered {
   /** The room under each box's content where it is taller than its
    *  content, by the unit that is that room. */
   rooms?: Map<Unit, Box>;
+  /** And the same where it stands beside something else down the strip. */
+  besideRooms?: Map<Unit, Box>;
   /** Whether the last box gathered avoids a break after it. */
   avoidAfter?: boolean;
   /** The boxes a break may fall inside that clone their edges at one
@@ -481,6 +494,13 @@ function gather(
   // flex row or a grid, and a table row's cells, but not a column flex
   // box's items, which stand one under another
   const beside = parallel && !columnFlex(box);
+  // the items of a row flex box, and the units of each, for its lines
+  const items = flexRow(box) ? ([] as { box: Box; units: Unit[] }[]) : null;
+  const closeItem = (to: number): void => {
+    const open = items?.[items.length - 1] as
+      { units: Unit[]; from: number } | undefined;
+    if (open) open.units = into.units.slice(open.from, to);
+  };
   const reach = (span: [Unit, Unit]): void => {
     if (!first || (parallel && span[0].top < first.top - EPS)) first = span[0];
     if (!last || !parallel || span[1].bottom >= last.bottom - EPS) {
@@ -541,6 +561,11 @@ function gather(
     if (columned.any) {
       COLUMN_PIECES.delete(child);
       REPEATED.delete(child);
+    }
+    const from = into.units.length;
+    if (items) {
+      closeItem(from);
+      items.push({ box: child, units: [], from } as never);
     }
     const before =
       pending || (!heading && forces(child.style.passive['break-before']));
@@ -657,9 +682,10 @@ function gather(
     const bottom = child.y + child.height;
     if (bottom > span[1].bottom + EPS && !sizedByItems(child)) {
       span[1] = clipped(space(span[1].bottom, bottom, null, into), clip);
-      if (!beside && !into.beside) {
-        (into.rooms ??= new Map()).set(span[1], child);
-      }
+      // beside something else, the room is an item's to take, as the
+      // item breaks on its own account (`rowSpans`)
+      const rooms = beside || into.beside ? 'besideRooms' : 'rooms';
+      (into[rooms] ??= new Map()).set(span[1], child);
     }
     into.spans.set(child, span);
     if (child.style.boxDecorationBreak === 'clone') into.cloned.push(child);
@@ -668,6 +694,11 @@ function gather(
     pending ||= afterInside === true;
     // a break avoided after a box's last child is avoided after the box
     shunning ||= avoidInside === true;
+  }
+  if (items) {
+    closeItem(into.units.length);
+    const lines = rowLines(items);
+    if (lines.length) (into.rows ??= []).push(...lines);
   }
   into.after = pending;
   into.avoidAfter = shunning;
@@ -705,6 +736,44 @@ function columnFlex(box: Box): boolean {
     (style.flexDirection === 'column' ||
       style.flexDirection === 'column-reverse')
   );
+}
+
+/** Whether a box is a flex container whose items stand side by side in
+ *  lines down the strip: a row, and not a grid, which has the same kind. */
+function flexRow(box: Box): boolean {
+  const style = box.style;
+  return (
+    box.kind === 'flex' &&
+    (style.display === 'flex' || style.display === 'inline-flex') &&
+    (style.flexDirection === 'row' || style.flexDirection === 'row-reverse') &&
+    !box.style.columns
+  );
+}
+
+/** A row flex box's items in its lines: those whose margin boxes overlap
+ *  down the strip, each line of two items or more. A line of one item
+ *  breaks as the item does, as before. */
+function rowLines(items: { box: Box; units: Unit[] }[]): Row[] {
+  const sorted = items
+    .filter((item) => item.units.length)
+    .map((item) => ({
+      item,
+      top: item.box.y - Math.max(0, item.box.marginTop),
+      bottom: item.box.y + item.box.height + Math.max(0, item.box.marginBottom),
+    }))
+    .sort((a, b) => a.top - b.top);
+  const rows: Row[] = [];
+  let row: Row | null = null;
+  for (const { item, top, bottom } of sorted) {
+    if (row && top < row.bottom - EPS) {
+      row.bottom = Math.max(row.bottom, bottom);
+      row.items.push(item);
+    } else {
+      row = { top, bottom, items: [item] };
+      rows.push(row);
+    }
+  }
+  return rows.filter((r) => r.items.length > 1);
 }
 
 /** Whether a flex container or a grid is as tall as its content makes it:
@@ -862,6 +931,34 @@ interface Filled {
   ats: number[];
   /** The boxes whose room a break inside them took some of (`Room`). */
   taken: Taken[];
+  /** The rows a break fell in each item of at a place of its own. */
+  flows: Flow[];
+}
+
+/** A line of a row flex box among the strip's groups, where a break may
+ *  fall in each of its items at a place of its own: the groups it is,
+ *  from `start` to before `end`, and each item's units, and its own groups
+ *  made of copies of them, which leave the strip's as they are. */
+interface RowSpan {
+  start: number;
+  end: number;
+  top: number;
+  bottom: number;
+  items: {
+    box: Box;
+    units: Unit[];
+    copies: Unit[];
+    groups: Group[];
+    bottom: number;
+  }[];
+}
+
+/** A row a break fell in: its items' own columns, from the column `first`
+ *  on, as `fill` set each item in them. */
+interface Flow {
+  span: RowSpan;
+  first: number;
+  filled: Filled[];
 }
 
 /**
@@ -911,7 +1008,11 @@ function fill(
    *  end, for the taller row in the next of them (WPT's
    *  multicol-nested-013). */
   jumpFrom?: (column: number, need: number, soft?: boolean) => number,
+  /** The lines of row flex boxes a break may fall in each item of at a
+   *  place of its own, by the group each starts at (`rowSpans`). */
+  rows?: Map<number, RowSpan>,
 ): Filled {
+  const flows: Flow[] = [];
   if (heightOf) height = heightOf(0);
   const starts = [0];
   const tops = [top];
@@ -1015,6 +1116,84 @@ function fill(
       next(i, Math.min(group.forced, group.top), false);
       continue;
     }
+    const row = rows?.get(i);
+    if (
+      row &&
+      row.bottom - columnTop > height + EPS &&
+      // a line that starts at or past the column's foot goes to the next
+      // one whole, by the breaks before it
+      row.top < columnTop + height - EPS &&
+      height >= 1
+    ) {
+      // a line of a row flex box that does not fit: each of its items is
+      // set in the columns on its own account, broken where it breaks best
+      // and going on at the head of the next column from there, as the
+      // items of a line are broken in parallel (CSS Flexbox 1, 10)
+      const each = row.items.map((item) => {
+        const head = item.groups[0];
+        // one whose start a margin keeps from the line's top, and that does
+        // not fit under it, starts at the head of the next column, its
+        // margin dropped there, as a break before it is one inside the line
+        if (
+          head &&
+          !head.sliced &&
+          head.top > row.top + EPS &&
+          head.bottom - columnTop > height + EPS
+        ) {
+          const f = fill(item.groups, head.top, height, fixed);
+          return {
+            ...f,
+            starts: [0, ...f.starts],
+            tops: [columnTop, ...f.tops],
+            cut: [false, ...f.cut],
+            taken: f.taken.map((t) => ({ ...t, column: t.column + 1 })),
+          };
+        }
+        return fill(item.groups, columnTop, height, fixed);
+      });
+      const more = Math.max(...each.map((f) => f.starts.length)) - 1;
+      // an item that cannot start in what is left of the column takes the
+      // line to the next one, where there is something before it here
+      const stuck = row.items.some((item) => {
+        const head = item.groups[0];
+        return (
+          head &&
+          !head.sliced &&
+          head.top <= row.top + EPS &&
+          head.bottom - columnTop > height + EPS
+        );
+      });
+      if (stuck && !bare(i, true)) {
+        next(i, group.top, false);
+        continue;
+      }
+      if (more > 0 && starts.length + more < MOST_COLUMNS) {
+        flows.push({ span: row, first: starts.length - 1, filled: each });
+        for (let c = 1; c <= more; c += 1) {
+          let from = Infinity;
+          if (c < more) {
+            for (const f of each) {
+              if (c < f.tops.length) from = Math.min(from, f.tops[c]);
+            }
+          } else {
+            // the last column the line reaches: what comes after it starts
+            // under the most any item has left there, where the strip has
+            // it at the line's foot
+            let used = 0;
+            each.forEach((f, k) => {
+              if (f.tops.length - 1 === more) {
+                used = Math.max(used, row.items[k].bottom - f.tops[more]);
+              }
+            });
+            from = row.bottom - used;
+          }
+          next(i, from, true);
+        }
+        i = row.end;
+        goesOn = false;
+        continue;
+      }
+    }
     if (
       group.bottom + drop(i + 1, false) - columnTop <= height + EPS ||
       // nothing at all, which takes no room wherever it is
@@ -1115,7 +1294,7 @@ function fill(
     at = shunned(at);
     next(at, groups[at].top, false);
   }
-  return { starts, tops, cut, shortage, over, lifts, ats, taken };
+  return { starts, tops, cut, shortage, over, lifts, ats, taken, flows };
 }
 
 /** The lines of a block that a line is among, in order: the groups about
@@ -1230,19 +1409,7 @@ export function layoutColumns(
     }
   }
   const groups = groupsOf(gathered.units);
-  for (const [unit, room] of gathered.rooms ?? []) {
-    const group = unit.group;
-    if (!group.sliced || group.top < unit.top - EPS) continue;
-    const spare = spareOf(room, unit.top);
-    if (spare <= EPS) continue;
-    (group.rooms ??= []).push({
-      box: room,
-      top: room.y,
-      bottom: room.y + room.height,
-      from: unit.top,
-      spare,
-    });
-  }
+  for (const [unit, room] of gathered.rooms ?? []) addRoom(unit, room);
   const clones = clonesOf(gathered, groups);
   // as far down as the content goes, past a box with a height it overflows:
   // what stands out of a box takes room in a column as what is in it does
@@ -1485,7 +1652,21 @@ export function layoutColumns(
   } else if (box.style.columnFill === 'auto' && !beforeSpanner) {
     height = Number.isFinite(limit) ? limit : strip;
     columnHeight = height;
-    filled = fill(groups, from, height, height >= limit, clones?.edges);
+    // the lines of row flex boxes, whose items each break on their own
+    // account, where the columns are of a height to fill: balanced ones
+    // still break each line at one place
+    const spans =
+      gathered.rows && !clones ? rowSpans(gathered, groups) : undefined;
+    filled = fill(
+      groups,
+      from,
+      height,
+      height >= limit,
+      clones?.edges,
+      undefined,
+      undefined,
+      spans,
+    );
     // a container with a `max-height` and less than a column of content
     // is as tall as its content
     if (filled.starts.length === 1) height = Math.min(height, strip);
@@ -1583,19 +1764,7 @@ export function layoutColumns(
 
   // the column each group starts in, and the one it ends in
   const { starts, tops, cut } = done;
-  let c = 0;
-  for (let i = 0; i < groups.length; i += 1) {
-    while (
-      c + 1 < starts.length &&
-      starts[c + 1] <= i &&
-      !(starts[c + 1] === i && cut[c + 1])
-    ) {
-      c += 1;
-    }
-    groups[i].column = c;
-    while (c + 1 < starts.length && starts[c + 1] === i && cut[c + 1]) c += 1;
-    groups[i].last = c;
-  }
+  setColumns(groups, done, 0);
   // the first column at the start of the line: the right, right to left
   const { lifts } = done;
   const breaks = clones?.breaks(starts, cut, done.ats);
@@ -1619,8 +1788,162 @@ export function layoutColumns(
     own.holds = main.holds ??= new Map();
     main.holds.set(t.box, own);
   }
+  // each item of a line a break fell in at a place of its own is placed by
+  // its own columns: from where it went on in each, and its units in its
+  // own groups
+  for (const flow of done.flows) {
+    flow.span.items.forEach((item, k) => {
+      const own = flow.filled[k];
+      setColumns(item.groups, own, flow.first);
+      const at = tops.slice();
+      own.tops.forEach((t, j) => {
+        if (flow.first + j < at.length) at[flow.first + j] = t;
+      });
+      const groupOf = new Map<Unit, Group>();
+      const endsOf = new Map<Unit, Group>();
+      item.units.forEach((unit, j) => {
+        groupOf.set(unit, item.copies[j].group);
+        const ends = item.copies[j].ends;
+        if (ends) endsOf.set(unit, ends);
+      });
+      const flowing: Placing = {
+        ...main,
+        tops: at,
+        dy: (c: number) => topOf(c) - at[c],
+        room: (c: number) => at[c] + heightOf(c),
+        breaks: undefined,
+        groupOf,
+        endsOf,
+        holds: undefined,
+      };
+      (main.flows ??= new Map()).set(item.box, flowing);
+      // a box in it whose room a break took some of, the item among them
+      for (const t of own.taken) {
+        const tops = at.slice();
+        tops[flow.first + t.column] = t.top;
+        (flowing.holds ??= new Map()).set(t.box, {
+          ...flowing,
+          tops,
+          dy: (c: number) => topOf(c) - tops[c],
+          room: (c: number) => tops[c] + heightOf(c),
+        });
+      }
+    });
+  }
   place(box, null, main);
   return answer;
+}
+
+/** Hand a box's room to the group the unit that is that room starts, where
+ *  it is that group's own and some of it is spare (`Room`). */
+function addRoom(unit: Unit, room: Box): void {
+  const group = unit.group;
+  if (!group.sliced || group.top < unit.top - EPS) return;
+  const spare = spareOf(room, unit.top);
+  if (spare <= EPS) return;
+  (group.rooms ??= []).push({
+    box: room,
+    top: room.y,
+    bottom: room.y + room.height,
+    from: unit.top,
+    spare,
+  });
+}
+
+/** Set the column each group starts in, and the one it ends in, from how
+ *  `fill` set them, its first column the column `first`. */
+function setColumns(groups: Group[], done: Filled, first: number): void {
+  const { starts, cut } = done;
+  let c = 0;
+  for (let i = 0; i < groups.length; i += 1) {
+    while (
+      c + 1 < starts.length &&
+      starts[c + 1] <= i &&
+      !(starts[c + 1] === i && cut[c + 1])
+    ) {
+      c += 1;
+    }
+    groups[i].column = c + first;
+    while (c + 1 < starts.length && starts[c + 1] === i && cut[c + 1]) c += 1;
+    groups[i].last = c + first;
+  }
+}
+
+/**
+ * The lines of row flex boxes among the strip's groups that a break may
+ * fall in each item of at a place of its own, by the group each starts
+ * at: where the line's groups hold nothing but its items, and no forced
+ * break falls inside it, which this does not weigh yet.
+ */
+function rowSpans(
+  gathered: Gathered,
+  groups: Group[],
+): Map<number, RowSpan> | undefined {
+  const index = new Map<Group, number>();
+  groups.forEach((group, i) => index.set(group, i));
+  const spans = new Map<number, RowSpan>();
+  for (const row of gathered.rows ?? []) {
+    const members = new Set<Unit>();
+    let start = Infinity;
+    let end = -Infinity;
+    let fits = true;
+    for (const item of row.items) {
+      for (const unit of item.units) {
+        members.add(unit);
+        if (unit.forced !== undefined) fits = false;
+        for (const group of [unit.group, unit.ends ?? unit.group]) {
+          const at = index.get(group);
+          if (at === undefined) fits = false;
+          else {
+            start = Math.min(start, at);
+            end = Math.max(end, at + 1);
+          }
+        }
+      }
+    }
+    if (!fits || !(start < end)) continue;
+    for (const unit of gathered.units) {
+      if (members.has(unit)) continue;
+      const a = index.get(unit.group) ?? -1;
+      const b = index.get(unit.ends ?? unit.group) ?? -1;
+      if ((a >= start && a < end) || (b >= start && b < end)) fits = false;
+    }
+    let bottom = -Infinity;
+    for (let i = start; i < end; i += 1) {
+      const group = groups[i];
+      if (i > start && group.forced !== undefined) {
+        fits = false;
+      }
+      bottom = Math.max(bottom, group.bottom);
+    }
+    if (!fits) continue;
+    spans.set(start, {
+      start,
+      end,
+      top: groups[start].top,
+      bottom,
+      items: row.items.map((item) => {
+        const copies = item.units.map((unit) => ({ ...unit, ends: undefined }));
+        const own = groupsOf(copies);
+        // an item taller than what it holds, stretched to its line, and a
+        // box in it, has its room taken as a box's is in its own columns
+        item.units.forEach((unit, j) => {
+          const room = gathered.besideRooms?.get(unit);
+          if (room) addRoom(copies[j], room);
+        });
+        let last = -Infinity;
+        for (const group of own) last = Math.max(last, group.bottom);
+        return {
+          box: item.box,
+          units: item.units,
+          copies,
+          groups: own,
+          bottom: last,
+        };
+      }),
+    });
+  }
+  return spans.size ? spans : undefined;
 }
 
 /** How tall a multicol container's columns are before its content is set
@@ -2249,6 +2572,25 @@ interface Placing {
    *  a break took some of has what follows it moved up in the column its
    *  content ends in, and not its content (`Room`). */
   holds?: Map<Box, Placing>;
+  /** The placing of each item of a row a break fell in each item of at a
+   *  place of its own (`fill`), which what is in it is placed by. */
+  flows?: Map<Box, Placing>;
+  /** In such an item, the groups its units are in: its own, which its own
+   *  columns were set from, and not the strip's. */
+  groupOf?: Map<Unit, Group>;
+  endsOf?: Map<Unit, Group>;
+}
+
+/** The group a unit starts in, as a placing has it. */
+function startIn(unit: Unit, to: Placing): Group {
+  return to.groupOf?.get(unit) ?? unit.group;
+}
+
+/** The group a unit ends in, as a placing has it. */
+function endIn(unit: Unit, to: Placing): Group {
+  const own = to.groupOf?.get(unit);
+  if (own) return to.endsOf?.get(unit) ?? own;
+  return unit.ends ?? unit.group;
 }
 
 function shift(box: Box, column: number, to: Placing): void {
@@ -2364,8 +2706,8 @@ function moveNested(box: Box, to: Placing): void {
  */
 function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
   const { gathered } = to;
-  const first = span ? span[0].group.column : 0;
-  const last = span ? (span[1].ends ?? span[1].group).last : to.tops.length - 1;
+  const first = span ? startIn(span[0], to).column : 0;
+  const last = span ? endIn(span[1], to).last : to.tops.length - 1;
   if (span && first === last && !gathered.loose.has(box)) {
     shift(box, first, to);
     return;
@@ -2389,7 +2731,7 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
         if (line.y > y + EPS) break;
         on = line;
       }
-      c = gathered.lines.get(on)!.group.column;
+      c = startIn(gathered.lines.get(on)!, inner).column;
     }
     asides.push([child, Math.min(last, Math.max(first, c))]);
   };
@@ -2404,12 +2746,12 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
     // below, with its pieces
   } else if (lines?.length) {
     for (const line of lines) {
-      const c = gathered.lines.get(line)!.group.column;
+      const c = startIn(gathered.lines.get(line)!, inner).column;
       shiftLine(line, inner.dx(c), inner.dy(c));
     }
     if (first !== last) {
       COLUMN_LINES.add(lines);
-      rowsOf(lines, gathered);
+      rowsOf(lines, gathered, to);
       columned.any = true;
     }
     eachAside(box, (aside) => {
@@ -2423,8 +2765,10 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
       const unit = gathered.boxes.get(child);
       const whole = unit ? ([unit, unit] as [Unit, Unit]) : undefined;
       const range = whole ?? gathered.spans.get(child);
-      if (range) place(child, range, inner);
-      else if (child.isFloat && !child.outOfFlow) cutFloat(child, inner);
+      // an item a break fell in at a place of its own, by its own columns
+      const own = inner.flows?.get(child) ?? inner;
+      if (range) place(child, range, own);
+      else if (child.isFloat && !child.outOfFlow) cutFloat(child, own);
     }
   }
   if (span && first === last) {
@@ -2617,10 +2961,10 @@ function cutFloat(float: Box, to: Placing): void {
  * The rows each text's layout has in each column, for the layouts whose
  * lines columns took apart (`COLUMN_ROWS`).
  */
-function rowsOf(lines: LineBox[], gathered: Gathered): void {
+function rowsOf(lines: LineBox[], gathered: Gathered, to: Placing): void {
   const byLayout = new Map<LineText['layout'], Map<number, LineText[]>>();
   for (const line of lines) {
-    const c = gathered.lines.get(line)!.group.column;
+    const c = startIn(gathered.lines.get(line)!, to).column;
     for (const text of line.texts) {
       let columns = byLayout.get(text.layout);
       if (!columns) byLayout.set(text.layout, (columns = new Map()));
