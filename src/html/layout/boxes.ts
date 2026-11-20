@@ -5033,6 +5033,8 @@ class Builder {
       // an item of a flex or grid box around it is blockified, as a child's
       // is (WPT's scroll-buttons-layout-parent)
       if (holdsItems(into.style)) blockify(buttonStyle, true);
+      this._scopes.open();
+      this._counterChanges(buttonStyle, null);
       const button = new Box(
         boxKindFor(buttonStyle.display),
         null,
@@ -5043,6 +5045,36 @@ class Builder {
       into.append(button);
       placeInFlow(button, buttonStyle, into);
       if (namesImages(buttonStyle)) this._backgrounds.push(button);
+      // what its `content` says, text and images, as a `::before` holds
+      // its (`_pseudo`; WPT's scroll-buttons-contents-appearance)
+      const pieces = this._generated(
+        buttonStyle.content as ContentItem[],
+        buttonStyle,
+        el,
+      );
+      this._noteReads(button);
+      this._scopes.close();
+      const flow = flowOf(buttonStyle, button);
+      const around = this._ws;
+      const aroundAt = this._length;
+      if (flow === 'block') this._endLine();
+      if (flow !== 'inline') this._ws = 'start';
+      for (const piece of pieces) {
+        if (typeof piece === 'string') {
+          this._textNode(piece, button, buttonStyle, el);
+        } else {
+          this._contentImage(
+            piece.url,
+            button,
+            buttonStyle,
+            el,
+            undefined,
+            piece.density,
+          );
+        }
+      }
+      if (flow !== 'inline') this._endLine();
+      this._ws = after(flow, this._ws, around, this._length !== aroundAt);
     }
   }
 

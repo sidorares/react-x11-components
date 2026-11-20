@@ -1934,3 +1934,26 @@ test('a ::scroll-button() is :enabled where its element can scroll its way, and 
   await act();
   assert.deepStrictEqual(colours(), [gray, gold, gray, gray], 'and at the end');
 });
+
+test('a ::scroll-button() holds the text its content says, a counter in it counted', async () => {
+  // as a `::before` holds its (CSS Overflow 5, 4; WPT's scroll-buttons-
+  // contents-appearance and -counter-appearance)
+  const { node } = await render(
+    '<style>body{margin:0}#s{counter-reset:n 3}#s::scroll-button(right){' +
+      'content:"next " counter(n);display:block}</style><div id="s"></div>',
+  );
+  type Laid = LaidBox & {
+    parent: Laid | null;
+    kind?: string;
+    text?: string;
+  };
+  const s = boxOf(view(node), 's') as Laid;
+  const siblings = s.parent!.children as Laid[];
+  const button = siblings[siblings.indexOf(s) + 1];
+  assert.strictEqual(button?.pseudo, 'scroll-button');
+  const text = (box: Laid): string =>
+    box.kind === 'text'
+      ? (box.text ?? '')
+      : (box.children as Laid[]).map(text).join('');
+  assert.strictEqual(text(button), 'next 3');
+});

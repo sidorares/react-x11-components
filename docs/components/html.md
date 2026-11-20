@@ -9853,8 +9853,9 @@ each direction a rule gives a `content`, `*` naming all four and `up`,
 to right has them, siblings after the element and its `::after` and before
 a group placed after it, in the order block-start, inline-start,
 inline-end, block-end, and items blockified where what holds them is a flex
-box or a grid. Blink makes them whether or not the element scrolls, and so
-does this. A button is `:enabled` where its element is a scroll container
+box or a grid, each holding what its `content` says, text, counters and
+images, as a `::before` does. Blink makes them whether or not the element
+scrolls, and so does this. A button is `:enabled` where its element is a scroll container
 that can scroll its way from where it is, by its writing mode and direction,
 and `:disabled` otherwise: the view works that out after each layout and
 each scroll, and tells a change as one of `-rx-scroll-buttons`, an attribute
