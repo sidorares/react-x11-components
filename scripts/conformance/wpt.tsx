@@ -477,45 +477,38 @@ interface Mounted {
 let mounted: Mounted | null = null;
 
 /** What the font manager has registered: a document's `@font-face` adds to
- *  it, and nothing takes from it (`src/html/fonts.ts`). Read off ntk's
+ *  it, and nothing takes from it (`src/html/fonts.ts`). The harness's own
+ *  fonts are its font source's, so a mount starts with none. Read off ntk's
  *  `FontManager`, which says nothing of it in its declarations. */
-interface Registered {
-  font: { postscriptName?: string; numGlyphs?: number };
-}
-const registeredOf = (app: unknown): Registered[] =>
-  (app as { fonts: { _registered: Registered[] } }).fonts._registered;
-const faceKey = ({ font }: Registered) =>
-  `${font.postscriptName}\u0000${font.numGlyphs}`;
+const registeredOf = (app: unknown): unknown[] =>
+  (app as { fonts: { _registered: unknown[] } }).fonts._registered;
 
 /** The X11 harness: node-x11's in-process server, the fonts as files. */
 async function mountX11(first: React.ReactElement): Promise<Mounted> {
-  const result: RenderX11Result = await renderX11(first, {
+  // mounted with nothing in it, so what the first page registers is seen
+  const result: RenderX11Result = await renderX11(h('box'), {
     width: WIDTH,
     height: HEIGHT,
     fonts: FONTS,
   });
   // A face a page registers stays in the font manager for good, and the
-  // fallback for a character no family a later page names has walks every
-  // face there is: a later page drew a glyph an earlier page's font had,
-  // and a result turned on what ran before it in its shard. So a mount
-  // that a page added a face to is made again before the next page, test
-  // or reference. A face the mount began with, Ahem's from
-  // `/fonts/ahem.css` above all, adds no glyph the fallback did not have.
+  // fallback for a character no family a later page names walks every face
+  // registered before the font source's: a later page drew a glyph an
+  // earlier page's font had, and a result turned on what ran before it in
+  // its shard. So a mount a page registered a face in is made again before
+  // the next page, test or reference. That is every page that links
+  // `/fonts/ahem.css` too: a registered Ahem comes ahead of the source's
+  // faces in that walk.
   const registered = registeredOf(result.app);
-  const base = new Set(registered.map(faceKey));
-  let seen = registered.length;
+  const at = registered.length;
+  await result.rerender(first);
   return {
     // taken once: the harness's `ctx` getter makes a new context on every
     // read, and each subscribes to the window for good
     ctx: result.ctx as Mounted['ctx'],
     scale: 1,
     render: (element) => result.rerender(element),
-    fontsAdded() {
-      for (; seen < registered.length; seen++) {
-        if (!base.has(faceKey(registered[seen]))) return true;
-      }
-      return false;
-    },
+    fontsAdded: () => registered.length > at,
     dispose: () => cleanup(),
   };
 }
