@@ -8591,7 +8591,10 @@ the page however long their text comes to, so that they are across it
 where a line in any other vertical mode would be. Its lines are as long as
 its containing block is tall where that is definite, else as its
 containing block's definite `max-height` lets them be, else as the viewport
-is tall (7.3.1), and no longer than their content. An absolute box at its static position in
+is tall (7.3.1), and no longer than their content. A frame is drawn through its
+turn at a whole translation, the fraction moved into where what it holds is
+painted from, so what is in it is snapped to the pixels the page would snap
+it to, its lines' edges included. An absolute box at its static position in
 `vertical-lr` starts at the left, where the flow it would have been in
 starts: laid out after the flow, which is laid out as `vertical-rl`'s and
 put back across, it is put back by its own size once it has one, and what
