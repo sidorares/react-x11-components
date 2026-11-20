@@ -326,6 +326,36 @@ test('a press on a scaled mount reaches the point of its document it is drawn ov
   }
 });
 
+test("a frame's document has the frame for its viewport: a vh is of the frame's height", async () => {
+  // CSS Values 4, 6.1.2: a frame is its document's viewport, and its `vh`
+  // was the window's, 600px here, where WPT's vh-support-* frames are 400px
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 300, height: 300, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<style>body{margin:0}iframe{border:0;display:block;' +
+          'width:200px;height:80px}</style><iframe id="f"></iframe>',
+        partial: false,
+        renderEmbedded: () =>
+          h(Html, {
+            'data-testname': 'leaf',
+            partial: false,
+            source:
+              '<style>body{margin:0}</style>' +
+              '<div id="t" style="height:50vh;width:50vw"></div>',
+          }),
+      }),
+    ),
+    { width: 340, height: 340, ...(FONTS && { fonts: FONTS }) },
+  );
+  await act();
+  await act();
+  const t = boxOf(view(screen.getByTestName('leaf') as DrawnNode), 't');
+  assert.deepStrictEqual([t.width, t.height], [100, 40]);
+});
+
 test("a frame's document is laid out again at a zoom that changes, drawn at the zooms it is under, at 1x and 2x", async () => {
   // WPT's zoom/iframe-zoom-nested.html: a frame's script sets the zoom of
   // the `<iframe>` it holds once the document in it is laid out. Core lays
