@@ -4210,3 +4210,24 @@ test('a percentage height in an absolute box its offsets size is of that height,
   assert.deepStrictEqual([v.width, v.height], [100, 100]);
   assert.deepStrictEqual([a.width, a.height], [100, 100]);
 });
+
+test('a clip-path on an inline box cuts all its fragments by a shape measured in its first', async () => {
+  // its text is painted apart from its lines, as one an inset moves is, and
+  // under its clip; the shape is placed and sized from its first fragment,
+  // as Blink has it (CSS Masking 1, 5.1; WPT's css-masking/clip-path/
+  // clip-path-inline-001)
+  const { node } = await render(
+    '<style>body{margin:0}div{width:300px;font:20px/40px sans-serif}' +
+      'span{background:#00ff00;clip-path:inset(0 50% 0 0)}</style>' +
+      '<div>Hello <span>wide words that go on to the next line</span></div>',
+  );
+  const ops: PaintOp[] = [];
+  const fills = await fillsOf(view(node), ops);
+  const green = fills.filter((f) => f.style === parseColor('#00ff00'));
+  assert.ok(green.length >= 2, 'a fragment on each line');
+  const [around] = clipsAround(ops, '#00ff00');
+  const clip = around?.find((c) => c.op === 'clip');
+  assert.ok(clip && clip.op === 'clip', 'under a clip');
+  assert.strictEqual(clip.x, Math.round(green[0].x), 'from its first fragment');
+  assert.strictEqual(clip.w, Math.round(green[0].w / 2), 'half of it across');
+});

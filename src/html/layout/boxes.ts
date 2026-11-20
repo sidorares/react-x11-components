@@ -794,9 +794,9 @@ export const CLIPPED_CELLS = new WeakSet<Box>();
  *  paint and the paint bounds. Written through `clampBox` and `unclampBox`. */
 export const CLAMPED = new WeakSet<Box>();
 
-/** The line-clamp containers whose clamp point fell inside them, which
- *  clip their floats at their padding box rather than holding them (CSS
- *  Overflow 4, 5.3.1): set as each is laid out. */
+/** The line-clamp containers, which clip their floats at their content
+ *  box's foot rather than holding them, whether or not a clamp point fell
+ *  in them (CSS Overflow 4, 5.3.1): set as each is laid out. */
 export const CLAMP_CUT = new WeakSet<Box>();
 
 /**
@@ -7522,10 +7522,15 @@ export function isOffset(style: ComputedStyle): boolean {
 
 /** Whether an inline box's text is laid out apart from the text around it,
  *  and painted at its own turn among the layers (`paintsApart`): one an
- *  inset moves, and one a view transition may capture by a name, whose
- *  image is it alone (CSS View Transitions 1, 7.4). */
+ *  inset moves, one a view transition may capture by a name, whose image
+ *  is it alone (CSS View Transitions 1, 7.4), and one a `clip-path` cuts,
+ *  under its clip (CSS Masking 1, 5). */
 export function laidApart(style: ComputedStyle): boolean {
-  return isOffset(style) || style.viewTransitionName !== 'none';
+  return (
+    isOffset(style) ||
+    style.viewTransitionName !== 'none' ||
+    style.clipPath !== null
+  );
 }
 
 /** Whether a style may put its box under its stacking context's flow: a
