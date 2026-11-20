@@ -2021,3 +2021,29 @@ test('a forced break before the first child of a box with layout containment is 
   const c = boxOf(view(node), 'c');
   assert.deepStrictEqual([c.x, c.y], [0, 200]);
 });
+
+test('a table in columns breaks between its rows and inside its cells', async () => {
+  // a table taller than a column is broken as a grid is, its rows' cells
+  // side by side down the strip and cut where the column ends (CSS
+  // Fragmentation 3, 4; WPT's css-break/table/break-inside-cell-000), where
+  // it went whole and hung past the column's foot
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:2;column-fill:auto;gap:0;width:100px;height:100px">' +
+      '<div style="display:table;width:100%"><div style="display:table-row">' +
+      '<div style="display:table-cell"><div id="c" style="height:150px">' +
+      '</div></div></div></div></div>',
+    300,
+  );
+  assert.deepStrictEqual(
+    COLUMN_PIECES.get(boxOf(view(node), 'c') as never)?.map((p) => [
+      p.x,
+      p.y,
+      p.height,
+    ]),
+    [
+      [0, 0, 100],
+      [50, 0, 50],
+    ],
+  );
+});

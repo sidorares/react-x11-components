@@ -180,7 +180,13 @@ const NO_GROUP: Group = {
 /** Whether no break may fall inside a box, whatever it holds: it is
  *  monolithic, or says so. It goes to a column with all that is in it. */
 function whole(box: Box, avoiding = true): boolean {
-  if (box.kind !== 'block' && box.kind !== 'flex') return true;
+  if (
+    box.kind !== 'block' &&
+    box.kind !== 'flex' &&
+    !TABLE_PARTS.has(box.kind)
+  ) {
+    return true;
+  }
   if (avoiding && box.style.breakInside === 'avoid') return true;
   // size containment makes a box monolithic (CSS Containment 2, 3.1), and
   // a forced break in it is none
@@ -206,6 +212,18 @@ function whole(box: Box, avoiding = true): boolean {
   );
 }
 
+/** The boxes of a table, which breaks between its rows and inside its
+ *  cells as a grid does between its rows and inside its items (CSS
+ *  Fragmentation 3, 4; CSS Tables 3, 9): a row's cells stand side by side
+ *  down the strip. */
+const TABLE_PARTS: ReadonlySet<Box['kind']> = new Set([
+  'table',
+  'table-row-group',
+  'table-row',
+  'table-cell',
+  'table-caption',
+]);
+
 /** Whether a flex or grid container, or an item of one, is a box no break
  *  may fall inside (CSS Fragmentation 3, 4.1): one that scrolls or clips,
  *  one size containment applies to, and anything else that makes a block a
@@ -226,7 +244,12 @@ function monolithic(box: Box): boolean {
  * scrolls or clips).
  */
 function sliceable(box: Box, avoiding = true): boolean {
-  if ((box.kind !== 'block' && box.kind !== 'flex') || box.marker) {
+  if (
+    (box.kind !== 'block' &&
+      box.kind !== 'flex' &&
+      box.kind !== 'table-cell') ||
+    box.marker
+  ) {
     return false;
   }
   const style = box.style;
@@ -396,7 +419,7 @@ function gather(
   // a flex container's items, and a grid's, stand side by side down the
   // strip: its first is the one that starts highest, its last the one that
   // ends lowest, which need not be the last in the tree
-  const parallel = box.kind === 'flex';
+  const parallel = box.kind === 'flex' || box.kind === 'table-row';
   const reach = (span: [Unit, Unit]): void => {
     if (!first || (parallel && span[0].top < first.top - EPS)) first = span[0];
     if (!last || !parallel || span[1].bottom >= last.bottom - EPS) {
