@@ -2005,6 +2005,23 @@ test('a box break-inside: avoid keeps whole is broken where it is taller than a 
   );
 });
 
+test('a forced break before the first child of a box with layout containment is none', async () => {
+  // the break is the box's own, which layout containment keeps from it,
+  // so the child stays under the box's top border (CSS Containment 2,
+  // 3.2; WPT's css-contain/contain-layout-breaks-002)
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:2;column-fill:auto;gap:0;width:200px;height:400px">' +
+      '<div style="border-top:100px solid"></div>' +
+      '<div style="border-top:100px solid;contain:layout">' +
+      '<div id="c" style="border-top:100px solid;break-before:column">' +
+      '</div></div></div>',
+    300,
+  );
+  const c = boxOf(view(node), 'c');
+  assert.deepStrictEqual([c.x, c.y], [0, 200]);
+});
+
 test('a table in columns breaks between its rows and inside its cells', async () => {
   // a table taller than a column is broken as a grid is, its rows' cells
   // side by side down the strip and cut where the column ends (CSS
