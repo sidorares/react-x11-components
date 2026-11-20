@@ -2804,9 +2804,14 @@ metric(
     const { node } = await render(
       '<!doctype html><html><head><style>body { margin: 0 }' +
         '.r { writing-mode: vertical-rl; height: 60px }' +
-        '.g { display: flex; width: 30px; writing-mode: vertical-lr }' +
+        // a subgrid in a vertical mode makes no frame, its tracks being
+        // its grid's (a flex box was the case, before it made one)
+        '.s { display: grid; grid-template-columns: 30px }' +
+        '.g { display: grid; grid-template-columns: subgrid; width: 30px;' +
+        ' writing-mode: vertical-lr }' +
         '</style></head><body><section><p id="p" class="r">x</p>' +
-        '<div class="g">one two three</div></section></body></html>',
+        '<div class="s"><div class="g">one two three</div></div></section>' +
+        '</body></html>',
       320,
     );
     const el = view(node);
