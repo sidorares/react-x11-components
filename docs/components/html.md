@@ -8290,14 +8290,15 @@ start tag is dropped, as HTML's parser drops it) and CSS Text 4's halves
 of it, `white-space-collapse` and `text-wrap-mode`, `text-wrap` (Tailwind
 4's `text-nowrap`, and `text-balance`: a heading of up to six lines broken
 at the narrowest width that keeps as many of them, and set in its whole
-width, as Chrome does it; and `text-pretty`, a paragraph's last word kept
+width, as Chrome does it, under a clamp the lines the clamp keeps, with
+room for its ellipsis on the last; and `text-pretty`, a paragraph's last word kept
 off a line of its own where Chrome keeps it off — see
 [the decisions](#the-decisions)), `line-clamp`
 (CSS Overflow 4: a line-clamp container shows the first lines of its
 formatting context, counted through the blocks in it, and is as tall as
 they are; what comes after them is invisible and takes no room, and the
 last line ends in an ellipsis where more follows, placed after the words
-that fit beside it. Tailwind's `line-clamp-2` writes it as
+that fit beside it, or alone on the line it displaced where none do. Tailwind's `line-clamp-2` writes it as
 `-webkit-line-clamp` on a vertical `-webkit-box`, the one place that form
 clamps, as in a browser, and that form's ellipsis cuts inside a word where
 the line has no room for it, as `text-overflow`'s does — as Chrome, Firefox
