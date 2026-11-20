@@ -5709,12 +5709,27 @@ class Builder {
     style: ComputedStyle,
     owner: Element | null,
   ): void {
+    const ws = style.whiteSpace;
     // text set at no size draws nothing and takes no room, so it needs no
-    // box — and it is no part of the white space around it either
-    if (!(style.fontSize > 0)) return;
+    // box — and it is no part of the white space around it either — but
+    // for what it keeps that moves what follows it whatever its size: a
+    // forced break, and a tab, whose stops are the block's (CSS Text 3,
+    // 4.1.2). A `<pre>` at `font-size: 0` with its text in spans set at a
+    // size of their own is one line a span, which dropped, ran on as one.
+    if (!(style.fontSize > 0)) {
+      const kept =
+        ws === 'pre' || ws === 'pre-wrap'
+          ? data.replace(/[^\n\t]+/g, '')
+          : ws === 'pre-line'
+            ? data.replace(/[^\n]+/g, '')
+            : '';
+      if (!kept) return;
+      this._ws = kept.endsWith('\n') ? 'start' : 'content';
+      this._textBox(kept, into, style, owner);
+      return;
+    }
     // a word does not run on over the start of a line
     if (this._ws === 'start') this._lettered = false;
-    const ws = style.whiteSpace;
     let text: string;
     if (ws === 'pre' || ws === 'pre-wrap') {
       text = data;

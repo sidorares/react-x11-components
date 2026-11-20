@@ -1050,6 +1050,28 @@ metric("a tab goes to the stops its own text's tab-size sets", async () => {
   }
 });
 
+metric('text set at no size keeps its forced breaks and its tabs', async () => {
+  // a `<pre>` at `font-size: 0` with its text in spans of their own sizes:
+  // what is between them draws nothing and still breaks the line and goes
+  // to the next stop, as WPT's white-space-zero-fontsize-001 and -002 have
+  const { node } = await render(
+    '<style>body{margin:0}pre{margin:0;font-size:0;font-family:monospace;' +
+      'tab-size:100px}span{font-size:12px}</style>' +
+      '<pre id="a">\n<span>foo</span>\n<span>bar</span>\n</pre>' +
+      '<pre id="b">\n<span>foo</span>\t<span>bar</span>\n</pre>',
+  );
+  const el = view(node);
+  assert.deepStrictEqual(
+    lineTextsOf(el, 'a').map((line) => line.trim()),
+    ['foo', 'bar'],
+  );
+  const lines = linesOf(el, 'b');
+  assert.strictEqual(lines.length, 1);
+  const runs = textRunsOf(lines[0]);
+  const bar = runs[runs.length - 1][0];
+  assert.ok(Math.abs(bar - 100) < 0.5, `bar at ${bar}, not 100`);
+});
+
 metric('a tab is set from where the room before it ends', async () => {
   // the edges of an inline box and the spacing of a word before a tab
   // move it: its stop is counted from where it is drawn, with them
