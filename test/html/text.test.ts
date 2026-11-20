@@ -3,7 +3,7 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { act, cleanup, pixelAt, waitFor } from 'react-x11/test';
-import { CLAMPED } from '../../src/html/layout/boxes.js';
+import { CLAMPED, COLUMN_ROWS } from '../../src/html/layout/boxes.js';
 import type { FontsLike } from '../../src/html/layout/inline.js';
 import { prettyBreaks } from '../../src/html/layout/pretty.js';
 import type {
@@ -2516,5 +2516,35 @@ metric(
     const b = rules('#0000ff').sort((p, q) => p[0] - q[0]);
     const gap = b.some((r, i) => i > 0 && r[0] - b[i - 1][1] > 2);
     assert.ok(gap, `a gap under the space: ${JSON.stringify(b)}`);
+  },
+);
+
+metric(
+  'a clamp cuts a layout its last line shares with lines it drops',
+  async () => {
+    // a float beside the first lines sets the paragraph a line at a time, and
+    // the lines after it in one layout: the clamp keeps the first of those
+    // and drops the rest, which are drawn with it unless the layout is cut
+    // (WPT's css-overflow/line-clamp/line-clamp-with-floats-001)
+    const { node } = await render(
+      '<div id="c" style="line-clamp:4;font:16px/32px serif;white-space:pre">' +
+        '<div style="float:left;width:50px;height:50px"></div>' +
+        'Line 1\nLine 2\nLine 3\nLine 4\nLine 5</div>',
+    );
+    const lines = linesOf(view(node), 'c');
+    assert.strictEqual(lines.length, 4, 'four lines kept');
+    const last = lines[3].texts[0];
+    const rows = COLUMN_ROWS.get(last as never);
+    assert.ok(rows, 'the last line is cut to its rows');
+    // the harness's layouts name no line's height: the engine's do
+    const natural = last.layout.lines[last.layoutLine] as unknown as {
+      y: number;
+      height: number;
+    };
+    assert.strictEqual(rows.bottom, natural.y + natural.height, 'at its foot');
+    assert.ok(
+      last.layout.lines.length > last.layoutLine + 1,
+      'its layout runs on past it',
+    );
   },
 );

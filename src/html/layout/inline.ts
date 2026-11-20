@@ -49,6 +49,8 @@ import type { Element } from '../dom.js';
 import {
   BOX_RAISES,
   CLAMPED,
+  COLUMN_ROWS,
+  columned,
   CONTROL_BASELINES,
   GRID_TRACKS,
   layerMarks,
@@ -907,6 +909,7 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
   // it — is cut here, and ends where its last line does, with none.
   if (clamp !== undefined && result.lines.length > clamp) {
     const lines = result.lines.slice(0, clamp);
+    keepRows(lines);
     const last = lines[clamp - 1];
     let widest = 0;
     for (const line of lines) widest = Math.max(widest, line.width);
@@ -919,6 +922,47 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
   }
   return result;
 }
+
+/**
+ * Where a clamp keeps a line whose text's layout runs on past it, the rows
+ * of the layout it keeps: a layout is drawn whole, so the lines the clamp
+ * dropped would be drawn with the ones it kept. Cut to them as a column
+ * cuts a layout to its rows (`COLUMN_ROWS`), from its top where the kept
+ * lines start it, and to the foot of the last line kept.
+ */
+function keepRows(lines: readonly LineBox[]): void {
+  const kept = new Map<LineText['layout'], LineText[]>();
+  for (const line of lines) {
+    for (const text of line.texts) {
+      const texts = kept.get(text.layout);
+      if (texts) texts.push(text);
+      else kept.set(text.layout, [text]);
+    }
+  }
+  for (const [layout, texts] of kept) {
+    let last = -1;
+    let top = Infinity;
+    let bottom = -Infinity;
+    let first = false;
+    for (const text of texts) {
+      const natural = layout.lines[text.layoutLine];
+      if (!natural) continue;
+      last = Math.max(last, text.layoutLine);
+      top = Math.min(top, natural.y);
+      bottom = Math.max(bottom, natural.y + natural.height);
+      if (text.layoutLine === 0) first = true;
+    }
+    // all of the layout is kept: nothing to cut
+    if (last < 0 || last >= layout.lines.length - 1) continue;
+    const rows = { top: first ? -CLAMP_REACH : top, bottom };
+    for (const text of texts) COLUMN_ROWS.set(text, rows);
+    columned.any = true;
+  }
+}
+
+/** How far above its first row a layout a clamp cuts may draw: a glyph
+ *  taller than its line. */
+const CLAMP_REACH = 2048;
 
 /**
  * The cut a block's text is laid out with, as the engine takes it: the

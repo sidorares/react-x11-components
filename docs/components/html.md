@@ -8240,7 +8240,9 @@ and WebKit cut it, where the newer property keeps whole words; `line-clamp: auto
 box's `height` or `max-height` holds, and `max-lines`, `continue` and
 `block-ellipsis` are read, a string in `line-clamp` or `block-ellipsis`
 drawn in place of the `…`. A block laid out a line at a time, around an
-image or a float, ends in the ellipsis as one laid out at once does. Where
+image or a float, ends in the ellipsis as one laid out at once does, and
+where the lines after a float are one layout, the lines the clamp drops are
+cut from it rather than drawn with the line it keeps. Where
 the last line's first word is too wide to leave the ellipsis room, a line
 of text that wraps is displaced whole and shows the ellipsis alone, as the
 non-tentative WPT tests, Edge and Safari have it; Chrome's experimental
