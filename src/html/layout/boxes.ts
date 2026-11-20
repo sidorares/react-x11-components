@@ -40,6 +40,7 @@ import {
   isXmlDocument,
 } from '../dom.js';
 import {
+  SCROLL_BUTTONS,
   ShapeCopies,
   VIEWPORT_AUTO,
   languageOf,
@@ -503,6 +504,7 @@ export class Box {
     | 'backdrop'
     | 'scroll-marker'
     | 'scroll-marker-group'
+    | 'scroll-button'
     | 'details-content'
     | 'view-transition'
     | null = null;
@@ -4795,6 +4797,7 @@ class Builder {
       this._pseudo(el, 'before', style, box);
       this._children(el, box, style, childInFlex, el, key);
       this._pseudo(el, 'after', style, box);
+      this._scrollButtons(el, style, into);
       this._scrollMarkers(el, style, box, into);
       if (
         this._options.transition &&
@@ -5013,6 +5016,36 @@ class Builder {
    * images (`GENERATED_FROM`). A marker's `content` makes its box and no
    * text yet, and nothing marks the marker of what is scrolled to.
    */
+  /**
+   * An element's `::scroll-button()`s (CSS Overflow 5, 4): a box for each
+   * direction a rule gives a `content`, siblings after the element's box —
+   * after its `::after`, and before a `::scroll-marker-group` placed after
+   * it — in the order block-start, inline-start, inline-end, block-end, as
+   * Blink makes them (WPT's css-pseudo/relative-box-order-of-pseudo-
+   * elements). Made whether or not the element scrolls, as Blink makes
+   * them: what one does when pressed is to come.
+   */
+  private _scrollButtons(el: Element, style: ComputedStyle, into: Box): void {
+    const cascade = this._options.cascade;
+    for (const which of SCROLL_BUTTONS) {
+      const buttonStyle = cascade.scrollButtonStyleFor(el, which, style);
+      if (!buttonStyle || buttonStyle.display === 'none') continue;
+      // an item of a flex or grid box around it is blockified, as a child's
+      // is (WPT's scroll-buttons-layout-parent)
+      if (holdsItems(into.style)) blockify(buttonStyle, true);
+      const button = new Box(
+        boxKindFor(buttonStyle.display),
+        null,
+        buttonStyle,
+      );
+      button.pseudo = 'scroll-button';
+      GENERATED_FROM.set(button, el);
+      into.append(button);
+      placeInFlow(button, buttonStyle, into);
+      if (namesImages(buttonStyle)) this._backgrounds.push(button);
+    }
+  }
+
   private _scrollMarkers(
     el: Element,
     style: ComputedStyle,
