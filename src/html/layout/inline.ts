@@ -5630,7 +5630,10 @@ function setTabs(
     advanceOf(fonts, fontOf(block), ' ') +
     block.letterSpacing +
     block.wordSpacing;
-  const every = block.tabSizeIsLength ? block.tabSize : block.tabSize * space;
+  // a tab's own `tab-size` (CSS Text 3, 4.2: it applies to text), in
+  // the block's spaces
+  const everyFor = (style: ComputedStyle): number =>
+    style.tabSizeIsLength ? style.tabSize : style.tabSize * space;
   const half = advanceOf(fonts, fontOf(block), '0') / 2;
   const rtl = block.direction === 'rtl';
   /** The room tabs have added to each line so far. */
@@ -5643,6 +5646,7 @@ function setTabs(
     }
     const text = item.run.text;
     const at = starts.get(item)!;
+    const every = everyFor(item.box.style);
     // what the space a tab is laid out as takes before it is spaced out
     const own =
       advanceOf(fonts, item.run, spaceIn(item.box)) +

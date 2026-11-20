@@ -1029,6 +1029,26 @@ metric('a kept tab goes to its stop', async () => {
   assert.ok(Math.abs(g - 40) < 0.5, `G at ${g}px`);
 });
 
+metric("a tab goes to the stops its own text's tab-size sets", async () => {
+  // `tab-size` applies to text (CSS Text 3, 4.2), so a span's own sets the
+  // stops of its tabs, in the block's spaces: WPT's tab-size-inline-001
+  const { node } = await render(
+    '<style>body{margin:0}pre{margin:0;font:10px monospace;tab-size:2}</style>' +
+      '<pre>0123456789A\n<span style="tab-size:5">\t\tB</span>\n' +
+      '<span style="tab-size:10">\tC</span></pre>',
+  );
+  const el = view(node);
+  const text = el.textContent();
+  const x = (at: number) => el.textCaretRect(at)!.x;
+  const a = x(text.indexOf('A')) - x(text.indexOf('0'));
+  for (const letter of ['B', 'C']) {
+    const at = text.indexOf(letter);
+    const from = text.lastIndexOf('\n', at) + 1;
+    const got = x(at) - x(from);
+    assert.ok(Math.abs(got - a) < 0.5, `${letter} at ${got}, not ${a}`);
+  }
+});
+
 metric('a tab is set from where the room before it ends', async () => {
   // the edges of an inline box and the spacing of a word before a tab
   // move it: its stop is counted from where it is drawn, with them
