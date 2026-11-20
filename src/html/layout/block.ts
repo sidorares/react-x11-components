@@ -5709,7 +5709,12 @@ export function ownIntrinsic(box: Box): Intrinsic | null {
     // in a frame of a writing mode its width is down the frame and its
     // height across it, as what is laid out there is turned a quarter, and
     // in a frame turned back in one it is as it was
-    return viewed && framed.any && quarterTurnsOf(box) % 2 === 1
+    // — an image's, a frame's and a drawing's, which are of the page; a
+    // control's is the size it takes in its own flow, set as it runs
+    return viewed &&
+      framed.any &&
+      TURNED_KINDS.has(box.replaced) &&
+      quarterTurnsOf(box) % 2 === 1
       ? turnedIntrinsic(viewed)
       : viewed;
   }
@@ -5721,6 +5726,13 @@ export function ownIntrinsic(box: Box): Intrinsic | null {
     missing: 0,
   };
 }
+
+/** The replaced elements whose natural size is turned in a frame. */
+const TURNED_KINDS: ReadonlySet<Box['replaced']> = new Set([
+  'image',
+  'frame',
+  'svg',
+]);
 
 /** A replaced element's own size as a frame of a writing mode has it, turned
  *  a quarter: its width and its height, and what it lacks of them, swapped,

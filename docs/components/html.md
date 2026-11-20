@@ -6308,7 +6308,7 @@ are `flex-start` and `flex-end`; `self-start` is the child's own start; and
 a `safe` alignment sets it at the axis's start where it would overflow. A flex box in a vertical writing mode is laid out in a
 frame of its own, as a vertical grid is: the frame is the flex box, and its
 row runs down the page, its items put back across in a `vertical-lr`
-flow as a block's are. An image or another replaced element in a frame has
+flow as a block's are. An image, a frame or an inline `<svg>` in a frame has
 its natural width down the frame and its height across it, so its ratio
 sizes it as on the page.
 A grid sits on the baseline of its first item in row-major order — the
