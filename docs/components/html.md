@@ -8284,7 +8284,10 @@ start tag is dropped, as HTML's parser drops it) and CSS Text 4's halves
 of it, `white-space-collapse` and `text-wrap-mode`, `text-wrap` (Tailwind
 4's `text-nowrap`, and `text-balance`: a heading of up to six lines broken
 at the narrowest width that keeps as many of them, and set in its whole
-width, as Chrome does it; and `text-pretty`, a paragraph's last word kept
+width, as Chrome does it; lines made a piece at a time, beside a float,
+after an indent or in fonts of more than one size, are balanced as Blink
+balances them, each line's room narrowed alike, a float keeping the line
+the unbalanced lines placed it on; and `text-pretty`, a paragraph's last word kept
 off a line of its own where Chrome keeps it off — see
 [the decisions](#the-decisions)), `line-clamp`
 (CSS Overflow 4: a line-clamp container shows the first lines of its

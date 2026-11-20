@@ -894,6 +894,13 @@ export interface InlineOptions {
     size(box: Box): number;
     place(box: Box, y: number): void;
   };
+  /**
+   * How much less room each line made a piece at a time breaks in than its
+   * band leaves it, taken off the band's end: `text-wrap: balance`'s
+   * narrowing (`balancedLines`). The lines are still aligned in the whole
+   * band, as the one-layout paths set balanced lines in the whole width.
+   */
+  balanceInset?: number;
 }
 
 /**
@@ -1089,12 +1096,17 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
   );
   const items = autospaced(collected, statics);
   if (options.fonts) rubyOverhang(items, options.fonts);
-  const result = linesOf(
+  let result = linesOf(
     block,
     roomForCluster(block, options, items),
     items,
     floatCount,
   );
+  // `text-wrap: balance` on lines made a piece at a time, which the
+  // one-layout paths balance for themselves
+  if (LINE_AT_A_TIME.has(result) && options.balanceInset === undefined) {
+    result = balancedLines(block, options, result) ?? result;
+  }
   // lines made a piece at a time that `text-wrap: pretty` would break
   // otherwise, made again with its breaks asked for — and kept where the
   // engine broke where it was asked to
@@ -1809,8 +1821,12 @@ function linesOf(
     placeDeferred();
   };
 
+  // the room a line breaks in, less what balancing takes off its end
+  const inset = options.balanceInset ?? 0;
+  const narrowed = (band: { left: number; right: number }) =>
+    inset ? { left: band.left, right: band.right - inset } : band;
   while (index < items.length) {
-    const band = bandAt(options, y, guess);
+    const band = narrowed(bandAt(options, y, guess));
     const available = band.right - band.left;
     const item = items[index];
     const onFirst = lineOne !== null && !lines.length;
@@ -1884,7 +1900,7 @@ function linesOf(
       // the room is what the floats leave beside all of it.
       const tall = box.marginTop + box.height + box.marginBottom;
       const lineTall = Math.max(guess, tall);
-      const room = tall > guess ? bandAt(options, y, tall) : band;
+      const room = tall > guess ? narrowed(bandAt(options, y, tall)) : band;
       const roomWidth = room.right - room.left;
       // a line with nothing on it keeps what comes first, indent or not:
       // there is no break before it (a first line's `text-indent` is room
@@ -2202,9 +2218,11 @@ function linesOf(
     // floated separator, went below it, and its row came out a line taller.
     if (
       isEmpty(open) &&
-      available < options.width &&
+      available + inset < options.width &&
       wraps(style) &&
-      tooNarrow(segment.runs, first.end, word, room)
+      // the room the floats leave, not what balancing took off it: a word
+      // balancing has no room for is a line more, never a move below
+      tooNarrow(segment.runs, first.end, word, room + inset)
     ) {
       const below = belowFloats(options, y, guess);
       if (below !== null) {
@@ -2383,11 +2401,13 @@ function linesOf(
   ) {
     const last = lines[clamping.lines - 1];
     if (!CUT_LINES.has(last)) {
+      // in the room balancing left the line, so a balanced line keeps
+      // room for the ellipsis
       ellipsizeLine(
         last,
         style,
         style.blockEllipsisMark,
-        options.width,
+        options.width - inset,
         fonts,
         base,
         lineHeightMul,
@@ -2415,6 +2435,7 @@ function linesOf(
       const at = prettyAgain(items, lines, fonts, base, style, pretty, indent);
       if (at) PRETTY_AGAIN.set(result, at);
     }
+    LINE_AT_A_TIME.add(result);
     return result;
   }
   const floatRow = besideLines(
@@ -2422,7 +2443,9 @@ function linesOf(
     floatsPlaced,
     options.startY,
   );
-  return { lines, height: y, width: widest, floatRow };
+  const result = { lines, height: y, width: widest, floatRow };
+  LINE_AT_A_TIME.add(result);
+  return result;
 }
 
 const EMPTY: InlineResult = { lines: [], height: 0, width: 0 };
@@ -8257,6 +8280,78 @@ export function clipBoxOf(box: Box | null): Box | null {
     if (at.outOfFlow) return null;
   }
   return null;
+}
+
+/** What the line at a time made (`linesOf`): the one path a paragraph's
+ *  lines are balanced after it is laid out (`balancedLines`). */
+const LINE_AT_A_TIME = new WeakSet<InlineResult>();
+
+/**
+ * `text-wrap: balance` on lines made a piece at a time: beside a float,
+ * after an indent, with an image or an inline box on them, or in fonts of
+ * more than one size. As Blink balances them, every line's room is made
+ * narrower by the same amount, taken off its end, and the most that keeps
+ * the lines as few is found by halving; the lines are then aligned in their
+ * whole room. Under a clamp it is the lines the clamp keeps, with as much of
+ * the text on them, the ellipsis taking its room on the last of them in the
+ * narrower room (`ellipsizeLine`). Null where the lines stay as they are.
+ *
+ * The floats are where the lines first placed them: a float in the middle
+ * of the text keeps its place, where a narrower room could put it a line
+ * lower, which no browser agrees on yet.
+ */
+function balancedLines(
+  block: Box,
+  options: InlineOptions,
+  result: InlineResult,
+): InlineResult | null {
+  const style = block.style;
+  if (
+    style.textWrapStyle !== 'balance' ||
+    !wraps(style) ||
+    style.textAlign === 'justify' ||
+    !(options.width > 0) ||
+    !Number.isFinite(options.width)
+  ) {
+    return null;
+  }
+  const clamp = options.clamp?.lines ?? Infinity;
+  const shownOf = (laid: InlineResult) => Math.min(laid.lines.length, clamp);
+  const keptOf = (laid: InlineResult) =>
+    laid.lines[shownOf(laid) - 1]?.textEnd ?? 0;
+  const count = shownOf(result);
+  if (count < 2 || count > BALANCE_LINES) return null;
+  const kept = keptOf(result);
+  let total = 0;
+  for (let i = 0; i < count; i += 1) total += result.lines[i].width;
+  // the floats were placed by the lines just made, and are beside these
+  const probe = (inset: number) =>
+    layoutLines(block, {
+      ...options,
+      floatBoxes: undefined,
+      balanceInset: inset,
+    });
+  const fits = (laid: InlineResult) =>
+    shownOf(laid) <= count && keptOf(laid) >= kept;
+  let lo = 0;
+  let hi = options.width - total / count;
+  for (let step = 0; step < 8 && hi - lo > 1; step += 1) {
+    const mid = (lo + hi) / 2;
+    if (fits(probe(mid))) lo = mid;
+    else hi = mid;
+  }
+  const inset = Math.floor(lo);
+  if (inset < 1) return null;
+  const balanced = probe(inset);
+  if (!fits(balanced)) return null;
+  // and the floats the first lines placed are theirs
+  balanced.floatRow = result.floatRow;
+  if (balanced.lines.length === result.lines.length) {
+    result.lines.forEach((line, i) => {
+      if (line.floats) balanced.lines[i].floats = line.floats;
+    });
+  }
+  return balanced;
 }
 
 /** The most lines `text-wrap: balance` evens out, as in Chrome: a heading,
