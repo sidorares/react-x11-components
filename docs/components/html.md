@@ -9862,8 +9862,12 @@ to right has them, siblings after the element and its `::after` and before
 a group placed after it, in the order block-start, inline-start,
 inline-end, block-end, and items blockified where what holds them is a flex
 box or a grid. Blink makes them whether or not the element scrolls, and so
-does this. What a press on a button does, `:enabled` and `:disabled` on it,
-`:target-current` on the marker of what is scrolled to and a marker's press
+does this. A button is `:enabled` where its element is a scroll container
+that can scroll its way from where it is, by its writing mode and direction,
+and `:disabled` otherwise: the view works that out after each layout and
+each scroll, and tells a change as one of `-rx-scroll-buttons`, an attribute
+nothing has, which a rule naming the state reads. What a press on a button
+does, `:target-current` on the marker of what is scrolled to and a marker's press
 scrolling to its element are later phases, as is text `content`, such as a
 `counter()` or an `attr()`.
 

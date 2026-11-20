@@ -23,6 +23,7 @@ import { parseMathNumberWith } from './calc.js';
 import type { AnyNode, Element } from 'domhandler';
 
 import { CONTROL_PSEUDOS } from '../control-state.js';
+import { scrollButtonEnabled } from '../scroll-buttons.js';
 import { directionOf } from '../direction.js';
 import {
   addRegistered,
@@ -873,7 +874,36 @@ interface KeptPart {
  *  `::-webkit-slider-runnable-track` are a range's, which only Chrome's and
  *  Safari's names reach, and every page that draws one writes. */
 const PSEUDO_ELEMENT =
-  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|file-selector-button|backdrop|scroll-marker|scroll-marker-group|details-content|column|target-text|spelling-error|grammar-error|-webkit-input-placeholder|-webkit-file-upload-button|-webkit-scrollbar|-webkit-slider-thumb|-webkit-slider-runnable-track)$|::highlight\(\s*((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f]|[^\s()\\])+)\s*\)$|::scroll-button\(\s*([a-zA-Z*-]+)\s*\)$/i;
+  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|file-selector-button|backdrop|scroll-marker|scroll-marker-group|details-content|column|target-text|spelling-error|grammar-error|-webkit-input-placeholder|-webkit-file-upload-button|-webkit-scrollbar|-webkit-slider-thumb|-webkit-slider-runnable-track)$|::highlight\(\s*((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f]|[^\s()\\])+)\s*\)$|::scroll-button\(\s*([a-zA-Z*-]+)\s*\)((?::(?:enabled|disabled))*)$/i;
+
+/**
+ * The rules a `::scroll-button()` rule is filed as, by direction: its rule
+ * for the element, with a test of the button's state where it names one,
+ * `:-rx-scroll-button(<direction> enabled)` — what the element view says of
+ * the element (`scrollButtonEnabled`), told as a change of
+ * `-rx-scroll-buttons`. Its specificity is the rule's, the state counted
+ * in.
+ */
+function scrollButtonRules(pseudo: {
+  rule: StyleRule;
+  buttons?: readonly ScrollButton[];
+  states?: readonly string[];
+}): [ScrollButton, StyleRule][] {
+  const out: [ScrollButton, StyleRule][] = [];
+  for (const which of pseudo.buttons!) {
+    const direction = which.slice('scroll-button-'.length);
+    const tests = (pseudo.states ?? [])
+      .map((state) => `:-rx-scroll-button(${direction} ${state})`)
+      .join('');
+    out.push([
+      which,
+      tests
+        ? { ...pseudo.rule, selector: pseudo.rule.selector + tests }
+        : pseudo.rule,
+    ]);
+  }
+  return out;
+}
 
 /** A scroll container's `::scroll-button()`s, one a logical direction, in
  *  the order they are made (CSS Overflow 5, 4). */
@@ -1045,6 +1075,8 @@ function splitPseudoElement(rule: StyleRule): {
   name?: string;
   /** A `::scroll-button()`'s, the directions it names. */
   buttons?: readonly ScrollButton[];
+  /** And the states after it, `enabled` or `disabled`, each. */
+  states?: readonly string[];
 } | null {
   const m = PSEUDO_ELEMENT.exec(rule.selector);
   if (!m) return null;
@@ -1058,7 +1090,15 @@ function splitPseudoElement(rule: StyleRule): {
   if (m[4] !== undefined) {
     const buttons = SCROLL_BUTTON_NAMES[m[4].toLowerCase()];
     if (!buttons) return null;
-    return { which: 'scroll-button', rule: { ...rule, selector }, buttons };
+    // `:enabled` and `:disabled` after it are its state, asked of its
+    // element by direction (`scrollButtonRules`)
+    const states = (m[5] ?? '').toLowerCase().match(/enabled|disabled/g);
+    return {
+      which: 'scroll-button',
+      rule: { ...rule, selector },
+      buttons,
+      states: states ?? [],
+    };
   }
   // a custom highlight's, by its name, which is case-sensitive and may be
   // written with escapes: `::highlight(multi\ word)` is `multi word`'s
@@ -3659,6 +3699,10 @@ function scanFunctionChanges(
     for (const key of keys) {
       note(key, has ? bits : bits | CHANGES_BELOW, has, subject ?? stable);
     }
+  } else if (name === '-rx-scroll-button') {
+    // a `::scroll-button()` enabled or disabled, told as a change of this
+    // attribute nothing has (`setScrollButtonsEnabled`)
+    note('a:-rx-scroll-buttons', bits, has, subject, stable, undefined, parent);
   } else if (name === 'state') {
     // a custom element's own states, told as a change of this attribute
     // nothing has (`DomHost`'s `customStates`)
@@ -5356,12 +5400,10 @@ export class Cascade {
       }
       const pseudo = splitPseudoElement(rule);
       if (pseudo?.which === 'scroll-button') {
-        for (const which of pseudo.buttons!) {
-          this._latest.push(
-            this._pseudo[which].add(pseudo.rule, undefined, scope),
-          );
+        for (const [which, derived] of scrollButtonRules(pseudo)) {
+          this._latest.push(this._pseudo[which].add(derived, undefined, scope));
+          this._restated.push(derived, rule);
         }
-        this._restated.push(pseudo.rule, rule);
       } else if (pseudo?.which === 'highlight') {
         let index = this._highlights.get(pseudo.name!);
         if (!index)
@@ -7570,6 +7612,12 @@ export class Cascade {
       return [at, style];
     }
     return null;
+  }
+
+  /** Whether any rule styles a `::scroll-button()`, whose state the
+   *  element view then works out (`setScrollButtonsEnabled`). */
+  get hasScrollButtons(): boolean {
+    return SCROLL_BUTTONS.some((which) => this._pseudo[which].size > 0);
   }
 
   /** Whether any rule is under an `@container` whose answer is a size's. */
@@ -11481,6 +11529,12 @@ const PSEUDOS = {
   // the top of a shadow tree, where `:host > .x`'s `.x` is (`readHost`)
   '-rx-top': (el: Element) => el.parent instanceof ShadowRoot,
   ...NAMESPACE_PSEUDOS,
+  // a `::scroll-button()`'s state, by direction (`scrollButtonRules`)
+  '-rx-scroll-button': (el: Element, arg?: string | null): boolean => {
+    const [direction, state] = (arg ?? '').split(' ');
+    const enabled = scrollButtonEnabled(el, direction);
+    return state === 'enabled' ? enabled : !enabled;
+  },
   // the host, which nothing in its tree is: a `:host` this reads in a
   // compound of its own is the host's (`readHost`), and one inside a
   // function's list, `:not(:host)`, is nothing's
