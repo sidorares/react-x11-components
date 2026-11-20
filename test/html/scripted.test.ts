@@ -967,8 +967,12 @@ test('a page told nothing hears again once its scripts have had their part of th
 test('a drag the document keeps up with tells a page every width, and so does a window that says nothing of a drag', async (t) => {
   const drag = await dragged(t);
   // the clock moves at the document's work, and none of it is past the
-  // budget; the page's scripts have spent all there is
-  drag.work.value = 1;
+  // budget; the page's scripts have spent all there is. A frame's work is
+  // the reads of the clock in it, and how many land in one frame turns on
+  // the machine's timers, so a read moves the clock far less than a frame
+  // could ever reach: at a millisecond a read, a frame that took a few
+  // more turns of the page than usual ran past the budget
+  drag.work.value = 0.01;
   drag.scripts.value += 1e9;
   drag.live(true);
   for (const width of [396, 392, 388, 384]) {
