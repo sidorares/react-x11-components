@@ -28,7 +28,7 @@ import {
   view,
 } from './harness.js';
 import type { Region } from './harness.js';
-import { uprightCells } from '../../src/html/layout/writing.js';
+import { FRAMES, uprightCells } from '../../src/html/layout/writing.js';
 
 afterEach(cleanup);
 
@@ -1367,3 +1367,24 @@ metric(
     assert.ok(!(await green(right)), `no column ${right} past it`);
   },
 );
+
+test('a frame turned up stands where its root ends, to the fraction', async () => {
+  // a frame turned up — `sideways-lr`, or a horizontal block turned back in
+  // a vertical flow — was placed on a whole pixel down the page, which set
+  // a line of text in it at another fraction of a pixel from the same line
+  // on the page, and drew some of its glyphs otherwise (WPT's
+  // css-writing-modes/sizing-orthog-vrl-in-htb-008, its reference); its
+  // pixels are snapped where the page would snap them as it is drawn
+  const { node } = await render(
+    '<style>body{margin:0;font:20px/1.13 monospace}</style>' +
+      '<div style="height:0.4px"></div>' +
+      '<div id="s" style="writing-mode:sideways-lr">ab</div>',
+  );
+  const root = boxOf(view(node), 's') as unknown as {
+    contentY: number;
+    contentHeight: number;
+  };
+  const frame = FRAMES.get(root as never) as unknown as { y: number };
+  assert.ok(frame, 'the root has a frame');
+  assert.strictEqual(frame.y, root.contentY + root.contentHeight);
+});
