@@ -6905,8 +6905,8 @@ function paintFlow(
   }
 }
 
-/** The line-clamp container whose clamp point fell inside it that a float
- *  is in (`CLAMP_CUT`), or null. */
+/** The nearest line-clamp container around a float, which cuts it
+ *  (`CLAMP_CUT`), or null. */
 function clampCutAround(float: Box): Box | null {
   for (let at = float.parent; at; at = at.parent) {
     if (at.style.lineClamp !== null) return CLAMP_CUT.has(at) ? at : null;
@@ -6946,9 +6946,8 @@ function paintFlowBackgrounds(
     if (CLAMPED.has(child)) continue;
     if (child.isFloat) {
       pass.floats.boxes.push(child);
-      // a line-clamp container whose clamp point fell inside it cuts its
-      // floats at its padding box (CSS Overflow 4, 5.3.1; WPT's
-      // line-clamp-with-floats-005)
+      // a line-clamp container cuts its floats at its content box's foot
+      // (CSS Overflow 4, 5.3.1; WPT's line-clamp-with-floats-005)
       const cut = clampCutAround(child);
       pass.floats.clips.push(cut ? [...clips, cut] : clips);
       continue;

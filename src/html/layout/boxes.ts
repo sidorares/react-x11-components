@@ -788,9 +788,9 @@ export const CLIPPED_CELLS = new WeakSet<Box>();
  *  paint and the paint bounds. Written through `clampBox` and `unclampBox`. */
 export const CLAMPED = new WeakSet<Box>();
 
-/** The line-clamp containers whose clamp point fell inside them, which
- *  clip their floats at their padding box rather than holding them (CSS
- *  Overflow 4, 5.3.1): set as each is laid out. */
+/** The line-clamp containers, which clip their floats at their content
+ *  box's foot rather than holding them, whether or not a clamp point fell
+ *  in them (CSS Overflow 4, 5.3.1): set as each is laid out. */
 export const CLAMP_CUT = new WeakSet<Box>();
 
 /**
