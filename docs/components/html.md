@@ -6305,8 +6305,12 @@ writing mode's, which they do not; `space-between` is `flex-start`,
 page's sides across it, the top and the bottom along a row that runs
 down, and the start along a column that does; `flow-start` and `flow-end`
 are `flex-start` and `flex-end`; `self-start` is the child's own start; and
-a `safe` alignment sets it at the axis's start where it would overflow. A flex box in a vertical writing mode is laid out on
-the page, so this holds there too.
+a `safe` alignment sets it at the axis's start where it would overflow. A flex box in a vertical writing mode is laid out in a
+frame of its own, as a vertical grid is: the frame is the flex box, and its
+row runs down the page, its items put back across in a `vertical-lr`
+flow as a block's are. An image or another replaced element in a frame has
+its natural width down the frame and its height across it, so its ratio
+sizes it as on the page.
 A grid sits on the baseline of its first item in row-major order — the
 first in its first row that holds one, by where it was placed — and an
 item with no line of its own gives the bottom edge of its border box (CSS
@@ -8715,7 +8719,7 @@ block start, the principal writing mode handed from the `<body>` or the root
 element to the viewport (8) — so a vertical body is as wide as the line
 where a browser makes it as wide as its lines and puts it at the right, and
 a block in it as tall as its text where a browser makes it the viewport's
-height — a vertical flex box or table, a subgrid's tracks across writing
+height — a vertical table, a subgrid's tracks across writing
 modes (its columns are its grid's columns, where they are its grid's rows),
 images and form controls
 set in a vertical line (a control is mounted where the flow's turn puts its

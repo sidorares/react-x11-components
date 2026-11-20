@@ -5704,8 +5704,14 @@ export function replacedRatio(box: Box): number {
 export function ownIntrinsic(box: Box): Intrinsic | null {
   if (!contained(box, CONTAIN_SIZE)) {
     const own = box.intrinsic;
-    if (!own || !box.style.objectViewBox) return own;
-    return viewedIntrinsic(box, own);
+    const viewed =
+      !own || !box.style.objectViewBox ? own : viewedIntrinsic(box, own);
+    // in a frame of a writing mode its width is down the frame and its
+    // height across it, as what is laid out there is turned a quarter, and
+    // in a frame turned back in one it is as it was
+    return viewed && framed.any && quarterTurnsOf(box) % 2 === 1
+      ? turnedIntrinsic(viewed)
+      : viewed;
   }
   const style = box.style;
   return {
@@ -5713,6 +5719,18 @@ export function ownIntrinsic(box: Box): Intrinsic | null {
     height: style.containIntrinsicHeight ?? 0,
     ratio: 0,
     missing: 0,
+  };
+}
+
+/** A replaced element's own size as a frame of a writing mode has it, turned
+ *  a quarter: its width and its height, and what it lacks of them, swapped,
+ *  and its ratio the other way up. */
+function turnedIntrinsic(own: Intrinsic): Intrinsic {
+  return {
+    width: own.height,
+    height: own.width,
+    missing: ((own.missing & 1) << 1) | ((own.missing & 2) >> 1),
+    ratio: own.ratio ? 1 / own.ratio : 0,
   };
 }
 

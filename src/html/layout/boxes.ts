@@ -4615,14 +4615,17 @@ class Builder {
         // and a grid, or grid lanes, whose frame is the grid (`makeFrame`),
         // but for a subgrid, whose tracks would be its parent's across
         // writing modes
-        (kind === 'flex' && style.grid && !subgridsIn(style, into))) &&
+        (kind === 'flex' && style.grid && !subgridsIn(style, into)) ||
+        // and a flex box, whose frame is the flex box as a grid's is
+        (kind === 'flex' && !style.grid)) &&
       flowModeAround(into) === 'horizontal-tb'
     ) {
       this._orthogonal.push(box);
     } else if (
       style.writingMode === 'horizontal-tb' &&
       ((kind === 'block' && !style.grid) ||
-        (kind === 'flex' && style.grid && !subgridsIn(style, into))) &&
+        (kind === 'flex' && style.grid && !subgridsIn(style, into)) ||
+        (kind === 'flex' && !style.grid)) &&
       holdsTurnBack(flowModeAround(into), style, into) &&
       this._inOrthogonal(into)
     ) {

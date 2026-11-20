@@ -160,12 +160,17 @@ export function makeFrame(
   // across; and the root is a block around it. Where the root has a width
   // of its own, which is the grid's block size, the frame is as tall as
   // the root's content box, which its rows fill.
-  const grid = box.kind === 'flex' && box.style.grid;
+  // A flex box's lines are its frame's the same way (CSS Flexbox 1, 2: its
+  // main axis is its writing mode's inline axis for a row, which is the
+  // frame's across): the frame is the flex box, and the root a block
+  // around it.
+  const grid = box.kind === 'flex';
   if (grid) {
     const own = box.style;
     const to = style as unknown as Record<string, unknown>;
     const from = own as unknown as Record<string, unknown>;
-    for (const field of GRID_CONTAINER_FIELDS) to[field] = from[field];
+    const fields = own.grid ? GRID_CONTAINER_FIELDS : FLEX_CONTAINER_FIELDS;
+    for (const field of fields) to[field] = from[field];
     style.display = 'flex';
     if (own.width !== 'auto' && !own.widthKeyword) style.height = { pct: 100 };
     const root = copyStyle(own);
@@ -225,6 +230,29 @@ export function makeFrame(
   FRAME_ROOTS.set(frame, box);
   return frame;
 }
+
+/** What makes a box a flex container, which a vertical flex box's frame
+ *  takes from its root (`makeFrame`): the direction and the wrapping, the
+ *  gaps and their rules, and the alignment of the lines and of the items.
+ *  All of them logical, so none is turned. */
+const FLEX_CONTAINER_FIELDS = [
+  'flexDirection',
+  'flexWrap',
+  'columnGap',
+  'columnGapNormal',
+  'rowGap',
+  'rowGapNormal',
+  'justifyContent',
+  'justifyContentText',
+  'alignContent',
+  'alignContentText',
+  'justifyItems',
+  'justifyItemsText',
+  'alignItems',
+  'alignItemsText',
+  'columnRule',
+  'rowRule',
+] as const;
 
 /** What makes a box a grid container, which a vertical grid's frame takes
  *  from its root (`makeFrame`): the templates, the implicit tracks and the
@@ -598,17 +626,24 @@ export function reflectFrame(
   const stack: Box[] = [frame];
   while (stack.length) {
     const box = stack.pop()!;
-    // a block container's lines and blocks: a flex box's items, a table's
-    // rows and an inline box's text are where their own layout put them,
-    // and only what is in them is put back
+    // a block container's lines and blocks: a table's rows and an inline
+    // box's text are where their own layout put them, and only what is in
+    // them is put back
     // and a grid's items, which it places from its rows, and grid lanes',
     // which they stack, down the frame
     const grid = box.kind === 'flex' && box.style.grid;
+    // and a flex box's items, which it lays out from its cross start, the
+    // frame's top: in a flow that runs left to right that is the page's
+    // left, and the items are put back across its content box as blocks
+    // are, which puts its lines, its cross axis and a column's main axis
+    // the right way round (WPT's css-flexbox/flex-aspect-ratio-img-vert-lr)
+    const flex = box.kind === 'flex' && !box.style.grid;
     const container =
       box.kind === 'block' ||
       box.kind === 'table-cell' ||
       box.kind === 'table-caption' ||
-      grid;
+      grid ||
+      flex;
     // a block that runs right to left in it — a `vertical-rl` aside in a
     // `vertical-lr` flow — was laid out as it reads: it is moved whole by
     // what it is in, and its own lines and blocks are left in its order
@@ -685,9 +720,9 @@ export function putBackAcross(box: Box): boolean {
   return frame !== null && reflects(frameTurn(frame));
 }
 
-/** Whether a box is laid out in a frame: a grid or a flex box in a vertical
- *  writing mode makes none, and is laid out level with its text, whatever
- *  else the document holds (`BoxTree.vertical`). */
+/** Whether a box is laid out in a frame: a subgrid in a vertical writing
+ *  mode makes none, and is laid out level with its text, whatever else the
+ *  document holds (`BoxTree.vertical`). */
 export function inFrame(box: Box): boolean {
   return FRAME_ROOTS.has(box) || frameOf(box) !== null;
 }

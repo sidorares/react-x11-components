@@ -1016,19 +1016,22 @@ metric(
 metric(
   'a box in a vertical writing mode that no frame holds is laid out as though the document had no frame',
   async () => {
-    // A flex container makes no frame, so its text is level whatever else
-    // is on the page. With a frame elsewhere it was made a line at a time
-    // and set upright for a paint that only a frame's root does
+    // A subgrid makes no frame, its tracks being its grid's, so its text
+    // is level whatever else is on the page. With a frame elsewhere it was
+    // made a line at a time and set upright for a paint that only a frame's
+    // root does (a flex container was the case, before it made a frame)
     const sheet =
       // a vertical paragraph's margins are on its left and right, so
       // neither has any, and the two are as tall as each other
       '<style>body{margin:0}p{margin:0}' +
       '.r{writing-mode:vertical-rl;height:40px}' +
-      '.g{display:flex;width:30px;writing-mode:vertical-lr;' +
-      'text-orientation:upright}</style>';
+      '.s{display:grid;grid-template-columns:30px}' +
+      '.g{display:grid;grid-template-columns:subgrid;width:30px;' +
+      'writing-mode:vertical-lr;text-orientation:upright}</style>';
     const laid = async (before: string) => {
       const { node, result } = await render(
-        `${sheet}<body>${before}<div class="g" id="g">one two three</div></body>`,
+        `${sheet}<body>${before}<div class="s"><div class="g" id="g">` +
+          'one two three</div></div></body>',
       );
       const el = view(node);
       await act();
@@ -1446,4 +1449,24 @@ test('a vertical-rl block in a vertical-lr flow keeps its own lines right to lef
     `its first line, ${at('a')}, right of ${at('b')}`,
   );
   assert.ok(at('m') < at('n'), 'and the flow still runs left to right');
+});
+
+test('a flex box in a vertical writing mode lays its row out down the page', async () => {
+  // a flex box's main axis is its writing mode's inline axis for a row
+  // (CSS Flexbox 1, 2), which in `vertical-rl` runs down the page: its
+  // frame is the flex box, as a vertical grid's is its grid, and its items
+  // start at the right
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;writing-mode:vertical-rl;height:200px;' +
+      'width:100px"><div id="a" style="block-size:30px;inline-size:40px">' +
+      '</div><div id="b" style="block-size:20px;flex:1"></div></div>',
+  );
+  const el = view(node);
+  const rect = (id: string) => {
+    const r = el.elementRect(findById(el.document, id)!)!;
+    return [r.x, r.y, r.width, r.height];
+  };
+  assert.deepStrictEqual(rect('a'), [70, 0, 30, 40]);
+  assert.deepStrictEqual(rect('b'), [80, 40, 20, 160]);
 });
