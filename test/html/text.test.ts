@@ -2548,3 +2548,28 @@ metric(
     );
   },
 );
+
+test('a float past a clamp point is hidden, and one on the last line kept is cut at the clamp point', async () => {
+  // a float the lines the clamp dropped reach is past the clamp point, and
+  // one on the last line kept is cut at the container's content box foot
+  // (CSS Overflow 4, 5.3.1; WPT's line-clamp-with-floats-003 and -005)
+  const { node } = await render(
+    '<style>body{margin:0}.c{line-clamp:2;font:16px/32px serif;white-space:pre}' +
+      '.f{float:left;width:50px;height:50px}</style>' +
+      '<div class="c" id="a">Line 1\nLine 2\n<div class="f" id="past"></div>' +
+      'Line 3</div>' +
+      '<div class="c" id="b">Line 1\nLine 2<div class="f" id="kept"></div>\n' +
+      'Line 3</div>',
+  );
+  const el = view(node);
+  const hidden = (id: string) => CLAMPED.has(boxOf(el, id) as never);
+  assert.strictEqual(hidden('past'), true, 'past the clamp point');
+  assert.strictEqual(hidden('kept'), false, 'on the last line kept');
+  const ops: PaintOp[] = [];
+  await fillsOf(el, ops);
+  const b = boxOf(el, 'b');
+  const clips = ops.filter(
+    (op) => op.op === 'clip' && op.y + op.h === b.y + b.height,
+  );
+  assert.ok(clips.length > 0, 'cut at the content box foot');
+});

@@ -161,6 +161,7 @@ import {
   BOX_RAISES,
   Box,
   clampBox,
+  CLAMP_CUT,
   COLUMN_BOXES,
   CLEARED_FROM,
   COLUMN_PIECES,
@@ -3627,6 +3628,22 @@ function countLines(
   }
   clamp.left -= result.lines.length;
   if (result.cut || (clamp.left <= 0 && cut?.follows)) clamp.done = true;
+  // a float placed from the lines the clamp dropped is past the clamp
+  // point, and hidden with them (CSS Overflow 4, 5.3.1; WPT's
+  // line-clamp-with-floats-003), where one on the last line kept stays
+  // (-005)
+  if (result.cut) {
+    const last = result.lines[result.lines.length - 1];
+    const foot = last ? contentTop + last.y + last.height : contentTop;
+    const stack = [...box.children];
+    while (stack.length) {
+      const at = stack.pop()!;
+      if (at.isFloat && !at.outOfFlow) {
+        if (at.y - Math.max(0, at.marginTop) >= foot - 0.01) hideClamped(at);
+        else unclampBox(at);
+      } else if (at.kind === 'inline') stack.push(...at.children);
+    }
+  }
 }
 
 /** Mark a box past a clamp point, and take from everything in it the lines
@@ -4465,6 +4482,8 @@ function layoutBoxAt(
   // Past a clamp point, a line-clamp container clips its floats rather
   // than holding them (CSS Overflow 4, 5.3.1).
   const clamped = ctx.clamp?.box === box && ctx.clamp.done;
+  if (clamped) CLAMP_CUT.add(box);
+  else if (box.style.lineClamp !== null) CLAMP_CUT.delete(box);
   const withFloats =
     ownFloats && !clamped
       ? Math.max(
