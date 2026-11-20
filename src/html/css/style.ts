@@ -11147,7 +11147,13 @@ function cascadeTakesNow(name: string, value: string): boolean | undefined {
   const unsaid = UNSAID_FONT[prop];
   if (unsaid) {
     const v = value.trim().toLowerCase();
-    if (!v || CSS_WIDE_KEYWORD.test(v) || /\b(?:var|env|attr)\(/.test(v)) {
+    if (
+      !v ||
+      CSS_WIDE_KEYWORD.test(v) ||
+      /(?<![\w-])(?:var|env|attr|ident|if|sibling-index|sibling-count)\(/.test(
+        v,
+      )
+    ) {
       return undefined;
     }
     if (unreadValue(prop, v)) return undefined;
@@ -11156,7 +11162,10 @@ function cascadeTakesNow(name: string, value: string): boolean | undefined {
   const fields = INHERIT_TARGETS[PREFIXED_ALIASES[prop] ?? prop];
   if (!fields?.length) return undefined;
   const v = value.trim();
-  if (!v || /\b(?:var|env|attr|ident|sibling-index|sibling-count)\(/i.test(v)) {
+  if (
+    !v ||
+    /(?<![\w-])(?:var|env|attr|ident|if|sibling-index|sibling-count)\(/i.test(v)
+  ) {
     return undefined;
   }
   if (/^(?:inherit|initial|unset|revert|revert-layer|revert-rule)$/i.test(v)) {
