@@ -143,6 +143,8 @@ import {
   layoutColumns,
   spansColumns,
   spannedRows,
+  rowGridOf,
+  spannerRow,
   isSpanner,
   containingParent,
   joinedGeometry,
@@ -4804,6 +4806,8 @@ function layoutRows(
    *  of all the rows (`joinedGeometry`). */
   let from = top;
   const joined = joinedGeometry(box);
+  // the rows the columns wrap into, which a spanner keeps to as well
+  const grid = rowGridOf(box, limit);
   try {
     for (let r = 0; r <= spanners.length; r += 1) {
       const row = slices.get(box)!.rows[r] ?? [];
@@ -4844,7 +4848,7 @@ function layoutRows(
           Math.max(0, limit - (y - top)),
           y,
           r < spanners.length,
-          { from, into: joined },
+          { from, into: joined, grid },
         );
         from += strip;
       }
@@ -4869,6 +4873,21 @@ function layoutRows(
         y,
         contentWidth,
       );
+      // in rows of columns, a spanner in a gap goes to the next row, and
+      // so does one that does not fit in what is left of its row: one at a
+      // row's top stays there however tall (WPT's column-height-018)
+      const below = grid ? spannerRow(grid, y, child.height) : null;
+      if (below !== null) {
+        y = below;
+        layoutBlockLevel(
+          child,
+          ctx,
+          new FloatContext(box.contentX, box.contentX + contentWidth),
+          box.contentX,
+          y,
+          contentWidth,
+        );
+      }
       y = child.y + child.height;
       margin = child.marginBottom;
     }

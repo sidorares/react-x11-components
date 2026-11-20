@@ -1875,3 +1875,47 @@ test('a piece of a box that clones its edges fills the column a break ends it in
     ],
   );
 });
+
+test('column-height and column-wrap set the columns in rows, a row gap apart', async () => {
+  // Rows of two columns 30px tall, 10px apart: six boxes of 20px that go
+  // whole take a column each, three rows, and the last row is as tall as
+  // the others whatever its content comes to (CSS Multi-column 2, 3.7;
+  // WPT's column-height-014).
+  const u = (id: string) =>
+    `<div id="${id}" style="height:20px;contain:size"></div>`;
+  const { node } = await render(
+    SHEET +
+      '<div class="m" id="m" style="column-height:30px;gap:10px 40px">' +
+      ['a', 'b', 'c', 'd', 'e', 'f'].map(u).join('') +
+      '</div>' +
+      // a spanner that does not fit in what is left of its row goes to the
+      // next, and what comes after one that ends in a gap to the row after
+      '<div class="m" id="n" style="column-height:30px;gap:10px 40px">' +
+      u('g') +
+      '<div id="s" style="column-span:all;height:30px"></div>' +
+      u('h') +
+      '</div>',
+    700,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(at(el, 'b', 'm'), [320, 0, 280, 20], 'beside');
+  assert.deepStrictEqual(at(el, 'c', 'm'), [0, 40, 280, 20], 'a row down');
+  assert.deepStrictEqual(at(el, 'f', 'm'), [320, 80, 280, 20], 'the last');
+  assert.strictEqual(boxOf(el, 'm').height, 110, 'three rows and the gaps');
+  assert.strictEqual(at(el, 's', 'n')[1], 40, 'the spanner, a row down');
+  assert.deepStrictEqual(at(el, 'h', 'n'), [0, 80, 280, 20], 'past the gap');
+  assert.strictEqual(boxOf(el, 'n').height, 110, 'to the last row');
+});
+
+test('the columns shorthand takes a column-height after a slash', async () => {
+  const { node } = await render(
+    SHEET +
+      '<div id="m" style="width:600px;columns:2 / 30px;gap:10px 40px">' +
+      '<div id="a" style="height:20px;contain:size"></div>' +
+      '<div style="height:20px;contain:size"></div>' +
+      '<div id="c" style="height:20px;contain:size"></div></div>',
+    700,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(at(el, 'c', 'm'), [0, 40, 280, 20], 'a row down');
+});

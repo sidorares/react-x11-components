@@ -6151,7 +6151,25 @@ in a spanner, and in nothing positioned in it, is positioned in the
 container, its offset parent with it, and an anchor in it is in none of the
 boxes it is laid out through. A box a break falls inside has a piece in each
 column: its background and its borders are drawn a piece at a time, with no
-edge at the break. Under `box-decoration-break: clone` each piece is a box of
+edge at the break.
+
+`column-height` and `column-wrap` (CSS Multi-column 2) set the columns in
+rows, a `row-gap` apart, each row as many columns as there are and as tall
+as `column-height` says, or, where it says `auto` and `column-wrap: wrap`
+asks for rows, as the container's own height. `column-wrap: auto` wraps
+where `column-height` is a length, and `columns` takes one after a slash
+(`columns: 2 / 100px`), as `column-height` alone makes a box a multicol
+container. The rows are filled one after another, and under
+`column-fill: balance` each row's columns are then as short as still hold
+what the row holds, the row keeping its full height; a spanner goes in what is left of its row where it fits
+there, and at the next row's top where it does not, and a column of no
+height still takes a pixel of what can be cut, as Blink sets them. With no
+height to wrap at there is one row, but where forced breaks make more
+columns than there are, rows of them, each as tall as its tallest. Not
+wrapping, the columns are as tall as `column-height`, whatever the
+container's height. A multicol container in another's columns still goes
+whole, so the rows of one nested in another's are not cut where the outer
+columns end. Under `box-decoration-break: clone` each piece is a box of
 its own, with its borders, padding, shadows and outline all round it, a piece a break ends running on to the column's foot as Blink fills it, and
 the edges take room: the column before a break keeps the end edges of every
 cloned box the break falls inside at its foot, and the one after starts
