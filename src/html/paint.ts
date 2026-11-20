@@ -10273,8 +10273,12 @@ export function clipsFor(box: Box, context: Box): Box[] {
     }
     return holder;
   };
+  // a float a line-clamp container cuts is cut there as a layer too: a
+  // relative one is painted by its stacking context (WPT's line-clamp-with-
+  // floats-008)
+  const cut = box.isFloat ? clampCutAround(box) : null;
   for (let at = from; at && at !== context; at = up(at)) {
-    if (clipsOverflow(at) || (at.outOfFlow && at.style.clip)) {
+    if (clipsOverflow(at) || (at.outOfFlow && at.style.clip) || at === cut) {
       (clips ??= []).push(at);
     }
   }
@@ -10306,6 +10310,11 @@ function paintStacked(
       const rect = clipOf(clipper, options);
       if (rect.w <= 0 || rect.h <= 0) empty = true;
       else if (pushClip(ctx, rect, null)) pushed.push(null);
+    }
+    if (!empty && !clipsOverflow(clipper) && CLAMP_CUT.has(clipper)) {
+      // a line-clamp container's cut of its floats, at its clamp point
+      const edge = flowClip(clipper, options);
+      if (edge && pushEdgeClip(ctx, edge)) pushed.push(null);
     }
     if (!empty && clipsOverflow(clipper)) {
       // A level, as `paintContent` makes one: an absolute box the box

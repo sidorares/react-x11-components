@@ -8298,7 +8298,7 @@ where the lines after a float are one layout, the lines the clamp drops are
 cut from it rather than drawn with the line it keeps. A float the dropped
 lines reach is past the clamp point and hidden with them, and one on a line
 kept is cut at the container's content box foot, the clamp point, and
-nowhere else. Where
+nowhere else, a relative one painted as a layer among them. Where
 the last line's first word is too wide to leave the ellipsis room, a line
 of text that wraps is displaced whole and shows the ellipsis alone, as the
 non-tentative WPT tests, Edge and Safari have it; Chrome's experimental
