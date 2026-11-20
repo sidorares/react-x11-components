@@ -608,6 +608,7 @@ import { WebFonts } from './fonts.js';
 import type { DeclaredFace, DocumentFontFace, FontMatch } from './fonts.js';
 import { corsOfKey, resolveUrl, UrlResolver } from './url.js';
 import { originOf } from './scripts/fetch-hops.js';
+import { FRAME_VIEWPORTS } from './frame-viewport.js';
 
 /** The element name — registration key, `node.kind` and JSX tag alike. */
 export const ELEMENT = 'htmlview';
@@ -4516,9 +4517,11 @@ export class HtmlViewNode extends Node {
     // toolbar, where `100vh` measured by the window put a page's footer the
     // toolbar's height below the fold. The window, where nothing scrolls it.
     for (let node = this.parent; node; node = node.parent) {
-      // `Scrollable`'s, and not every node's: asked the way core asks it
+      // `Scrollable`'s, and not every node's: asked the way core asks it —
+      // or a frame's, the box a host mounted the document in for an
+      // `<iframe>`, which is its viewport (`FRAME_VIEWPORTS`)
       const scroller = node as { isScroller?: () => boolean };
-      if (!scroller.isScroller?.()) continue;
+      if (!scroller.isScroller?.() && !FRAME_VIEWPORTS.has(node)) continue;
       const height = node.contentBox().height;
       if (height > 0) return height;
       break;

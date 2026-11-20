@@ -8257,7 +8257,14 @@ and `hrefAtPoint` as the page's does, so **anything new the root does with
 an event asks `embedded.contains` first**. The press handlers did not, and
 the page toggled back every summary a frame opened — joshwcomeau.com's
 interpolate-size playground did nothing on a click — and followed the
-frame's links and sent its forms itself. **Only what draws something covers a mount,
+frame's links and sent its forms itself. **A frame's document has the frame for its viewport** (`FRAME_VIEWPORTS`,
+`frame-viewport.ts`). The box `embedded.ts` mounts a host's node in is
+marked, and `_viewportHeight` takes it as it takes a scroll pane, so a `vh`
+in a frame's document is of the frame and not the window. **Anything new
+that mounts a document for an element marks its box with
+`markFrameViewport`.**
+
+**Only what draws something covers a mount,
 or a player** (`drawsNothing`, `inkMeets`): a box faded to nothing or
 hidden all through — Docusaurus's menu backdrop, fixed over the viewport —
 and the overflow of a pane beside it that a box clipping it cuts away

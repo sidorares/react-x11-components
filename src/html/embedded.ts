@@ -30,6 +30,7 @@ import React from 'react';
 import type { ReactNode } from 'react';
 import type { DrawnNode } from 'react-x11';
 
+import { markFrameViewport } from './frame-viewport.js';
 import { hx } from './hx.js';
 import { renderCovers } from './videos.js';
 import { keptMount } from './widgets.js';
@@ -183,6 +184,8 @@ function mount(
         {
           selectable: false,
           scale: zoom,
+          // the frame's viewport, which a `vh` in its document is of
+          ref: markFrameViewport,
           // sized in the unit it establishes, so it fills the frame
           style: {
             width: width / zoom,
