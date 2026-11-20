@@ -11540,9 +11540,12 @@ function inlineContainingBlock(
   const face = ctx.fonts ? faceExtentOf(ctx.fonts, inline.style) : null;
   let first: CbRect | null = null;
   let last: CbRect | null = null;
+  // the line the first fragment is on
+  let firstLine: LineBox | null = null;
   for (const line of block?.lines ?? []) {
     const span = spanOn(line, inline);
     if (!span) continue;
+    firstLine ??= line;
     const [top, bottom] = fragmentRow(line, inline, face, false);
     // where the strip had the line, where columns moved it: what is
     // positioned in the inline box is laid out against the strip, and cut
@@ -11565,11 +11568,14 @@ function inlineContainingBlock(
   // in-multicolumn-057, and -050, whose box starts with text, has none)
   if (first && block?.lines && startsOutOfFlow(inline)) {
     const start = inline.subtreeTextStart;
-    const line = block.lines.find(
+    const at = block.lines.findIndex(
       (l) => l.textStart <= start && start <= l.textEnd,
     );
+    // only a line before the one the first fragment is on
+    const line =
+      at >= 0 && at < block.lines.indexOf(firstLine!) ? block.lines[at] : null;
     const moved = line && columned.any ? stripShiftOf(line) : undefined;
-    if (line && line.y - (moved?.dy ?? 0) < first.y - 0.01) {
+    if (line) {
       const x = Math.min(caretX(line, start, false), line.x + line.width);
       const [top, bottom] = fragmentRow(line, inline, face, false);
       first = {
