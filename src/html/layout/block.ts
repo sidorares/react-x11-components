@@ -203,6 +203,7 @@ import type { ShapeImageSource } from './float-shape.js';
 import { drawingViewport, foreignRect } from '../svg.js';
 import {
   CUT_LINES,
+  caretX,
   emptyLinePoint,
   faceExtentOf,
   isButton,
@@ -11519,6 +11520,16 @@ function brokenInlineRect(
   return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
 }
 
+/** Whether what an inline box holds starts with a box out of the flow,
+ *  white space aside. */
+function startsOutOfFlow(inline: Box): boolean {
+  for (const child of inline.children) {
+    if (child.kind === 'text' && !/\S/.test(child.text ?? '')) continue;
+    return child.outOfFlow;
+  }
+  return false;
+}
+
 function inlineContainingBlock(
   inline: Box,
   box: Box,
@@ -11529,9 +11540,12 @@ function inlineContainingBlock(
   const face = ctx.fonts ? faceExtentOf(ctx.fonts, inline.style) : null;
   let first: CbRect | null = null;
   let last: CbRect | null = null;
+  // the line the first fragment is on
+  let firstLine: LineBox | null = null;
   for (const line of block?.lines ?? []) {
     const span = spanOn(line, inline);
     if (!span) continue;
+    firstLine ??= line;
     const [top, bottom] = fragmentRow(line, inline, face, false);
     // where the strip had the line, where columns moved it: what is
     // positioned in the inline box is laid out against the strip, and cut
@@ -11546,6 +11560,31 @@ function inlineContainingBlock(
     };
     first ??= rect;
     last = rect;
+  }
+  // a first fragment that holds only a box out of the flow — the inline box
+  // starting at a line's end with one, its text all on the lines after — is
+  // no less its first: the caret where it starts, at most the line's end,
+  // as Blink keeps one (CSS 2.1 10.1, item 4; WPT's css-break/out-of-flow-
+  // in-multicolumn-057, and -050, whose box starts with text, has none)
+  if (first && block?.lines && startsOutOfFlow(inline)) {
+    const start = inline.subtreeTextStart;
+    const at = block.lines.findIndex(
+      (l) => l.textStart <= start && start <= l.textEnd,
+    );
+    // only a line before the one the first fragment is on
+    const line =
+      at >= 0 && at < block.lines.indexOf(firstLine!) ? block.lines[at] : null;
+    const moved = line && columned.any ? stripShiftOf(line) : undefined;
+    if (line) {
+      const x = Math.min(caretX(line, start, false), line.x + line.width);
+      const [top, bottom] = fragmentRow(line, inline, face, false);
+      first = {
+        x: x - (moved?.dx ?? 0),
+        y: top - (moved?.dy ?? 0),
+        width: 0,
+        height: bottom - top,
+      };
+    }
   }
   if (!first || !last) {
     const at = box.staticPosition;

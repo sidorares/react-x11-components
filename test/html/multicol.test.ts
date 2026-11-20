@@ -2112,3 +2112,27 @@ test('a box positioned in an inline box columns break is placed against the stri
     ],
   );
 });
+
+test('an inline box that starts at the end of a line with a box out of the flow has its first fragment there', async () => {
+  // its text all goes on the next line, and the box placed against it is
+  // placed from the empty fragment the line ends with, as Blink places it
+  // (CSS 2.1 10.1, item 4; WPT's css-break/out-of-flow-in-multicolumn-057)
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:2;column-fill:auto;gap:0;width:100px;height:100px;font:20px/1 sans-serif">' +
+      '<div style="height:200px;width:50px"><div style="height:60px"></div>B ' +
+      '<span style="position:relative"><div id="a" style="position:absolute;' +
+      'width:25px;height:200px;top:-60px"></div>WWWW WW</span></div></div>',
+    300,
+  );
+  // the next line, which the box was placed from before, is a line
+  // further down, and the box ran on into a third column
+  const pieces = COLUMN_PIECES.get(boxOf(view(node), 'a') as never) ?? [];
+  assert.deepStrictEqual(
+    pieces.map((p) => [p.x, p.y]),
+    [
+      [0, 0],
+      [50, 0],
+    ],
+  );
+});
