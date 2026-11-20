@@ -166,10 +166,11 @@ function mount(
           top: top - port.y,
           width,
           height,
-          ...(rect.radius && {
-            borderRadius: rect.radius,
-            overflow: 'hidden',
-          }),
+          // a frame's document is cut to the frame, its viewport, whatever
+          // it draws past it (CSS 2.1, 11.1.1): a box a frame's page
+          // translates out of it was drawn over the page around it
+          overflow: 'hidden',
+          ...(rect.radius && { borderRadius: rect.radius }),
           // what takes the pointer is what the host mounted: a canvas's
           // picture lets it through to the element in the document, which
           // the page hears of

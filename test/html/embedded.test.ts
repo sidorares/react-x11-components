@@ -162,6 +162,19 @@ test('a mount is cut where the document clips the element', async () => {
   );
 });
 
+test("a frame's document is cut to the frame, whatever it draws past it", async () => {
+  // CSS 2.1, 11.1.1: a frame is its document's viewport; a box its page
+  // translated out of it was drawn over the page around it (WPT's
+  // transform-iframe-001)
+  await renderEmbedded(
+    '<style>body{margin:0}</style><iframe id="f" width="100" height="50" style="border:0"></iframe>',
+  );
+  const node = mounted('f')!;
+  const frame = (node as unknown as { parent: { parent: DrawnNode } }).parent
+    .parent as unknown as { style: { overflow?: string } };
+  assert.strictEqual(frame.style.overflow, 'hidden');
+});
+
 for (const scale of [1, 2]) {
   test(`a frame in a scaled box is mounted where it is drawn, cut where it is drawn, and laid out at its own size, at ${scale}x`, async () => {
     // a slide deck fits each slide to the window with a scale on its stage,
