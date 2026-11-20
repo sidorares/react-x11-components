@@ -261,6 +261,9 @@ export const PASSIVE: Record<string, PassiveProperty> = Object.assign(
       'space-around',
       keyword('start', 'center', 'space-between', 'space-around'),
     ),
+    // whether an annotation wider than its base may hang over the spaces
+    // beside its ruby (CSS Ruby 1, 4.2), which `rubyOverhang` reads
+    'ruby-overhang': inherited('auto', keyword('auto', 'none', 'spaces')),
     'ruby-position': inherited('alternate', (v) => {
       const words = wordsOf(v);
       if (words.length === 1 && words[0] === 'inter-character') {
