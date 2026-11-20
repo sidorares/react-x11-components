@@ -446,6 +446,37 @@ test('a horizontal block in a vertical flow is a frame of its own, which turns b
   assert.strictEqual(short.height, 10, 'one line, across the page');
 });
 
+test('a horizontal block in a vertical-lr flow is a frame of its own too, and holds its lines', async () => {
+  // the flow is put back across after it is laid out (`reflectFrame`),
+  // which moves the horizontal block whole and nothing in its own frame
+  // (WPT css-writing-modes/sizing-orthog-htb-in-vlr-*)
+  const { node } = await render(
+    '<style>body{margin:0}.t{writing-mode:horizontal-tb;' +
+      'border:3px solid blue}</style>' +
+      '<div style="writing-mode:vertical-lr;height:100px">' +
+      '<p style="margin:0" id="before">ab</p>' +
+      '<div class="t" id="flow"><span id="text">a a a a</span></div>' +
+      '<p style="margin:0" id="after">cd</p></div>',
+  );
+  const el = view(node);
+  const flow = rectOf(el, 'flow');
+  const text = rectOf(el, 'text');
+  const before = rectOf(el, 'before');
+  const after = rectOf(el, 'after');
+  // left to right: the paragraph, the block, the paragraph
+  assert.ok(before.x + before.width <= flow.x, 'the block is after the first');
+  assert.ok(flow.x + flow.width <= after.x, 'and before the second');
+  // its text across the page, inside its border
+  assert.ok(text.width > text.height, `written across: ${text.width}`);
+  assert.ok(
+    text.x >= flow.x + 2.5 &&
+      text.x + text.width <= flow.x + flow.width - 2.5 &&
+      text.y >= flow.y &&
+      text.y + text.height <= flow.y + flow.height,
+    `its line is in its content box: ${JSON.stringify([text, flow])}`,
+  );
+});
+
 test('a document in no vertical writing mode makes no frame', async () => {
   const flat = await render(
     '<div style="writing-mode:horizontal-tb">a</div><p>b</p>',
