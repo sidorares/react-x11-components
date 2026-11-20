@@ -8298,8 +8298,9 @@ where the lines after a float are one layout, the lines the clamp drops are
 cut from it rather than drawn with the line it keeps. A float the dropped
 lines reach is past the clamp point and hidden with them, and one on a line
 kept is cut at the container's content box foot, the clamp point, and
-nowhere else. A line-clamp container with no clamp point in it does the same: it
-cuts its floats at its content box foot and is no taller for them. Where
+nowhere else, a relative one painted as a layer among them. A line-clamp
+container with no clamp point in it does the same: it cuts its floats at its
+content box foot and is no taller for them. Where
 the last line's first word is too wide to leave the ellipsis room, a line
 of text that wraps is displaced whole and shows the ellipsis alone, as the
 non-tentative WPT tests, Edge and Safari have it; Chrome's experimental
@@ -9838,6 +9839,18 @@ a click, a link followed or an event of the page's. The bars are drawn in
 a pass of their own over the whole document, cut by the boxes that clip
 their container, so a box positioned over a container's edge is under its
 bar.
+
+**Scroll markers are built in phases, and phase 1 is their boxes** (CSS
+Overflow 5, 3). A scroll container whose `scroll-marker-group` says `before`
+or `after` has a `::scroll-marker-group` box, its sibling before or after it,
+styled by the rules for it and blockified; in it is the `::scroll-marker` of
+each element the scroller holds, in the order of the tree, where a rule gives
+the marker a `content`, an item of the group where the group is a flex box
+or a grid. A marker draws its box and no text yet: `content: ""` is all phase
+1 reads. Placing the group as the specification places it, the
+`::scroll-button`s, `:target-current` on the marker of what is scrolled to,
+and a marker's press scrolling to its element are later phases, as is text
+`content` (`counter()`, `attr()`).
 
 ## Shadow DOM
 
