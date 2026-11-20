@@ -216,7 +216,9 @@ import type {
 } from './svg.js';
 import type { CollapsedBorder } from './layout/collapse.js';
 import {
+  applyMatrices,
   backdropFilter,
+  blurPixels,
   colourFilter,
   filterOutsets,
   runsOverPixels,
@@ -5837,6 +5839,160 @@ function paintBoxOutline(
     for (const piece of pieces)
       paintOutline(ctx, pieceFrame(box, piece), options);
   } else paintOutline(ctx, box, options);
+}
+
+/** The most pixels a `filter()`'s image is made of: past it, a tile the
+ *  size of a page, it is not drawn. */
+const MAX_FILTERED_PIXELS = 4096 * 4096;
+
+/** Straight RGBA at another size, the nearest pixel each. */
+function resampled(
+  src: Uint8Array | Uint8ClampedArray,
+  w: number,
+  h: number,
+  width: number,
+  height: number,
+): Uint8ClampedArray {
+  if (w === width && h === height) return new Uint8ClampedArray(src);
+  const out = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    const sy = Math.min(h - 1, Math.floor(((y + 0.5) * h) / height));
+    for (let x = 0; x < width; x += 1) {
+      const sx = Math.min(w - 1, Math.floor(((x + 0.5) * w) / width));
+      const i = (y * width + x) * 4;
+      const j = (sy * w + sx) * 4;
+      out[i] = src[j];
+      out[i + 1] = src[j + 1];
+      out[i + 2] = src[j + 2];
+      out[i + 3] = src[j + 3];
+    }
+  }
+  return out;
+}
+
+/** The images a `filter()` made, by the image and what filtered it. */
+const FILTERED_IMAGES = new WeakMap<object, Map<string, unknown>>();
+
+/**
+ * An image put through a `filter()`'s list (Filter Effects 1, 12): a new
+ * image of its size, its pixels run through the list's steps — colour
+ * matrices, blurs and drop shadows, in the order written, each shadow cast
+ * from what came before it, offset, coloured and blurred, under it — and
+ * cut to the image, which a filter's result is. Made once for an image and
+ * a list, and kept. The image as it is where the list does nothing, and
+ * null where its pixels cannot be had: an SVG, or an engine's image with
+ * no straight RGBA of its own.
+ */
+function filteredImage<T extends { image: unknown }>(
+  loaded: T,
+  list: readonly FilterFunction[],
+  style: ComputedStyle,
+  /** The device size it is drawn at, which it is filtered at. */
+  drawnWidth: number,
+  drawnHeight: number,
+): T | null {
+  const colour = colourFilter(list as FilterFunction[]);
+  if (!colour) return loaded;
+  const image = loaded.image as {
+    width?: number;
+    height?: number;
+    data?: Uint8Array | Uint8ClampedArray;
+    constructor: new (rgba: {
+      width: number;
+      height: number;
+      data: Uint8ClampedArray;
+    }) => unknown;
+  } | null;
+  const natW = image?.width ?? 0;
+  const natH = image?.height ?? 0;
+  if (!image || !image.data || image.data.length !== natW * natH * 4) {
+    return null;
+  }
+  const width = Math.max(1, Math.round(drawnWidth));
+  const height = Math.max(1, Math.round(drawnHeight));
+  if (width * height > MAX_FILTERED_PIXELS) return null;
+  const key = `${colour.key} ${colour.alpha} ${width}x${height} ${style.color}`;
+  let made = FILTERED_IMAGES.get(image);
+  if (!made) FILTERED_IMAGES.set(image, (made = new Map()));
+  let out = made.get(key);
+  if (out === undefined) {
+    const data = resampled(image.data, natW, natH, width, height);
+    const steps: FilterStep[] = colour.steps ?? [
+      {
+        kind: 'colour',
+        matrices: colour.matrices,
+        blur: colour.blur,
+        css: colour.css,
+      },
+    ];
+    for (const step of steps) {
+      if (step.kind === 'colour') {
+        if (step.matrices.length) applyMatrices(data, data, step.matrices);
+        if (step.blur > 0) blurPixels(data, width, height, step.blur);
+        continue;
+      }
+      castShadow(data, width, height, step, style);
+    }
+    if (colour.alpha < 1) {
+      for (let i = 3; i < data.length; i += 4) data[i] *= colour.alpha;
+    }
+    try {
+      out = new image.constructor({ width, height, data });
+    } catch {
+      out = null;
+    }
+    made.set(key, out);
+  }
+  return out ? { ...loaded, image: out } : null;
+}
+
+/** A `drop-shadow()` under an image's pixels, in place: their alpha
+ *  offset, in its colour and blurred, with the pixels over it, all cut to
+ *  the image. */
+function castShadow(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  shadow: Extract<FilterStep, { kind: 'shadow' }>,
+  style: ComputedStyle,
+): void {
+  const rgba = rgbaOf(inkColor(shadow.color, style.color));
+  if (!rgba) return;
+  // in device pixels, as the image is
+  const dx = Math.round(shadow.x);
+  const dy = Math.round(shadow.y);
+  const layer = new Uint8ClampedArray(data.length);
+  const r = rgba[0] * 255;
+  const g = rgba[1] * 255;
+  const b = rgba[2] * 255;
+  for (let y = 0; y < height; y += 1) {
+    const sy = y - dy;
+    if (sy < 0 || sy >= height) continue;
+    for (let x = 0; x < width; x += 1) {
+      const sx = x - dx;
+      if (sx < 0 || sx >= width) continue;
+      const a = data[(sy * width + sx) * 4 + 3];
+      if (!a) continue;
+      const i = (y * width + x) * 4;
+      layer[i] = r;
+      layer[i + 1] = g;
+      layer[i + 2] = b;
+      layer[i + 3] = a * rgba[3];
+    }
+  }
+  if (shadow.blur > 0) blurPixels(layer, width, height, shadow.blur);
+  // the pixels over their shadow, straight alpha
+  for (let i = 0; i < data.length; i += 4) {
+    const top = data[i + 3] / 255;
+    const under = layer[i + 3] / 255;
+    const out = top + under * (1 - top);
+    if (!(out > 0)) continue;
+    for (let c = 0; c < 3; c += 1) {
+      data[i + c] =
+        (data[i + c] * top + layer[i + c] * under * (1 - top)) / out;
+    }
+    data[i + 3] = out * 255;
+  }
 }
 
 /**
@@ -11919,7 +12075,7 @@ function paintBackgroundImage(
     at = options.viewport ?? options.canvas;
   }
   const url = urlOf(style.backgroundImage);
-  const loaded =
+  let loaded =
     url !== null ? options.backgroundImageFor?.(url, painting) : null;
   if (!loaded) return;
   const svg = loaded.image instanceof SvgDrawing ? loaded.image : null;
@@ -11946,6 +12102,15 @@ function paintBackgroundImage(
   }
   const [iw, ih] = roundedTile(style.backgroundSize, repeat, tile, at);
   if (!(iw > 0 && ih > 0)) return;
+  // a `filter()`'s image filtered at the size it is drawn, whose lengths
+  // are the page's and not the image's pixels (WPT's
+  // css/filter-effects/filter-function/filter-function-007)
+  const through = urlImageOf(style.backgroundImage);
+  if (through && typeof through !== 'string' && through.filter && !svg) {
+    const filtered = filteredImage(loaded, through.filter, style, iw, ih);
+    if (!filtered) return;
+    loaded = filtered;
+  }
   const offset = (len: Len, extent: number, size: number): number =>
     resolve(len, extent - size);
   const x0 = Math.round(at.x + offset(style.backgroundPositionX, at.width, iw));
@@ -12514,6 +12679,10 @@ function paintBorderImage(
   const spec = box.style.borderImage;
   const source = spec.source;
   if (!source || !ctx.drawImage) return false;
+  // a `filter()`'s image is drawn filtered in a background alone: a
+  // border image of one is drawn as none, as before it was known
+  const through = urlImageOf(source);
+  if (through && typeof through !== 'string' && through.filter) return false;
   const url = urlOf(source);
   const gradient = gradientOf(source);
   const loaded =

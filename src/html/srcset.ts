@@ -57,6 +57,9 @@ export interface Candidate {
 export interface ImageSource {
   url: string;
   density: number;
+  /** The filter list a `filter()` puts the image through, its pixels
+   *  filtered before it is drawn (Filter Effects 1, 12). */
+  filter?: readonly import('./css/filter.js').FilterFunction[];
 }
 
 /** What a choice turns on. */

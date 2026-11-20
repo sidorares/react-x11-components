@@ -7559,12 +7559,14 @@ function filteredImageOf(
   const args = splitCommas(text.slice(7, end));
   if (args.length < 2) return undefined;
   const image = backgroundImageOf(args[0], ctx);
-  if (!image || typeof image === 'string' || !('stops' in image)) {
-    return undefined;
-  }
+  if (!image) return undefined;
   const list = parseFilter(args.slice(1).join(','), ctx);
   if (list === undefined) return undefined;
   if (list === null) return image;
+  // an image's pixels are filtered as it is drawn (`filteredImage`)
+  if (typeof image === 'string')
+    return { url: image, density: 1, filter: list };
+  if ('url' in image) return { ...image, filter: list };
   const colour = colourFilter(list);
   if (!colour) return image;
   if (colour.steps || colour.blur > 0) return undefined;
