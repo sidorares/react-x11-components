@@ -1797,6 +1797,25 @@ test('a block that is a formatting context of its own breaks across columns, unl
   ]);
 });
 
+test('a relative offset in a box columns broke is a percentage of the column it was laid out in', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:4;column-fill:auto;gap:0;width:200px;height:100px">' +
+      '<div id="i" style="width:20px">' +
+      '<div id="r" style="position:relative;left:100%;height:300px"></div>' +
+      '</div></div>',
+    300,
+  );
+  const el = view(node);
+  const at = (id: string) =>
+    COLUMN_PIECES.get(boxOf(el, id) as never)?.map((p) => p.x);
+  // past the 20px it was laid out in, in each column, and not past the
+  // rectangle around all the pieces (WPT's
+  // css-break/box-decoration-break-clone-030)
+  assert.deepStrictEqual(at('i'), [0, 50, 100]);
+  assert.deepStrictEqual(at('r'), [20, 70, 120]);
+});
+
 test('a float in a box that clones its edges steers clear of those a break clones', async () => {
   const { node } = await render(
     '<style>body{margin:0}</style>' +
