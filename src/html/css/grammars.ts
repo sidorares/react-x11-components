@@ -8,6 +8,8 @@
 // parsing tests and the `-valid` ones beside them.
 import { positionSpecified } from './backgrounds-specified.js';
 import { mathNumber } from './math.js';
+import { parseShapeFunction } from './shape-function.js';
+import { basicShapeSpecified } from './shape-outside.js';
 import { parseLength, splitValue } from './values.js';
 import type { UnitContext } from './values.js';
 
@@ -392,6 +394,35 @@ function maxLines(word: string): string | null {
   return words.length === 2 ? `${n} auto` : n;
 }
 
+/** `border-shape` (CSS Borders 4, 6): `none`, or one or two shapes, each
+ *  with a box after it or none, the outer shape's `border-box` left out. */
+function borderShape(word: string): string | null {
+  if (/^none$/i.test(word)) return 'none';
+  const out: string[] = [];
+  let shapes = 0;
+  let boxed = true;
+  for (const token of splitValue(word)) {
+    if (BOXES.test(token)) {
+      if (boxed) return null;
+      boxed = true;
+      const box = token.toLowerCase();
+      if (!(shapes === 1 && box === 'border-box')) out.push(box);
+      continue;
+    }
+    const shape = /^shape\(/i.test(token)
+      ? (parseShapeFunction(token, CHECK)?.text ?? null)
+      : (basicShapeSpecified(token) ?? null);
+    if (!shape || shapes === 2) return null;
+    shapes += 1;
+    boxed = false;
+    out.push(shape);
+  }
+  return shapes ? out.join(' ') : null;
+}
+
+const BOXES =
+  /^(?:margin-box|border-box|padding-box|content-box|fill-box|stroke-box|view-box)$/i;
+
 /** The properties read here, by name. */
 export const GRAMMARS: Readonly<
   Record<string, (word: string) => string | null | undefined>
@@ -415,5 +446,6 @@ export const GRAMMARS: Readonly<
   'block-ellipsis': blockEllipsis,
   'scroll-marker-group': oneOf('none', 'before', 'after'),
   'max-lines': maxLines,
+  'border-shape': borderShape,
   continue: oneOf('normal', 'discard', 'collapse', '-webkit-legacy'),
 };

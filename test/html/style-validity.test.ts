@@ -234,6 +234,14 @@ test('a keyword property takes its keywords each at most once, as the three brow
     ['max-lines', '3 4', ''],
     ['continue', 'auto discard', ''],
     ['continue', 'discard', 'discard'],
+    [
+      'border-shape',
+      'circle() border-box circle() content-box',
+      'circle() circle() content-box',
+    ],
+    ['border-shape', 'circle() padding-box margin-box', ''],
+    ['border-shape', 'padding-box circle()', ''],
+    ['border-shape', 'nonsense', ''],
   ];
   const out = await readBack(cases.map(([p, v]) => [p, v]));
   assert.deepEqual(
