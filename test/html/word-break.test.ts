@@ -11,10 +11,7 @@ import { lineTextsOf, linesOf, metric, render, view } from './harness.js';
 
 afterEach(cleanup);
 
-const rule = (
-  text: string,
-  over: Partial<BreakRule> = {},
-): BreakRule => ({
+const rule = (text: string, over: Partial<BreakRule> = {}): BreakRule => ({
   start: 0,
   end: text.length,
   wordBreak: 'normal',
@@ -24,6 +21,15 @@ const rule = (
 });
 const places = (text: string, rules: BreakRule[]) =>
   breakOpportunities(text, rules).map((b) => b.at);
+
+test('break-all keeps a prefix with what follows it', () => {
+  const text = 'XXX\\X';
+  assert.deepEqual(
+    places(text, [rule(text, { wordBreak: 'break-all' })]),
+    [1, 2, 3, 5],
+    'before the backslash and not after it',
+  );
+});
 
 test('break-all adds a place between letters and none at punctuation', () => {
   const text = 'ab cd. ef';
@@ -44,13 +50,15 @@ test('break-all keeps a mark with what it marks', () => {
   );
 });
 
-test('a place break-all adds stands only where both sides break so', () => {
+test('break-all reads its own letters as ideographs, and nowrap text none', () => {
   const text = 'aaaabbbb';
   const rules = [
     rule(text, { end: 4 }),
     rule(text, { start: 4, wordBreak: 'break-all' }),
   ];
-  assert.deepEqual(places(text, rules), [5, 6, 7, 8]);
+  // UAX #14 breaks between a letter and an ideograph, as Blink does at an
+  // inline box of `break-all` (WPT's word-break-break-all-inline-004)
+  assert.deepEqual(places(text, rules), [4, 5, 6, 7, 8]);
   const held = [rule(text, { wordBreak: 'break-all', wraps: false })];
   assert.deepEqual(places(text, held), [8], 'nowrap text adds none');
 });
@@ -78,22 +86,28 @@ test('line-break: anywhere breaks between any two clusters but before a space', 
   );
 });
 
-metric('a break-all line fills its room and carries the rest of a word down', async () => {
-  const font = 'font:36px/1 sans-serif';
-  const { node: whole } = await render(
-    `<div id="t" style="${font};display:inline-block">Latin latin latin latin</div>`,
-    900,
-  );
-  const full = linesOf(view(whole), 't')[0].width;
-  const { node } = await render(
-    `<div id="t" style="${font};word-break:break-all;width:${Math.floor(full - 5)}px">Latin latin latin latin</div>`,
-    600,
-  );
-  const lines = lineTextsOf(view(node), 't');
-  assert.equal(lines.length, 2);
-  assert.ok(lines[0].startsWith('Latin latin latin lat'), lines[0]);
-  assert.ok(lines[1].length <= 2, `only the end of the last word: ${lines[1]}`);
-});
+metric(
+  'a break-all line fills its room and carries the rest of a word down',
+  async () => {
+    const font = 'font:36px/1 sans-serif';
+    const { node: whole } = await render(
+      `<div id="t" style="${font};display:inline-block">Latin latin latin latin</div>`,
+      900,
+    );
+    const full = linesOf(view(whole), 't')[0].width;
+    const { node } = await render(
+      `<div id="t" style="${font};word-break:break-all;width:${Math.floor(full - 5)}px">Latin latin latin latin</div>`,
+      600,
+    );
+    const lines = lineTextsOf(view(node), 't');
+    assert.equal(lines.length, 2);
+    assert.ok(lines[0].startsWith('Latin latin latin lat'), lines[0]);
+    assert.ok(
+      lines[1].length <= 2,
+      `only the end of the last word: ${lines[1]}`,
+    );
+  },
+);
 
 metric('keep-all moves a run of letters to the next line whole', async () => {
   const { node } = await render(

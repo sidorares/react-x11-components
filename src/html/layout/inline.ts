@@ -81,7 +81,7 @@ import {
 } from './writing.js';
 import { tableGrid } from './grid.js';
 import { endsShort, prettyBreaks, shortLine, spacedWords } from './pretty.js';
-import { breakOpportunities, movesBreaks } from './word-break.js';
+import { SMALL_KANA, breakOpportunities, movesBreaks } from './word-break.js';
 import type { BreakRule } from './word-break.js';
 import type { PrettySetting } from './pretty.js';
 
@@ -963,6 +963,44 @@ function linesOf(
     if (laid) strutted = true;
   }
 
+  // Text that breaks where UAX #14 does not say, in text that is all the
+  // paragraph holds: a line at a time (`layoutOwnBreaks`).
+  if (
+    fonts &&
+    wraps(style) &&
+    !hasAtomics &&
+    !hasEdges &&
+    !raised &&
+    !floated &&
+    !indented &&
+    !alignedApart &&
+    !restyled &&
+    !strutted &&
+    !apart &&
+    !options.clamp &&
+    style.textAlign !== 'justify' &&
+    lastAlign !== 'justify' &&
+    cutOf(style, options.clamp, options.width, over) === null &&
+    breaksOwnWay(items) &&
+    !hasControls(items) &&
+    movesBreaks(
+      breakRulesOf(items as Extract<Item, { kind: 'text' }>[]),
+      textOfItems(items),
+    )
+  ) {
+    const laid = layoutOwnBreaks(
+      items as Extract<Item, { kind: 'text' }>[],
+      base,
+      style,
+      options.width,
+      lineHeightMul,
+      align,
+      fonts,
+    );
+    if (laid && !shortOfStrut(laid.lines, strut, firstStrut)) return laid;
+    if (laid) strutted = true;
+  }
+
   // Spaces kept as `break-spaces` keeps them, which take room at a line's
   // end and break after each, in text that is all the paragraph holds: a
   // line at a time (`layoutBreakSpaces`). Anything else in it is laid out
@@ -996,41 +1034,6 @@ function linesOf(
     );
     if (!shortOfStrut(laid.lines, strut, firstStrut)) return laid;
     strutted = true;
-  }
-
-  // Text that breaks where UAX #14 does not say, in text that is all the
-  // paragraph holds: a line at a time (`layoutOwnBreaks`).
-  if (
-    fonts &&
-    wraps(style) &&
-    !hasAtomics &&
-    !hasEdges &&
-    !raised &&
-    !floated &&
-    !indented &&
-    !alignedApart &&
-    !restyled &&
-    !strutted &&
-    !apart &&
-    !options.clamp &&
-    style.textAlign !== 'justify' &&
-    lastAlign !== 'justify' &&
-    cutOf(style, options.clamp, options.width, over) === null &&
-    breaksOwnWay(items) &&
-    !hasControls(items) &&
-    movesBreaks(breakRulesOf(items as Extract<Item, { kind: 'text' }>[]))
-  ) {
-    const laid = layoutOwnBreaks(
-      items as Extract<Item, { kind: 'text' }>[],
-      base,
-      style,
-      options.width,
-      lineHeightMul,
-      align,
-      fonts,
-    );
-    if (laid && !shortOfStrut(laid.lines, strut, firstStrut)) return laid;
-    if (laid) strutted = true;
   }
 
   // The text-only, float-free, unindented case: one call, every line — or
@@ -2673,12 +2676,21 @@ function breaksOwnWay(items: readonly Item[]): boolean {
     if (
       style.lineBreakAnywhere ||
       style.wordBreak === 'break-all' ||
-      style.wordBreak === 'keep-all'
+      style.wordBreak === 'keep-all' ||
+      style.lineBreak === 'loose' ||
+      (style.lineBreak !== 'strict' && SMALL_KANA.test(item.run.text))
     ) {
       return true;
     }
   }
   return false;
+}
+
+/** The joined text of a paragraph's text items. */
+function textOfItems(items: readonly Item[]): string {
+  let text = '';
+  for (const item of items) if (item.kind === 'text') text += item.run.text;
+  return text;
 }
 
 /** The rules each text of a paragraph breaks by (`breakOpportunities`). */
@@ -2696,6 +2708,9 @@ function breakRulesOf(
       wordBreak: style.wordBreak,
       anywhere: style.lineBreakAnywhere,
       wraps: !item.control && wraps(style),
+      lineBreak: style.lineBreak,
+      keepsSpaces: style.whiteSpace === 'pre-wrap',
+      breakSpaces: keepsBreakSpaces(item),
     });
     at = end;
   }
@@ -2704,7 +2719,7 @@ function breakRulesOf(
 
 /** How much of a paragraph is laid out on one line to measure where its
  *  next line may end (`layoutOwnBreaks`), at first. */
-const OWN_BREAKS_WINDOW = 1024;
+const OWN_BREAKS_WINDOW = 256;
 
 /**
  * A paragraph whose text breaks where UAX #14 does not say (CSS Text 3, 5.2
@@ -2738,7 +2753,10 @@ function layoutOwnBreaks(
   // nothing that reorders a line, whose width no caret says
   if (style.direction === 'rtl' || RTL_TEXT.test(text)) return null;
   const starts = runStarts(runs);
-  const breaks = breakOpportunities(text, breakRulesOf(items));
+  const rules = breakRulesOf(items);
+  const breaks = breakOpportunities(text, rules);
+  const breakSpacesAt = (at: number): boolean =>
+    !!rules[runIndexAt(starts, at)].breakSpaces;
   const options = {
     maxWidth: width,
     lineHeight: lineHeightMul,
@@ -2749,9 +2767,10 @@ function layoutOwnBreaks(
   // the room where none does, and a forced break wherever it comes
   const total = text.length;
   let b = 0;
+  // a few lines' worth, once a line says how much one holds
+  let window = OWN_BREAKS_WINDOW;
   const endFrom = (from: number): number => {
     while (b < breaks.length && breaks[b].at <= from) b += 1;
-    let window = OWN_BREAKS_WINDOW;
     for (;;) {
       const to = Math.min(total, from + window);
       const probe = sliceRuns(runs, from, to);
@@ -2763,9 +2782,16 @@ function layoutOwnBreaks(
       let fit = -1;
       for (let k = b; k < breaks.length && breaks[k].at <= to; k += 1) {
         const at = breaks[k].at;
-        // the white space a line ends on hangs past it
+        // the white space a line ends on hangs past it, but for the spaces
+        // `break-spaces` keeps, which take room
         let end = at;
-        while (end > from && /[ \t\n]/.test(text[end - 1])) end -= 1;
+        while (
+          end > from &&
+          /[ \t\n]/.test(text[end - 1]) &&
+          !(text[end - 1] === ' ' && breakSpacesAt(end - 1))
+        ) {
+          end -= 1;
+        }
         if (fit >= 0 && xAt(end) > width + FIT_SLACK) return fit;
         if (fit < 0 && xAt(end) > width + FIT_SLACK) return at;
         fit = at;
@@ -2782,8 +2808,10 @@ function layoutOwnBreaks(
   for (let from = 0; from < total;) {
     let to = endFrom(from);
     if (to <= from) to = total;
+    window = Math.max(64, (to - from) * 4);
     const own = sliceRuns(runs, from, to).slice();
     const spans = new SpanMap();
+    let piece = 0;
     for (let k = 0; k < items.length; k += 1) {
       const start = starts[k];
       const end = start + runs[k].text.length;
@@ -2794,6 +2822,13 @@ function layoutOwnBreaks(
         Math.min(end, to) - lo,
         items[k].control ? null : items[k].box,
       );
+      // the spaces `break-spaces` keeps as no-break spaces, which an
+      // engine measures, aligns and never hangs (`layoutBreakSpaces`)
+      if (rules[k].breakSpaces) {
+        const run = own[piece];
+        own[piece] = { ...run, text: run.text.replace(/ /g, '\u00a0') };
+      }
+      piece += 1;
     }
     // a layout of its own, as a `break-spaces` line is
     const layout = fonts.layout(own, base, {
@@ -2811,8 +2846,7 @@ function layoutOwnBreaks(
 }
 
 /** A character of a right-to-left script, or a control that embeds one. */
-const RTL_TEXT =
-  /[֐-ࣿיִ-﷿ﹰ-﻿‏‫‮⁧]|\uD802[\uDC00-\uDFFF]|\uD83A/;
+const RTL_TEXT = /[֐-ࣿיִ-﷿ﹰ-﻿‏‫‮⁧]|\uD802[\uDC00-\uDFFF]|\uD83A/;
 
 /** Whether a text keeps its spaces as `break-spaces` does where its lines
  *  wrap (`layoutBreakSpaces`). */
