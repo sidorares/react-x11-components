@@ -38,7 +38,7 @@
  * place down the strip, where a browser breaks each on its own account and
  * takes the rest of the row as far down as the item that went furthest.
  */
-import { CONTAIN_SIZE, scrolls } from '../css/style.js';
+import { CONTAIN_LAYOUT, CONTAIN_SIZE, scrolls } from '../css/style.js';
 import { AUTO, gapOf } from '../css/values.js';
 import { contained, establishesBFC, forgetOwnLayout, moveTo } from './block.js';
 import {
@@ -435,6 +435,10 @@ function gather(
   }
   // a forced break after the box before, which comes before this one
   let pending = false;
+  // a forced break before a box's first child is the box's own, which a box
+  // with layout containment does not take on (CSS Containment 2, 3.2), so
+  // there it is no break at all (WPT's css-contain/contain-layout-breaks-002)
+  let heading = contained(box, CONTAIN_LAYOUT);
   for (const child of box.children) {
     if (child.isFloat && !child.outOfFlow) {
       floatUnit(child, box, into);
@@ -442,7 +446,9 @@ function gather(
     }
     if (!flows(child)) continue;
     if (columned.any) COLUMN_PIECES.delete(child);
-    const before = pending || forces(child.style.passive['break-before']);
+    const before =
+      pending || (!heading && forces(child.style.passive['break-before']));
+    heading = false;
     pending = false;
     // a forced break before the first unit of a box, which keeps the
     // margin after it (CSS Fragmentation 3, 5.2): the column starts above
