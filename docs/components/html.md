@@ -8690,6 +8690,10 @@ out in its grid's axes (CSS Grid 2, 9), and what is in it is orthogonal, or
 not, by its grid's writing mode: a vertical item of a vertical subgrid of a
 horizontal grid draws its text down the page.
 
+A `vertical-lr` flow is laid out as `vertical-rl`'s and put back across;
+a block in it that runs right to left, a `vertical-rl` one, keeps its lines
+and blocks in its own order, and is moved whole.
+
 Not yet: `text-combine-upright` and its kin, a horizontal block, float or
 absolutely positioned box inside a `vertical-lr` flow (laid out turned with
 the flow, which is put back across after its layout; a `vertical-lr` grid's

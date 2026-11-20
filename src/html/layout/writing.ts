@@ -609,7 +609,16 @@ export function reflectFrame(
       box.kind === 'table-cell' ||
       box.kind === 'table-caption' ||
       grid;
-    if (container && REFLECTED.get(box) !== box.layoutSerial) {
+    // a block that runs right to left in it — a `vertical-rl` aside in a
+    // `vertical-lr` flow — was laid out as it reads: it is moved whole by
+    // what it is in, and its own lines and blocks are left in its order
+    // (WPT's css-writing-modes/available-size-020, its reference), where
+    // what is in it that runs left to right is still put back
+    const leftToRight =
+      box === frame ||
+      box.style.writingMode === 'vertical-lr' ||
+      box.style.writingMode === 'sideways-lr';
+    if (container && leftToRight && REFLECTED.get(box) !== box.layoutSerial) {
       REFLECTED.set(box, box.layoutSerial);
       const top = box.contentY;
       const bottom = top + (box === frame ? extent : box.contentHeight);

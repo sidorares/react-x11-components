@@ -1427,3 +1427,23 @@ test('an orthogonal flow in a block of no height is as long as the scroll contai
   assert.ok(v.height <= 100, `${v.height} no taller than the scroller`);
   assert.ok(v.height > 80, `${v.height} as tall as it lets it be`);
 });
+
+test('a vertical-rl block in a vertical-lr flow keeps its own lines right to left', async () => {
+  // a vertical-lr flow is laid out as vertical-rl's and put back across;
+  // a block in it that runs right to left was laid out as it reads, and
+  // putting its lines back too set its first line at its left (WPT's
+  // css-writing-modes/available-size-020, its reference)
+  const { node } = await render(
+    '<div style="writing-mode:vertical-lr;font:15px/1 sans-serif">' +
+      '<article id="m"><aside style="writing-mode:vertical-rl;width:2em;' +
+      'height:60px"><span id="a">aaaa</span> <span id="b">bbbb</span>' +
+      '</aside></article><article id="n">x</article></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => el.elementRect(findById(el.document, id)!)!.x;
+  assert.ok(
+    at('a') > at('b'),
+    `its first line, ${at('a')}, right of ${at('b')}`,
+  );
+  assert.ok(at('m') < at('n'), 'and the flow still runs left to right');
+});
