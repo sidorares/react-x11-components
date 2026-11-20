@@ -2086,3 +2086,29 @@ test('a table repeats its header group at the head of each column it breaks into
     'three headers and three footers drawn again',
   );
 });
+
+test('a box positioned in an inline box columns break is placed against the strip and cut into the columns', async () => {
+  // the inline box's fragments are where the strip had them, before the
+  // columns moved its lines, and the box laid out against them is cut into
+  // the columns after, as one in a block is (CSS Position 3, 4.2; WPT's
+  // css-break/out-of-flow-in-multicolumn-056), where it hung out of them
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:2;column-fill:auto;gap:0;width:100px;height:100px">' +
+      '<div style="height:200px;width:50px"></div>' +
+      '<span style="position:relative"><div id="a" style="position:absolute;' +
+      'width:50px;height:200px;top:-200px"></div></span></div>',
+    300,
+  );
+  assert.deepStrictEqual(
+    COLUMN_PIECES.get(boxOf(view(node), 'a') as never)?.map((p) => [
+      p.x,
+      p.y,
+      p.height,
+    ]),
+    [
+      [0, 0, 100],
+      [50, 0, 100],
+    ],
+  );
+});

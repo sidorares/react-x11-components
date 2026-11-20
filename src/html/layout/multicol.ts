@@ -2081,6 +2081,11 @@ function shift(box: Box, column: number, to: Placing): void {
 }
 
 function shiftLine(line: LineBox, dx: number, dy: number): void {
+  const was = LINE_SHIFTS.get(line);
+  LINE_SHIFTS.set(
+    line,
+    was ? { dx: was.dx + dx, dy: was.dy + dy } : { dx, dy },
+  );
   line.x += dx;
   line.y += dy;
   for (const text of line.texts) {
@@ -2093,6 +2098,20 @@ function shiftLine(line: LineBox, dx: number, dy: number): void {
     moveTo(placed.box, placed.box.x + dx, placed.box.y + dy);
   }
   for (const edge of line.edges ?? []) edge.x += dx;
+}
+
+/** How far columns moved each line from where the strip had it, for what
+ *  is laid out against the strip after them: an inline box's fragments,
+ *  which a box positioned in it is placed by (`stripShiftOf`). A
+ *  multicol container keeps none of its layout, so a line is new each
+ *  time its columns are set. */
+const LINE_SHIFTS = new WeakMap<LineBox, { dx: number; dy: number }>();
+
+/** How far columns moved a line from where the strip had it, or nothing. */
+export function stripShiftOf(
+  line: LineBox,
+): { dx: number; dy: number } | undefined {
+  return LINE_SHIFTS.get(line);
 }
 
 /** The column a point down the strip is in, between boxes: at a break it
