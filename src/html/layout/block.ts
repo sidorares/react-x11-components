@@ -5335,6 +5335,8 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
 export function percentBaseInside(box: Box): number {
   const flexed = FLEXED_HEIGHT.get(box);
   if (flexed !== undefined) return flexed;
+  const inset = INSET_HEIGHT.get(box);
+  if (inset !== undefined) return inset;
   if (!box.el && !box.pseudo) return box.percentHeightBase;
   const resolved = specifiedHeight(box);
   if (resolved === null) {
@@ -5353,6 +5355,17 @@ export function percentBaseInside(box: Box): number {
       : set + box.verticalExtra;
   return Math.max(0, clampHeight(box, borderBox) - box.verticalExtra);
 }
+
+/**
+ * The content height an absolute box's offsets leave it, where both down
+ * are set and its height is `auto`: definite, as a height of its own is
+ * (CSS Position 3, 4.1; CSS Sizing 3, 3.1), so a percentage in it resolves
+ * against it — a canvas `height: 100%` in it is as tall as it and as wide
+ * as its ratio makes that, and the box shrinks to fit that width (WPT's
+ * css-sizing/intrinsic-percent-replaced-007). Set as the box is placed,
+ * before its width is measured.
+ */
+const INSET_HEIGHT = new WeakMap<Box, number>();
 
 /** Whether anything in a box takes a percentage of a height: what a height
  *  a flex or grid layout makes definite changes. Kept for the tree's life. */
@@ -10421,6 +10434,19 @@ function positionedIn(
           ? cbX + cbWidth - (at.from.x + at.right)
           : at.from.x + at.x - cbX));
 
+  // the height its offsets leave it, which what it holds takes percentages
+  // of before its width is measured (`INSET_HEIGHT`)
+  if (
+    style.height === AUTO &&
+    !style.heightKeyword &&
+    !style.heightSize &&
+    Number.isFinite(fill)
+  ) {
+    INSET_HEIGHT.set(
+      box,
+      Math.max(0, clampHeight(box, fill) - box.verticalExtra),
+    );
+  } else INSET_HEIGHT.delete(box);
   let width: number;
   let stretched = NaN;
   if (style.width !== AUTO) {
