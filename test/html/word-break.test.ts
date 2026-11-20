@@ -129,3 +129,25 @@ metric('keep-all moves a run of letters to the next line whole', async () => {
     assert.match(line.trim(), /^(한글이 ?)+$/u, `no word cut: ${line}`);
   }
 });
+
+metric(
+  'a word overflow-wrap cuts is whole in a min-content width',
+  async () => {
+    // CSS Text 3, 5.5: `break-word`'s cuts are no part of the min-content
+    // width, `keep-all` or not (WPT's overflow-wrap-min-content-size-006)
+    const box =
+      '<div id="%" style="font:20px/1 sans-serif;display:inline-block;width:min-content;%">MMMM</div>';
+    const { node } = await render(
+      box
+        .replace('%', 'a')
+        .replace('%', 'word-break:keep-all;overflow-wrap:break-word') +
+        '<br>' +
+        box.replace('%', 'b').replace('%', ''),
+      400,
+    );
+    const el = view(node);
+    const a = linesOf(el, 'a');
+    assert.equal(a.length, 1, 'one line');
+    assert.equal(a[0].width, linesOf(el, 'b')[0].width);
+  },
+);

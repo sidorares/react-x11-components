@@ -2835,26 +2835,12 @@ function layoutOwnBreaks(
     }
     return end;
   };
-  // A word wider than the room, which `overflow-wrap` cuts at the last
-  // cluster that fits, one at least (CSS Text 3, 5.5), and leaves whole
-  // where it does not say to.
+  // A word wider than the room, which `overflow-wrap` cuts: the engine's
+  // to cut, whose layout of the whole paragraph is what a min-content
+  // width reads the word off, where a line of it cut here would say the
+  // word is as wide as the piece on it (CSS Text 3, 5.5: those cuts are no
+  // part of a min-content width)
   const cuts = overflowWrapOf(style, items) === 'break-word';
-  const cutInside = (from: number, word: number, x0: number): number => {
-    if (!cuts) return word;
-    graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-    let last = -1;
-    for (const { index } of graphemes.segment(text.slice(from, word))) {
-      if (index === 0) continue;
-      if (xAt(from + index) - x0 > width + FIT_SLACK) break;
-      last = from + index;
-    }
-    if (last > from) return last;
-    // a line holds one cluster at least
-    for (const { index } of graphemes.segment(text.slice(from, word))) {
-      if (index > 0) return from + index;
-    }
-    return word;
-  };
   // where a line ends: the last place that fits from `from`, the first past
   // the room where none does, and a forced break wherever it comes
   let b = 0;
@@ -2868,7 +2854,7 @@ function layoutOwnBreaks(
     const x0 = lineOf.has(from) ? 0 : xAt(from);
     const fits = (k: number): boolean =>
       xAt(inkEnd(breaks[k].at, from)) - x0 <= width + FIT_SLACK;
-    if (!fits(b)) return cutInside(from, breaks[b].at, x0);
+    if (!fits(b)) return cuts ? -1 : breaks[b].at;
     let lo = b;
     let hi = last;
     while (lo < hi) {
@@ -2883,6 +2869,7 @@ function layoutOwnBreaks(
   let y = 0;
   for (let from = 0; from < total;) {
     let to = endFrom(from);
+    if (to < 0) return null;
     if (to <= from) to = total;
     const own = sliceRuns(runs, from, to).slice();
     const spans = new SpanMap();
