@@ -228,7 +228,9 @@ function sliceable(box: Box): boolean {
   }
   const style = box.style;
   if (style.breakInside === 'avoid' || scrolls(style)) return false;
-  // a transform makes no box monolithic (CSS Fragmentation 3, 4.1)
+  // a multicol container whose rows the columns about it cut is cut where
+  // they end (`NESTED_ROWS`)
+  if (NESTED_ROWS.has(box)) return true;
   if (style.columns) return false;
   // size containment makes a box monolithic (CSS Containment 2, 3.1)
   if (contained(box, CONTAIN_SIZE)) return false;
@@ -725,6 +727,12 @@ function fill(
   /** How tall each column is, where they are not all `height` tall: the
    *  rows of columns `column-wrap` makes (`RowGrid`). */
   heightOf?: (column: number) => number,
+  /** How many columns to leave empty before what stands first in a
+   *  column and does not fit there, where a later one would hold more:
+   *  the rest of a row cut short where the columns about the container
+   *  end, for the taller row in the next of them (WPT's
+   *  multicol-nested-013). */
+  jumpFrom?: (column: number, need: number, soft?: boolean) => number,
 ): Filled {
   if (heightOf) height = heightOf(0);
   const starts = [0];
@@ -809,6 +817,13 @@ function fill(
       else next(i, group.top, false);
       continue;
     }
+    if (jumpFrom && (i === head || bare(i, true))) {
+      const jump = jumpFrom(starts.length - 1, group.bottom - columnTop);
+      if (jump > 0 && starts.length + jump < MOST_COLUMNS) {
+        for (let k = 0; k < jump; k += 1) next(i, group.top, false);
+        continue;
+      }
+    }
     if (
       i === head ||
       bare(i, true) ||
@@ -835,6 +850,20 @@ function fill(
       const widows = Math.min(block.style.widows, count);
       const a = run[0];
       if (a >= head && k > 0 && k < orphans) {
+        // at the head of a row cut short, they go to the next row, where
+        // it is taller (WPT's multicol-nested-018)
+        const jump =
+          a === head && jumpFrom
+            ? jumpFrom(
+                starts.length - 1,
+                groups[run[orphans - 1]].bottom - columnTop,
+                true,
+              )
+            : 0;
+        if (jump > 0 && starts.length + jump < MOST_COLUMNS) {
+          for (let n = 0; n < jump; n += 1) next(a, groups[a].top, false);
+          continue;
+        }
         if (a === head && !fixed) {
           // at the head of the column already: they stay, and hang out,
           // for a taller column to take them in
@@ -978,23 +1007,105 @@ export function layoutColumns(
   let rowTop: (j: number) => number = () => top;
   let rowHeight: (j: number) => number = () => 0;
   let heights: ((c: number) => number) | undefined;
+  let jump: ((c: number, need: number, soft?: boolean) => number) | undefined;
   let reach = 0;
-  if (grid && Number.isFinite(grid.height)) {
-    const H = grid.height;
-    const period = H + grid.gap;
-    let k0 = period > EPS ? Math.floor((top - grid.base + EPS) / period) : 0;
-    if (k0 < 0) k0 = 0;
+  // a multicol container in another's columns of a known height has its
+  // rows cut where those columns end, and starts a row at each one's top
+  // (CSS Multi-column 1, 8.1; WPT's multicol-nested-013 and
+  // column-height-027): only one with no height of its own to fill, or
+  // whose columns wrap, and outside rows a spanner makes
+  const outer = columnsAround.current;
+  const nested =
+    outer !== null &&
+    !row &&
+    // a block in the flow: a float, an item and what is out of the flow
+    // are placed some other way, which moves none of what it holds
+    box.parent?.kind === 'block' &&
+    !box.isFloat &&
+    !box.outOfFlow &&
+    !wholeBetween(box, outer.box) &&
+    (grid ? Number.isFinite(grid.height) : !Number.isFinite(limit));
+  let ownRows = true;
+  if (nested || (grid && Number.isFinite(grid.height))) {
+    const H = grid ? grid.height : Infinity;
+    const gap = grid ? grid.gap : 0;
+    ownRows = Number.isFinite(H);
+    /** Where the outer column a point down the strip is in ends. */
+    const outerEnd = (y: number): number =>
+      nested
+        ? outer.base +
+          (Math.floor((y - outer.base + EPS) / outer.height) + 1) * outer.height
+        : Infinity;
     // a row the content starts part way down, where the spanner before it
     // ended, or the next row, where that was in a gap
     let firstTop = top;
-    let firstHeight = H - (top - (grid.base + k0 * period));
-    if (top - (grid.base + k0 * period) > EPS && firstHeight <= EPS) {
-      k0 += 1;
-      firstTop = grid.base + k0 * period;
-      firstHeight = H;
+    let firstHeight = H;
+    if (grid && Number.isFinite(H)) {
+      const period = H + gap;
+      let k0 = period > EPS ? Math.floor((top - grid.base + EPS) / period) : 0;
+      if (k0 < 0) k0 = 0;
+      firstHeight = H - (top - (grid.base + k0 * period));
+      if (top - (grid.base + k0 * period) > EPS && firstHeight <= EPS) {
+        firstTop = grid.base + (k0 + 1) * period;
+        firstHeight = H;
+      }
     }
-    rowTop = (j) => (j === 0 ? firstTop : grid.base + (k0 + j) * period);
-    rowHeight = (j) => (j === 0 ? firstHeight : H);
+    const tops: number[] = [];
+    const sizes: number[] = [];
+    const make = (j: number): void => {
+      while (tops.length <= j) {
+        let y: number;
+        let h: number;
+        if (!tops.length) {
+          y = firstTop;
+          h = firstHeight;
+        } else {
+          const k = tops.length - 1;
+          const foot = tops[k] + sizes[k];
+          const end = outerEnd(tops[k]);
+          // the next row a gap down, or at the next outer column's top
+          // where what is left of this one is no more than the gap
+          y = foot + gap < end - EPS ? foot + gap : Math.max(foot, end);
+          h = H;
+        }
+        let end = outerEnd(y);
+        // a row of its own height starts only where it fits in what is
+        // left of the outer column, and else at the next one's top, where
+        // it is cut to the column (WPT's column-height-028 and -025)
+        if (
+          end - y <= EPS ||
+          (tops.length && Number.isFinite(h) && h - (end - y) > EPS)
+        ) {
+          y = end;
+          end = outerEnd(y);
+        }
+        tops.push(y);
+        sizes.push(Math.min(h, end - y));
+      }
+    };
+    rowTop = (j) => (make(j), tops[j]);
+    rowHeight = (j) => (make(j), sizes[j]);
+    // what does not fit in a row the columns about the container cut short
+    // goes to the next row, where it is taller
+    jump = nested
+      ? (c, need, soft) => {
+          // lines `orphans` keeps together go on in the row they start in
+          // where they are the first of the container and it avoids a break
+          // before it, which leaving that row empty would be (WPT's
+          // multicol-nested-019, and -016 after something)
+          if (
+            soft &&
+            c === 0 &&
+            box.style.passive['break-before'] === 'avoid'
+          ) {
+            return 0;
+          }
+          const j = Math.floor(c / count);
+          if (need <= rowHeight(j) + EPS) return 0;
+          if (!(rowHeight(j + 1) > rowHeight(j) + EPS)) return 0;
+          return (j + 1) * count - c;
+        }
+      : undefined;
     rowOf = (c) => Math.floor(c / count);
     // a column of no height still takes a pixel of what can be cut, as
     // Blink moves on (WPT's column-height-022)
@@ -1005,7 +1116,7 @@ export function layoutColumns(
      *  column-height-024, whose rows of forced breaks are a pixel). */
     const short: number[] = [];
     heights = (c) => short[rowOf!(c)] ?? room(rowOf!(c));
-    filled = fill(groups, from, room(0), true, clones?.edges, heights);
+    filled = fill(groups, from, room(0), true, clones?.edges, heights, jump);
     const rowCount = rowOf(Math.max(1, filled.starts.length) - 1) + 1;
     if (groups.length && (box.style.columnFill !== 'auto' || beforeSpanner)) {
       for (let j = 0; j < rowCount; j += 1) {
@@ -1032,27 +1143,55 @@ export function layoutColumns(
             tallestOf(groups.slice(at, until)),
           ),
         );
-        let tried = fill(groups, from, room(0), true, clones?.edges, heights);
+        let tried = fill(
+          groups,
+          from,
+          room(0),
+          true,
+          clones?.edges,
+          heights,
+          jump,
+        );
         for (let pass = 0; pass < 4096; pass += 1) {
           if (holds(tried)) break;
           if (short[j] >= most || !Number.isFinite(tried.shortage)) break;
           short[j] = Math.min(most, short[j] + tried.shortage);
-          tried = fill(groups, from, room(0), true, clones?.edges, heights);
+          tried = fill(
+            groups,
+            from,
+            room(0),
+            true,
+            clones?.edges,
+            heights,
+            jump,
+          );
         }
         if (holds(tried)) filled = tried;
         else delete short[j];
       }
     }
-    height = H;
+    height = room(0);
     columnHeight = room(0);
-    const end = rowOf(Math.max(1, filled.starts.length) - 1);
-    // before a spanner, the rows end where the balanced columns do, which
-    // the spanner goes under where it fits in the row (`layoutRows`)
-    reach = groups.length
-      ? rowTop(end) +
-        (beforeSpanner ? heights(end * count) : rowHeight(end)) -
-        top
-      : 0;
+    const made = filled.starts.length;
+    const end = rowOf(Math.max(1, made) - 1);
+    // the last row's foot: before a spanner, where its balanced columns
+    // end, which the spanner goes under where it fits in the row
+    // (`layoutRows`); in rows of no height of their own, where its content
+    // does; else the row's
+    let foot = rowHeight(end);
+    if (beforeSpanner || (!ownRows && short[end] !== undefined)) {
+      foot = heights(end * count);
+    } else if (!ownRows) {
+      foot = 0;
+      for (let c = end * count; c < made; c += 1) {
+        const until = c + 1 < made ? filled.tops[c + 1] : from + strip;
+        foot = Math.max(foot, until - filled.tops[c]);
+      }
+      foot = Math.min(foot, rowHeight(end));
+    }
+    reach = groups.length ? rowTop(end) + foot - top : 0;
+    if (nested && end > 0) NESTED_ROWS.add(box);
+    else NESTED_ROWS.delete(box);
   } else if (grid) {
     // no height to wrap at: one row, but where forced breaks make more
     // columns than there are, rows of them, each as tall as its tallest
@@ -1214,6 +1353,29 @@ export function layoutColumns(
   });
   return answer;
 }
+
+/** The columns of the multicol container whose content is being laid
+ *  out down its strip, where they are of a known height: its content box's
+ *  top, and that height (`layoutColumns`, which a multicol container in
+ *  them reads, set by the block layout about its children). */
+export const columnsAround: {
+  current: { box: Box; base: number; height: number } | null;
+} = { current: null };
+
+/** Whether a box between a multicol container and the one whose columns
+ *  it is in goes whole, which carries the container with it whole. */
+function wholeBetween(box: Box, outer: Box): boolean {
+  for (let at = box.parent; at && at !== outer; at = at.parent) {
+    if (whole(at)) return true;
+  }
+  return false;
+}
+
+/** The multicol containers in another's columns whose rows those columns
+ *  cut (`layoutColumns`): broken as a box that can be cut anywhere, at the
+ *  foot of a column, and what they hold moved by where it is down the
+ *  strip (`moveNested`). */
+const NESTED_ROWS = new WeakSet<Box>();
 
 /** The rows a multicol container's columns wrap into (CSS Multi-column 2,
  *  3.6 and 3.7): as tall as `column-height` says, or as the container's
@@ -1713,6 +1875,57 @@ function columnAt(y: number, tops: number[]): number {
 }
 
 /**
+ * Move what a multicol container in the columns holds (`NESTED_ROWS`), its
+ * own rows set where they are down the strip already, each to the column
+ * it is in there: its lines, and its boxes or their pieces, by where each
+ * starts. A row starts at a column's top, which is that column's.
+ */
+function moveNested(box: Box, to: Placing): void {
+  const at = (y: number): number => {
+    let c = 0;
+    while (c + 1 < to.tops.length && to.tops[c + 1] <= y + EPS) c += 1;
+    return c;
+  };
+  for (const line of box.lines ?? []) {
+    const c = at(line.y);
+    shiftLine(line, to.dx(c), to.dy(c));
+  }
+  for (const child of box.children) {
+    if (child.kind === 'text' || child.kind === 'break') continue;
+    const pieces = COLUMN_PIECES.get(child);
+    if (pieces?.length) {
+      let x1 = Infinity;
+      let y1 = Infinity;
+      let x2 = -Infinity;
+      let y2 = -Infinity;
+      for (const piece of pieces) {
+        const c = at(piece.y);
+        piece.x += to.dx(c);
+        piece.y += to.dy(c);
+        piece.wholeY += to.dy(c);
+        x1 = Math.min(x1, piece.x);
+        y1 = Math.min(y1, piece.y);
+        x2 = Math.max(x2, piece.x + piece.width);
+        y2 = Math.max(y2, piece.y + piece.height);
+      }
+      child.x = x1;
+      child.y = y1;
+      child.width = x2 - x1;
+      child.height = y2 - y1;
+    } else {
+      const c = at(child.y);
+      child.x += to.dx(c);
+      child.y += to.dy(c);
+      if (child.marker) {
+        child.marker.x += to.dx(c);
+        child.marker.y += to.dy(c);
+      }
+    }
+    moveNested(child, to);
+  }
+}
+
+/**
  * Move what a box holds to its columns: the container's content, with no
  * `span`, or that of a box a break falls inside, which is then its pieces.
  */
@@ -1745,9 +1958,16 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
     }
     asides.push([child, Math.min(last, Math.max(first, c))]);
   };
-  if (lines?.length) eachAside(box, aside);
+  // a multicol container whose rows these columns cut moves what it holds
+  // itself, by where each is (`moveNested`), and nothing of it was gathered
+  const nested = span !== null && NESTED_ROWS.has(box);
+  if (nested) {
+    // nothing to move here
+  } else if (lines?.length) eachAside(box, aside);
   else for (const child of box.children) aside(child);
-  if (lines?.length) {
+  if (nested) {
+    // below, with its pieces
+  } else if (lines?.length) {
     for (const line of lines) {
       const c = gathered.lines.get(line)!.group.column;
       shiftLine(line, to.dx(c), to.dy(c));
@@ -1859,6 +2079,7 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
     box.y = y1;
     box.width = x2 - x1;
     box.height = y2 - y1;
+    if (nested) moveNested(box, to);
   }
   for (const [child, c] of asides) {
     const at = child.staticPosition!;

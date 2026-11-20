@@ -144,6 +144,7 @@ import {
   spansColumns,
   spannedRows,
   rowGridOf,
+  columnsAround,
   spannerRow,
   isSpanner,
   containingParent,
@@ -4408,10 +4409,21 @@ function layoutBoxAt(
       ? layoutRows(box, ctx, columns, contentWidth, borderBoxWidth, spanned)
       : null;
   if (columns) box.width = columns.width + box.horizontalExtra;
-  const flow =
-    rows === null
-      ? layoutChildren(box, ctx, floats, box.contentY, flowWidth)
-      : { height: rows, hanging: NO_MARGIN };
+  // a multicol container in these columns cuts its rows where they end, so
+  // it is told how tall they are, where that is known (`columnsAround`)
+  const around = columnsAround.current;
+  if (columns && rows === null) {
+    columnsAround.current = columnsHeightOf(box);
+  }
+  let flow: { height: number; hanging: MarginStrut };
+  try {
+    flow =
+      rows === null
+        ? layoutChildren(box, ctx, floats, box.contentY, flowWidth)
+        : { height: rows, hanging: NO_MARGIN };
+  } finally {
+    columnsAround.current = around;
+  }
   box.width = borderBoxWidth;
   // A list item with a marker and no line holds one, the marker's, a line
   // of its own face tall: an empty `<li>` is a line tall in a browser, and
@@ -5025,6 +5037,24 @@ function notePiece(
 
 /** The tallest a multicol container's columns may be: its own height where
  *  it has one, and its `max-height`; no limit where it has neither. */
+/** How tall a multicol container's columns are before its content is set
+ *  in them, where that is known: rows of `column-height`, or of its own
+ *  height where its columns wrap or are filled in turn; null where they
+ *  are balanced, whose height comes of the content (`columnsAround`). */
+function columnsHeightOf(
+  box: Box,
+): { box: Box; base: number; height: number } | null {
+  const limit = columnLimit(box);
+  const grid = rowGridOf(box, limit);
+  let height = grid ? grid.height : NaN;
+  if (!grid) {
+    if (box.style.columnHeight !== null) height = box.style.columnHeight;
+    else if (box.style.columnFill === 'auto') height = limit;
+  }
+  if (!(Number.isFinite(height) && height >= 1)) return null;
+  return { box, base: box.contentY, height };
+}
+
 function columnLimit(box: Box): number {
   const height = box.height;
   finishHeight(box, specifiedHeight(box) === null ? Infinity : 0);
