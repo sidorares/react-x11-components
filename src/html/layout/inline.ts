@@ -6156,7 +6156,9 @@ export function inlineDecoration(
     s.backgroundImages !== null ||
     box.borderTop + box.borderRight + box.borderBottom + box.borderLeft > 0 ||
     s.outlineStyle !== 'none' ||
-    s.boxShadow !== null;
+    s.boxShadow !== null ||
+    // a clip-path is measured in its first fragment (`inlineClipPath`)
+    s.clipPath !== null;
   return !decorated ? null : fonts ? faceExtent(fonts, s) : NO_EXTENT;
 }
 

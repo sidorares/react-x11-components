@@ -7061,7 +7061,10 @@ which is drawn whole and found where it is drawn; a browser cuts that one
 too. `clip-path` shows the part of any box its shape names, and
 of everything in the box — one positioned from outside it too, which a box
 that clips its overflow lets out — and nothing it cuts away is under the
-pointer (CSS Masking 1, 5.1). The shapes are the rectangles of CSS Shapes:
+pointer (CSS Masking 1, 5.1). An inline box's shape is measured in its
+first fragment and placed there, and cuts every fragment where it is, as
+Blink has it: its text is painted apart from its lines, as one an inset
+moves is, under the clip. The shapes are the rectangles of CSS Shapes:
 `inset()`, `rect()` and `xywh()`, with the corners `round` gives them, in
 the box the value names, the border box unless it says; or that box alone,
 rounded as the element is. Insets that meet or pass each other leave
