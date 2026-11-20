@@ -1919,3 +1919,32 @@ test('the columns shorthand takes a column-height after a slash', async () => {
   const el = view(node);
   assert.deepStrictEqual(at(el, 'c', 'm'), [0, 40, 280, 20], 'a row down');
 });
+
+test('a box break-inside: avoid keeps whole is broken where it is taller than a column', async () => {
+  // Columns 100px tall: a box of 200px under `break-inside: avoid` cannot
+  // go whole, so it starts the next column, past the 15px left of this one,
+  // and is broken there as a last resort (CSS Fragmentation 3, 4.4; WPT's
+  // multicol-nested-028). One that fits goes whole.
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:4;gap:0;column-fill:auto;width:100px;height:100px">' +
+      '<div style="height:110px"></div>' +
+      '<div id="a" style="break-inside:avoid;height:75px"></div>' +
+      '<div id="b" style="break-inside:avoid;height:200px"></div></div>',
+    300,
+  );
+  const el = view(node);
+  const a = boxOf(el, 'a');
+  assert.deepStrictEqual([a.x, a.y, a.height], [25, 10, 75], 'whole');
+  assert.deepStrictEqual(
+    COLUMN_PIECES.get(boxOf(el, 'b') as never)?.map((p) => [
+      p.x,
+      p.y,
+      p.height,
+    ]),
+    [
+      [50, 0, 100],
+      [75, 0, 100],
+    ],
+  );
+});

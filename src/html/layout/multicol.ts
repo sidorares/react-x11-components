@@ -161,6 +161,9 @@ interface Gathered {
   /** The boxes a break may fall inside that clone their edges at one
    *  (`box-decoration-break: clone`), in the order they were gathered. */
   cloned: Box[];
+  /** The boxes `break-inside: avoid` keeps whole that are taller than a
+   *  column, which a break falls inside after all (`layoutColumns`). */
+  tall?: Set<Box>;
 }
 
 const NO_GROUP: Group = {
@@ -176,9 +179,9 @@ const NO_GROUP: Group = {
 
 /** Whether no break may fall inside a box, whatever it holds: it is
  *  monolithic, or says so. It goes to a column with all that is in it. */
-function whole(box: Box): boolean {
+function whole(box: Box, avoiding = true): boolean {
   if (box.kind !== 'block' && box.kind !== 'flex') return true;
-  if (box.style.breakInside === 'avoid') return true;
+  if (avoiding && box.style.breakInside === 'avoid') return true;
   // size containment makes a box monolithic (CSS Containment 2, 3.1), and
   // a forced break in it is none
   if (contained(box, CONTAIN_SIZE)) return true;
@@ -222,12 +225,14 @@ function monolithic(box: Box): boolean {
  * only what cannot be cut monolithic: replaced content, and a box that
  * scrolls or clips).
  */
-function sliceable(box: Box): boolean {
+function sliceable(box: Box, avoiding = true): boolean {
   if ((box.kind !== 'block' && box.kind !== 'flex') || box.marker) {
     return false;
   }
   const style = box.style;
-  if (style.breakInside === 'avoid' || scrolls(style)) return false;
+  if ((avoiding && style.breakInside === 'avoid') || scrolls(style)) {
+    return false;
+  }
   // a transform makes no box monolithic (CSS Fragmentation 3, 4.1)
   if (style.columns) return false;
   // size containment makes a box monolithic (CSS Containment 2, 3.1)
@@ -453,7 +458,8 @@ function gather(
       const room = space(clear, child.y, null, into);
       if (!parallel) first ??= room;
     }
-    if (whole(child)) {
+    const tall = into.tall?.has(child) ?? false;
+    if (!tall && whole(child)) {
       const unit: Unit = {
         top: child.y,
         bottom: reachOf(child),
@@ -480,6 +486,13 @@ function gather(
       continue;
     }
     const span = gather(child, into, clip);
+    // a box `break-inside: avoid` cannot keep whole starts a column, where
+    // nothing comes before it in it, and is broken where it must be (CSS
+    // Fragmentation 3, 4.4: the break before it is the one to take)
+    if (tall && span) {
+      const at = child.y - Math.max(0, child.marginTop);
+      span[0].forced = Math.min(span[0].forced ?? Infinity, at);
+    }
     if (into.loose.has(child)) into.loose.add(box);
     const afterInside = into.after;
     into.after = false;
@@ -489,7 +502,7 @@ function gather(
         top: child.y,
         bottom: child.y + child.height,
         block: null,
-        sliced: sliceable(child),
+        sliced: sliceable(child, !tall),
         size: 0,
         end: 0,
         group: NO_GROUP,
@@ -507,6 +520,10 @@ function gather(
         into.cloned.push(child);
       }
       reach([unit, unit]);
+      if (tall) {
+        const at = child.y - Math.max(0, child.marginTop);
+        unit.forced = Math.min(unit.forced ?? Infinity, at);
+      }
       force(unit);
       continue;
     }
@@ -945,15 +962,41 @@ export function layoutColumns(
   // where the strip it is cut from starts, which the columns are set from
   // `top`
   const from = row ? row.from : top;
-  const gathered: Gathered = {
-    units: [],
-    lines: new Map(),
-    boxes: new Map(),
-    spans: new Map(),
-    loose: new Set(),
-    cloned: [],
+  const gatherAll = (tall?: Set<Box>): Gathered => {
+    const into: Gathered = {
+      units: [],
+      lines: new Map(),
+      boxes: new Map(),
+      spans: new Map(),
+      loose: new Set(),
+      cloned: [],
+      tall,
+    };
+    gather(box, into);
+    return into;
   };
-  gather(box, gathered);
+  let gathered = gatherAll();
+  // a box `break-inside: avoid` keeps whole that is taller than a column
+  // can be is broken after all, as a last resort: where the columns' height
+  // is known before the content is set (WPT's multicol-nested-028)
+  const known = knownHeight(box, limit, row ? row.grid : undefined);
+  if (Number.isFinite(known)) {
+    const tall = new Set<Box>();
+    for (let pass = 0; pass < 8; pass += 1) {
+      const before = tall.size;
+      for (const [b, unit] of gathered.boxes) {
+        if (
+          b.style.breakInside === 'avoid' &&
+          unit.bottom - unit.top > known + EPS &&
+          !whole(b, false)
+        ) {
+          tall.add(b);
+        }
+      }
+      if (tall.size === before) break;
+      gathered = gatherAll(tall);
+    }
+  }
   const groups = groupsOf(gathered.units);
   const clones = clonesOf(gathered, groups);
   // as far down as the content goes, past a box with a height it overflows:
@@ -1213,6 +1256,18 @@ export function layoutColumns(
     breaks,
   });
   return answer;
+}
+
+/** How tall a multicol container's columns are before its content is set
+ *  in them, where that is known: the rows `column-height` makes, or what
+ *  `column-height` says where they do not wrap, or the container's own
+ *  height. Infinity where it is not. */
+function knownHeight(box: Box, limit: number, grid?: RowGrid | null): number {
+  const rows = grid === undefined ? rowGridOf(box, limit) : grid;
+  if (rows)
+    return Number.isFinite(rows.height) ? Math.max(rows.height, 1) : Infinity;
+  if (box.style.columnHeight !== null) return box.style.columnHeight;
+  return limit;
 }
 
 /** The rows a multicol container's columns wrap into (CSS Multi-column 2,
