@@ -168,6 +168,7 @@ export const PASSIVE: Record<string, PassiveProperty> = Object.assign(
       /^auto$/i.test(v.trim()) ? 'auto' : lengthOf(v.trim(), false, true),
     ),
     'column-wrap': own('auto', keyword('auto', 'nowrap', 'wrap')),
+    'scroll-marker-group': own('none', keyword('none', 'before', 'after')),
     'font-palette': inherited('normal', (v) => {
       const w = v.trim();
       if (/^(?:normal|light|dark)$/i.test(w)) return w.toLowerCase();
