@@ -179,3 +179,63 @@ test('a value Chromium, Firefox and WebKit all take is kept in the form all thre
     cases,
   );
 });
+
+test('a keyword property takes its keywords each at most once, as the three browsers do, and writes them back in its own order', async () => {
+  const cases: [string, string, string][] = [
+    ['object-fit', 'scale-down cover', 'cover scale-down'],
+    ['object-fit', 'contain scale-down', 'scale-down'],
+    ['object-fit', 'contain cover', ''],
+    ['object-fit', 'auto', ''],
+    ['font-synthesis', 'small-caps style weight', 'weight style small-caps'],
+    ['font-synthesis', 'none weight', ''],
+    ['font-synthesis', 'style oblique-only', ''],
+    ['font-style', 'italic oblique', ''],
+    ['font-style', 'auto', ''],
+    ['font-style', 'oblique 10deg', 'oblique 10deg'],
+    [
+      'text-decoration-line',
+      'blink overline underline',
+      'underline overline blink',
+    ],
+    ['text-decoration-line', 'none underline', ''],
+    ['text-decoration-line', 'underline underline', ''],
+    ['text-decoration-line', 'spelling-error overline', ''],
+    ['text-overflow', 'clip ellipsis clip', ''],
+    ['text-overflow', '"-"', '"-"'],
+    ['vertical-align', 'super middle first', 'first middle super'],
+    ['vertical-align', 'baseline 0', 'baseline'],
+    ['vertical-align', 'sub super', ''],
+    ['vertical-align', 'none', ''],
+    ['display', 'list-item flow-root inline', 'inline flow-root list-item'],
+    ['display', 'flex inline', 'inline-flex'],
+    ['display', 'ruby block', 'block ruby'],
+    ['display', 'flow', 'block'],
+    ['display', 'ruby list-item', ''],
+    ['display', 'flex ruby', ''],
+    ['opacity', '50%', '0.5'],
+    ['opacity', '2.5e-1', '0.25'],
+    ['opacity', 'auto', ''],
+    ['image-orientation', 'from-image', 'from-image'],
+    ['image-orientation', '30deg', ''],
+    ['caret-color', 'auto auto', ''],
+    ['caret-color', 'red green', ''],
+    ['caret-color', '50%', ''],
+    ['caret-color', 'auto', 'auto'],
+    ['initial-letter', 'drop 1.23', '1.23 drop'],
+    ['initial-letter', 'drop', ''],
+    ['initial-letter', '0', ''],
+    ['baseline-source', 'auto first', ''],
+    ['text-group-align', 'justify', ''],
+    ['hanging-punctuation', 'first last force-end', 'first last force-end'],
+    ['hanging-punctuation', 'force-end allow-end', ''],
+    ['text-decoration-skip-spaces', 'end start', 'start end'],
+    ['text-decoration-skip-spaces', 'none all', ''],
+    ['block-ellipsis', 'auto', ''],
+    ['scroll-marker-group', 'before, after', ''],
+  ];
+  const out = await readBack(cases.map(([p, v]) => [p, v]));
+  assert.deepEqual(
+    out.map((got, i) => [cases[i][0], cases[i][1], got]),
+    cases,
+  );
+});

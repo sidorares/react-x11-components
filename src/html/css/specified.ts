@@ -292,7 +292,8 @@ export function specifiedValue(
   if (grammar) {
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
-    return grammar(word);
+    const read = grammar(word);
+    if (read !== undefined) return read;
   }
   // one keyword (CSS UI 4, 6.1)
   // keywords a property takes and nothing else (CSS Position 4, 3.2; CSS
