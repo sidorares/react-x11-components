@@ -10465,7 +10465,12 @@ function positionedIn(
             ? alignedIn(
                 room.x,
                 room.width,
-                room.across,
+                safely(
+                  room.across,
+                  room.safeAcross,
+                  room.width,
+                  box.width + box.marginLeft + box.marginRight,
+                ),
                 box.width + box.marginLeft + box.marginRight,
                 rtl,
               ) + box.marginLeft
@@ -10523,7 +10528,12 @@ function positionedIn(
             ? alignedIn(
                 room.y,
                 room.height,
-                room.down,
+                safely(
+                  room.down,
+                  room.safeDown,
+                  room.height,
+                  box.height + box.marginTop + box.marginBottom,
+                ),
                 box.height + box.marginTop + box.marginBottom,
                 false,
               ) + box.marginTop
@@ -10822,6 +10832,17 @@ function insideRect(
     width: Math.max(0, box.width - box.borderLeft - box.borderRight),
     height: Math.max(0, box.height - box.borderTop - box.borderBottom),
   };
+}
+
+/** How far along its free room a box is set, where a `safe` alignment sets
+ *  it at `fallback` instead once it overflows the room. */
+function safely(
+  along: number,
+  fallback: number | undefined,
+  size: number,
+  outer: number,
+): number {
+  return fallback !== undefined && outer > size ? fallback : along;
 }
 
 /** Where a margin box of a size starts in a room, `along` of the free room
@@ -11388,7 +11409,7 @@ function staticAlignment(
   child: Box,
   container: Box,
   flex: boolean,
-): { across: number; down: number } {
+): { across: number; down: number; safeAcross?: number; safeDown?: number } {
   const own = child.style;
   const style = container.style;
   const factor = (align: string): number =>
@@ -11433,19 +11454,169 @@ function staticAlignment(
     if (framed.any && ROWS_MIRRORED.has(container)) down = 1 - down;
     return { across, down };
   }
-  const justify = style.justifyContent;
-  let main =
-    justify === 'flex-end' || justify === 'end' || justify === 'right'
-      ? 1
-      : justify === 'center' ||
-          justify === 'space-around' ||
-          justify === 'space-evenly'
-        ? 0.5
-        : 0;
-  if (style.flexDirection.endsWith('-reverse')) main = 1 - main;
-  return style.flexDirection.startsWith('row')
-    ? { across: main, down: cross }
-    : { across: cross, down: main };
+  return flexStaticAlignment(own, style);
+}
+
+/** A writing mode's axis on the page: whether it runs down, and whether
+ *  it starts at the far end, the right or the bottom. */
+function pageAxis(
+  style: ComputedStyle,
+  inline: boolean,
+): { down: boolean; high: boolean } {
+  const mode = style.writingMode;
+  const rtl = style.direction === 'rtl';
+  if (mode === 'horizontal-tb') {
+    return inline ? { down: false, high: rtl } : { down: true, high: false };
+  }
+  if (inline) return { down: true, high: mode === 'sideways-lr' ? !rtl : rtl };
+  return {
+    down: false,
+    high: mode === 'vertical-rl' || mode === 'sideways-rl',
+  };
+}
+
+/**
+ * Where a flex box's absolutely positioned child is, as though it were its
+ * one item (CSS Flexbox 1, 4.1): along the main axis by `justify-content`,
+ * and across by its `align-self`, each a fraction of the free room from the
+ * page's left and its top, turned to the inline start across, from which
+ * the caller reads it. `flex-start` and `flex-end` are the flex lines'
+ * sides, which `-reverse` and `wrap-reverse` turn, and `start` and `end`
+ * the writing mode's, which they do not; `left` and `right` are the line's
+ * left and right across the page, its top and its bottom along a row that
+ * runs down (but in `sideways-lr`), and the start along a column that does; `space-between`
+ * falls back to `flex-start`, `space-around` and `space-evenly` to
+ * `center`, and a baseline to `start` and a last one to `end`, whichever
+ * way the lines wrap (CSS Box Alignment 3, 4.2 and 5.1). Those are Chromium's, and Firefox's
+ * and WebKit's.
+ */
+function flexStaticAlignment(
+  own: ComputedStyle,
+  style: ComputedStyle,
+): { across: number; down: number; safeAcross?: number; safeDown?: number } {
+  const row = style.flexDirection.startsWith('row');
+  const main = pageAxis(style, row);
+  const cross = pageAxis(style, !row);
+  // where each axis's flex start is: its writing mode's start, turned
+  const mainFlexHigh = style.flexDirection.endsWith('-reverse')
+    ? !main.high
+    : main.high;
+  const crossFlexHigh =
+    style.flexWrap === 'wrap-reverse' ? !cross.high : cross.high;
+  // `flow-start` and `flow-end` are `flex-start` and `flex-end` here
+  const word = (text: string | undefined) =>
+    (text ?? 'normal')
+      .replace(/^(?:safe|unsafe) /, '')
+      .replace(/^flow-(start|end)$/, 'flex-$1');
+  // a fraction from the axis's low end, by the side a keyword names
+  const from = (
+    at: 'flex-start' | 'flex-end' | 'start' | 'end' | 'center' | 'low' | 'high',
+    axis: { high: boolean },
+    flexHigh: boolean,
+  ): number => {
+    switch (at) {
+      case 'center':
+        return 0.5;
+      case 'low':
+        return 0;
+      case 'high':
+        return 1;
+      case 'flex-start':
+        return flexHigh ? 1 : 0;
+      case 'flex-end':
+        return flexHigh ? 0 : 1;
+      case 'start':
+        return axis.high ? 1 : 0;
+      case 'end':
+        return axis.high ? 0 : 1;
+    }
+  };
+  const justify = word(style.justifyContentText);
+  const mainAt =
+    justify === 'flex-end'
+      ? 'flex-end'
+      : justify === 'end'
+        ? 'end'
+        : justify === 'start'
+          ? 'start'
+          : justify === 'center' ||
+              justify === 'space-around' ||
+              justify === 'space-evenly'
+            ? 'center'
+            : justify === 'left' || justify === 'right'
+              ? main.down && !row
+                ? 'start'
+                : (justify === 'left') !==
+                    (main.down && style.writingMode === 'sideways-lr')
+                  ? 'low'
+                  : 'high'
+              : 'flex-start';
+  const alignText =
+    own.alignSelfText === 'auto' || !own.alignSelfText
+      ? style.alignItemsText
+      : own.alignSelfText;
+  const align = word(alignText);
+  const crossAt =
+    align === 'flex-end'
+      ? 'flex-end'
+      : align === 'end' || align === 'last baseline'
+        ? 'end'
+        : align === 'start' ||
+            align === 'baseline' ||
+            align === 'first baseline'
+          ? 'start'
+          : align === 'center'
+            ? 'center'
+            : align === 'self-start' || align === 'self-end'
+              ? (ownStartSide(own, cross.down) === 'high') ===
+                (align === 'self-start')
+                ? 'high'
+                : 'low'
+              : 'flex-start';
+  const mainFrom = from(mainAt, main, mainFlexHigh);
+  const crossFrom = from(crossAt, cross, crossFlexHigh);
+  // and a `safe` one at the axis's start where it would overflow (CSS Box
+  // Alignment 3, 4.4)
+  const mainSafe = style.justifyContentText?.startsWith('safe ')
+    ? from('start', main, mainFlexHigh)
+    : undefined;
+  const crossSafe = alignText?.startsWith('safe ')
+    ? from('start', cross, crossFlexHigh)
+    : undefined;
+  // read from the inline start across, which is the right in a
+  // right-to-left box
+  const rtl = style.direction === 'rtl';
+  const fromStart = (v: number | undefined) =>
+    v === undefined || !rtl ? v : 1 - v;
+  const out: {
+    across: number;
+    down: number;
+    safeAcross?: number;
+    safeDown?: number;
+  } = {
+    across: fromStart(main.down ? crossFrom : mainFrom)!,
+    down: main.down ? mainFrom : crossFrom,
+  };
+  const safeX = fromStart(main.down ? crossSafe : mainSafe);
+  const safeY = main.down ? mainSafe : crossSafe;
+  if (safeX !== undefined) out.safeAcross = safeX;
+  if (safeY !== undefined) out.safeDown = safeY;
+  return out;
+}
+
+/** The page side an item's own start is on, across (`down` false) or down:
+ *  its inline start where its inline axis runs that way, else its block
+ *  start. */
+function ownStartSide(style: ComputedStyle, down: boolean): 'low' | 'high' {
+  const mode = style.writingMode;
+  const rtl = style.direction === 'rtl';
+  if (mode === 'horizontal-tb') return down || !rtl ? 'low' : 'high';
+  if (down) {
+    // the inline axis runs down, from the bottom in `sideways-lr`
+    const up = mode === 'sideways-lr';
+    return up !== rtl ? 'high' : 'low';
+  }
+  return mode === 'vertical-rl' || mode === 'sideways-rl' ? 'high' : 'low';
 }
 
 /** The nearest positioned ancestor, or null for the initial containing

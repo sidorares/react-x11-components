@@ -176,6 +176,10 @@ export interface StaticPosition {
     box: 'content' | 'padding';
     across: number;
     down: number;
+    /** Where it is set instead where it overflows the room, by a `safe`
+     *  alignment: the start of the axis (CSS Box Alignment 3, 4.4). */
+    safeAcross?: number;
+    safeDown?: number;
   };
 }
 
