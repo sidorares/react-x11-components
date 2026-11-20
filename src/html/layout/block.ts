@@ -12570,10 +12570,25 @@ export function retranslate(box: Box, was: ComputedStyle): void {
 }
 
 /** How far `position: relative` moves a box. */
+/**
+ * The width a box's content is laid out in: its content box's, or, where
+ * columns broke it, one piece's. A broken box's rect is the one around all
+ * its pieces, side by side across the columns, and a percentage of what it
+ * holds is of the column it was laid out a column wide in.
+ */
+function layoutContentWidth(box: Box): number {
+  const piece = columned.any ? COLUMN_PIECES.get(box)?.[0] : undefined;
+  if (!piece) return box.contentWidth;
+  return Math.max(
+    0,
+    piece.width - box.borderLeft - box.borderRight - box.padLeft - box.padRight,
+  );
+}
+
 function relativeOffset(box: Box): [number, number] {
   // an inset it inherited from a box an anchor placed is what that came to
   const style = PLACED_STYLE.get(box) ?? box.style;
-  const parentWidth = box.parent ? box.parent.contentWidth : 0;
+  const parentWidth = box.parent ? layoutContentWidth(box.parent) : 0;
   const left = resolveOrNull(style.left, parentWidth);
   const right = resolveOrNull(style.right, parentWidth);
   // a percentage down is of a height the containing block sets, as a
@@ -12622,7 +12637,7 @@ export function resolvedInsets(
       sides[2] = lent.bottom;
       sides[3] = lent.left;
     }
-    const across = box.parent ? box.parent.contentWidth : 0;
+    const across = box.parent ? layoutContentWidth(box.parent) : 0;
     // a percentage on an inline box stays as it was written, as Chrome
     // answers it, and leaves the side opposite nothing to negate
     const written = (len: Len) => box.kind === 'inline' && isPct(len);
