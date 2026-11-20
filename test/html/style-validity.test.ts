@@ -180,6 +180,46 @@ test('a value Chromium, Firefox and WebKit all take is kept in the form all thre
   );
 });
 
+test('a name no property has is an expando on the style, as in a browser, and makes no declaration', async () => {
+  const page = await scriptedPage(
+    `<style>@font-face { font-family: f; src: url(f.woff2); }</style>
+    <div id="e"></div><script>
+    var e = document.getElementById('e');
+    var before = 'corner' in e.style;
+    e.style.corner = 'auto';
+    e.style['--x'] = '1';
+    e.style.setProperty('corners', 'round');
+    e.style.setProperty('--y', '2');
+    e.style.color = 'red';
+    e.style.webkitTransform = 'rotate(1deg)';
+    var face = document.styleSheets[1].cssRules[0].style;
+    face.setProperty('font-display', 'swap');
+    console.log('out ' + JSON.stringify([
+      before, e.style.corner, e.style.getPropertyValue('corner'),
+      e.style.getPropertyValue('corners'), e.style['--x'],
+      e.style.getPropertyValue('--x'), e.style.getPropertyValue('--y'),
+      e.style.cssText, 'color' in e.style, 'backgroundColor' in e.style,
+      'webkitTransform' in e.style, face.getPropertyValue('font-display'),
+    ]));</script>`,
+  );
+  const out = JSON.parse(await page.until('out'));
+  page.result.unmount();
+  assert.deepEqual(out, [
+    false,
+    'auto',
+    '',
+    '',
+    '1',
+    '',
+    '2',
+    '--y: 2; color: red; -webkit-transform: rotate(1deg);',
+    true,
+    true,
+    true,
+    'swap',
+  ]);
+});
+
 test('a keyword property takes its keywords each at most once, as the three browsers do, and writes them back in its own order', async () => {
   const cases: [string, string, string][] = [
     ['object-fit', 'scale-down cover', 'cover scale-down'],

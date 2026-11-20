@@ -179,6 +179,7 @@ import {
   declaredProperties,
   fieldsOfProperty,
   fontQuery,
+  probedStyle,
 } from '../css/style.js';
 import type { ComputedStyle, FontQuery, RootLook } from '../css/style.js';
 import type { CanvasText } from '../canvas-text.js';
@@ -2058,6 +2059,22 @@ const STYLE_NAMES_BESIDE: readonly string[] = [
   ...Object.keys(SVG_PROPERTIES),
   'marker',
 ];
+
+/** Every name a style has an attribute for: a computed style's, worked
+ *  out from an initial style, since which names it has does not turn on an
+ *  element and a layout to find them out would be the page's to wait for,
+ *  and what it leaves out. */
+let STYLE_NAMES: string[] | null = null;
+let STYLE_NAME_SET: Set<string> | null = null;
+function styleNames(): string[] {
+  return (STYLE_NAMES ??= [
+    ...Object.keys(cssomStyle(probedStyle(), 1, null)),
+    ...STYLE_NAMES_BESIDE,
+  ]);
+}
+function styleNameSet(): Set<string> {
+  return (STYLE_NAME_SET ??= new Set(styleNames()));
+}
 
 function withDeclaration(
   block: string | null | undefined,
@@ -4317,23 +4334,11 @@ export class DomHost {
     root: Primitive,
   ): boolean {
     if (property.startsWith('--')) return true;
-    if (!this._styleNames) {
-      const style =
-        root === null || root === undefined
-          ? null
-          : this._handle.computedStyle(this._element(root), null);
-      if (!style) return true;
-      this._styleNames = new Set([
-        ...Object.keys(style),
-        ...STYLE_NAMES_BESIDE,
-      ]);
-    }
-    if (!this._styleNames.has(property)) return false;
+    if (!styleNameSet().has(property)) return false;
     // a value the property does not take, as its setter has it
     if (declarationTaken(property, value) === false) return false;
     return true;
   }
-  private _styleNames: Set<string> | null = null;
 
   private _element(id: Primitive): Element {
     const node = this._node(id);
@@ -7014,11 +7019,8 @@ export class DomHost {
       }
       // every name a style has an attribute for, a computed style's list
       // with what it leaves out
-      case 'styleProperties': {
-        const style = this._handle.computedStyle(this._element(a), null);
-        if (!style) return '';
-        return [...Object.keys(style), ...STYLE_NAMES_BESIDE].join(',');
-      }
+      case 'styleProperties':
+        return styleNames().join(',');
       case 'computed': {
         this.flush();
         const pseudo = computedPseudo(b);

@@ -10340,8 +10340,18 @@ export function installDom(
       return declarationBlockOf(this).priority(cssName(name));
     }
     setProperty(name: Any, value: Any, priority: Any = ''): void {
-      declarationBlockOf(this).set(
-        cssName(name),
+      const block = declarationBlockOf(this);
+      const prop = cssName(name);
+      // a name no property has sets nothing (CSSOM 6.7.2, step 2)
+      if (
+        propertyBlocks.has(block) &&
+        !prop.startsWith('--') &&
+        unknownProperty(prop)
+      ) {
+        return;
+      }
+      block.set(
+        prop,
         value === null || value === undefined ? '' : str(value),
         str(priority),
       );
@@ -10401,6 +10411,17 @@ export function installDom(
     }
     return !key.startsWith('--') && styleProperties.has(blockProperty(key));
   };
+  /** Whether a name is none of a style's properties, once the names are
+   *  known: an attribute of no CSSOM interface, which a page sets as an
+   *  expando on the object (`el.style.corner = 'auto'`) and which makes
+   *  no declaration, as `setProperty` makes none for it (CSSOM 6.7.2).
+   *  A page feature-detects so, reading back what it wrote. */
+  const unknownProperty = (key: string): boolean =>
+    !isStyleProperty(key) && styleProperties !== null;
+  /** The blocks whose names are a style's properties: an element's, a
+   *  style rule's and a keyframe's, and not a `@font-face` rule's, whose
+   *  are its descriptors. */
+  const propertyBlocks = new WeakSet<DeclarationBlock>();
   /**
    * A declaration block a page may write, an element's or a rule's: its
    * names by index, and each property read and set as an attribute of its
@@ -10408,7 +10429,10 @@ export function installDom(
    * wrapped — `style.color = …` is no `setProperty` call in a browser
    * either.
    */
-  const writableStyle = (block: DeclarationBlock): Any => {
+  const writableStyle = (block: DeclarationBlock, properties = true): Any => {
+    if (properties) propertyBlocks.add(block);
+    const expando = (key: string): boolean =>
+      properties && unknownProperty(key);
     const target = Object.create(CSSStyleProperties.prototype);
     const index = (key: Any): number =>
       typeof key === 'string' && /^(?:0|[1-9]\d*)$/.test(key) ? +key : -1;
@@ -10417,10 +10441,16 @@ export function installDom(
         if (typeof key !== 'string' || key in t) return t[key as Any];
         const at = index(key);
         if (at >= 0) return block.names()[at];
+        if (expando(key)) return undefined;
         return block.value(blockProperty(key));
       },
       set(t, key, value) {
-        if (typeof key !== 'string' || key in t || index(key) >= 0) {
+        if (
+          typeof key !== 'string' ||
+          key in t ||
+          index(key) >= 0 ||
+          expando(key)
+        ) {
           return Reflect.set(t, key, value);
         }
         block.set(
@@ -22204,28 +22234,31 @@ export function installDom(
    *  from its text and written back as they change, which edits the rule
    *  in its sheet (`replaceRule`). A rule inside another, whose sheet that
    *  does not edit, changes only its own text. */
-  const ruleStyleOf = (rule: Any): Any => {
+  const ruleStyleOf = (rule: Any, properties = true): Any => {
     const block = (): string => blockOf(rule._text);
     const write = (body: string): void =>
       replaceRule(
         rule,
         `${preludeOf(rule._text)} { ${body ? `${body} ` : ''}}`,
       );
-    return writableStyle({
-      value: (name) => String(call('blockValue', block(), name) ?? ''),
-      priority: (name) => String(call('blockPriority', block(), name) ?? ''),
-      set: (name, value, priority) => {
-        const next = call('blockSet', block(), name, value, priority);
-        if (typeof next === 'string') write(next);
+    return writableStyle(
+      {
+        value: (name) => String(call('blockValue', block(), name) ?? ''),
+        priority: (name) => String(call('blockPriority', block(), name) ?? ''),
+        set: (name, value, priority) => {
+          const next = call('blockSet', block(), name, value, priority);
+          if (typeof next === 'string') write(next);
+        },
+        names: () =>
+          String(call('blockNames', block()) ?? '')
+            .split(',')
+            .filter(Boolean),
+        text: () => String(call('blockText', block()) ?? ''),
+        setText: (text) => write(String(call('blockText', text) ?? '')),
+        rule,
       },
-      names: () =>
-        String(call('blockNames', block()) ?? '')
-          .split(',')
-          .filter(Boolean),
-      text: () => String(call('blockText', block()) ?? ''),
-      setText: (text) => write(String(call('blockText', text) ?? '')),
-      rule,
-    });
+      properties,
+    );
   };
 
   class CSSRule {
@@ -22628,7 +22661,7 @@ export function installDom(
     override _type = 5;
     _style: Any = null;
     get style(): Any {
-      return (this._style ??= ruleStyleOf(this));
+      return (this._style ??= ruleStyleOf(this, false));
     }
     set style(v: Any) {
       this.style.cssText = v;
