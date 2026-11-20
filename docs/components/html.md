@@ -6148,7 +6148,7 @@ container, its offset parent with it, and an anchor in it is in none of the
 boxes it is laid out through. A box a break falls inside has a piece in each
 column: its background and its borders are drawn a piece at a time, with no
 edge at the break. Under `box-decoration-break: clone` each piece is a box of
-its own, with its borders, padding, shadows and outline all round it, and
+its own, with its borders, padding, shadows and outline all round it, a piece a break ends running on to the column's foot as Blink fills it, and
 the edges take room: the column before a break keeps the end edges of every
 cloned box the break falls inside at its foot, and the one after starts
 below their start edges, as Blink sets them. A float a break cuts steers clear of the edges cloned of the boxes it is in: it stops above their end edges at a column's foot and goes on below their start edges at the next column's head. A box with nothing in it whose
@@ -8301,7 +8301,13 @@ overlines). A dotted rule over three pixels thick is round dots spread from
 one end of it to the other, and squares under that; a dashed one's dashes
 are three times its thickness long and two apart, twice and one from three
 pixels thick, the first at its start and the last at its end; and the two
-lines of a double one are a pixel apart. `text-decoration-inset` (CSS Text
+lines of a double one are a pixel apart. `text-decoration-skip-spaces`
+(CSS Text Decoration 4, 2.4) leaves spaces out of an underline and a line
+through: by its initial `start end`, the spaces at a line's start and end,
+one run of them whichever elements they are in; under `all`, every one;
+under `none`, none. A space is any of Unicode's, and a plain space, tab or
+line feed at the very edge of a line whose white space collapses is the line
+breaker's, which hangs it and draws no rule there already. `text-decoration-inset` (CSS Text
 Decoration 4, 2.6) moves an underline's and a line through's ends in from
 the start and the end of the element that set them, or out where it is
 negative: at the line holding its first character and the line holding

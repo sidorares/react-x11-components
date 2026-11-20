@@ -11964,7 +11964,6 @@ const UNASKED = new Set([
   'text-align-all',
   'text-decoration',
   'text-decoration-line',
-  'text-decoration-skip-spaces',
   'text-group-align',
   'text-overflow',
   'text-spacing',
