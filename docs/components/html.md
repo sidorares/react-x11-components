@@ -6143,7 +6143,14 @@ in a spanner, and in nothing positioned in it, is positioned in the
 container, its offset parent with it, and an anchor in it is in none of the
 boxes it is laid out through. A box a break falls inside has a piece in each
 column: its background and its borders are drawn a piece at a time, with no
-edge at the break, `elementRect` answers the rectangle that takes in all of
+edge at the break. Under `box-decoration-break: clone` each piece is a box of
+its own, with its borders, padding, shadows and outline all round it, and
+the edges take room: the column before a break keeps the end edges of every
+cloned box the break falls inside at its foot, and the one after starts
+below their start edges, as Blink sets them. A box with nothing in it whose
+height is its border box's shares its cloned edges out of that height,
+adding none. What is out of the flow is cut as before, taking no room for
+cloned edges. `elementRect` answers the rectangle that takes in all of
 them, as a browser's bounding rect does, and a point between two of them is
 not over it. Right to left, the first column is the one at the right. A
 container as wide as its content is as wide as its columns side by side.

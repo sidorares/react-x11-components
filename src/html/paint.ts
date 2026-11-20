@@ -4923,7 +4923,7 @@ function paintContent(
   // over all of it, outside the box's own clip; an inline box's is drawn a
   // fragment at a time, on its lines
   if (box.style.outlineStyle !== 'none' && box.kind !== 'inline') {
-    paintOutline(ctx, box, options);
+    paintBoxOutline(ctx, box, options);
   }
 }
 
@@ -5734,6 +5734,12 @@ function paintColumnPieces(
   const rules = pieceRules(box, pieces);
   for (const piece of pieces) {
     if (!(piece.height > 0 && piece.width > 0)) continue;
+    if (piece.cloned) {
+      // a whole box of its own, which casts its own shadow (CSS
+      // Fragmentation 3, 5.4)
+      paintClonedPiece(ctx, box, piece, options);
+      continue;
+    }
     const frame: Frame = {
       x: piece.x,
       y: piece.wholeY,
@@ -5780,6 +5786,57 @@ function paintColumnPieces(
     }
     ctx.restore();
   }
+}
+
+/** A piece's frame: the piece, with every edge of its box. */
+function pieceFrame(box: Box, piece: ColumnPiece): Frame {
+  return {
+    x: piece.x,
+    y: piece.y,
+    width: piece.width,
+    height: piece.height,
+    captionTop: 0,
+    captionBottom: 0,
+    borderTop: box.borderTop,
+    borderRight: box.borderRight,
+    borderBottom: box.borderBottom,
+    borderLeft: box.borderLeft,
+    padTop: box.padTop,
+    padRight: box.padRight,
+    padBottom: box.padBottom,
+    padLeft: box.padLeft,
+    style: box.style,
+  };
+}
+
+/** A piece of a box that clones its edges at a break, painted as the box
+ *  would be were it that piece alone. */
+function paintClonedPiece(
+  ctx: PaintContext,
+  box: Box,
+  piece: ColumnPiece,
+  options: PaintOptions,
+): void {
+  const frame = pieceFrame(box, piece);
+  const style = box.style;
+  if (style.boxShadow) paintShadows(ctx, frame, options, false);
+  paintLayers(ctx, frame, options, frameImages(ctx, frame, options));
+  if (style.boxShadow) paintShadows(ctx, frame, options, true);
+  paintBorders(ctx, frame, options);
+}
+
+/** A box's outline: a piece at a time where columns broke it and it clones
+ *  its edges, each piece being a box of its own. */
+function paintBoxOutline(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  const pieces = columned.any ? COLUMN_PIECES.get(box) : undefined;
+  if (pieces?.[0]?.cloned) {
+    for (const piece of pieces)
+      paintOutline(ctx, pieceFrame(box, piece), options);
+  } else paintOutline(ctx, box, options);
 }
 
 /**
@@ -6930,7 +6987,7 @@ function paintLater(
     }
     if (shown) {
       if (floats) paintBox(ctx, box, options);
-      else paintOutline(ctx, box, options);
+      else paintBoxOutline(ctx, box, options);
     }
     for (let j = 0; j < pushed; j += 1) popFlowClip(ctx, options, floats);
   }

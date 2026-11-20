@@ -158,6 +158,9 @@ interface Gathered {
   /** Whether the last box gathered asked for a break after it, which comes
    *  before whatever follows it. */
   after?: boolean;
+  /** The boxes a break may fall inside that clone their edges at one
+   *  (`box-decoration-break: clone`), in the order they were gathered. */
+  cloned: Box[];
 }
 
 const NO_GROUP: Group = {
@@ -449,6 +452,16 @@ function gather(
       };
       into.units.push(clipped(made(unit), clip));
       into.boxes.set(child, unit);
+      // a box with nothing in it whose height is its border box's has its
+      // cloned edges in that height, which its pieces share out: no room
+      // is added at the break (WPT's css-break/box-decoration-break-clone-007)
+      if (
+        unit.sliced &&
+        child.style.boxDecorationBreak === 'clone' &&
+        child.style.boxSizing !== 'border-box'
+      ) {
+        into.cloned.push(child);
+      }
       reach([unit, unit]);
       force(unit);
       continue;
@@ -470,6 +483,16 @@ function gather(
       };
       into.units.push(clipped(made(unit), clip));
       into.boxes.set(child, unit);
+      // a box with nothing in it whose height is its border box's has its
+      // cloned edges in that height, which its pieces share out: no room
+      // is added at the break (WPT's css-break/box-decoration-break-clone-007)
+      if (
+        unit.sliced &&
+        child.style.boxDecorationBreak === 'clone' &&
+        child.style.boxSizing !== 'border-box'
+      ) {
+        into.cloned.push(child);
+      }
       reach([unit, unit]);
       force(unit);
       continue;
@@ -487,6 +510,7 @@ function gather(
       span[1] = clipped(space(span[1].bottom, bottom, null, into), clip);
     }
     into.spans.set(child, span);
+    if (child.style.boxDecorationBreak === 'clone') into.cloned.push(child);
     reach(span);
     force(span[0]);
     pending ||= afterInside === true;
@@ -640,6 +664,24 @@ interface Filled {
   shortage: number;
   /** Whether something stands in a column it is taller than. */
   over: boolean;
+  /** How far down each column its content starts, for the start edges of
+   *  the boxes the break before it fell inside that clone them. */
+  lifts: number[];
+  /** Where each break falls, for the boxes it clones the edges of. */
+  ats: number[];
+}
+
+/**
+ * The edges a break clones (CSS Fragmentation 3, 5.4): the start and end
+ * edges of every box with `box-decoration-break: clone` a break falls
+ * inside, which the column before it ends with and the one after starts
+ * with. Asked of the break before a group, or inside it.
+ */
+interface Clones {
+  /** `y` is where a break inside the group falls, down the strip: a box
+   *  that ends there is not broken by it. */
+  start(at: number, inside: boolean, y: number): number;
+  end(at: number, inside: boolean, y: number): number;
 }
 
 /** The most columns content is set in: past it, the rest stays in the
@@ -666,10 +708,16 @@ function fill(
   /** Whether the columns can be no taller: the container's own height, or
    *  its `max-height`, is what they are. */
   fixed: boolean,
+  clones: Clones | null = null,
 ): Filled {
   const starts = [0];
   const tops = [top];
   const cut = [false];
+  const lifts = [0];
+  /** What a column ending before a group, or inside it, keeps at its foot
+   *  for the end edges it clones. */
+  const drop = (at: number, inside: boolean, y = 0): number =>
+    clones && at < groups.length ? clones.end(at, inside, y) : 0;
   let shortage = Infinity;
   let over = false;
   let head = 0;
@@ -679,7 +727,8 @@ function fill(
   let goesOn = false;
   let i = 0;
   const missed = (index: number): void => {
-    const by = groups[index].bottom - columnTop - height;
+    const by =
+      groups[index].bottom + drop(index + 1, false) - columnTop - height;
     if (by > EPS && by < shortage) shortage = by;
   };
   /** Whether nothing with a height has been set in the column before a
@@ -694,12 +743,18 @@ function fill(
     }
     return !goesOn;
   };
-  const next = (at: number, from: number, inside: boolean): void => {
+  /** Where each break inside a group falls for the boxes it clones the
+   *  edges of: the column's foot, before the end edges came off it. */
+  const ats = [top];
+  const next = (at: number, from: number, inside: boolean, y = from): void => {
+    const lift = clones ? clones.start(at, inside, y) : 0;
+    ats.push(y);
     starts.push(at);
     tops.push(from);
     cut.push(inside);
+    lifts.push(lift);
     head = at;
-    columnTop = from;
+    columnTop = from - lift;
     goesOn = inside;
     i = at;
   };
@@ -716,7 +771,7 @@ function fill(
       continue;
     }
     if (
-      group.bottom - columnTop <= height + EPS ||
+      group.bottom + drop(i + 1, false) - columnTop <= height + EPS ||
       // nothing at all, which takes no room wherever it is
       group.bottom - group.top <= EPS ||
       starts.length >= MOST_COLUMNS
@@ -730,8 +785,9 @@ function fill(
       // what fits of it stays, and the rest goes on; none of it fits where
       // it starts at the column's foot, and then all of it goes on
       const from = goesOn ? columnTop : group.top;
-      const foot = columnTop + height;
-      if (foot - from > EPS) next(i, foot, true);
+      const bottom = columnTop + height;
+      const foot = bottom - drop(i, true, bottom);
+      if (foot - from > EPS) next(i, foot, true, bottom);
       else next(i, group.top, false);
       continue;
     }
@@ -792,7 +848,7 @@ function fill(
     }
     next(at, groups[at].top, false);
   }
-  return { starts, tops, cut, shortage, over };
+  return { starts, tops, cut, shortage, over, lifts, ats };
 }
 
 /** The lines of a block that a line is among, in order: the groups about
@@ -877,9 +933,11 @@ export function layoutColumns(
     boxes: new Map(),
     spans: new Map(),
     loose: new Set(),
+    cloned: [],
   };
   gather(box, gathered);
   const groups = groupsOf(gathered.units);
+  const clones = clonesOf(gathered, groups);
   // as far down as the content goes, past a box with a height it overflows:
   // what stands out of a box takes room in a column as what is in it does
   for (const group of groups) strip = Math.max(strip, group.bottom - from);
@@ -891,7 +949,7 @@ export function layoutColumns(
   if (box.style.columnFill === 'auto' && !beforeSpanner) {
     height = Number.isFinite(limit) ? limit : strip;
     columnHeight = height;
-    filled = fill(groups, from, height, height >= limit);
+    filled = fill(groups, from, height, height >= limit, clones?.edges);
     // a container with a `max-height` and less than a column of content
     // is as tall as its content
     if (filled.starts.length === 1) height = Math.min(height, strip);
@@ -903,12 +961,12 @@ export function layoutColumns(
       limit,
       Math.max(strip / columns.count, tallestOf(groups)),
     );
-    filled = fill(groups, from, height, height >= limit);
+    filled = fill(groups, from, height, height >= limit, clones?.edges);
     for (let pass = 0; pass < 4096; pass += 1) {
       if (filled.starts.length <= columns.count && !filled.over) break;
       if (height >= limit || !Number.isFinite(filled.shortage)) break;
       height = Math.min(limit, height + filled.shortage);
-      filled = fill(groups, from, height, height >= limit);
+      filled = fill(groups, from, height, height >= limit, clones?.edges);
     }
     columnHeight = height;
   }
@@ -933,12 +991,19 @@ export function layoutColumns(
   });
   // where each column is, for what is out of the flow inside it, which is
   // laid out after all of this, in the strip (`stripOf`, `cutIntoColumns`)
+  // past the start edges a break clones, which what is out of the flow
+  // does not make room for: it is cut by how much of it each column has
+  // taken, and goes on at the next column's top (WPT's
+  // css-break/box-decoration-break-clone-005)
+  // (`tops` is a copy: a frame moves it with the container, and leaves
+  // how far the columns moved the strip as it was)
+  const oofTops = filled.tops.map((t, c) => t + filled.lifts[c]);
   const own: ColumnGeometry = {
     container: box,
-    tops: [...filled.tops],
+    tops: [...oofTops],
     height: columnHeight,
     dx: (c) => origin + across(c),
-    dy: (c) => top - (filled.tops[c] ?? filled.tops[0] + c * columnHeight),
+    dy: (c) => top - (oofTops[c] ?? oofTops[0] + c * columnHeight),
   };
   const geometry = row ? joinGeometry(row.into, own) : own;
   GEOMETRY.set(box, geometry);
@@ -969,15 +1034,127 @@ export function layoutColumns(
     groups[i].last = c;
   }
   // the first column at the start of the line: the right, right to left
+  const { lifts } = filled;
+  const breaks = clones?.breaks(starts, cut, filled.ats);
   place(box, null, {
     gathered,
     tops,
     height,
     dx: (c) => origin + across(c),
-    dy: (c) => top - tops[c],
+    dy: (c) => top - tops[c] + lifts[c],
     geometry,
+    room: (c) => tops[c] + height - lifts[c] - (breaks?.[c + 1]?.drop ?? 0),
+    breaks,
   });
   return height;
+}
+
+/** A box that clones its edges at a break, and the groups it starts and
+ *  ends in. */
+interface Cloned {
+  box: Box;
+  first: number;
+  last: number;
+  start: number;
+  end: number;
+}
+
+/** What a break before a column clones: the boxes it falls inside that do,
+ *  where the column before it ends down the strip, and what that column
+ *  keeps at its foot for their end edges. */
+interface Break {
+  open: Cloned[];
+  end: number;
+  drop: number;
+}
+
+/**
+ * The boxes a break may fall inside that clone their edges at one, with
+ * what the breaks ask of them (`Clones`), and, once the columns are set,
+ * what each break clones (`Break`). Null where none does, which leaves the
+ * columns as `slice` has them.
+ */
+function clonesOf(
+  gathered: Gathered,
+  groups: Group[],
+): {
+  edges: Clones;
+  breaks(
+    starts: number[],
+    cut: boolean[],
+    ats: number[],
+  ): (Break | undefined)[];
+} | null {
+  if (!gathered.cloned.length) return null;
+  const index = new Map<Group, number>();
+  groups.forEach((group, i) => index.set(group, i));
+  const list: Cloned[] = [];
+  for (const box of gathered.cloned) {
+    const whole = gathered.boxes.get(box);
+    const span = gathered.spans.get(box) ?? (whole && [whole, whole]);
+    if (!span) continue;
+    const first = index.get(span[0].group);
+    const last = index.get(span[1].ends ?? span[1].group);
+    if (first === undefined || last === undefined) continue;
+    list.push({
+      box,
+      first,
+      last,
+      start: box.borderTop + box.padTop,
+      end: box.borderBottom + box.padBottom,
+    });
+  }
+  if (!list.length) return null;
+  const open = (at: number, inside: boolean, y: number): Cloned[] =>
+    list.filter(
+      (c) =>
+        (inside
+          ? c.first <= at && c.box.y + c.box.height > y + EPS
+          : c.first < at) && c.last >= at,
+    );
+  const sum = (
+    at: number,
+    inside: boolean,
+    y: number,
+    side: 'start' | 'end',
+  ): number => {
+    let total = 0;
+    for (const c of open(at, inside, y)) total += c[side];
+    return total;
+  };
+  return {
+    edges: {
+      start: (at, inside, y) => sum(at, inside, y, 'start'),
+      end: (at, inside, y) => sum(at, inside, y, 'end'),
+    },
+    breaks(starts, cut, ats) {
+      const out: (Break | undefined)[] = [undefined];
+      for (let k = 1; k < starts.length; k += 1) {
+        const at = starts[k];
+        const inside = cut[k];
+        const here = open(at, inside, ats[k]);
+        if (!here.length) {
+          out.push(undefined);
+          continue;
+        }
+        let drop = 0;
+        for (const c of here) drop += c.end;
+        // the column before ends where its last group does, or where the
+        // break cut the group it falls inside
+        const end = inside ? Number.NaN : (groups[at - 1]?.bottom ?? 0);
+        out.push({ open: here, end, drop });
+      }
+      return out;
+    },
+  };
+}
+
+/** Whether a box is another or inside it. */
+function within(box: Box, around: Box): boolean {
+  for (let at: Box | null = box; at; at = at.parent) {
+    if (at === around) return true;
+  }
+  return false;
 }
 
 /**
@@ -1286,6 +1463,11 @@ interface Placing {
   height: number;
   dx(column: number): number;
   dy(column: number): number;
+  /** Where the room for content in a column ends down the strip: its foot,
+   *  less the end edges the break after it clones. */
+  room(column: number): number;
+  /** What the break before each column clones, where any does. */
+  breaks?: (Break | undefined)[];
 }
 
 function shift(box: Box, column: number, to: Placing): void {
@@ -1408,20 +1590,47 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
     let x2 = -Infinity;
     let y2 = -Infinity;
     const end = was.y + was.height;
+    const clone = box.style.boxDecorationBreak === 'clone';
+    /** The edges of the boxes a break clones that are this one or inside
+     *  it: what of a column its piece takes for them. */
+    const cloned = (at: Break | undefined, side: 'start' | 'end'): number => {
+      let total = 0;
+      for (const c of at?.open ?? []) {
+        if (within(c.box, box)) total += c[side];
+      }
+      return total;
+    };
     for (let c = first; c <= last; c += 1) {
       // no further than the box goes: what is gathered of one that holds
       // nothing of its own runs to the next unit of the flow, which may be
       // a column on
       if (c > first && to.tops[c] >= end - EPS) break;
       const from = c === first ? was.y : to.tops[c];
-      const until = c === last ? end : Math.min(end, to.tops[c] + to.height);
+      let until = c === last ? end : Math.min(end, to.room(c));
+      let y = from + to.dy(c);
+      let height = Math.max(0, until - from);
+      if (clone) {
+        // each piece a whole box: its edges at the breaks it is cut at,
+        // round the content it has there
+        const before = to.breaks?.[c];
+        const after = to.breaks?.[c + 1];
+        if (c > first) y -= cloned(before, 'start');
+        if (c < last) {
+          const content = Number.isNaN(after?.end ?? Number.NaN)
+            ? until
+            : Math.min(until, after!.end);
+          until = content;
+          height = content + to.dy(c) + cloned(after, 'end') - y;
+        } else height = until + to.dy(c) - y;
+      }
       const piece: ColumnPiece = {
         x: was.x + to.dx(c),
-        y: from + to.dy(c),
+        y,
         width: was.width,
-        height: Math.max(0, until - from),
-        wholeY: was.y + to.dy(c),
-        wholeHeight: was.height,
+        height: Math.max(0, height),
+        wholeY: clone ? y : was.y + to.dy(c),
+        wholeHeight: clone ? Math.max(0, height) : was.height,
+        cloned: clone || undefined,
       };
       pieces.push(piece);
       x1 = Math.min(x1, piece.x);
