@@ -8852,6 +8852,19 @@ block, a float and a box at its static position in such a flow are placed
 from where the flow was put back across, which a frame of their own does
 not yet follow, and 10 of css-writing-modes' reftests fell with one.
 
+**A box positioned in a `vertical-lr` frame is placed after the frame was
+put back across, and is not put back itself** (`placedAfterReflection`, in
+`positionedIn`). The frame hands a box the margins in the order a box that
+is put back takes them (`REFLECTED_MARGINS`), so `positionedIn` swaps its
+top and bottom ones, and its block axis starts at the frame's far end: the
+`rtl` handed to `selfAligned` down, which `ROWS_MIRRORED` alone had said,
+for a grid. **Anything new that places a positioned box from its margins or
+its block start in a frame asks `placedAfterReflection`**, or it lands a
+margin's width off, on the wrong side, in `vertical-lr` alone. And
+**`self-start`, `self-end`, `left` and `right` are read from the alignment's
+text** (`selfFlips`, `staticAlignment`, `selfAligned`): the keyword layout
+keeps holds them as a start and an end.
+
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
 including why the seams stay the parent's and why `handle.document` would

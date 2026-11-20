@@ -10171,6 +10171,9 @@ function positionedIn(
   let right = resolveOrNull(style.right, cbWidth);
   let top = resolveOrNull(style.top, cbHeight);
   let bottom = resolveOrNull(style.bottom, cbHeight);
+  // a box laid out in a `vertical-lr` frame after the frame was put back
+  // across: its block axis starts at the far end of the frame's
+  const reversedDown = placedAfterReflection(box, containing);
   // an axis its self-alignment places it on (CSS Position 3, 4.3): sized
   // and placed in the rectangle its insets leave, an `auto` inset nought
   const alignX = selfAligned(
@@ -10182,6 +10185,7 @@ function positionedIn(
     right,
     anchoring,
     containing.style.direction === 'rtl',
+    containing.style,
   );
   const alignY = selfAligned(
     box,
@@ -10191,7 +10195,8 @@ function positionedIn(
     top,
     bottom,
     anchoring,
-    framed.any && ROWS_MIRRORED.has(containing),
+    reversedDown,
+    containing.style,
   );
   if (alignX) {
     left = alignX.startInset;
@@ -10480,6 +10485,13 @@ function positionedIn(
                 box.marginRight
               : (at ? at.from.x + at.x : cbX) + box.marginLeft;
   }
+  // A `vertical-lr` frame is put back across before a box positioned in it
+  // is placed, and the box is placed where it goes and not put back: the
+  // margins the frame handed it in the order a box that is put back takes
+  // them (`REFLECTED_MARGINS`) are the other way round for it
+  if (reversedDown) {
+    [box.marginTop, box.marginBottom] = [box.marginBottom, box.marginTop];
+  }
   let y: number;
   if (alignY) {
     if (stretches) {
@@ -10634,6 +10646,9 @@ function selfAligned(
   end: number | null,
   anchoring: Anchoring | null,
   rtl = false,
+  /** The containing block's style, whose start `self-start` is measured
+   *  against. */
+  container: ComputedStyle | null = null,
 ): SelfAligned | null {
   const style = box.style;
   const value = down ? style.alignSelf : style.justifySelf;
@@ -10642,7 +10657,9 @@ function selfAligned(
       ? anchoring.centre.y
       : anchoring.centre.x
     : null;
-  const normal = value === 'auto' || value === 'normal' || value === 'baseline';
+  // a baseline is no `normal`: an absolutely positioned box shares one with
+  // nothing, and it falls back to the start (CSS Box Alignment 3, 4.2)
+  const normal = value === 'auto' || value === 'normal';
   // `left` and `right` are the page's sides, which no direction turns (CSS
   // Box Alignment 3, 4.2): the field holds them as a start and an end
   const word = down
@@ -10662,6 +10679,19 @@ function selfAligned(
             : rtl
               ? 1
               : 0;
+  // `self-start` and `self-end` are the box's own sides, which its writing
+  // mode or its direction may put at the containing block's end (4.3)
+  if (
+    container &&
+    selfFlips(
+      down ? style.alignSelfText : style.justifySelfText,
+      style,
+      container,
+      down,
+    )
+  ) {
+    along = 1 - along;
+  }
   let centre: number | null = null;
   let stretch = false;
   // an overflow position that says so aligns as it says, overflow or not
@@ -10923,33 +10953,35 @@ function areaSpan(
   rtl = false,
 ): [number, number] {
   const count = tracks.length;
-  // a line the grid has, or null for auto, a span and one it has not
-  const at = (line: GridLine, side: 'start' | 'end'): number | null => {
-    const index = lineOf(lines, line, side);
-    return index !== null && count > 0 && index >= 0 && index <= count
-      ? index
-      : null;
-  };
+  // the line a placement names, null for auto and a span: one the grid has
+  // not is past its ends, where a name it has not is too (CSS Grid 1, 8.3)
+  const at = (line: GridLine, side: 'start' | 'end'): number | null =>
+    count > 0 ? lineOf(lines, line, side) : null;
   const spanOf = (line: GridLine) => (line && 'span' in line ? line : null);
   let from = at(start, 'start');
   let to = at(end, 'end');
+  const has = (index: number | null) =>
+    index !== null && index >= 0 && index <= count;
   const startSpan = spanOf(start);
   const endSpan = spanOf(end);
-  if (from === null && to !== null && startSpan) {
-    const f =
+  if (from === null && to !== null && has(to) && startSpan) {
+    from =
       startSpan.name !== undefined
         ? spanToName(lines, startSpan.name, startSpan.span, to, false)
         : to - startSpan.span;
-    from = f >= 0 ? f : null;
   }
-  if (to === null && from !== null && endSpan) {
-    const t =
+  if (to === null && from !== null && has(from) && endSpan) {
+    to =
       endSpan.name !== undefined
         ? spanToName(lines, endSpan.name, endSpan.span, from, true)
         : from + endSpan.span;
-    to = t <= count ? t : null;
   }
+  // two lines the wrong way round are swapped first, and a line the grid
+  // has not is then `auto`, its padding edge (9.1): `foo / 1` with no line
+  // called `foo` runs from line 1 to the grid's end
   if (from !== null && to !== null && to < from) [from, to] = [to, from];
+  if (!has(from)) from = null;
+  if (!has(to)) to = null;
   const startOf = (t: number) => (rtl ? tracks[t][1] : tracks[t][0]);
   const endOf = (t: number) => (rtl ? tracks[t][0] : tracks[t][1]);
   const a =
@@ -11433,7 +11465,24 @@ function staticAlignment(
         ? style.justifyItems
         : own.justifySelf;
     let across = factor(justify);
+    // `left` and `right` are the page's sides, which no direction turns (CSS
+    // Box Alignment 3, 4.2): the keyword holds them as a start and an end,
+    // and the room is read from its right where the grid runs right to left
+    const side = /(?:^|\s)(left|right)$/.exec(text ?? '')?.[1];
+    // — on the page, where no frame turned the inline axis
+    if (side && !(framed.any && inFrame(child))) {
+      const rtl = style.direction === 'rtl';
+      across = (side === 'right') !== rtl ? 1 : 0;
+    }
     let down = cross;
+    // `self-start` and `self-end` are the item's own sides, which its
+    // direction or its writing mode may put at the grid's end (4.3)
+    {
+      if (selfFlips(text, child.style, style, false)) across = 1 - across;
+      const downText =
+        own.alignSelf === AUTO ? style.alignItemsText : own.alignSelfText;
+      if (selfFlips(downText, child.style, style, true)) down = 1 - down;
+    }
     // and grid lanes turn it round with themselves (CSS Grid 3, 8): to the
     // far edge of the stacking axis where they fill from there, and of the
     // grid axis where the lanes are filled from the last
@@ -11604,6 +11653,16 @@ function flexStaticAlignment(
   return out;
 }
 
+/** Whether a box positioned in a containing block is placed in a frame
+ *  that was put back across (`reflectFrame`) before it was: a `vertical-lr`
+ *  flow's, which the box itself is not put back across in. */
+function placedAfterReflection(box: Box, containing: Box): boolean {
+  if (!framed.any) return false;
+  const frame = frameOf(box);
+  if (!frame || !reflects(frameTurn(frame))) return false;
+  return containing === frame || frameOf(containing) === frame;
+}
+
 /** The page side an item's own start is on, across (`down` false) or down:
  *  its inline start where its inline axis runs that way, else its block
  *  start. */
@@ -11617,6 +11676,21 @@ function ownStartSide(style: ComputedStyle, down: boolean): 'low' | 'high' {
     return up !== rtl ? 'high' : 'low';
   }
   return mode === 'vertical-rl' || mode === 'sideways-rl' ? 'high' : 'low';
+}
+
+/** Whether `self-start` or `self-end` in an alignment's text is the other
+ *  end of the room from the container's start: where the item's own start
+ *  is on the other side of the page from the container's. */
+function selfFlips(
+  text: string | undefined,
+  own: ComputedStyle,
+  container: ComputedStyle,
+  down: boolean,
+): boolean {
+  if (!text || !/(?:^|\s)self-(?:start|end)$/.test(text)) return false;
+  // the page's axis it is, which a vertical container turns
+  const pageDown = container.writingMode === 'horizontal-tb' ? down : !down;
+  return ownStartSide(own, pageDown) !== ownStartSide(container, pageDown);
 }
 
 /** The nearest positioned ancestor, or null for the initial containing

@@ -6243,7 +6243,14 @@ takes the grid area its lines name for its containing block, and a grid's
 or a flex box's child is where it would be as the box's one item: in a
 grid, the sole item of an area whose edges are the grid's content edges
 (CSS Grid 2, 10.1), aligned by its `justify-self` and `align-self`, a
-baseline falling back to the start and a last baseline to the end. In a
+baseline falling back to the start and a last baseline to the end. There,
+and in the area its lines name, `left` and `right` are the page's sides in a
+grid of either direction, `self-start` and `self-end` the box's own by its
+direction and its writing mode, and in a `vertical-lr` grid its margins are
+on the sides they are written on. A line a box's placement names that the
+grid has not, a name no line has among them, is its `auto` padding edge
+once the two lines are in order, so `foo / 1` runs from line 1 to the
+grid's far edge (CSS Grid 1, 9.1). In a
 flex box it is set along the main axis by `justify-content` and across by
 its `align-self` (CSS Flexbox 1, 4.1), as Chrome, Firefox and Safari set
 it: `flex-start` and `flex-end` are the lines' sides, which `-reverse` and
@@ -9030,7 +9037,10 @@ insets and margins nought, as wide as its content in what its insets
 leave. Outside a position area, the two align any absolutely positioned
 box between two insets neither of which is `auto`, where neither margin
 is, sized to its content there (CSS Position 3, 4.3): `start`, `end`,
-`center`, and `anchor-center` with no default anchor. `left` and `right`
+`center`, and `anchor-center` with no default anchor; a baseline at the
+start and a last one at the end, as it shares one with nothing; and
+`self-start` and `self-end` at the box's own start and end. In a
+`vertical-lr` containing block the block axis starts at the left. `left` and `right`
 are the page's sides in any direction, and `flip-start` takes them to the
 end of the block axis they come to, `self-start` or `self-end` by the box's
 own writing mode. A box too big for
