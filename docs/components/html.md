@@ -6125,8 +6125,12 @@ of, and is broken in as a last resort — with
 of each unless they say otherwise, and a margin at a break dropped. A
 table breaks between its rows and inside its cells, as a grid does between
 its rows and inside its items, a row's cells side by side down the strip
-and an empty cell cut where a column ends; its header and footer are not
-yet repeated in each column. A box
+and an empty cell cut where a column ends. Its first header group and its
+first footer group, where they say `break-inside: avoid`, are drawn again at
+the head and the foot of each column a break inside it reaches, the body
+taking the room that leaves, as Blink repeats them (CSS Tables 3, 9.4); not
+where a box between the table and the columns clips, since that box's
+height would not count the room. A box
 with a height and nothing in it, a float among them, is cut wherever a
 column ends and goes on at the head of the next. A block that is a
 formatting context of its own, a `flow-root` say, breaks as any block does;
