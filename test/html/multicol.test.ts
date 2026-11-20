@@ -1751,6 +1751,52 @@ test('a box that clones its edges at a break has them in every column, and they 
   ]);
 });
 
+test('a block that is a formatting context of its own breaks across columns, unless it scrolls or clips', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}.m{columns:2;column-fill:auto;gap:0;' +
+      'width:200px;height:100px}</style>' +
+      // a `flow-root` is broken as any block is (CSS Fragmentation 3, 4.1)
+      '<div class="m"><div id="f" style="display:flow-root">' +
+      '<div style="height:60px"></div><div style="height:60px"></div>' +
+      '</div></div>' +
+      // one that scrolls goes whole, overflowing its column
+      '<div class="m"><div id="o" style="overflow:hidden;height:150px">' +
+      '<div style="height:60px"></div><div style="height:60px"></div>' +
+      '</div></div>' +
+      // one that holds a float that cannot be cut goes with it
+      '<div class="m"><div style="height:30px"></div>' +
+      '<div id="u" style="display:flow-root">' +
+      '<div style="float:left;width:50px;height:100px;overflow:hidden">' +
+      '</div></div></div>' +
+      // and one that holds a float with nothing in it is cut with it
+      '<div class="m"><div id="c" style="display:flow-root">' +
+      '<div style="float:left;width:50px;height:150px"></div></div></div>',
+    300,
+  );
+  const el = view(node);
+  const pieces = (id: string) =>
+    COLUMN_PIECES.get(boxOf(el, id) as never)?.map((p) => [
+      p.x,
+      p.y - boxOf(el, id).y,
+      p.height,
+    ]);
+  assert.deepStrictEqual(pieces('f'), [
+    [0, 0, 100],
+    [100, 0, 20],
+  ]);
+  assert.strictEqual(pieces('o'), undefined, 'goes whole');
+  const u = boxOf(el, 'u');
+  assert.deepStrictEqual(
+    [pieces('u'), u.x, u.height],
+    [undefined, 100, 100],
+    'in the next column, whole',
+  );
+  assert.deepStrictEqual(pieces('c'), [
+    [0, 0, 100],
+    [100, 0, 50],
+  ]);
+});
+
 test('a relative offset in a box columns broke is a percentage of the column it was laid out in', async () => {
   const { node } = await render(
     '<style>body{margin:0}</style>' +
