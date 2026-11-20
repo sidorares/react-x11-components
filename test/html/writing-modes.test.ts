@@ -1317,3 +1317,20 @@ metric(
     assert.deepStrictEqual(rect('p'), [220, 90, 30, 10], 'at the far corner');
   },
 );
+
+test('an orthogonal flow in a block of no height but a max-height is as long as the max-height lets it be', async () => {
+  // CSS Writing Modes 4, 7.3.1: the available inline size of an orthogonal
+  // flow is its containing block's height where definite, else its
+  // definite `max-height`, else the viewport's (WPT's
+  // css-writing-modes/available-size-001)
+  const { node } = await render(
+    '<style>body{margin:0}#p{max-height:100px;overflow:hidden}' +
+      '#v{writing-mode:vertical-rl}</style>' +
+      '<div id="p"><div id="v">' +
+      'aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm ' +
+      'nnnn oooo pppp qqqq rrrr</div></div>',
+  );
+  const v = boxOf(view(node), 'v');
+  assert.ok(v.height <= 100, `${v.height} no taller than the max-height`);
+  assert.ok(v.height > 50, `${v.height} as tall as it lets it be`);
+});
