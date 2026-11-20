@@ -1662,6 +1662,95 @@ test("a flex box's row gap that a column break falls in has no rule, however nar
   );
 });
 
+test('a box that clones its edges at a break has them in every column, and they take room', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}.m{columns:2;column-fill:auto;gap:0;' +
+      'width:200px;height:100px}</style>' +
+      // a box with content, 15px of edge at either end: the first column
+      // holds 70px of the child and keeps 15px at its foot for the
+      // cloned end edge, and the second starts below a cloned start edge
+      // (WPT's css-break/box-decoration-break-clone-001)
+      '<div class="m"><div id="a" style="box-decoration-break:clone;' +
+      'padding:5px 0;border-block:10px solid green">' +
+      '<div id="ac" style="height:140px"></div></div></div>' +
+      // a box with nothing in it: cut 15px short of the foot, and what
+      // follows it goes on below its second piece (clone-004)
+      '<div class="m"><div id="b" style="box-decoration-break:clone;' +
+      'padding:5px 0;border-block:10px solid green;height:80px"></div>' +
+      '<div id="n" style="height:60px"></div></div>' +
+      // nested: each piece holds the edges of the boxes in it (clone-033's
+      // shape), and a box sliced as the default keeps none at the break
+      '<div class="m"><div id="o" style="box-decoration-break:clone;' +
+      'border-block:5px solid">' +
+      '<div id="i" style="border-block:10px solid">' +
+      '<div style="height:150px"></div></div></div></div>' +
+      // a break that falls where the box ends breaks nothing in it
+      // (clone-003)
+      '<div class="m"><div id="e" style="box-decoration-break:clone;' +
+      'border-block:15px solid;height:70px">' +
+      '<div style="height:185px"></div></div></div>' +
+      // a sliced box around a cloned one: its pieces reach over the edges
+      // cloned in it, to the column's top and foot (clone-008)
+      '<div class="m"><div id="s"><div style="box-decoration-break:clone;' +
+      'padding:10px 0"><div style="height:160px"></div></div></div></div>',
+    300,
+  );
+  const el = view(node);
+  const pieces = (id: string) =>
+    COLUMN_PIECES.get(boxOf(el, id) as never)?.map((p) => [
+      p.x,
+      p.y - boxOf(el, id).y,
+      p.width,
+      p.height,
+      p.cloned ?? false,
+    ]);
+  assert.deepStrictEqual(pieces('a'), [
+    [0, 0, 100, 100, true],
+    [100, 0, 100, 100, true],
+  ]);
+  assert.deepStrictEqual(
+    COLUMN_PIECES.get(boxOf(el, 'ac') as never)?.map((p) => [p.y, p.height]),
+    [
+      [boxOf(el, 'a').y + 15, 70],
+      [boxOf(el, 'a').y + 15, 70],
+    ],
+    'the content between the edges',
+  );
+  assert.deepStrictEqual(pieces('b'), [
+    [0, 0, 100, 100, true],
+    [100, 0, 100, 40, true],
+  ]);
+  const n = boxOf(el, 'n');
+  assert.deepStrictEqual(
+    [n.x, n.y - boxOf(el, 'b').y],
+    [100, 40],
+    'after the second piece',
+  );
+  assert.deepStrictEqual(pieces('o'), [
+    [0, 0, 100, 100, true],
+    [100, 0, 100, 90, true],
+  ]);
+  // the inner box slices: no edge at the break, and the outer box's
+  // start edge above where it goes on
+  const inner = COLUMN_PIECES.get(boxOf(el, 'i') as never)!;
+  assert.deepStrictEqual(
+    inner.map((p) => [p.y - boxOf(el, 'o').y, p.height, p.cloned ?? false]),
+    [
+      [5, 90, false],
+      [5, 80, false],
+    ],
+  );
+  assert.deepStrictEqual(
+    pieces('e'),
+    [[0, 0, 100, 100, true]],
+    'all of it in the first column, its child going on alone',
+  );
+  assert.deepStrictEqual(pieces('s'), [
+    [0, 0, 100, 100, false],
+    [100, 0, 100, 100, false],
+  ]);
+});
+
 test('a relative offset in a box columns broke is a percentage of the column it was laid out in', async () => {
   const { node } = await render(
     '<style>body{margin:0}</style>' +
