@@ -5,6 +5,7 @@
 // kept as it was written, as it always was here, so a value a page sets and
 // reads back is never lost to a grammar this has not got.
 
+import { GRAMMARS } from './grammars.js';
 import { PASSIVE } from './passive-properties.js';
 import { parseTransform } from './transform.js';
 import { parseFilter } from './filter.js';
@@ -247,7 +248,11 @@ export function specifiedValue(
 ): string | null | undefined {
   // a value that is only known once it is substituted, or a keyword
   // every property takes, is kept as written
-  if (/\b(?:var|env|attr|ident|sibling-index|sibling-count)\(/i.test(value)) {
+  if (
+    /(?<![\w-])(?:var|env|attr|ident|if|sibling-index|sibling-count)\(/i.test(
+      value,
+    )
+  ) {
     return undefined;
   }
   const name = prop.toLowerCase();
@@ -281,6 +286,13 @@ export function specifiedValue(
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
     return passive.take(word);
+  }
+  // what the cascade reads otherwise, or not at all (`grammars.ts`)
+  const grammar = GRAMMARS[name];
+  if (grammar) {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return grammar(word);
   }
   // one keyword (CSS UI 4, 6.1)
   // keywords a property takes and nothing else (CSS Position 4, 3.2; CSS

@@ -127,3 +127,55 @@ test('a value it does take is kept alike by all four, and one read only as it is
     VALID.map((c) => [...c, 'set', 'set', 'set', true]),
   );
 });
+
+/** What the setter keeps of each [property, value], read back. */
+async function readBack(cases: [string, string][]): Promise<string[]> {
+  const page = await scriptedPage(
+    `<div id="e"></div><script>
+    var e = document.getElementById('e');
+    var out = ${JSON.stringify(cases)}.map(function (c) {
+      e.removeAttribute('style');
+      e.style[c[0]] = c[1];
+      return e.style.getPropertyValue(c[0]);
+    });
+    console.log('out ' + JSON.stringify(out));</script>`,
+  );
+  const out = JSON.parse(await page.until('out'));
+  page.result.unmount();
+  return out;
+}
+
+test('a value Chromium, Firefox and WebKit all take is kept in the form all three write it back in', async () => {
+  const cases: [string, string, string][] = [
+    // a tag and a number, the number a math function or a tree count
+    ['font-variation-settings', '"wght" sign(2px)', '"wght" calc(1)'],
+    [
+      'font-variation-settings',
+      '"wght" sibling-index()',
+      '"wght" sibling-index()',
+    ],
+    [
+      'font-variation-settings',
+      "'wght' 1e3, 'slnt' -450.0e-1",
+      '"wght" 1000, "slnt" -45',
+    ],
+    ['font-variation-settings', '"wght" calc(100px + 200px)', ''],
+    ['font-variation-settings', '"abc\\7F" 0.5', ''],
+    // a <position>, which has no three-value form
+    ['object-position', '10%', '10% center'],
+    ['object-position', 'bottom 10% right 20%', 'right 20% bottom 10%'],
+    ['object-position', 'center left 1px', ''],
+    ['object-position', 'auto', ''],
+    // an if() is substituted before a property's grammar reads it
+    [
+      'background-image',
+      'image-set(if(style(--true): url(a.png); else: url(b.png);))',
+      'image-set(if(style(--true): url("a.png"); else: url("b.png");))',
+    ],
+  ];
+  const out = await readBack(cases.map(([p, v]) => [p, v]));
+  assert.deepEqual(
+    out.map((got, i) => [cases[i][0], cases[i][1], got]),
+    cases,
+  );
+});

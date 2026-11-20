@@ -978,3 +978,10 @@ function specifiedTransform(value: string): string | null | undefined {
   }
   return fns.join(' ');
 }
+
+/** A value that is one math function coming to a number, simplified as
+ *  `el.style` keeps it, or null where it comes to anything else; undefined
+ *  where it is no math function or this cannot say. */
+export function mathNumber(value: string): string | null | undefined {
+  return mathAs(NUMBER_ONLY, value);
+}
