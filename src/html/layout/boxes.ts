@@ -962,6 +962,9 @@ export interface ColumnPiece {
   /** The top of the whole box, in this column, and its height. */
   wholeY: number;
   wholeHeight: number;
+  /** Whether it is a whole box of its own, its edges cloned at the breaks
+   *  it is cut at (`box-decoration-break: clone`). */
+  cloned?: boolean;
 }
 
 /** The pieces of each block a column break falls inside, in the order of
