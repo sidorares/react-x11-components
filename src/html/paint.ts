@@ -9512,7 +9512,62 @@ function paintApart(ctx: PaintContext, box: Box, options: PaintOptions): void {
   if (!apartOf(box)) return;
   let block = box.parent;
   while (block && block.kind === 'inline') block = block.parent;
-  if (block) paintLines(ctx, block, options, box);
+  if (!block) return;
+  // under its `clip-path`, measured in its first fragment
+  let pushed = false;
+  if (box.style.clipPath) {
+    const first = firstFragmentBox(box);
+    if (!first) return;
+    const path = clipPathOf(first, options);
+    if (!(path.rect.w > 0 && path.rect.h > 0)) return;
+    pushed = pushPathClip(ctx, path);
+  }
+  paintLines(ctx, block, options, box);
+  if (pushed) ctx.restore();
+}
+
+/**
+ * An inline box as its first fragment: where its text starts, as tall as
+ * its face, its padding and its borders, with the edges it has on that line
+ * alone, as `paintInlineFragment` draws it. What a `clip-path` on an inline
+ * box is measured in and placed from, as Blink places it (WPT's css-masking/
+ * clip-path/clip-path-inline-001): its other fragments are cut by the same
+ * shape, where it is. Null for a box on no line.
+ */
+function firstFragmentBox(box: Box): Box | null {
+  const face = box.decoration;
+  const lines = linesAround(box);
+  if (!face || !lines) return null;
+  const moved = offsetOf(box);
+  for (const line of lines) {
+    const f = fragmentsOn(line, false)?.get(box)?.[0];
+    if (!f) continue;
+    const raise = SHIFTED_LINES.has(line)
+      ? (LINE_BOX_RAISES.get(line)?.get(box) ?? BOX_RAISES.get(box) ?? 0)
+      : 0;
+    const baseline = line.y + line.baseline - raise;
+    const top = baseline - face.ascent - box.padTop - box.borderTop;
+    const bottom = baseline + face.descent + box.padBottom + box.borderBottom;
+    const rtl = box.style.direction === 'rtl';
+    const leftEnds = rtl ? f.end : f.start;
+    const rightEnds = rtl ? f.start : f.end;
+    const first = Object.create(box) as Box;
+    first.x = f.left + (moved?.x ?? 0);
+    first.y = top + (moved?.y ?? 0);
+    first.width = f.right - f.left;
+    first.height = bottom - top;
+    // its margins above and below, which no line reads, for `margin-box`,
+    // of its block's width as every margin is
+    let block = box.parent;
+    while (block && block.kind === 'inline') block = block.parent;
+    const across = block?.contentWidth ?? 0;
+    first.marginTop = resolve(box.style.marginTop, across);
+    first.marginBottom = resolve(box.style.marginBottom, across);
+    if (!leftEnds) first.borderLeft = first.padLeft = first.marginLeft = 0;
+    if (!rightEnds) first.borderRight = first.padRight = first.marginRight = 0;
+    return first;
+  }
+  return null;
 }
 
 /**
@@ -10174,8 +10229,10 @@ export function stacksLayers(box: Box): boolean {
   // a backdrop filter (Filter Effects 2, 2)
   if (style.filter !== null || style.backdropFilter !== null) return true;
   // and so does a mask, which is applied to the group (CSS Masking 1, 7),
-  // and a clip path, which cuts it (5.1)
+  // and a clip path, which cuts it (5.1), an inline box's too, painted
+  // apart from its lines under it (`paintApart`)
   if (masked(style) || pathClips(box)) return true;
+  if (box.kind === 'inline' && style.clipPath !== null) return true;
   // layout and paint containment make one (CSS Containment 2, 3.3, 3.5),
   // and isolation, whose whole purpose that is (CSS Compositing 1, 3.2)
   if (contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT)) return true;

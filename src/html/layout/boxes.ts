@@ -7489,10 +7489,15 @@ export function isOffset(style: ComputedStyle): boolean {
 
 /** Whether an inline box's text is laid out apart from the text around it,
  *  and painted at its own turn among the layers (`paintsApart`): one an
- *  inset moves, and one a view transition may capture by a name, whose
- *  image is it alone (CSS View Transitions 1, 7.4). */
+ *  inset moves, one a view transition may capture by a name, whose image
+ *  is it alone (CSS View Transitions 1, 7.4), and one a `clip-path` cuts,
+ *  under its clip (CSS Masking 1, 5). */
 export function laidApart(style: ComputedStyle): boolean {
-  return isOffset(style) || style.viewTransitionName !== 'none';
+  return (
+    isOffset(style) ||
+    style.viewTransitionName !== 'none' ||
+    style.clipPath !== null
+  );
 }
 
 /** Whether a style may put its box under its stacking context's flow: a
