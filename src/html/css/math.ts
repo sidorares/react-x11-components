@@ -821,6 +821,33 @@ export function specifiedMath(
   return mathAs(EXPECTED[name], value);
 }
 
+/** What a value that is one math function comes to, a percentage being a
+ *  type of its own, as a colour's channel reads one: null where its types
+ *  do not go together, undefined where it is no math function or this
+ *  cannot say (a keyword in it this does not know). */
+export function mathKind(
+  value: string,
+): 'number' | 'percent' | 'angle' | 'other' | null | undefined {
+  if (!STARTS_WITH_MATH.test(value)) return undefined;
+  const parser = new Parser(value.trim());
+  let node: Node | null;
+  let type: MathType | null;
+  try {
+    node = parser.math();
+    if (node && !parser.done()) return undefined;
+    if (!node) return null;
+    type = typeOf(node, null);
+  } catch (e) {
+    if (e instanceof Unknown) return undefined;
+    throw e;
+  }
+  if (!type) return null;
+  if (same(type, NUMBER)) return 'number';
+  if (same(type, { percent: 1 })) return 'percent';
+  if (same(type, { angle: 1 })) return 'angle';
+  return 'other';
+}
+
 /** A value that is one math function, typed against `expected`, or against
  *  nothing where none is given (`specifiedMath`). */
 function mathAs(
