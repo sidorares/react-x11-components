@@ -8377,7 +8377,9 @@ container with no clamp point in it does the same: it cuts its floats at its
 content box foot and is no taller for them. An absolutely positioned box
 in a block or a float past the clamp point is hidden only where what it is
 placed against is: one placed against the container, or a box around it,
-is drawn, and the box it is in is not. An inline box all of whose text the
+is drawn, and the box it is in is not. The clamp is no part of how wide
+the content is: a container's min-content and max-content widths are those
+of all its lines, with no ellipsis. An inline box all of whose text the
 clamp drops, or the ellipsis displaces, is past the clamp point, and what is
 positioned against it is hidden. Where
 the last line's first word is too wide to leave the ellipsis room, a line
