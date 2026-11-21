@@ -2170,6 +2170,27 @@ metric(
 );
 
 metric(
+  'line-clamp: auto puts its clamp point after a box of a formatting context of its own that fits',
+  async () => {
+    // WPT's line-clamp-auto-034: a `flow-root` that ends in the room is the
+    // last thing kept, its lines with it, and what follows is past the
+    // clamp point
+    const { node } = await render(
+      '<style>body{margin:0} div{width:160px;line-height:20px}' +
+        ' p{margin:0}</style>' +
+        '<div id="a" style="line-clamp:auto;max-height:3lh">' +
+        '<p>One.</p><div style="display:flow-root"><p>Two.</p><p>Three.</p>' +
+        '</div><div id="r" style="display:flow-root"><p>Four.</p></div>' +
+        '<p>Five.</p></div>',
+    );
+    const el = view(node);
+    assert.strictEqual(boxOf(el, 'a').height, 60);
+    assert.ok(CLAMPED.has(boxOf(el, 'r') as never), 'past the clamp point');
+    assert.strictEqual(linesOf(el, 'a').length, 3);
+  },
+);
+
+metric(
   'a balanced clamp evens out the lines it keeps, the ellipsis on the last',
   async () => {
     // WPT's text-wrap-balance-line-clamp-003 and -004: the clamp first,

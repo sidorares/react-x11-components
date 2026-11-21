@@ -451,7 +451,19 @@ interface Clamp {
    * document coordinates — with what closes below each. `over` once one
    * does not; null where the lines are cut rather than counted.
    */
-  fit: { floor: number; lines: number; over: boolean } | null;
+  fit: {
+    floor: number;
+    lines: number;
+    over: boolean;
+    /** The last box of a formatting context of its own that ends in the
+     *  room, after `afterLines` lines: the clamp point is after it where no
+     *  line after it is counted. */
+    after?: Box;
+    afterLines?: number;
+  } | null;
+  /** A clamp point after a box rather than a line (`fit.after`): every
+   *  box in the flow after it is past the clamp point. */
+  after?: Box;
 }
 
 export interface LayoutResult {
@@ -3243,7 +3255,15 @@ function layoutChildren(
         child.borderBottom +
         closingBelow(child, clamp!.box);
       if (bottom > fit.floor) fit.over = true;
+      // and after it where it ends in the room, where it is one of its
+      // own (WPT's `line-clamp-auto-034`): its lines are none of the
+      // clamp's to count, and the box is the last thing that fits
+      else if (child.kind !== 'replaced' && establishesBFC(child)) {
+        fit.after = child;
+        fit.afterLines = fit.lines;
+      }
     }
+    if (clamp?.after === child) clamp.done = true;
     first = false;
     const moved = childY !== at;
     if (moved) CLEARED_FROM.set(child, at);
@@ -4330,13 +4350,13 @@ function layoutClamped(
     layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
     return;
   }
-  const fit = { floor, lines: 0, over: false };
+  const fit: NonNullable<Clamp['fit']> = { floor, lines: 0, over: false };
   ctx.clamp = { box, left: Infinity, done: false, fit };
   const positioned = ctx.positioned.length;
   layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
   if (!fit.over) return;
   ctx.positioned.length = positioned;
-  ctx.clamp = { box, left: fit.lines, done: fit.lines === 0, fit: null };
+  ctx.clamp = clampFromFit(box, fit);
   layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
 }
 
@@ -4361,6 +4381,15 @@ function framedFloor(box: Box): number {
         : set + box.horizontalExtra;
   const width = clampWidth(box, outer, NaN);
   return Number.isFinite(width) ? width - box.horizontalExtra : Infinity;
+}
+
+/** The clamp an `auto` clamp's count comes to, which its content is laid
+ *  out again under: after the lines that fit, or after the box of a
+ *  formatting context of its own that fits after them. */
+function clampFromFit(box: Box, fit: NonNullable<Clamp['fit']>): Clamp {
+  return fit.after && fit.afterLines === fit.lines
+    ? { box, left: Infinity, done: false, fit: null, after: fit.after }
+    : { box, left: fit.lines, done: fit.lines === 0, fit: null };
 }
 
 /** Where an `auto` clamp's lines have to end by, in document coordinates:
@@ -4740,11 +4769,11 @@ function framedWidth(box: Box, frame: Box, ctx: LayoutContext): number {
       }
       layFrame(frame, ctx, inline, NaN);
     } else {
-      const fit = { floor, lines: 0, over: false };
+      const fit: NonNullable<Clamp['fit']> = { floor, lines: 0, over: false };
       ctx.clamp = { box, left: Infinity, done: false, fit };
       layFrame(frame, ctx, inline, NaN);
       if (fit.over) {
-        ctx.clamp = { box, left: fit.lines, done: fit.lines === 0, fit: null };
+        ctx.clamp = clampFromFit(box, fit);
         layFrame(frame, ctx, inline, NaN);
       }
     }
