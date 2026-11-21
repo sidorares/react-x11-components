@@ -1162,6 +1162,7 @@ test('a box that spans the columns from inside a block breaks the block about it
   assert.deepStrictEqual(at(el, 'c', 'n'), [0, 0, 210, 20], 'in both');
 });
 
+<<<<<<< HEAD
 test('a box its content runs out of is its height across its pieces, the room a break leaves taken out of it', async () => {
   // Chrome's numbers, from WPT's css-break/grid/grid-item-fragmentation-017
   // as a block and as a grid item: lines of 50, 100 and 100 in a box 200
@@ -1186,6 +1187,37 @@ test('a box its content runs out of is its height across its pieces, the room a 
     COLUMN_PIECES.get(boxOf(el, id) as never)?.map((p) => p.height);
   assert.deepStrictEqual(heights('b'), [100, 100], 'the block');
   assert.deepStrictEqual(heights('g'), [100, 100], 'the grid item');
+=======
+test('what is positioned after a spanner in a block it breaks stands where that row of columns starts', async () => {
+  // the block is in the strip as its first row has it, and the box out of
+  // the flow in its second row stood from where that row had the block:
+  // taken from the first, it came out at the container's top, in the row
+  // before the spanner. Chrome's numbers
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="column-count:2;column-fill:auto;column-gap:0;' +
+      'height:140px;width:100px"><div style="position:relative">' +
+      '<div style="height:60px"></div>' +
+      '<div style="column-span:all;height:5px"></div>' +
+      '<div id="a" style="position:absolute;width:50px;height:200px">' +
+      '</div></div></div>',
+    300,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(
+    COLUMN_PIECES.get(boxOf(el, 'a') as never)?.map((p) => [
+      p.x,
+      p.y,
+      p.width,
+      p.height,
+    ]),
+    [
+      [0, 35, 50, 105],
+      [50, 35, 50, 95],
+    ],
+    'under the spanner, in its row',
+  );
+>>>>>>> 91a916e2763d6acdf576de4a183d2b40d4a6b1f4
 });
 
 test('what comes after a spanner in a block it is in is laid out, in a first layout with nothing broken before it', async () => {
