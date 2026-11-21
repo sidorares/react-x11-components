@@ -6154,7 +6154,11 @@ columns balance, and CSS leaves how to the user agent; this does as Blink
 does — the content's height shared out between the columns, no less than
 the tallest thing that cannot break, then as much
 taller as lets the next line or box into a column, until they hold it all —
-so a page breaks where Chrome breaks it. A container with a `height` or a
+so a page breaks where Chrome breaks it. What is absolutely positioned in
+the columns, against a box in their flow, is shared out with the content:
+positioned boxes are laid out after the columns are set, so the container
+keeps how far down they reached, and where that moves what it is balanced
+over the document is laid out once more, and only once. A container with a `height` or a
 `max-height` has columns no taller than it, and what they do not hold goes
 on in columns past its edge; under `column-fill: auto` its columns are that
 tall, each filled before the next is started, and with no height to fill

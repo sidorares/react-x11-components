@@ -1709,11 +1709,34 @@ export const stripReach = {
   note(box: Box, from: number, flow: number): void {
     this.decided.push({ box, from, flow });
   },
-  /** A positioned box laid out in a container's strip. */
-  reach(box: Box, container: Box): void {
+  /** A positioned box laid out in a container's strip, against a box in
+   *  it. */
+  reach(
+    box: Box,
+    containing: Box,
+    container: Box,
+    /** What a box out of the flow is positioned against. */
+    against: (box: Box) => Box | null,
+  ): void {
     if (!this.decided.length) return;
     const entry = this.decided.find((d) => d.box === container);
     if (!entry) return;
+    // only where what it is positioned against is in the container's
+    // columns: in its flow, or itself out of the flow against a box in
+    // them, and so on out. A box positioned against the container itself,
+    // or past it, is no part of the columns, and nor is what is positioned
+    // in it, as Chromium leaves them (WPT's css-break/
+    // out-of-flow-in-multicolumn-083, css-multicol/
+    // nested-oofs-in-relative-multicol)
+    let at: Box | null = containing;
+    while (at !== container) {
+      if (!at) return;
+      if (at.outOfFlow) {
+        const cb = against(at);
+        if (!cb || cb === container) return;
+        at = cb;
+      } else at = at.parent;
+    }
     const need = Math.max(0, flowReach(box) - entry.from);
     this.reached.set(
       container,

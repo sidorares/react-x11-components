@@ -2139,7 +2139,12 @@ function layoutDocumentPass(
       reflectFrame(box, box.contentHeight, translate, moveLine);
     }
     if (strip) {
-      stripReach.reach(box, strip.geometry.container);
+      stripReach.reach(
+        box,
+        containing,
+        strip.geometry.container,
+        containingBlockFor,
+      );
       cutIntoColumns(box, strip.geometry, (b, dx, dy) =>
         translate(b, dx, dy, () => false),
       );
