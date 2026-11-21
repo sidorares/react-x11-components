@@ -8324,7 +8324,9 @@ one that overflows a box of no height is not; a box of a formatting
 context of its own, a `flow-root`, that ends in the room after the last
 line that does is the clamp point, kept with its lines and no ellipsis; and `max-lines`, `continue` and
 `block-ellipsis` are read, a string in `line-clamp` or `block-ellipsis`
-drawn in place of the `…`. A block laid out a line at a time, around an
+drawn in place of the `…`, on one line, which `text-overflow` cuts where
+it is wider than the line; a line of the string alone keeps none of it
+where the `…` leaves no room for a character. A block laid out a line at a time, around an
 image or a float, ends in the ellipsis as one laid out at once does, at
 its left in a right-to-left block, where its lines end and are cut for
 `text-overflow` too, and

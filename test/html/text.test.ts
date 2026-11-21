@@ -2053,7 +2053,8 @@ metric(
     const el = view(node);
     const a = linesOf(el, 'a');
     assert.strictEqual(a.length, 2);
-    assert.strictEqual(lastRunText(a[1]), ' more');
+    // drawn with no-break spaces, which hold it on one line
+    assert.strictEqual(lastRunText(a[1])?.replace(/\u00a0/g, ' '), ' more');
     assert.ok(a[1].width <= 160 + 0.01, `within the box: ${a[1].width}`);
     const b = linesOf(el, 'b');
     assert.strictEqual(b.length, 2);
@@ -2398,6 +2399,32 @@ metric(
       if (text === mark) continue;
       assert.ok(extentOf(text)[0] >= extentOf(mark!)[1] - 0.01, 'right of it');
     }
+  },
+);
+
+metric(
+  'a block ellipsis wider than its line stays on it, and text-overflow cuts it',
+  async () => {
+    // WPT's line-clamp-with-text-overflow-bidi-001 and -first-character-001:
+    // "x" is displaced by the string, which is one line, cut with `…`; and a
+    // line that is the string alone keeps none of its characters where the
+    // `…` leaves no room for one, as it would the document's first
+    const { node } = await render(
+      '<style>body{margin:0} div{font:20px/1.2 monospace;overflow:hidden;' +
+        'text-overflow:ellipsis}</style>' +
+        '<div id="a" style="width:10ch;line-clamp:1 \'very long block ellipsis\'">' +
+        'x<br>y</div>' +
+        '<div id="b" style="width:1.5ch;line-clamp:1 \'wxyz\'">xyz<br>y</div>',
+    );
+    const el = view(node);
+    const a = linesOf(el, 'a');
+    assert.strictEqual(a.length, 1);
+    assert.strictEqual(lastRunText(a[0]), '…');
+    assert.ok(a[0].width <= 200 + 0.01, `within the box: ${a[0].width}`);
+    const b = linesOf(el, 'b');
+    assert.strictEqual(b.length, 1);
+    assert.strictEqual(b[0].texts.length, 1, 'the ellipsis alone');
+    assert.strictEqual(lastRunText(b[0]), '…');
   },
 );
 
