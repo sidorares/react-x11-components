@@ -7930,7 +7930,8 @@ function ellipsized(
   legacy = false,
 ): { layout: TextLayoutLike; runs: TextRun[]; spans: SpanMap } {
   const mark = runFor(style.blockEllipsisMark, style);
-  const room = width - fonts.layout([mark], base, {}).width;
+  const markWidth = fonts.layout([mark], base, {}).width;
+  const room = width - markWidth;
   const last = layout.lines[layout.lines.length - 1];
   let end = last.end;
   if (last.width > room) {
@@ -8002,7 +8003,27 @@ function ellipsized(
   const ending = displaced ? { ...whole, text: '\n' + whole.text } : whole;
   spans.add(at, ending.text.length, null);
   kept.push(ending);
-  return { layout: fonts.layout(kept, base, options), runs: kept, spans };
+  // the ellipsis takes the room its advance leaves, which is what the line
+  // was cut to: where the line is fitted as a browser fits it, in items
+  // each rounded up to a 64th of a pixel (`fit`), the ellipsis is an item
+  // of its own and is given back what its rounding adds, or words and an
+  // ellipsis that fill the line between them come out a hair past it, and
+  // the last word breaks onto the lines the clamp hides with the ellipsis
+  // glued to it (WPT's `block-ellipsis-bidi-002`)
+  const rounding = options?.fit
+    ? fonts.layout([mark], base, { fit: options.fit }).width - markWidth
+    : 0;
+  return {
+    layout: fonts.layout(
+      kept,
+      base,
+      rounding > 0 && options?.maxWidth !== undefined
+        ? { ...options, maxWidth: options.maxWidth + rounding }
+        : options,
+    ),
+    runs: kept,
+    spans,
+  };
 }
 
 /** Whether a line has been cut short a piece at a time (`ellipsizeLines`):
