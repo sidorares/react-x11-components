@@ -1994,6 +1994,24 @@ test('a column rule in a row of columns a spanner ends stops at the spanner, unl
   );
 });
 
+test("a multicol container another's columns break has its rules in each piece, and none in a row gap a break ends", async () => {
+  // WPT's multicol-gap-decorations-fragmentation-001: rows of one column
+  // 40px tall, 20px apart, in outer columns 120px tall. The first and the
+  // third row gap are in a column each; the second ends where the first
+  // outer column does, and a break follows it, so it has no rule
+  const doc =
+    '<div style="columns:2;column-fill:auto;column-gap:40px;width:240px;' +
+    'height:120px"><div style="column-count:1;column-width:100px;' +
+    'column-height:40px;column-wrap:wrap;row-gap:20px;' +
+    'row-rule:10px solid #ffd700">' +
+    '<div style="height:40px"></div>'.repeat(4) +
+    '</div></div>';
+  assert.deepStrictEqual(await rulesIn(doc, '#ffd700'), [
+    [0, 45, 100, 10],
+    [140, 45, 100, 10],
+  ]);
+});
+
 test('column-height and column-wrap set the columns in rows, a row gap apart', async () => {
   // Rows of two columns 30px tall, 10px apart: six boxes of 20px that go
   // whole take a column each, three rows, and the last row is as tall as
