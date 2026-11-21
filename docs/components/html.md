@@ -8370,7 +8370,10 @@ empty block that clears a float keeping the float; and `max-lines`, `continue` a
 `block-ellipsis` are read, a string in `line-clamp` or `block-ellipsis`
 drawn in place of the `…`, on one line, which `text-overflow` cuts where
 it is wider than the line; a line of the string alone keeps none of it
-where the `…` leaves no room for a character. A block laid out a line at a time, around an
+where the `…` leaves no room for a character; `continue: discard` on a
+multicol container of a height of its own keeps what fits in its columns
+and discards the rest, which makes no overflow column, where on any other
+block container it clamps as `collapse` does. A block laid out a line at a time, around an
 image, a float or an inline box with a border, ends in the ellipsis as one laid out at once does, at
 its left in a right-to-left block, where its lines end and are cut for
 `text-overflow` too, and
