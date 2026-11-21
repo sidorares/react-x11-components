@@ -15671,6 +15671,15 @@ function paintLinesApart(
 
 /** What of a block's visible lines `paintLines` paints, a part of them at
  *  a time (`LinePart`), or all of them in one where `part` is null. */
+/** Whether a layout was drawn at an origin already (`paintLinePart`):
+ *  `at` holds each origin it was drawn at, x then y. */
+function placedAt(at: number[], x: number, y: number): boolean {
+  for (let i = 0; i < at.length; i += 2) {
+    if (at[i] === x && at[i + 1] === y) return true;
+  }
+  return false;
+}
+
 function paintLinePart(
   ctx: PaintContext,
   box: Box,
@@ -15737,7 +15746,13 @@ function paintLinePart(
   // One `draw` per layout: a paragraph is a single glyph composite, and
   // drawing it once per line would be one X request per line for the same
   // batch.
-  const drawn = new Set<unknown>();
+  // A layout the text engine hands back for the same runs is the same
+  // object, so where two lines each hold one at their own place — the
+  // ellipsis `text-overflow` ends each of a block's lines in, or what it
+  // left of each — a layout of one line is drawn once at each place
+  // (WPT's `text-overflow-013`), where a paragraph's lines, which share
+  // one layout, are drawn once whole
+  const drawn = new Map<unknown, number[]>();
   // text a `::highlight()` or a `::selection` colours is drawn in that
   // colour where it is lit, the selection's over the highlights'
   const lit = highlightOptions(options);
@@ -15750,8 +15765,16 @@ function paintLinePart(
       if (skip?.has(text)) continue;
       // once for each column its lines are in, where they are in several
       const rows = columned.any ? COLUMN_ROWS.get(text) : undefined;
-      if (drawn.has(rows ?? text.layout)) continue;
-      drawn.add(rows ?? text.layout);
+      const key = rows ?? text.layout;
+      const at = drawn.get(key);
+      if (
+        at &&
+        (text.layout.lines.length > 1 || placedAt(at, text.drawX, text.drawY))
+      ) {
+        continue;
+      }
+      if (at) at.push(text.drawX, text.drawY);
+      else drawn.set(key, [text.drawX, text.drawY]);
       const top = text.drawY + dy;
       if (top < -COORD_LIMIT || top + text.layout.height > COORD_LIMIT) {
         // A single layout so tall its own lines overflow the Int16 envelope

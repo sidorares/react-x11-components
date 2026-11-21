@@ -2063,6 +2063,23 @@ metric(
 );
 
 metric(
+  'a clamp ends in its ellipsis where an inline box with a border is on its lines',
+  async () => {
+    // a paragraph whose inline boxes' edges are spacers in its one layout
+    // was cut at the clamp with no ellipsis at all (WPT's
+    // `block-ellipsis-004` to `-006`)
+    const { node } = await render(
+      '<style>body{margin:0} #a{line-clamp:3;width:200px}' +
+        ' span{border:2px solid blue;font-size:1.5em}</style>' +
+        '<div id="a">Line 1<br>Line 2<br><span>Line 3</span><br>Line 4</div>',
+    );
+    const lines = linesOf(view(node), 'a');
+    assert.strictEqual(lines.length, 3);
+    assert.strictEqual(lastRunText(lines[2]), '\u2026');
+  },
+);
+
+metric(
   'a clamp ends in the string it names, and a line laid out a piece at a time takes it too',
   async () => {
     // CSS Overflow 4, 5.4: `line-clamp: 2 "…more"` draws its string where
@@ -2385,6 +2402,35 @@ metric(
     assert.strictEqual(mark?.size, 16, "the block's size");
     assert.match(String(mark?.color), /0, 128, 0|#008000/i, 'and colour');
     assert.ok(lines[0].width <= 120, `within the box: ${lines[0].width}`);
+  },
+);
+
+metric(
+  'the ellipsis text-overflow ends each line in is drawn on each of them',
+  async () => {
+    // the engine hands back one layout for the same runs, so the ellipsis
+    // of each line, and what each kept of the same text, was one layout,
+    // drawn once at the first line's place (WPT's `text-overflow-013`)
+    const { node } = await render(
+      '<style>body{margin:0} div{width:40px;overflow:hidden;' +
+        'text-overflow:ellipsis;white-space:pre;line-height:20px}' +
+        ' span{color:rgb(255, 0, 0)}</style>' +
+        '<div id="a"> <span>xxxxxxxx<br> xxxxxxxx<br> xxxxxxxx</span></div>',
+    );
+    const el = view(node);
+    const lines = linesOf(el, 'a');
+    assert.strictEqual(lines.length, 3);
+    const ops: PaintOp[] = [];
+    await fillsOf(el, ops);
+    const drawnOn = new Set<number>();
+    for (const op of ops) {
+      if (op.op !== 'text') continue;
+      const line = lines.findIndex(
+        (l) => op.y >= l.y - 1 && op.y < l.y + l.height,
+      );
+      if (line >= 0) drawnOn.add(line);
+    }
+    assert.deepStrictEqual([...drawnOn].sort(), [0, 1, 2], 'every line');
   },
 );
 

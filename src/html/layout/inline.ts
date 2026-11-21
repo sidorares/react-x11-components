@@ -1564,7 +1564,9 @@ function linesOf(
 
   // Inline boxes' edges as spacers in one layout, where the engine left
   // every edge on the line of the content it belongs to (`layoutSpaced`);
-  // the lines a piece at a time, below, where it did not.
+  // the lines a piece at a time, below, where it did not, and where a
+  // clamp ends them in an ellipsis, which that layout has no way to place
+  // (WPT's `block-ellipsis-004` to `-006`)
   if (
     spaced &&
     !floated &&
@@ -1572,7 +1574,8 @@ function linesOf(
     !alignedApart &&
     !restyled &&
     !apart &&
-    !cutsApart
+    !cutsApart &&
+    !options.clamp?.ellipsis
   ) {
     const laid = layoutSpaced(
       items,
@@ -6998,6 +7001,15 @@ const HELD = new WeakMap<Box, string>();
  * such a line is made a line at a time instead, where `finishLine` puts
  * the strut on every line; one whose lines all hold text of the block's
  * own face is kept as it was laid out.
+ *
+ * So is a paragraph one of whose layouts would move its lines' baselines
+ * by different amounts to where `lineAscent` puts them (`layoutLift`): a
+ * layout is drawn from one origin, and kept so it keeps the engine's
+ * baselines, a fraction of a pixel from a browser's, where a line made a
+ * piece at a time floors the half-leading as Blink does — a line with a
+ * span in a larger font among lines without, as WPT's
+ * `block-ellipsis-004` has, came out a quarter of a pixel apart from the
+ * same line clamped.
  */
 function shortOfStrut(
   lines: readonly LineBox[],
@@ -7019,6 +7031,25 @@ function shortOfStrut(
       line.height - ascent < holds.descent - 0.5
     ) {
       return true;
+    }
+  }
+  return liftsApart(lines);
+}
+
+/** Whether a layout the lines are drawn from would move their baselines by
+ *  different amounts (`layoutLift`, `shortOfStrut`). */
+function liftsApart(lines: readonly LineBox[]): boolean {
+  let last: TextLayoutLike | null = null;
+  for (const line of lines) {
+    for (const text of line.texts) {
+      if (text.layout === last) continue;
+      last = text.layout;
+      let lift = NaN;
+      for (const natural of last.lines) {
+        const own = natural.baseline - natural.y - lineAscent(natural);
+        if (Number.isNaN(lift)) lift = own;
+        else if (Math.abs(own - lift) > 1e-6) return true;
+      }
     }
   }
   return false;

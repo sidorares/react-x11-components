@@ -6161,7 +6161,7 @@ positioned boxes are laid out after the columns are set, so the container
 keeps how far down they reached, and where that moves what it is balanced
 over the document is laid out once more, and only once. Each row of columns about a
 spanner is balanced over what is positioned in it, a row at a time, though
-not rows `column-wrap` sets. A container with a `height` or a
+not rows `column-wrap` sets; what is positioned in a row nothing balances is that row's, and makes none taller. A container with a `height` or a
 `max-height` has columns no taller than it, and what they do not hold goes
 on in columns past its edge; under `column-fill: auto` its columns are that
 tall, each filled before the next is started, and with no height to fill
@@ -8358,7 +8358,7 @@ empty block that clears a float keeping the float; and `max-lines`, `continue` a
 drawn in place of the `…`, on one line, which `text-overflow` cuts where
 it is wider than the line; a line of the string alone keeps none of it
 where the `…` leaves no room for a character. A block laid out a line at a time, around an
-image or a float, ends in the ellipsis as one laid out at once does, at
+image, a float or an inline box with a border, ends in the ellipsis as one laid out at once does, at
 its left in a right-to-left block, where its lines end and are cut for
 `text-overflow` too, and
 where the lines after a float are one layout, the lines the clamp drops are
@@ -8379,8 +8379,8 @@ ellipsis, as Chrome and Safari have it),
 `text-overflow` on a block that clips (`truncate`: each line that runs past
 the box's end — or a float's, beside it — cut there, inside a word if need
 be but never inside a grapheme cluster, with an ellipsis, as a browser cuts
-it, the ellipsis in the block's font and colour whatever text it ends; a
-word too long for a line that wraps is cut the same way, and so are
+it, the ellipsis in the block's font and colour whatever text it ends,
+and drawn on every line it ends; a word too long for a line that wraps is cut the same way, and so are
 the lines a clamp leaves. `text-overflow: "<string>"` draws the string in
 the ellipsis's place, in the paragraph's direction, a run of forced breaks
 in it made one space, or nothing between two wide characters, and a line's
@@ -8464,7 +8464,10 @@ of 20px ones makes a 60px line, with its text in the middle. A paragraph
 holding either is laid out a line at a time. A box whose own line height is
 less keeps the paragraph's multiple of its font's natural one, which in a
 font with taller lines than the paragraph's — a `<code>` in Menlo beside
-Helvetica — is a little more than CSS gives it. Underlines an element outside a raised text draws through it stay on
+Helvetica — is a little more than CSS gives it. A line's half-leading is
+floored above its text, as Blink floors it, on every line of a paragraph:
+one whose lines in other fonts would move by different amounts is laid out
+a line at a time rather than keep the text engine's baselines. Underlines an element outside a raised text draws through it stay on
 the line's baseline. White space collapses across element boundaries as CSS
 2.1 16.6.1 has it — none at the start or the end of a line, one between two
 words whatever elements they are in — and text at `font-size: 0` takes no
