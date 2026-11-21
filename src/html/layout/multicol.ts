@@ -2524,6 +2524,13 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
     return;
   }
   const was = { x: box.x, y: box.y, width: box.width, height: box.height };
+  // A box whose height is not what it holds came to — one of its own, or
+  // one its content runs out of — is that tall across its pieces, the room
+  // a break leaves at a column's foot taken out of it, as Blink consumes
+  // it: pushed on past it, a grid item 200px tall over 250px of lines took
+  // a third column, and it ends where the second ends (WPT's
+  // css-break/grid/grid-item-fragmentation-017)
+  const own = span !== null && overflowsInFlow(box);
   // what it holds, by its own column tops where its room took some (`Room`)
   const inner = to.holds?.get(box) ?? to;
   const lines = box.lines;
@@ -2613,11 +2620,14 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
       }
       return total;
     };
+    /** What is left of the height of a box that has one of its own. */
+    let left = was.height;
     for (let c = first; c <= last; c += 1) {
       // no further than the box goes: what is gathered of one that holds
       // nothing of its own runs to the next unit of the flow, which may be
       // a column on
       if (c > first && to.tops[c] >= end - EPS) break;
+      if (own && c > first && left <= EPS) break;
       const from = c === first ? was.y : to.tops[c];
       const until = c === last ? end : Math.min(end, to.room(c));
       let y = from + to.dy(c);
@@ -2634,6 +2644,10 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
         if (c < last) {
           height = until + to.dy(c) + cloned(after, 'end') - y;
         } else height = until + to.dy(c) - y;
+      }
+      if (own) {
+        height = Math.min(height, left);
+        left -= Math.max(0, height);
       }
       const piece: ColumnPiece = {
         x: was.x + to.dx(c),
@@ -2946,6 +2960,30 @@ export function forgetColumns(box: Box): void {
 
 /** How far down a box reaches with what it holds in its flow: its own
  *  bottom, and its in-flow boxes' and lines', where they run on past it. */
+/** Whether what a box holds in its flow, floats aside, runs on past its
+ *  bottom: a height that is not its content's. A float is no part of its
+ *  height, and hangs out of an auto one as much as a fixed one; nor is what
+ *  a child lets run out of itself, which the child's height already left
+ *  out (WPT's single-line-column-flex-fragmentation-072). */
+function overflowsInFlow(box: Box): boolean {
+  const bottom = box.y + box.height + EPS;
+  for (const line of box.lines ?? []) {
+    if (line.y + line.height > bottom) return true;
+  }
+  for (const child of box.children) {
+    if (
+      child.outOfFlow ||
+      child.isFloat ||
+      child.kind === 'text' ||
+      child.kind === 'break'
+    ) {
+      continue;
+    }
+    if (child.y + child.height > bottom) return true;
+  }
+  return false;
+}
+
 function flowReach(box: Box): number {
   let bottom = box.y + box.height;
   for (const line of box.lines ?? []) {

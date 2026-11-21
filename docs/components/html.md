@@ -6183,7 +6183,10 @@ container, its offset parent with it, and an anchor in it is in none of the
 boxes it is laid out through. A box a break falls inside has a piece in each
 column: its background and its borders are drawn a piece at a time, with no
 edge at the break, and a transform turns or scales each piece about its own
-`transform-origin`, with what its column holds of the box. Under `box-decoration-break: clone` each piece is a box of
+`transform-origin`, with what its column holds of the box. A box whose
+content runs out of it is its own height across its pieces, the room a
+break leaves at a column's foot taken out of that height, as Blink has it,
+and not added to it. Under `box-decoration-break: clone` each piece is a box of
 its own, with its borders, padding, shadows and outline all round it, a piece a break ends running on to the column's foot as Blink fills it, and
 the edges take room: the column before a break keeps the end edges of every
 cloned box the break falls inside at its foot, and the one after starts
@@ -8373,7 +8376,9 @@ in a block or a float past the clamp point is hidden only where what it is
 placed against is: one placed against the container, or a box around it,
 is drawn, and the box it is in is not. The clamp is no part of how wide
 the content is: a container's min-content and max-content widths are those
-of all its lines, with no ellipsis. Where
+of all its lines, with no ellipsis. An inline box all of whose text the
+clamp drops, or the ellipsis displaces, is past the clamp point, and what is
+positioned against it is hidden. Where
 the last line's first word is too wide to leave the ellipsis room, a line
 of text that wraps is displaced whole and shows the ellipsis alone, as the
 non-tentative WPT tests, Edge and Safari have it; Chrome's experimental
