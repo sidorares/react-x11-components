@@ -2053,7 +2053,8 @@ metric(
     const el = view(node);
     const a = linesOf(el, 'a');
     assert.strictEqual(a.length, 2);
-    assert.strictEqual(lastRunText(a[1]), ' more');
+    // drawn with no-break spaces, which hold it on one line
+    assert.strictEqual(lastRunText(a[1])?.replace(/\u00a0/g, ' '), ' more');
     assert.ok(a[1].width <= 160 + 0.01, `within the box: ${a[1].width}`);
     const b = linesOf(el, 'b');
     assert.strictEqual(b.length, 2);
@@ -2166,6 +2167,27 @@ metric(
     // cut after "Three.", one line: what overflows the empty box is no part
     // of the container's height
     assert.strictEqual(linesOf(el, 'b').length, 3);
+  },
+);
+
+metric(
+  'line-clamp: auto puts its clamp point after a box of a formatting context of its own that fits',
+  async () => {
+    // WPT's line-clamp-auto-034: a `flow-root` that ends in the room is the
+    // last thing kept, its lines with it, and what follows is past the
+    // clamp point
+    const { node } = await render(
+      '<style>body{margin:0} div{width:160px;line-height:20px}' +
+        ' p{margin:0}</style>' +
+        '<div id="a" style="line-clamp:auto;max-height:3lh">' +
+        '<p>One.</p><div style="display:flow-root"><p>Two.</p><p>Three.</p>' +
+        '</div><div id="r" style="display:flow-root"><p>Four.</p></div>' +
+        '<p>Five.</p></div>',
+    );
+    const el = view(node);
+    assert.strictEqual(boxOf(el, 'a').height, 60);
+    assert.ok(CLAMPED.has(boxOf(el, 'r') as never), 'past the clamp point');
+    assert.strictEqual(linesOf(el, 'a').length, 3);
   },
 );
 
@@ -2377,6 +2399,32 @@ metric(
       if (text === mark) continue;
       assert.ok(extentOf(text)[0] >= extentOf(mark!)[1] - 0.01, 'right of it');
     }
+  },
+);
+
+metric(
+  'a block ellipsis wider than its line stays on it, and text-overflow cuts it',
+  async () => {
+    // WPT's line-clamp-with-text-overflow-bidi-001 and -first-character-001:
+    // "x" is displaced by the string, which is one line, cut with `…`; and a
+    // line that is the string alone keeps none of its characters where the
+    // `…` leaves no room for one, as it would the document's first
+    const { node } = await render(
+      '<style>body{margin:0} div{font:20px/1.2 monospace;overflow:hidden;' +
+        'text-overflow:ellipsis}</style>' +
+        '<div id="a" style="width:10ch;line-clamp:1 \'very long block ellipsis\'">' +
+        'x<br>y</div>' +
+        '<div id="b" style="width:1.5ch;line-clamp:1 \'wxyz\'">xyz<br>y</div>',
+    );
+    const el = view(node);
+    const a = linesOf(el, 'a');
+    assert.strictEqual(a.length, 1);
+    assert.strictEqual(lastRunText(a[0]), '…');
+    assert.ok(a[0].width <= 200 + 0.01, `within the box: ${a[0].width}`);
+    const b = linesOf(el, 'b');
+    assert.strictEqual(b.length, 1);
+    assert.strictEqual(b[0].texts.length, 1, 'the ellipsis alone');
+    assert.strictEqual(lastRunText(b[0]), '…');
   },
 );
 

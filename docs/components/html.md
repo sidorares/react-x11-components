@@ -6739,11 +6739,15 @@ over them. A right-to-left container's horizontal rules start at their right.
 The rows of columns `column-wrap` makes are a grid of columns for its rules:
 a row rule is drawn in each row gap between them, across the columns, and a
 column rule stops at a row gap under `normal`, which is `intersection` there
-as at a spanner, its ends there junctions where the row rule is drawn.
+as at a spanner, its ends there junctions where the row rule is drawn. A
+row of columns balanced shorter than its row, before a spanner, has rules as
+tall as its columns, and under `column-rule-break: none` a gap's rule runs on
+through the spanner and every row.
 
-A grid or a flex container that columns break has its rules drawn in each
-piece, as the whole box has them, where its pieces stand; a row gap a break
-falls in has no rule (3.6). Not here: a grid lanes container that columns
+A grid, a flex container or a multicol container that columns break has its
+rules drawn in each piece, as the whole box has them, where its pieces
+stand; a row gap a break falls in has no rule (3.6), and nor has one a piece
+starts or ends with, since a break comes straight before or after it. Not here: a grid lanes container that columns
 break, a container in a vertical writing mode, whose rules are drawn as a
 horizontal one's are.
 
@@ -8316,9 +8320,13 @@ and WebKit cut it, where the newer property keeps whole words; `line-clamp: auto
 box's `height` or `max-height` holds, a line counted where the box would
 end were it cut after it: a box around the line ends where its own height
 and limits say, so a line in a box taller than the room is past it, and
-one that overflows a box of no height is not; and `max-lines`, `continue` and
+one that overflows a box of no height is not; a box of a formatting
+context of its own, a `flow-root`, that ends in the room after the last
+line that does is the clamp point, kept with its lines and no ellipsis; and `max-lines`, `continue` and
 `block-ellipsis` are read, a string in `line-clamp` or `block-ellipsis`
-drawn in place of the `…`. A block laid out a line at a time, around an
+drawn in place of the `…`, on one line, which `text-overflow` cuts where
+it is wider than the line; a line of the string alone keeps none of it
+where the `…` leaves no room for a character. A block laid out a line at a time, around an
 image or a float, ends in the ellipsis as one laid out at once does, at
 its left in a right-to-left block, where its lines end and are cut for
 `text-overflow` too, and
