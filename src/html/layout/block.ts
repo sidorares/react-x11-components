@@ -10951,13 +10951,20 @@ function positionedIn(
     flowAt && !flowAt.inside && inColumns(box, containing)
       ? stripStatic(box)
       : null;
+  // and moved by the relative offsets of the boxes between it and what it
+  // is positioned against, which are known now and applied after the
+  // columns cut it: a fixed box's static position in a relative box in a
+  // transformed one is where the offset puts it, and it is cut there (WPT's
+  // css-break/out-of-flow-in-multicolumn-073). Its containing block's own
+  // offset moves it with all its containing block holds, after the cut.
+  const folded = stripAt ? foldOffsets(box, flowAt!.from, containing) : null;
   const at =
     flowAt && stripAt
       ? {
           ...flowAt,
-          x: stripAt.x,
-          y: stripAt.y,
-          right: stripAt.right,
+          x: stripAt.x + (folded?.[0] ?? 0),
+          y: stripAt.y + (folded?.[1] ?? 0),
+          right: stripAt.right + (folded?.[0] ?? 0),
           // the box it is from, where the strip had it
           from: Object.assign(Object.create(flowAt.from) as Box, {
             x: stripAt.fromX,
@@ -13048,6 +13055,43 @@ const inTopLayer = (box: Box): boolean => box.topLayer;
  * And a box in the top layer, which is at no place in the flow of what
  * holds it, and is moved by no offset of its (CSS Position 4, 3.1).
  */
+/**
+ * The relative offsets between a box out of the flow in columns and its
+ * containing block, from the box its static position is from up, which
+ * its static position is moved by before the columns cut it
+ * (`layoutPositioned`): Blink places it in the strip where the offsets put
+ * it, and only the containing block's own offset, and those around that,
+ * after the cut. Each box that offset it is noted, which then moves it no
+ * more (`offsetBox`). Null where none does.
+ */
+function foldOffsets(
+  box: Box,
+  from: Box,
+  containing: Box,
+): [number, number] | null {
+  FOLDED.delete(box);
+  let dx = 0;
+  let dy = 0;
+  let by: Set<Box> | null = null;
+  for (let at: Box | null = from; at !== containing; at = at.parent) {
+    if (!at) return null;
+    if (at.style.position !== 'relative' || at.kind === 'inline') continue;
+    const [x, y] = relativeOffset(at);
+    if (!x && !y) continue;
+    dx += x;
+    dy += y;
+    (by ??= new Set()).add(at);
+  }
+  if (!by) return null;
+  FOLDED.set(box, by);
+  return [dx, dy];
+}
+
+/** The relative boxes a box out of the flow in columns took the offsets
+ *  of into its static position before it was cut (`foldOffsets`), which
+ *  move it no more. */
+const FOLDED = new WeakMap<Box, Set<Box>>();
+
 function offsetBox(box: Box, dx: number, dy: number, sticky: boolean): void {
   const fixed: Box[] = [];
   translate(box, dx, dy, (child) => {
@@ -13059,6 +13103,9 @@ function offsetBox(box: Box, dx: number, dy: number, sticky: boolean): void {
   });
   if (sticky) return;
   for (const child of fixed) {
+    // where its static position took this offset in already, before the
+    // columns cut it
+    if (FOLDED.get(child)?.has(box)) continue;
     const style = child.style;
     const sx = style.left === AUTO && style.right === AUTO ? dx : 0;
     const sy = style.top === AUTO && style.bottom === AUTO ? dy : 0;

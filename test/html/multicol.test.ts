@@ -2714,3 +2714,48 @@ metric(
     assert.deepStrictEqual([past.x, past.y], [50, 100], 'in the second');
   },
 );
+
+test('a fixed box in a relative box in a transformed one in columns is cut where the offset puts it', async () => {
+  // Chrome's numbers: the relative offsets between a fixed box's static
+  // position and the transformed box it is positioned against move where
+  // it is cut, and the transformed box's own offset moves it after the
+  // cut, with all the transformed box holds (WPT's css-break/
+  // out-of-flow-in-multicolumn-073)
+  const { node } = await render(
+    '<style>body{margin:0}.m{columns:2;column-fill:auto;height:100px;' +
+      'width:100px;column-gap:0;margin-bottom:20px}</style>' +
+      '<div class="m"><div style="transform:translateX(0)">' +
+      '<div style="position:relative;top:100px;left:50px">' +
+      '<div style="position:absolute"><div id="a" style="position:fixed;' +
+      'width:50px;height:200px"></div></div></div></div></div>' +
+      '<div class="m"><div style="position:relative;top:30px;' +
+      'transform:translateX(0)"><div style="height:30px"></div>' +
+      '<div style="position:absolute"><div id="b" style="position:fixed;' +
+      'width:50px;height:120px"></div></div></div></div>',
+    300,
+  );
+  const el = view(node);
+  const pieces = (id: string) =>
+    COLUMN_PIECES.get(boxOf(el, id) as never)?.map((p) => [
+      p.x,
+      p.y,
+      p.width,
+      p.height,
+    ]);
+  assert.deepStrictEqual(
+    pieces('a'),
+    [
+      [100, 0, 50, 100],
+      [150, 0, 50, 100],
+    ],
+    'the offset between it and the transformed box, before the cut',
+  );
+  assert.deepStrictEqual(
+    pieces('b'),
+    [
+      [0, 180, 50, 70],
+      [50, 150, 50, 50],
+    ],
+    "the transformed box's own offset, after it",
+  );
+});

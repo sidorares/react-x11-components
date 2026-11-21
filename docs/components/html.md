@@ -6222,7 +6222,11 @@ line, holding nothing, where it starts there with a box out of the flow
 and all its text goes on to the next, as Blink keeps it, but not after a
 forced break, which ends the line before with nothing of the box on it —
 and is then cut
-into them as a float with a height is, with what it holds; an anchor it
+into them as a float with a height is, with what it holds. Its static
+position is moved first by the relative offsets of the boxes between it and
+its containing block, so a fixed box in a relative box in a transformed one
+is cut where the offset puts it; its containing block's own offset moves it
+after the cut, with all the containing block holds, as Blink places both. An anchor it
 refers to in the same columns it sees unbroken, where the strip had it,
 and one outside them the rectangle around the anchor's pieces (CSS Anchor
 Positioning 1, 2). A multicol container in a vertical writing mode sets its
