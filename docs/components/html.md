@@ -6745,7 +6745,9 @@ over them. A right-to-left container's horizontal rules start at their right.
 The rows of columns `column-wrap` makes are a grid of columns for its rules:
 a row rule is drawn in each row gap between them, across the columns, and a
 column rule stops at a row gap under `normal`, which is `intersection` there
-as at a spanner, its ends there junctions where the row rule is drawn. A
+as at a spanner, its ends there junctions where the row rule is drawn. In a
+right-to-left container the gaps a rule's lists go by are counted from its
+right. A
 vertical container's frame has its rows of columns, their gaps and their
 rules, all of them logical, and a `vertical-lr` one's are put back across
 from its left, as its rows are. A
@@ -8331,7 +8333,9 @@ end were it cut after it: a box around the line ends where its own height
 and limits say, so a line in a box taller than the room is past it, and
 one that overflows a box of no height, or of size containment, is not; a box of a formatting
 context of its own, a `flow-root`, that ends in the room after the last
-line that does is the clamp point, kept with its lines and no ellipsis; and `max-lines`, `continue` and
+line that does is the clamp point, kept with its lines and no ellipsis,
+as any box with no lines that fits after the last line that does is, an
+empty block that clears a float keeping the float; and `max-lines`, `continue` and
 `block-ellipsis` are read, a string in `line-clamp` or `block-ellipsis`
 drawn in place of the `…`, on one line, which `text-overflow` cuts where
 it is wider than the line; a line of the string alone keeps none of it

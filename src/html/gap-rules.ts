@@ -530,6 +530,7 @@ function multicolSegments(box: Box): {
 } {
   const rule = box.style.columnRule;
   const visibility = shown(rule, 'between');
+  const rtl = box.style.direction === 'rtl';
   const all = COLUMN_BOXES.get(box) ?? [];
   // rows `column-wrap` set, a row gap apart, are a grid of columns: their
   // column rules and row rules are a grid's (CSS Gap Decorations 1, 3.1.3)
@@ -544,37 +545,40 @@ function multicolSegments(box: Box): {
     if (j - i < 2) {
       rows.push(all[i]);
     } else {
-      const grid = gridOfRows(all.slice(i, j));
+      // right to left, the columns are counted from the right, which a
+      // rule's lists go by: worked out from there and drawn mirrored, as a
+      // right-to-left grid's are
+      const mirror = rtl ? box.contentWidth : undefined;
+      const grid = gridOfRows(all.slice(i, j), mirror);
       const { lanes, tracks, areas } = grid;
       // a column rule stops at a row gap under `normal`, which is
       // `intersection` here, as it does at a spanner: the row gap is no
       // part of the column gap (WPT's multicol-column-rule-final-row-overflow)
       const down: GapRule =
         rule.break === 'normal' ? { ...rule, break: 'intersection' } : rule;
-      wrapped.push(
-        ...gridRuleSegments(
-          lanes,
-          tracks,
-          areas,
-          down,
-          box.style.rowRule,
-          box.contentX,
-          box.contentY,
-          'between',
-        ),
+      const down2 = gridRuleSegments(
+        lanes,
+        tracks,
+        areas,
+        down,
+        box.style.rowRule,
+        box.contentX,
+        box.contentY,
+        'between',
       );
-      across.push(
-        ...gridRuleSegments(
-          tracks,
-          lanes,
-          areas.map(([c, cs, r, rs]) => [r, rs, c, cs]),
-          box.style.rowRule,
-          rule,
-          box.contentY,
-          box.contentX,
-          'between',
-        ),
+      const across2 = gridRuleSegments(
+        tracks,
+        lanes,
+        areas.map(([c, cs, r, rs]) => [r, rs, c, cs]),
+        box.style.rowRule,
+        rule,
+        box.contentY,
+        box.contentX,
+        'between',
       );
+      if (mirror !== undefined) mirrored(box, mirror, down2, across2);
+      wrapped.push(...down2);
+      across.push(...across2);
     }
     i = j;
   }
@@ -612,7 +616,7 @@ function multicolSegments(box: Box): {
         at: box.contentX + (every[c] + row.width + every[c + 1]) / 2,
         from: top,
         to: row === last ? Math.max(top + row.height, foot) : top + row.height,
-        gap: c,
+        gap: rtl ? every.length - 2 - c : c,
       });
     }
   }
@@ -674,18 +678,27 @@ function downward(
 /** Rows of columns as a grid's tracks, from the content box's corner: the
  *  columns across, the rows down, and a one-cell area for each column that
  *  holds something. */
-function gridOfRows(rows: readonly ColumnRow[]): {
+function gridOfRows(
+  rows: readonly ColumnRow[],
+  /** Where the columns are counted from the right: the content box's
+   *  width, which each left is taken from. */
+  mirror?: number,
+): {
   lanes: [number, number][];
   tracks: [number, number][];
   areas: [number, number, number, number][];
 } {
-  const every = (rows[0].every ?? rows[0].lefts).slice().sort((a, b) => a - b);
   const width = rows[0].width;
+  const from = (l: number): number =>
+    mirror === undefined ? l : mirror - l - width;
+  const every = (rows[0].every ?? rows[0].lefts)
+    .map(from)
+    .sort((a, b) => a - b);
   const lanes = every.map((l): [number, number] => [l, l + width]);
   const tracks = rows.map((r): [number, number] => [r.top, r.top + r.height]);
   const areas: [number, number, number, number][] = [];
   rows.forEach((row, r) => {
-    for (const left of row.lefts) {
+    for (const left of row.lefts.map(from)) {
       const c = every.findIndex((l) => Math.abs(l - left) < 1 / 64);
       if (c >= 0) areas.push([c, 1, r, 1]);
     }
