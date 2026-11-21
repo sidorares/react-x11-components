@@ -257,3 +257,24 @@ metric(
     assert.ok(-a.marginLeft < 10, `${-a.marginLeft} is a space's width`);
   },
 );
+
+metric(
+  'a mark is centred on its character, not on its letter spacing',
+  async () => {
+    // the room `letter-spacing` adds after a character is no part of it
+    // (WPT's letter-spacing-211): marks over spaced text stand where they
+    // stand over the same text set apart with spaces
+    const { node } = await render(
+      '<p id=a style="font: 20px/1 monospace; text-emphasis: dot;' +
+        ' letter-spacing: 20px; margin: 0">abc</p>' +
+        '<p id=b style="font: 20px/1 monospace; text-emphasis: dot;' +
+        ' white-space: pre; margin: 0; letter-spacing: 0">a\u2003b\u2003c</p>',
+    );
+    const el = view(node);
+    const spaced = marksOf(boxIn(el, 'a')).map((m) => m.x);
+    const plain = marksOf(boxIn(el, 'b')).map((m) => m.x);
+    // the first marks at the same place: the first character starts both
+    assert.equal(spaced.length, 3);
+    assert.ok(Math.abs(spaced[0] - plain[0]) < 0.5, `${spaced} ${plain}`);
+  },
+);
