@@ -147,6 +147,7 @@ import {
   PADDED_FACES,
   Box,
   CLAMPED,
+  CLAMP_ESCAPES,
   CLAMP_CUT,
   CLIPPED_CELLS,
   COLLAPSED_CELLS,
@@ -966,6 +967,19 @@ function boundsOf(
       child.boundsY = Infinity;
       child.boundsWidth = 0;
       child.boundsHeight = 0;
+      // but for what it holds that the clamp does not hide, which reaches
+      // as far as it is drawn
+      for (const escaped of CLAMP_ESCAPES.get(child) ?? []) {
+        OUT_OF_FLOW_REACH.set(
+          escaped,
+          boundsOf(escaped, moved, null, false, false),
+        );
+        if (escaped.boundsY === Infinity) continue;
+        x1 = Math.min(x1, escaped.boundsX);
+        y1 = Math.min(y1, escaped.boundsY);
+        x2 = Math.max(x2, escaped.boundsX + escaped.boundsWidth);
+        y2 = Math.max(y2, escaped.boundsY + escaped.boundsHeight);
+      }
       continue;
     }
     const reach =
@@ -1459,6 +1473,9 @@ function buildChildIndexes(box: Box): void {
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
     if (child.holdsLayers) inner = true;
+    // what a box past a clamp point holds that the clamp does not hide
+    // (`CLAMP_ESCAPES`) is a layer of the context around it
+    else if (CLAMPED.has(child) && CLAMP_ESCAPES.has(child)) inner = true;
     if (layered(box, child)) (positioned ??= []).push(child);
     else if (!onLine(box, child)) paintable += 1;
   }
@@ -9740,8 +9757,13 @@ function gatherLayers(
   for (const child of PAINT_ORDER.get(box) ?? box.children) {
     layersWalkedCount += 1;
     if (child.kind === 'text' || child.kind === 'break') continue;
-    // a positioned box past a clamp point, or in a box that is
-    if (CLAMPED.has(child)) continue;
+    // a positioned box past a clamp point, or in a box that is, but for
+    // one positioned against something the clamp does not hide
+    if (CLAMPED.has(child)) {
+      const escapes = CLAMP_ESCAPES.get(child);
+      if (escapes) gatherEscapes(escapes, context, into, nested);
+      continue;
+    }
     // one below the flow is on its stacking context's list already
     const below = HOISTED.has(child);
     if (child.topLayer) {
@@ -9763,6 +9785,30 @@ function gatherLayers(
       settleLayers(child, own);
     } else if (child.holdsLayers) {
       gatherLayers(child, context, into, nested);
+    }
+  }
+}
+
+/** The layers a box past a clamp point holds that the clamp does not hide
+ *  (`CLAMP_ESCAPES`), gathered as the box's own would be were it shown. */
+function gatherEscapes(
+  escapes: readonly Box[],
+  context: Box,
+  into: Box[],
+  nested: boolean,
+): void {
+  for (const escaped of escapes) {
+    const clips = clipsFor(escaped, context);
+    if (clips.length) CLIPS_BETWEEN.set(escaped, clips);
+    else CLIPS_BETWEEN.delete(escaped);
+    into.push(escaped);
+    if (stacksLayers(escaped)) {
+      if (!nested) continue;
+      const own: Box[] = [];
+      if (escaped.holdsLayers) gatherLayers(escaped, escaped, own);
+      settleLayers(escaped, own);
+    } else if (escaped.holdsLayers) {
+      gatherLayers(escaped, context, into, nested);
     }
   }
 }

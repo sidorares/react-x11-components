@@ -794,6 +794,13 @@ export const CLIPPED_CELLS = new WeakSet<Box>();
  *  paint and the paint bounds. Written through `clampBox` and `unclampBox`. */
 export const CLAMPED = new WeakSet<Box>();
 
+/** What a box past a clamp point holds that is positioned against
+ *  something outside it, and so is not hidden with it (CSS Overflow 4,
+ *  5.3.1: an absolutely positioned box is hidden only where its containing
+ *  block is): set by the layout that marks the box `CLAMPED`, and read by
+ *  the walks that pass over what a `CLAMPED` box holds. */
+export const CLAMP_ESCAPES = new WeakMap<Box, Box[]>();
+
 /** The line-clamp containers, which clip their floats at their content
  *  box's foot rather than holding them, whether or not a clamp point fell
  *  in them (CSS Overflow 4, 5.3.1): set as each is laid out. */
