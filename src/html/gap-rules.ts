@@ -641,7 +641,7 @@ function multicolSegments(box: Box): {
     });
   }
   if (rule.break !== 'none' || !wrapped.length) {
-    return { columns: [...columns, ...wrapped], rows: across };
+    return downward(box, { columns: [...columns, ...wrapped], rows: across });
   }
   // under `none` a gap's rule runs on from the first row to the last, across
   // a spanner, rows of columns `column-wrap` set among the rest
@@ -661,7 +661,18 @@ function multicolSegments(box: Box): {
       run.end = piece.end;
     }
   }
-  return { columns: runs, rows: across };
+  return downward(box, { columns: runs, rows: across });
+}
+
+/** A multicol container's rules put back across a `vertical-lr` frame, as
+ *  its rows of columns were (`ROWS_MIRRORED`): worked out down the frame,
+ *  as `vertical-rl`'s are, and drawn mirrored. */
+function downward(
+  box: Box,
+  pieces: { columns: RuleSegment[]; rows: RuleSegment[] },
+): { columns: RuleSegment[]; rows: RuleSegment[] } {
+  mirrored(box, undefined, pieces.columns, pieces.rows);
+  return pieces;
 }
 
 /** Rows of columns as a grid's tracks, from the content box's corner: the
