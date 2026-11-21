@@ -3257,8 +3257,14 @@ function layoutChildren(
       if (bottom > fit.floor) fit.over = true;
       // and after it where it ends in the room, where it is one of its
       // own (WPT's `line-clamp-auto-034`): its lines are none of the
-      // clamp's to count, and the box is the last thing that fits
-      else if (child.kind !== 'replaced' && establishesBFC(child)) {
+      // clamp's to count, and the box is the last thing that fits; or
+      // where no line is counted yet, whatever it is, since a clamp point
+      // before all of the content would hide what fits (`-069`: a spacer
+      // and a float lifted beside it, then a line past the room)
+      else if (
+        (child.kind !== 'replaced' && establishesBFC(child)) ||
+        fit.lines === 0
+      ) {
         fit.after = child;
         fit.afterLines = fit.lines;
       }

@@ -2192,6 +2192,27 @@ metric(
 );
 
 metric(
+  'line-clamp: auto whose first line is past the room keeps what fits before it',
+  async () => {
+    // WPT's line-clamp-auto-069: a spacer, and a float lifted beside it,
+    // fit; the first line does not. The clamp point is after the spacer's
+    // block, not before all of the content
+    const { node } = await render(
+      '<style>body{margin:0} div{width:160px;line-height:20px}' +
+        ' p{margin:0}</style>' +
+        '<div id="a" style="line-clamp:auto;max-height:2.5lh">' +
+        '<div id="b"><div style="height:2lh"></div>' +
+        '<div id="f" style="float:right;margin-top:-2lh">Float</div></div>' +
+        '<p id="p">One.</p></div>',
+    );
+    const el = view(node);
+    assert.ok(!CLAMPED.has(boxOf(el, 'b') as never), 'the block that fits');
+    assert.ok(CLAMPED.has(boxOf(el, 'p') as never), 'the line past the room');
+    assert.strictEqual(boxOf(el, 'a').height, 40);
+  },
+);
+
+metric(
   'a balanced clamp evens out the lines it keeps, the ellipsis on the last',
   async () => {
     // WPT's text-wrap-balance-line-clamp-003 and -004: the clamp first,
