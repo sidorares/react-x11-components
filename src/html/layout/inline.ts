@@ -1246,16 +1246,45 @@ function linesCut(over: ComputedStyle, width: number): boolean {
 }
 
 /** Whether the lines are cut by `text-overflow` where no one layout can:
- *  they wrap, or the ellipsis is a string (`linesCut`). */
+ *  they wrap, the ellipsis is a string, or text on them is in a look of
+ *  its own (`linesCut`, `markLooksApart`). */
 function cutApart(
   style: ComputedStyle,
   over: ComputedStyle,
   width: number,
+  items: readonly Item[],
 ): boolean {
   return (
     linesCut(over, width) &&
-    (wraps(style) || over.textOverflowMark !== '\u2026')
+    (wraps(style) ||
+      over.textOverflowMark !== '\u2026' ||
+      markLooksApart(style, items))
   );
+}
+
+/** What of a run the engine's own ellipsis is drawn in. */
+const MARK_LOOK = ['family', 'size', 'weight', 'style', 'color'] as const;
+
+/**
+ * Whether text on a block's lines is in another font or colour than the
+ * block: the ellipsis is drawn in the block's (CSS Overflow 3, 5.1: it is
+ * rendered with the block container's font and colour, WPT's
+ * `text-overflow-011` and `-014`), where the engine's is in the style of
+ * the span the line ends in, so such lines are cut a piece at a time
+ * (`ellipsizeLines`), which sets the mark in the block's style and on its
+ * baseline (`text-overflow-013`).
+ */
+function markLooksApart(style: ComputedStyle, items: readonly Item[]): boolean {
+  let own: Record<string, unknown> | null = null;
+  for (const item of items) {
+    if (item.kind !== 'text' || item.control) continue;
+    own ??= runFor('\u2026', style) as unknown as Record<string, unknown>;
+    const run = item.run as unknown as Record<string, unknown>;
+    // a `<br>`'s break, which has no look
+    if (run.text === '\n') continue;
+    for (const name of MARK_LOOK) if (run[name] !== own[name]) return true;
+  }
+  return false;
 }
 
 /**
@@ -1529,7 +1558,8 @@ function linesOf(
       item.kind === 'text' && (item.run as DocumentRun).emphasis !== undefined,
   );
   // lines `text-overflow` cuts where no one layout can (`cutApart`)
-  const cutsApart = !options.clamp && cutApart(style, over, options.width);
+  const cutsApart =
+    !options.clamp && cutApart(style, over, options.width, items);
   let strutted = emphasized || cutsApart;
 
   // Inline boxes' edges as spacers in one layout, where the engine left

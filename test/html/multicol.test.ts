@@ -6,7 +6,7 @@ import { act, cleanup, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { parseColor } from '../../src/html/css/values.js';
-import { COLUMN_PIECES } from '../../src/html/layout/boxes.js';
+import { COLUMN_PIECES, columned } from '../../src/html/layout/boxes.js';
 import { REPEATED, stripReach } from '../../src/html/layout/multicol.js';
 import { resolvedInsets } from '../../src/html/layout/block.js';
 import {
@@ -1193,6 +1193,37 @@ test('what is positioned after a spanner in a block it breaks stands where that 
   );
 });
 
+test('what comes after a spanner in a block it is in is laid out, in a first layout with nothing broken before it', async () => {
+  // a box a spanner is in is laid out once a row of columns, and was kept
+  // from the row before where no layout had broken anything yet: the
+  // block after the spanner was never laid out, and the container was as
+  // tall as the spanner (WPT css-break/out-of-flow-in-multicolumn-006).
+  // The flag is the process's, so a test before this one sets it
+  columned.any = false;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="m" style="column-count:2;column-gap:0;width:100px">' +
+      '<div><div style="column-span:all;height:5px"></div>' +
+      '<div id="b" style="height:60px"></div></div></div>',
+    300,
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'm').height, 35, 'the spanner and 30 under it');
+  assert.deepStrictEqual(
+    COLUMN_PIECES.get(boxOf(el, 'b') as never)?.map((p) => [
+      p.x,
+      p.y,
+      p.width,
+      p.height,
+    ]),
+    [
+      [0, 5, 50, 30],
+      [50, 5, 50, 30],
+    ],
+    'the block, balanced in two columns under the spanner',
+  );
+});
+
 test('what is positioned in a box that spans the columns, and in nothing in it, is positioned in the container', async () => {
   // CSS Multi-column 1, 6: a spanner's containing block is the multicol
   // container, past the boxes it is laid out through; and its offset
@@ -2221,6 +2252,27 @@ test("a multicol container another's columns break, its edges cloned, has its ru
   assert.deepStrictEqual(shown, [
     [100, 10, 80],
     [310, 10, 45],
+  ]);
+});
+
+test('a row of columns a spanner ends is balanced over what is positioned in it', async () => {
+  // WPT's css-break/out-of-flow-in-multicolumn-015: a block 100px tall
+  // before a spanner, a box positioned in it 160px tall. The row is
+  // balanced over the box, two columns of 80px, and the spanner comes
+  // under them
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="m" style="columns:2;width:100px;height:100px;' +
+      'column-fill:auto;column-gap:0"><div style="height:100px;' +
+      'position:relative"><div id="a" style="position:absolute;top:0;' +
+      'height:160px;width:50px"></div></div>' +
+      '<div id="s" style="column-span:all;height:20px"></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 's').y, 80);
+  assert.deepStrictEqual(piecesAt(el, 'a', 'm'), [
+    [0, 0, 50, 80],
+    [50, 0, 50, 80],
   ]);
 });
 

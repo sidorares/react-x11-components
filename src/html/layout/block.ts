@@ -5068,6 +5068,13 @@ function layoutRows(
     });
   }
   const all = box.children;
+  // A box a spanner is in is laid out once a row in this pass, holding
+  // other children each time, so nothing in it may be kept from the row
+  // before (`reuseLaid`): the flow asks `inMulticol` only once something
+  // has said there are columns, and in a document's first layout nothing
+  // had, where no row before this one broke anything. The content after
+  // the last spanner was the row before's, empty, and was never laid out.
+  columned.any = true;
   /** What is out of the flow in a box a spanner breaks, and where the
    *  strip had that box in the row it is in. */
   const rowStatics: [Box, Box, number][] = [];

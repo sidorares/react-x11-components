@@ -2357,6 +2357,37 @@ metric(
   },
 );
 
+metric(
+  "text-overflow's ellipsis is in the block's font and colour, not the text it ends",
+  async () => {
+    // CSS Overflow 3, 5.1: the ellipsis is rendered in the block
+    // container's style, where the engine's own took the style of the span
+    // the line ends in (WPT's `text-overflow-011` and `-014`)
+    const { node } = await render(
+      '<style>body{margin:0} div{width:120px;overflow:hidden;' +
+        'text-overflow:ellipsis;white-space:nowrap;color:rgb(0, 128, 0);' +
+        'font-size:16px} span{color:rgb(255, 0, 0);font-size:8px}</style>' +
+        '<div id="a">ab <span>leslie.alexander@example.com and more</span>' +
+        '</div>',
+    );
+    const el = view(node);
+    const lines = linesOf(el, 'a');
+    assert.strictEqual(lines.length, 1);
+    const text = lines[0].texts[lines[0].texts.length - 1];
+    const layout = text.layout as unknown as {
+      lines: {
+        runs: { span?: { text: string; color?: string; size?: number } }[];
+      }[];
+    };
+    const runs = layout.lines[text.layoutLine].runs;
+    const mark = runs[runs.length - 1]?.span;
+    assert.strictEqual(mark?.text, '\u2026');
+    assert.strictEqual(mark?.size, 16, "the block's size");
+    assert.match(String(mark?.color), /0, 128, 0|#008000/i, 'and colour');
+    assert.ok(lines[0].width <= 120, `within the box: ${lines[0].width}`);
+  },
+);
+
 metric('a truncated block cuts each of its lines, and loses none', async () => {
   // the cut was the paragraph's, one line with an ellipsis: a `truncate`
   // block with a `<br>` in it, or a `<pre>` that clips with
