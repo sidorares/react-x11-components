@@ -8313,7 +8313,10 @@ that fit beside it, or alone on the line it displaced where none do. Tailwind's 
 clamps, as in a browser, and that form's ellipsis cuts inside a word where
 the line has no room for it, as `text-overflow`'s does — as Chrome, Firefox
 and WebKit cut it, where the newer property keeps whole words; `line-clamp: auto` shows as many lines as the
-box's `height` or `max-height` holds, and `max-lines`, `continue` and
+box's `height` or `max-height` holds, a line counted where the box would
+end were it cut after it: a box around the line ends where its own height
+and limits say, so a line in a box taller than the room is past it, and
+one that overflows a box of no height is not; and `max-lines`, `continue` and
 `block-ellipsis` are read, a string in `line-clamp` or `block-ellipsis`
 drawn in place of the `…`. A block laid out a line at a time, around an
 image or a float, ends in the ellipsis as one laid out at once does, and

@@ -2145,6 +2145,31 @@ metric('line-clamp: auto shows the lines its height holds', async () => {
 });
 
 metric(
+  'line-clamp: auto keeps a line where the container would not overflow cut after it',
+  async () => {
+    // WPT's line-clamp-auto-035 and -040: a line in a box of a height of
+    // its own is where that box ends, and a line past a box of no height
+    // ends no higher than that box
+    const { node } = await render(
+      '<style>body{margin:0} div{width:160px;line-height:20px}' +
+        ' p{margin:0}</style>' +
+        '<div id="a" style="line-clamp:auto;max-height:3lh">' +
+        '<p>One.</p><div style="height:3lh"><p>Two.</p></div><p>Three.</p>' +
+        '</div>' +
+        '<div id="b" style="line-clamp:auto;max-height:1lh">' +
+        '<p>One.</p><div style="height:0"><p>Two.</p><p>Three.</p></div>' +
+        '<p>Four.</p></div>',
+    );
+    const el = view(node);
+    // cut after "Two." the container would be four lines tall
+    assert.strictEqual(linesOf(el, 'a').length, 1);
+    // cut after "Three.", one line: what overflows the empty box is no part
+    // of the container's height
+    assert.strictEqual(linesOf(el, 'b').length, 3);
+  },
+);
+
+metric(
   'a balanced clamp evens out the lines it keeps, the ellipsis on the last',
   async () => {
     // WPT's text-wrap-balance-line-clamp-003 and -004: the clamp first,

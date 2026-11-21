@@ -3618,9 +3618,9 @@ function countLines(
   const fit = clamp.fit;
   if (fit !== null) {
     if (fit.over) return;
-    const below = closingBelow(box, clamp.box);
     for (const line of result.lines) {
-      if (contentTop + line.y + line.height + below > fit.floor) {
+      const bottom = contentTop + line.y + line.height;
+      if (bottomIfCut(box, clamp.box, bottom) > fit.floor) {
         fit.over = true;
         return;
       }
@@ -3667,6 +3667,41 @@ function hideClamped(box: Box): void {
  * margin of the box and of each block around it in the container, the
  * margins collapsed where nothing parts them.
  */
+/**
+ * Where a line-clamp container's content would end, were it clamped after a
+ * line that ends at `bottom` in a block in it: each box around the line
+ * ending where its own height says, its `height` and its limits applied to
+ * what it would hold to the line, and a bottom margin collapsing out of it
+ * only where nothing ends it first (CSS Overflow 4, 5.3.1: an `auto` clamp
+ * point is the last after which the container does not overflow). A line
+ * in a box of a height of its own is past the container where that box is,
+ * however high the line, and one that overflows a box of no height, or of
+ * a `max-height`, is not.
+ */
+function bottomIfCut(box: Box, container: Box, bottom: number): number {
+  let margin = 0;
+  for (let at: Box | null = box; at && at !== container; at = at.parent) {
+    const top = at.y + at.borderTop + at.padTop;
+    const edge = at.padBottom + at.borderBottom;
+    const content = Math.max(0, bottom + (edge ? margin : 0) - top);
+    const natural = content + at.verticalExtra;
+    const set = resolveOrNull(at.style.height, at.percentHeightBase);
+    const outer =
+      set === null
+        ? natural
+        : at.style.boxSizing === 'border-box'
+          ? Math.max(set, at.verticalExtra)
+          : set + at.verticalExtra;
+    const used = clampHeight(at, outer);
+    bottom = at.y + used;
+    // a margin that hangs out of a box goes on hanging where the box ends
+    // with its content, and stops where an edge or a height ends it
+    if (edge || used !== natural) margin = 0;
+    margin = Math.max(margin, at.marginBottom);
+  }
+  return bottom + margin;
+}
+
 function closingBelow(box: Box, container: Box): number {
   let below = 0;
   let margin = 0;
