@@ -6140,7 +6140,10 @@ formatting context of its own, a `flow-root` say, breaks as any block does;
 only one that scrolls or clips, a multicol container, a clamp and an
 orthogonal flow go to a column whole, as does a box whose only content is a
 float that cannot be cut. A forced break before the first child of a box
-with layout containment is none, since it would be the box's own. A break
+with layout containment is none, since it would be the box's own. A forced
+break after a grid or flex item is after its row, and comes before the next
+row; after one in its box's last row it is the box's own, and goes out to
+the row or the box around it. A break
 `break-before` or `break-after` avoids (`avoid`, `avoid-column`), on a box
 or on what is about it, a flex item's included, goes to the last break
 before it in the column that is not avoided and has something with a height

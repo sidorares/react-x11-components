@@ -1250,6 +1250,33 @@ test('what comes after a spanner in a block it is in is laid out, in a first lay
   );
 });
 
+test('a forced break after an item beside another belongs to the row, and goes out to the row around its grid', async () => {
+  // Chrome's numbers, from WPT's css-break/grid/grid-item-fragmentation-047:
+  // a nested grid in the outer grid's first row holds two items side by
+  // side, the first `break-after: column`. That break is after the row,
+  // and the nested grid's last row is its last, so it is the outer row's:
+  // the second outer row starts the second column. Taken for a break
+  // before the item beside it, at the nested grid's top, it was none, and
+  // the second row was cut across both columns
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:2;column-gap:0;column-fill:auto;width:100px;' +
+      'height:100px"><div style="display:grid;' +
+      'grid-template-rows:50px 100px"><div style="display:grid;' +
+      'grid-template-columns:auto auto"><div style="break-after:column">' +
+      '</div><div></div></div><div id="b"></div></div></div>',
+    300,
+  );
+  const el = view(node);
+  const b = boxOf(el, 'b');
+  assert.deepStrictEqual(
+    [b.x, b.y, b.width, b.height],
+    [50, 0, 50, 100],
+    'the second row, whole in the second column',
+  );
+  assert.strictEqual(COLUMN_PIECES.get(b as never), undefined, 'not cut');
+});
+
 test('what is positioned in a box that spans the columns, and in nothing in it, is positioned in the container', async () => {
   // CSS Multi-column 1, 6: a spanner's containing block is the multicol
   // container, past the boxes it is laid out through; and its offset

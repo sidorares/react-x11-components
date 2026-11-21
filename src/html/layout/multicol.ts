@@ -519,6 +519,13 @@ function gather(
   }
   // a forced break after the box before, which comes before this one
   let pending = false;
+  // where the item that forces a break after it ends, in a box whose items
+  // stand side by side: the break comes before what starts below that, a
+  // later row, and an item beside it takes none of it. What no later row
+  // takes is the box's own break after it (CSS Grid 1, 12; CSS Flexbox 1,
+  // 10), as Blink propagates it out to the row around the box (WPT's
+  // css-break/grid/grid-item-fragmentation-047)
+  let pendingBelow = -Infinity;
   // and a `break-after: avoid` there, which avoids the break before this one
   let shunning = false;
   // a forced break before a box's first child is the box's own, which a box
@@ -542,10 +549,14 @@ function gather(
       COLUMN_PIECES.delete(child);
       REPEATED.delete(child);
     }
+    const takes = pending && (!beside || child.y >= pendingBelow - EPS);
     const before =
-      pending || (!heading && forces(child.style.passive['break-before']));
+      takes || (!heading && forces(child.style.passive['break-before']));
     heading = false;
-    pending = false;
+    if (takes || !beside) {
+      pending = false;
+      pendingBelow = -Infinity;
+    }
     // a break avoided before a box is avoided before its first unit, which
     // is where that break falls, however deep the unit is in it
     const shun = shunning || avoids(child.style.passive['break-before']);
@@ -558,7 +569,10 @@ function gather(
         const at = child.y - Math.max(0, child.marginTop);
         unit.forced = Math.min(unit.forced ?? Infinity, at);
       }
-      pending = forces(child.style.passive['break-after']);
+      if (forces(child.style.passive['break-after'])) {
+        pending = true;
+        pendingBelow = Math.max(pendingBelow, child.y + child.height);
+      } else if (!beside) pending = false;
       if (shun) unit.avoid = true;
       shunning = avoids(child.style.passive['break-after']);
     };
@@ -665,7 +679,10 @@ function gather(
     if (child.style.boxDecorationBreak === 'clone') into.cloned.push(child);
     reach(span);
     force(span[0]);
-    pending ||= afterInside === true;
+    if (afterInside === true) {
+      pending = true;
+      pendingBelow = Math.max(pendingBelow, child.y + child.height);
+    }
     // a break avoided after a box's last child is avoided after the box
     shunning ||= avoidInside === true;
   }
