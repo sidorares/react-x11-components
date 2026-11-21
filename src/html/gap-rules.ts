@@ -587,6 +587,13 @@ function multicolSegments(box: Box): {
   for (const row of rows) {
     exist = Math.max(exist, row.exists ?? (row.every ?? row.lefts).length);
   }
+  // the columns of the last row, past a spanner or of the only one, are as
+  // tall as what is left of the content box, where the content is shorter
+  // than the container: Blink's column boxes there reach its foot (WPT's
+  // multicol-gap-decorations-026 and -visibility-all-empty-columns). Not
+  // rows `column-wrap` sets, which are as tall as they say.
+  const last = all[all.length - 1]?.wrap ? null : all[all.length - 1];
+  const foot = box.contentY + box.contentHeight;
   for (const row of rows) {
     const every = (row.every ?? row.lefts)
       .slice(0, Math.max(exist, row.lefts.length))
@@ -604,7 +611,7 @@ function multicolSegments(box: Box): {
       pieces.push({
         at: box.contentX + (every[c] + row.width + every[c + 1]) / 2,
         from: top,
-        to: top + row.height,
+        to: row === last ? Math.max(top + row.height, foot) : top + row.height,
         gap: c,
       });
     }
