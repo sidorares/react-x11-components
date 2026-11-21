@@ -8438,8 +8438,9 @@ part of the document's: a copy, a caret and a selection skip them. HTML's
 `dir` isolates its element, `dir="auto"` and `<bdi>` take their first
 strong letter's direction, and `<bdo>` overrides. A block of
 `unicode-bidi: plaintext` takes its paragraph's direction from its first
-strong letter, to order and align its lines by; not yet each paragraph a
-forced break starts, which takes the first's. `vertical-align` raises and lowers text as well as
+strong letter, to order and align its lines by, and so does each paragraph
+a forced break starts, laid out under the one before it; a paragraph with
+anything but text on its lines still takes the first's. `vertical-align` raises and lowers text as well as
 images and inline blocks: the UA sheet's `<sup>` and `<sub>`, a length, a
 percentage of the line height, `text-top`, `text-bottom`, `middle`, and
 `top` and `bottom` against the line box, whose height each raised box adds
