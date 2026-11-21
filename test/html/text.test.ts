@@ -2191,6 +2191,26 @@ metric(
 );
 
 metric(
+  'line-clamp: auto counts a line in a box of size containment as no taller than the box',
+  async () => {
+    // WPT's line-clamp-auto-046: the box is as tall as though it held
+    // nothing, so its lines overflow it, and cut after any of them the
+    // container ends at the box's foot
+    const { node } = await render(
+      '<style>body{margin:0} div{width:160px;line-height:20px}' +
+        ' p{margin:0}</style>' +
+        '<div id="a" style="line-clamp:auto;max-height:2lh">' +
+        '<div style="contain:size"><p>A.</p><p>B.</p><p>C.</p></div>' +
+        '<p>One.</p><p>Two.</p><p>Three.</p></div>',
+    );
+    const el = view(node);
+    // the three in the box, and two after it
+    assert.strictEqual(linesOf(el, 'a').length, 5);
+    assert.strictEqual(boxOf(el, 'a').height, 40);
+  },
+);
+
+metric(
   'a balanced clamp evens out the lines it keeps, the ellipsis on the last',
   async () => {
     // WPT's text-wrap-balance-line-clamp-003 and -004: the clamp first,
