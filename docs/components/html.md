@@ -6739,7 +6739,10 @@ over them. A right-to-left container's horizontal rules start at their right.
 The rows of columns `column-wrap` makes are a grid of columns for its rules:
 a row rule is drawn in each row gap between them, across the columns, and a
 column rule stops at a row gap under `normal`, which is `intersection` there
-as at a spanner, its ends there junctions where the row rule is drawn.
+as at a spanner, its ends there junctions where the row rule is drawn. A
+row of columns balanced shorter than its row, before a spanner, has rules as
+tall as its columns, and under `column-rule-break: none` a gap's rule runs on
+through the spanner and every row.
 
 A grid or a flex container that columns break has its rules drawn in each
 piece, as the whole box has them, where its pieces stand; a row gap a break
