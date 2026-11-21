@@ -1488,16 +1488,15 @@ export function layoutColumns(
   // — in each row of columns about a spanner as well, each its own
   // (WPT's out-of-flow-in-multicolumn-015 and -097), though not in rows
   // `column-wrap` sets
-  if (
-    !filled &&
-    (!row || row.grid === null) &&
-    (box.style.columnFill !== 'auto' ||
-      beforeSpanner ||
-      !Number.isFinite(limit))
-  ) {
+  // and every row about a spanner is noted, balanced or not, so that a
+  // box positioned in one that is not is found in it, and not taken for
+  // the row before's, which it would make taller
+  const balanced =
+    box.style.columnFill !== 'auto' || beforeSpanner || !Number.isFinite(limit);
+  if (!filled && (!row || row.grid === null) && (balanced || row)) {
     const flow = strip;
-    const index = stripReach.note(box, from, flow);
-    strip = Math.max(strip, stripReach.hintOf(box, index));
+    const index = stripReach.note(box, from, flow, balanced);
+    if (balanced) strip = Math.max(strip, stripReach.hintOf(box, index));
   }
   if (filled) {
     // set in rows, above
@@ -1705,16 +1704,23 @@ export const stripReach = {
   /** The rows of columns this layout balanced, in order: the container,
    *  which of its rows, where the row's strip starts and how far its flow
    *  reached down it; and how far what is positioned in each reached. */
-  decided: [] as { box: Box; index: number; from: number; flow: number }[],
+  decided: [] as {
+    box: Box;
+    index: number;
+    from: number;
+    flow: number;
+    /** Whether the row is balanced, and so takes a hint at all. */
+    balanced: boolean;
+  }[],
   reached: new Map<object, number>(),
   hintOf(box: Box, index: number): number {
     return this.hints.get(box)?.[index] ?? 0;
   },
-  /** A row of a container's columns balanced: which of its rows it is. */
-  note(box: Box, from: number, flow: number): number {
+  /** A row of a container's columns, balanced or not: which of its rows. */
+  note(box: Box, from: number, flow: number, balanced: boolean): number {
     let index = 0;
     for (const d of this.decided) if (d.box === box) index += 1;
-    this.decided.push({ box, index, from, flow });
+    this.decided.push({ box, index, from, flow, balanced });
     return index;
   },
   /** A positioned box laid out in a container's strip, against a box in
@@ -1763,7 +1769,7 @@ export const stripReach = {
     const hints = new Map<Box, number[]>();
     for (const entry of this.decided) {
       const { box, index, flow } = entry;
-      const need = this.reached.get(entry) ?? 0;
+      const need = entry.balanced ? (this.reached.get(entry) ?? 0) : 0;
       const had = this.hints.get(box)?.[index] ?? 0;
       let list = hints.get(box);
       if (!list) hints.set(box, (list = []));

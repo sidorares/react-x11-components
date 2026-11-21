@@ -2255,6 +2255,46 @@ test("a multicol container another's columns break, its edges cloned, has its ru
   ]);
 });
 
+test('what is positioned in a row of columns nothing balances is no part of the row before', async () => {
+  // the last row under `column-fill: auto` is filled, not balanced, and
+  // what is positioned in it was taken for the row before's, the last one
+  // balanced: that row grew to hold it, and pushed the spanner and the
+  // box down to the container's foot, in columns 5px tall. Chrome's numbers
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="column-count:2;column-fill:auto;column-gap:0;' +
+      'height:140px;width:100px"><div id="b" style="height:60px"></div>' +
+      '<div style="column-span:all;height:5px"></div>' +
+      '<div style="position:relative"><div id="a" style="position:absolute;' +
+      'width:50px;height:200px"></div></div></div>',
+    300,
+  );
+  const el = view(node);
+  const pieces = (id: string) =>
+    COLUMN_PIECES.get(boxOf(el, id) as never)?.map((p) => [
+      p.x,
+      p.y,
+      p.width,
+      p.height,
+    ]);
+  assert.deepStrictEqual(
+    pieces('b'),
+    [
+      [0, 0, 50, 30],
+      [50, 0, 50, 30],
+    ],
+    'balanced over itself alone',
+  );
+  assert.deepStrictEqual(
+    pieces('a'),
+    [
+      [0, 35, 50, 105],
+      [50, 35, 50, 95],
+    ],
+    'in the row under the spanner',
+  );
+});
+
 test('a row of columns a spanner ends is balanced over what is positioned in it', async () => {
   // WPT's css-break/out-of-flow-in-multicolumn-015: a block 100px tall
   // before a spanner, a box positioned in it 160px tall. The row is
