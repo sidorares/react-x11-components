@@ -2212,6 +2212,27 @@ metric(
 );
 
 metric(
+  'line-clamp: auto keeps a line past one that does not fit, where cut after it the container ends higher',
+  async () => {
+    // WPT's line-clamp-auto-063: cut after "Three." the margin below it
+    // collapses out of the box of a max-height and takes the container past
+    // its room; cut after "Four.", which overflows that box, the margin
+    // stays in it, and the container ends at the box's maximum
+    const { node } = await render(
+      '<style>body{margin:0} #a{width:160px;line-height:20px} p{margin:0}' +
+        '</style>' +
+        '<div id="a" style="line-clamp:auto;max-height:3lh">' +
+        '<div style="max-height:3lh"><div style="margin-bottom:1lh">' +
+        '<p>One.</p><p>Two.</p><p>Three.</p><p>Four.</p></div></div>' +
+        '<p id="z">Five.</p></div>',
+    );
+    const el = view(node);
+    assert.strictEqual(linesOf(el, 'a').length, 4);
+    assert.ok(CLAMPED.has(boxOf(el, 'z') as never), 'past the clamp point');
+  },
+);
+
+metric(
   'a balanced clamp evens out the lines it keeps, the ellipsis on the last',
   async () => {
     // WPT's text-wrap-balance-line-clamp-003 and -004: the clamp first,
