@@ -6159,7 +6159,9 @@ the columns, against a box in their flow, is shared out with the content, but
 for a box no break may fall inside:
 positioned boxes are laid out after the columns are set, so the container
 keeps how far down they reached, and where that moves what it is balanced
-over the document is laid out once more, and only once. A container with a `height` or a
+over the document is laid out once more, and only once. Each row of columns about a
+spanner is balanced over what is positioned in it, a row at a time, though
+not rows `column-wrap` sets. A container with a `height` or a
 `max-height` has columns no taller than it, and what they do not hold goes
 on in columns past its edge; under `column-fill: auto` its columns are that
 tall, each filled before the next is started, and with no height to fill
@@ -8376,7 +8378,8 @@ ellipsis, as Chrome and Safari have it),
 `text-overflow` on a block that clips (`truncate`: each line that runs past
 the box's end — or a float's, beside it — cut there, inside a word if need
 be but never inside a grapheme cluster, with an ellipsis, as a browser cuts
-it; a word too long for a line that wraps is cut the same way, and so are
+it, the ellipsis in the block's font and colour whatever text it ends; a
+word too long for a line that wraps is cut the same way, and so are
 the lines a clamp leaves. `text-overflow: "<string>"` draws the string in
 the ellipsis's place, in the paragraph's direction, a run of forced breaks
 in it made one space, or nothing between two wide characters, and a line's
