@@ -953,6 +953,12 @@ function orderOf(box: Box): number {
  *  a browser's does (`elementRect`). */
 export const CUT_BLOCKS = new WeakMap<Box, Box[]>();
 
+/** The inline box each of those blocks broke, the nearest one around it,
+ *  by its first piece (`breakAround`): in the tree the block stands beside
+ *  the box, but it is in it, and the box is in the chain of its containing
+ *  blocks (`containingParent`). */
+export const BROKEN_BY = new WeakMap<Box, Box>();
+
 /** The pieces after the first of an inline box broken around blocks, under
  *  the first (`breakAround`): a sticky one moves as one box, by what all of
  *  it comes to (`applyRelativeOffsets`), and its first piece moves the rest. */
@@ -7246,6 +7252,10 @@ function breakAround(inline: Box): Box[] | null {
   }
   CUT_BLOCKS.set(pieces[0], blocks);
   CUT_PIECES.set(pieces[0], pieces.slice(1));
+  // an inline box inside this one broke them first, and is nearer
+  for (const block of blocks) {
+    if (!BROKEN_BY.has(block)) BROKEN_BY.set(block, pieces[0]);
+  }
   const fade = inline.style.opacity;
   if (fade < 1) {
     for (const block of blocks) {
