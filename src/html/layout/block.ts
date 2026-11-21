@@ -5105,6 +5105,18 @@ function layoutRows(
         // down a strip that goes on from the row before's, which the row's
         // columns are cut from and set at `y`
         const flow = layoutChildren(box, ctx, floats, from, columns.width);
+        // what is out of the flow in a box a spanner breaks stands from
+        // where the strip has that box in this row, which is not where it
+        // has it in its first, whose top the whole box is taken from
+        // (`setStripPlace`): here, before the columns move it
+        for (const [b, piece] of broken) {
+          if (r < piece.first || r > piece.last) continue;
+          for (const child of b.children) {
+            if (child.outOfFlow && child.staticPosition?.from === b) {
+              rowStatics.push([child, b, b.y]);
+            }
+          }
+        }
         box.width = borderBoxWidth;
         const strip = Math.max(
           flow.height,
@@ -5123,17 +5135,6 @@ function layoutRows(
       }
       for (const [b, piece] of broken) {
         if (r < piece.first || r > piece.last) continue;
-        // what is out of the flow in this row stands from where the strip
-        // has the box in this row, which is not where it has it in its
-        // first, whose top the whole box is taken from (`setStripPlace`)
-        const at = stripOf(b)?.y;
-        if (at !== undefined) {
-          for (const child of b.children) {
-            if (child.outOfFlow && child.staticPosition?.from === b) {
-              rowStatics.push([child, b, at]);
-            }
-          }
-        }
         notePiece(b, piece, r);
       }
       const child = spanners[r];
