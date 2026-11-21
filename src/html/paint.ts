@@ -5607,7 +5607,11 @@ function paintGapRules(
         (Math.min(seg.at - width / 2, seg.span?.[0] ?? Infinity) <
           within[0] - 0.5 ||
           Math.max(seg.at + width / 2, seg.span?.[1] ?? -Infinity) >
-            within[1] + 0.5)
+            within[1] + 0.5 ||
+          // and a gap the piece ends with, or starts with, is one a break
+          // follows or comes after: no row of the piece is past it
+          (seg.span !== undefined &&
+            (seg.span[1] >= within[1] - 0.5 || seg.span[0] <= within[0] + 0.5)))
       ) {
         continue;
       }
@@ -5724,9 +5728,10 @@ function pieceRules(
     p.x + box.borderLeft + box.padLeft,
     p.wholeY + box.borderTop + box.padTop,
   ];
-  if (s.grid) {
+  if (s.grid || s.columns) {
     // the tracks are from the box's content box, which a piece's frame
-    // has inside its border and padding
+    // has inside its border and padding; so are a multicol container's
+    // rows of columns, which another's columns break between (`moveNested`)
     return {
       x: box.contentX - box.borderLeft - box.padLeft,
       y: box.contentY - box.borderTop - box.padTop,
