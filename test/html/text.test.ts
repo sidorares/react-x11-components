@@ -2219,7 +2219,7 @@ metric(
     // last line, and ends in the room, is the clamp point, so the float is
     // kept whole and the line before it ends in no ellipsis
     const { node } = await render(
-      '<style>body{margin:0} div{width:160px;line-height:20px}' +
+      '<style>body{margin:0} #a{width:160px;line-height:20px}' +
         ' p{margin:0}</style>' +
         '<div id="a" style="line-clamp:auto;max-height:3lh">' +
         '<p>One.</p><div id="f" style="float:right">A<br>B</div>' +
