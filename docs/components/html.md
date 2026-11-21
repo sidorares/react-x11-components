@@ -8480,7 +8480,8 @@ part of the document's: a copy, a caret and a selection skip them. HTML's
 `dir` isolates its element, `dir="auto"` and `<bdi>` take their first
 strong letter's direction, and `<bdo>` overrides. A block of
 `unicode-bidi: plaintext` takes its paragraph's direction from its first
-strong letter, to order and align its lines by, and so does each paragraph
+strong letter, a right-to-left or left-to-right mark among them, to order
+and align its lines by, and so does each paragraph
 a forced break starts, laid out under the one before it; a paragraph with
 anything but text on its lines still takes the first's. `vertical-align` raises and lowers text as well as
 images and inline blocks: the UA sheet's `<sup>` and `<sub>`, a length, a
@@ -8542,7 +8543,8 @@ there, which a selection across it shows.
 `text-emphasis-color` and `text-emphasis-position`, and their `-webkit-`
 spellings (CSS Text Decoration 3, 3). A mark is drawn over or under each
 character but a space, a separator, a punctuation mark and a control or
-format character, centred on it, and where a ruby annotation of the mark
+format character, centred on it and not on the `letter-spacing` after it,
+and where a ruby annotation of the mark
 would be: at half the text's size, on a line of `line-height: normal`
 against the edge of the text's face (`placeMarks`). A line makes room for
 its marks as for an annotation, so a paragraph with marks is laid out a
