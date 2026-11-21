@@ -2388,6 +2388,35 @@ metric(
   },
 );
 
+metric(
+  'the ellipsis text-overflow ends each line in is drawn on each of them',
+  async () => {
+    // the engine hands back one layout for the same runs, so the ellipsis
+    // of each line, and what each kept of the same text, was one layout,
+    // drawn once at the first line's place (WPT's `text-overflow-013`)
+    const { node } = await render(
+      '<style>body{margin:0} div{width:40px;overflow:hidden;' +
+        'text-overflow:ellipsis;white-space:pre;line-height:20px}' +
+        ' span{color:rgb(255, 0, 0)}</style>' +
+        '<div id="a"> <span>xxxxxxxx<br> xxxxxxxx<br> xxxxxxxx</span></div>',
+    );
+    const el = view(node);
+    const lines = linesOf(el, 'a');
+    assert.strictEqual(lines.length, 3);
+    const ops: PaintOp[] = [];
+    await fillsOf(el, ops);
+    const drawnOn = new Set<number>();
+    for (const op of ops) {
+      if (op.op !== 'text') continue;
+      const line = lines.findIndex(
+        (l) => op.y >= l.y - 1 && op.y < l.y + l.height,
+      );
+      if (line >= 0) drawnOn.add(line);
+    }
+    assert.deepStrictEqual([...drawnOn].sort(), [0, 1, 2], 'every line');
+  },
+);
+
 metric('a truncated block cuts each of its lines, and loses none', async () => {
   // the cut was the paragraph's, one line with an ellipsis: a `truncate`
   // block with a `<br>` in it, or a `<pre>` that clips with
