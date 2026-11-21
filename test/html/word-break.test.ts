@@ -3,7 +3,7 @@
 // `css/css-text/word-break/` and `line-break/` hold the rest.
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { cleanup } from 'react-x11/test';
+import { act, cleanup, fireEvent } from 'react-x11/test';
 
 import { breakOpportunities } from '../../src/html/layout/word-break.js';
 import type { BreakRule } from '../../src/html/layout/word-break.js';
@@ -151,3 +151,24 @@ metric(
     assert.equal(a[0].width, linesOf(el, 'b')[0].width);
   },
 );
+
+metric('hyphens: none breaks at no soft hyphen, and manual does', async () => {
+  const word = 'Deoxy­ribo­nucleic acid';
+  const html = (hyphens: string) =>
+    `<div id="t" style="font:32px/1 monospace;width:10ch;hyphens:${hyphens}">${word}</div>`;
+  const { node: manual } = await render(html('manual'), 600);
+  assert.equal(lineTextsOf(view(manual), 't').length, 3, 'at a soft hyphen');
+  const { node } = await render(html('none'), 600);
+  const lines = lineTextsOf(view(node), 't');
+  assert.equal(lines.length, 2, `the word whole: ${lines.join(' | ')}`);
+  assert.equal(lines[1].trim(), 'acid');
+  // a copy is of the document's text, its soft hyphens as they were
+  await act(async () => {
+    fireEvent.mouseDown(node, {});
+    fireEvent.mouseUp(node, {});
+  });
+  await act(async () => {
+    fireEvent.key(0x61 /* a */, { modifiers: ['Control'] });
+  });
+  assert.equal(JSON.stringify(node.selectedText()), JSON.stringify(word));
+});
