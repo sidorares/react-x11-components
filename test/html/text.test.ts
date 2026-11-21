@@ -2080,6 +2080,38 @@ metric(
 );
 
 metric(
+  'a positioned box in a box a clamp hides is drawn where what it is placed against is not hidden',
+  async () => {
+    // CSS Overflow 4, 5.3.1: an absolutely positioned box past the clamp
+    // point is hidden only where its containing block is: one in a block or
+    // a float the clamp hides, placed against the clamp container, is
+    // drawn, and the block and the float are not (WPT's
+    // `line-clamp-with-abspos-025` and `-026`)
+    const { node } = await render(
+      '<style>body{margin:0} .c{line-clamp:2;position:relative;' +
+        'line-height:20px;white-space:pre} .a{position:absolute;left:0;' +
+        'top:0;width:20px;height:20px;background:#00aa00}' +
+        ' .b{background:#ff0000} .f{float:left;width:30px;height:30px;' +
+        'background:#ff0000}</style>' +
+        '<div class="c">one\ntwo\n<div class="b">three<div class="a">' +
+        '</div></div></div>' +
+        '<div class="c">one\ntwo\n<div class="f"><div class="a"></div>' +
+        '</div>three</div>',
+    );
+    const fills = await fillsOf(view(node));
+    const shown = fills.filter(
+      (f) => f.style === '#00aa00' && f.w === 20 && f.h === 20,
+    );
+    assert.strictEqual(shown.length, 2, 'both drawn');
+    assert.strictEqual(
+      fills.filter((f) => f.style === '#ff0000').length,
+      0,
+      'and neither box they are in',
+    );
+  },
+);
+
+metric(
   'a clamp ends in the string it names, and a line laid out a piece at a time takes it too',
   async () => {
     // CSS Overflow 4, 5.4: `line-clamp: 2 "…more"` draws its string where
