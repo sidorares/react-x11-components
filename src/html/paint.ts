@@ -5792,8 +5792,31 @@ function paintColumnPieces(
     if (!(piece.height > 0 && piece.width > 0)) continue;
     if (piece.cloned) {
       // a whole box of its own, which casts its own shadow (CSS
-      // Fragmentation 3, 5.4)
+      // Fragmentation 3, 5.4), and its part of the rules, where the whole
+      // box would stand for what it holds
       paintClonedPiece(ctx, box, piece, options);
+      if (rules) {
+        // inside the edges the piece clones, which hold none of the box's
+        // content, and so none of its rules
+        const left = Math.round(piece.x + options.originX);
+        const top = Math.round(
+          piece.y + box.borderTop + box.padTop + options.originY,
+        );
+        const right = Math.round(piece.x + piece.width + options.originX);
+        const bottom = Math.round(
+          piece.y +
+            piece.height -
+            box.borderBottom -
+            box.padBottom +
+            options.originY,
+        );
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(left, top, right - left, bottom - top);
+        ctx.clip();
+        pieceGapRules(ctx, box, piece, rules, options);
+        ctx.restore();
+      }
       continue;
     }
     const frame: Frame = {
@@ -5825,23 +5848,33 @@ function paintColumnPieces(
     paintBorders(ctx, frame, options);
     // the rules in its gaps, as the whole box has them: the piece's part
     // of them, which leaves none at a break (CSS Gap Decorations 1, 3.6)
-    if (rules) {
-      const dx = piece.x - rules.x;
-      const dy = piece.wholeY - rules.y;
-      paintGapRules(
-        ctx,
-        box,
-        {
-          ...options,
-          originX: options.originX + dx,
-          originY: options.originY + dy,
-        },
-        [piece.y - dy, piece.y + piece.height - dy],
-        rules.frame,
-      );
-    }
+    if (rules) pieceGapRules(ctx, box, piece, rules, options);
     ctx.restore();
   }
+}
+
+/** A piece's part of the rules of a box columns broke, drawn where the
+ *  whole box would stand for what it holds in that piece. */
+function pieceGapRules(
+  ctx: PaintContext,
+  box: Box,
+  piece: ColumnPiece,
+  rules: { x: number; y: number; frame?: FlexFrame },
+  options: PaintOptions,
+): void {
+  const dx = piece.x - rules.x;
+  const dy = piece.wholeY + (piece.unclone ?? 0) - rules.y;
+  paintGapRules(
+    ctx,
+    box,
+    {
+      ...options,
+      originX: options.originX + dx,
+      originY: options.originY + dy,
+    },
+    [piece.y - dy, piece.y + piece.height - dy],
+    rules.frame,
+  );
 }
 
 /** A piece's frame: the piece, with every edge of its box. */
