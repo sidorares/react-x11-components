@@ -6140,7 +6140,10 @@ formatting context of its own, a `flow-root` say, breaks as any block does;
 only one that scrolls or clips, a multicol container, a clamp and an
 orthogonal flow go to a column whole, as does a box whose only content is a
 float that cannot be cut. A forced break before the first child of a box
-with layout containment is none, since it would be the box's own. A break
+with layout containment is none, since it would be the box's own. A forced
+break after a grid or flex item is after its row, and comes before the next
+row; after one in its box's last row it is the box's own, and goes out to
+the row or the box around it. A break
 `break-before` or `break-after` avoids (`avoid`, `avoid-column`), on a box
 or on what is about it, a flex item's included, goes to the last break
 before it in the column that is not avoided and has something with a height
@@ -8375,9 +8378,11 @@ content box foot and is no taller for them. An absolutely positioned box
 in a block or a float past the clamp point is hidden only where what it is
 placed against is: one placed against the container, or a box around it,
 is drawn, and the box it is in is not, though its opacity still fades it:
-the hidden box is a group of what escapes it, as Chromium draws it. An
-inline box all of whose text the clamp drops, or the ellipsis displaces, is
-past the clamp point, and what is positioned against it is hidden. Where
+the hidden box is a group of what escapes it, as Chromium draws it. The
+clamp is no part of how wide the content is: a container's min-content and
+max-content widths are those of all its lines, with no ellipsis. An inline
+box all of whose text the clamp drops, or the ellipsis displaces, is past
+the clamp point, and what is positioned against it is hidden. Where
 the last line's first word is too wide to leave the ellipsis room, a line
 of text that wraps is displaced whole and shows the ellipsis alone, as the
 non-tentative WPT tests, Edge and Safari have it; Chrome's experimental
