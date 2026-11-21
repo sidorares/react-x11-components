@@ -164,6 +164,7 @@ import type { Columns, SpannedRows } from './multicol.js';
 import {
   BOX_RAISES,
   Box,
+  CLAMP_ESCAPES,
   clampBox,
   CLAMP_CUT,
   COLUMN_BOXES,
@@ -3107,6 +3108,17 @@ function layoutChildren(
     if (clamp !== null && !child.outOfFlow) {
       if (clamp.done) {
         hideClamped(child);
+        // what it holds that is positioned against this box or one around
+        // it is no part of what is hidden, and is placed as though the
+        // box it is in were here
+        const top = y + marginOf(pendingMargin);
+        for (const escaped of CLAMP_ESCAPES.get(child) ?? []) {
+          placeStatic(escaped, box, contentLeft, contentWidth, top);
+          ctx.positioned.push({
+            box: escaped,
+            containing: containingBlockFor(escaped) ?? box,
+          });
+        }
         continue;
       }
       unclampBox(child);
@@ -3735,16 +3747,59 @@ function countLines(
   }
 }
 
+/** What a box past a clamp point holds that is absolutely positioned
+ *  against a box outside it, which the clamp does not hide (CSS Overflow 4,
+ *  5.3.1; WPT's `line-clamp-with-abspos-025` and `-026`): null where there
+ *  is none. What such a box holds is its own to lay out. */
+function escapingClamp(hidden: Box): Box[] | null {
+  let out: Box[] | null = null;
+  const stack = [...hidden.children];
+  while (stack.length) {
+    const at = stack.pop()!;
+    if (at.kind === 'text' || at.kind === 'break') continue;
+    if (at.outOfFlow) {
+      const containing = containingBlockFor(at);
+      let inside = false;
+      for (let up = containing; up; up = up.parent) {
+        if (up === hidden) {
+          inside = true;
+          break;
+        }
+      }
+      if (!inside) {
+        (out ??= []).push(at);
+        continue;
+      }
+    }
+    for (const child of at.children) stack.push(child);
+  }
+  return out;
+}
+
 /** Mark a box past a clamp point, and take from everything in it the lines
  *  a layout before gave it: a hidden box is not laid out, and nothing —
  *  a selection, a caret — may find text in it where it stood. */
 function hideClamped(box: Box): void {
   clampBox(box);
+  const escapes = escapingClamp(box);
+  const before = CLAMP_ESCAPES.get(box);
+  // the order of the layers reads them, so a change is one of `layerMarks`
+  if (
+    (before?.length ?? 0) !== (escapes?.length ?? 0) ||
+    before?.some((at, i) => at !== escapes![i])
+  ) {
+    layerMarks.moved += 1;
+  }
+  if (escapes) CLAMP_ESCAPES.set(box, escapes);
+  else CLAMP_ESCAPES.delete(box);
+  const kept = escapes ? new Set(escapes) : null;
   const stack = [box];
   while (stack.length) {
     const at = stack.pop()!;
     at.lines = null;
-    for (const child of at.children) stack.push(child);
+    for (const child of at.children) {
+      if (!kept?.has(child)) stack.push(child);
+    }
   }
 }
 

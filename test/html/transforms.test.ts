@@ -436,6 +436,29 @@ metric(
   },
 );
 
+metric(
+  'a fragment scaled from a fraction of a pixel down is cut where its pieces are, and leaves no line at its head',
+  async () => {
+    // WPT's css-break/transform-018, 20.4px down the page: the fragment in
+    // the second column is scaled twice from its foot, and was cut a pixel
+    // inside what it drew, a line of the container's red at its head
+    const { result } = await render(
+      PAGE +
+        '<div style="height:20.4px"></div>' +
+        '<div style="display:flow-root;height:100px">' +
+        '<div style="margin-top:50px;columns:4;gap:0;column-fill:auto;' +
+        'width:100px;height:50px;background:#ff0000">' +
+        '<div style="height:20px"></div>' +
+        '<div style="transform:scaleY(2);transform-origin:bottom;' +
+        'height:150px"><div><div style="position:absolute;width:100%;' +
+        'height:100%;background:#0000ff"></div></div></div></div></div>',
+    );
+    await act();
+    await expectPixel(result.ctx, 37, 20, BLUE);
+    await expectPixel(result.ctx, 62, 20, BLUE);
+  },
+);
+
 metric('an inline icon turned a quarter points the other way', async () => {
   // GitHub's menu buttons hold a triangle pointing right, turned to point
   // down with `transform: rotate(90deg)`, and it pointed right
