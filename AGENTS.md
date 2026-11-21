@@ -6252,7 +6252,15 @@ differ only in it are two layouts. CSS matches a family's faces by width
 before slant and weight (5.2), and the font manager picks by weight and
 slant alone, so faces of several widths in one family are registered a name
 per width, and the same layer hands a run the list with its width's name
-first.
+first. The slant is the same story: to an engine a face is upright or
+slanted, and CSS tells an italic face from an oblique one, trying an
+oblique face for an italic only where `font-synthesis-style` is not
+`oblique-only` (`SLANT_ORDER`, `slantOf`). So a family with an oblique face
+is registered a name per width and slant, and a run whose slant its `style`
+cannot say carries it as `slant`, in `RUN_FIELDS` as `stretch` is. **Anything
+that matches a face of the document's asks `bestFace` with a `Slant`**, or an
+italic under `oblique-only` is set in the oblique face, and an oblique in the
+italic one.
 
 **A face's rule sets its size and its lines, in the same layer.**
 `size-adjust` scales the run's size there, and `layout/axes.ts` answers
