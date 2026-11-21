@@ -21,6 +21,7 @@ import {
   lineTextsOf,
   linesOf,
   metric,
+  pixelsIn,
   render,
   render2x,
   textRunsOf,
@@ -2128,6 +2129,31 @@ metric(
       0,
       'and neither box they are in',
     );
+  },
+);
+
+metric(
+  'a positioned box that escapes a faded box a clamp hides is faded with it',
+  async () => {
+    // the hidden block's opacity makes a group of what it holds, and what
+    // escapes the clamp is still in it, as Chromium draws it
+    const { result } = await render(
+      '<style>body{margin:0;background:#ffffff} .c{line-clamp:2;' +
+        'position:relative;line-height:20px;white-space:pre}' +
+        ' .h{opacity:0.5} .a{position:absolute;left:100px;top:0;' +
+        'width:20px;height:20px;background:#00aa00}</style>' +
+        '<div class="c">one\ntwo\n<div class="h">three<div class="a">' +
+        '</div></div></div>',
+    );
+    const [r, g, b] = await pixelsIn(result.ctx, {
+      x: 110,
+      y: 10,
+      width: 1,
+      height: 1,
+    });
+    // green at half over white
+    assert.ok(Math.abs(r - 128) < 8 && Math.abs(g - 212) < 8, `${r} ${g} ${b}`);
+    assert.ok(Math.abs(b - 128) < 8, `${r} ${g} ${b}`);
   },
 );
 
