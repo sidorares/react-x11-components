@@ -3340,11 +3340,15 @@ function layoutChildren(
     // bottom, and spends it: the margin neither escapes nor makes the box
     // taller still. 8.3.1 has it collapse only through a box of no
     // `min-height`; browsers part it only where the minimum is what sets
-    // the height, and the suite has it so. A maximum leaves it to collapse
-    // through, as 8.3.1 has it, where the suite has a test either way
+    // the height, and the suite has it so. A maximum the content overflows
+    // parts it too, as Chrome parts it: the box ends at the maximum, and
+    // what it holds runs past its bottom with the margin (WPT's
+    // `line-clamp-auto-063`'s reference)
+    const natural = height + box.verticalExtra;
+    const limited = clampHeight(box, natural);
     const parted =
-      box.style.minHeight !== AUTO &&
-      clampHeight(box, height + box.verticalExtra) > height + box.verticalExtra;
+      (box.style.minHeight !== AUTO && limited > natural) ||
+      (box.style.maxHeight !== 'none' && limited < natural);
     return { height, hanging: parted ? NO_MARGIN : pendingMargin };
   }
   // The cleared block's top border edge is where it would be with a border
