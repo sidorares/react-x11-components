@@ -8432,7 +8432,10 @@ something lets it shrink, as `min-w-0` does), `overflow-wrap` (a word too long f
 its line runs past the line's end, as in a browser, unless the paragraph
 says it may be cut: `overflow-wrap: break-word` or `anywhere`,
 `word-break: break-all` or `break-word`, or `line-break: anywhere`, all of
-which cut it where the line runs out; the text engine answers for a whole
+which cut it where the line runs out — but where `break-all` or `anywhere`
+has already worked out where a line may break and no `overflow-wrap` says
+so, what is wider than the room between two of those places overflows, as
+`a‐` does, a hyphen keeping the letter before it; the text engine answers for a whole
 paragraph, so an element in it that asks has its every word cut, and text
 in a script written without spaces is cut regardless, as the engine finds
 no words in it — CoreText, on macOS, cuts a word too long whatever the

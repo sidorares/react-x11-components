@@ -152,6 +152,19 @@ metric(
   },
 );
 
+metric(
+  'break-all overflows with what it may not break, and cuts no word',
+  async () => {
+    // a hyphen keeps the letter before it, even one break-all reads as an
+    // ideograph: `a‐` is wider than the room and stays whole
+    const { node } = await render(
+      '<div id="t" style="font:20px/1 monospace;width:1ch;word-break:break-all">aa‐a</div>',
+      400,
+    );
+    assert.deepEqual(lineTextsOf(view(node), 't'), ['a', 'a‐', 'a']);
+  },
+);
+
 metric('hyphens: none breaks at no soft hyphen, and manual does', async () => {
   const word = 'Deoxy­ribo­nucleic acid';
   const html = (hyphens: string) =>
