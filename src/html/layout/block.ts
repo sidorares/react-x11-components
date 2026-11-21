@@ -150,6 +150,8 @@ import {
   isSpanner,
   containingParent,
   joinedGeometry,
+  forgetStripStatic,
+  restateStripStatic,
   setStripPlace,
   columnsSet,
   cutIntoColumns,
@@ -5073,6 +5075,9 @@ function layoutRows(
   // had, where no row before this one broke anything. The content after
   // the last spanner was the row before's, empty, and was never laid out.
   columned.any = true;
+  /** What is out of the flow in a box a spanner breaks, and where the
+   *  strip had that box in the row it is in. */
+  const rowStatics: [Box, Box, number][] = [];
   /** Where the next row's content starts down the strip, and the columns
    *  of all the rows (`joinedGeometry`). */
   let from = top;
@@ -5107,6 +5112,18 @@ function layoutRows(
         // down a strip that goes on from the row before's, which the row's
         // columns are cut from and set at `y`
         const flow = layoutChildren(box, ctx, floats, from, columns.width);
+        // what is out of the flow in a box a spanner breaks stands from
+        // where the strip has that box in this row, which is not where it
+        // has it in its first, whose top the whole box is taken from
+        // (`setStripPlace`): here, before the columns move it
+        for (const [b, piece] of broken) {
+          if (r < piece.first || r > piece.last) continue;
+          for (const child of b.children) {
+            if (child.outOfFlow && child.staticPosition?.from === b) {
+              rowStatics.push([child, b, b.y]);
+            }
+          }
+        }
         box.width = borderBoxWidth;
         const strip = Math.max(
           flow.height,
@@ -5222,6 +5239,10 @@ function layoutRows(
       );
     }
     COLUMN_PIECES.set(b, pieces);
+  }
+  for (const [child, b, at] of rowStatics) {
+    const first = stripOf(b)?.y;
+    if (first !== undefined) restateStripStatic(child, at - first);
   }
   // and one at its end, nothing set after it, its bottom margin
   if (trim & 2 && margin !== null) {
@@ -11998,6 +12019,9 @@ function placeStatic(
     right: x + width - parent.x,
     y: y - parent.y,
   };
+  // and where columns had it before they moved it, which is this layout's
+  // to say again, or no one's
+  if (columned.any) forgetStripStatic(box);
 }
 
 /**
