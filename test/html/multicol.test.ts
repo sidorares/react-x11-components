@@ -1162,6 +1162,37 @@ test('a box that spans the columns from inside a block breaks the block about it
   assert.deepStrictEqual(at(el, 'c', 'n'), [0, 0, 210, 20], 'in both');
 });
 
+test('what is positioned after a spanner in a block it breaks stands where that row of columns starts', async () => {
+  // the block is in the strip as its first row has it, and the box out of
+  // the flow in its second row stood from where that row had the block:
+  // taken from the first, it came out at the container's top, in the row
+  // before the spanner. Chrome's numbers
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="column-count:2;column-fill:auto;column-gap:0;' +
+      'height:140px;width:100px"><div style="position:relative">' +
+      '<div style="height:60px"></div>' +
+      '<div style="column-span:all;height:5px"></div>' +
+      '<div id="a" style="position:absolute;width:50px;height:200px">' +
+      '</div></div></div>',
+    300,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(
+    COLUMN_PIECES.get(boxOf(el, 'a') as never)?.map((p) => [
+      p.x,
+      p.y,
+      p.width,
+      p.height,
+    ]),
+    [
+      [0, 35, 50, 105],
+      [50, 35, 50, 95],
+    ],
+    'under the spanner, in its row',
+  );
+});
+
 test('what comes after a spanner in a block it is in is laid out, in a first layout with nothing broken before it', async () => {
   // a box a spanner is in is laid out once a row of columns, and was kept
   // from the row before where no layout had broken anything yet: the
