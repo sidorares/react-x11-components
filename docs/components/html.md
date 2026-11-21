@@ -6756,6 +6756,9 @@ column rule stops at a row gap under `normal`, which is `intersection` there
 as at a spanner, its ends there junctions where the row rule is drawn. In a
 right-to-left container the gaps a rule's lists go by are counted from its
 right. A
+vertical container's frame has its rows of columns, their gaps and their
+rules, all of them logical, and a `vertical-lr` one's are put back across
+from its left, as its rows are. A
 row of columns balanced shorter than its row, before a spanner, has rules as
 tall as its columns, and under `column-rule-break: none` a gap's rule runs on
 through the spanner and every row.
@@ -6763,7 +6766,9 @@ through the spanner and every row.
 A grid, a flex container or a multicol container that columns break has its
 rules drawn in each piece, as the whole box has them, where its pieces
 stand; a row gap a break falls in has no rule (3.6), and nor has one a piece
-starts or ends with, since a break comes straight before or after it. Not here: a grid lanes container that columns
+starts or ends with, since a break comes straight before or after it. A piece
+that clones its edges has its part of the rules inside them, where what the
+box holds stands in it. Not here: a grid lanes container that columns
 break, a container in a vertical writing mode, whose rules are drawn as a
 horizontal one's are.
 
@@ -7071,7 +7076,9 @@ view timeline still takes it for an axis the box does not scroll along.
 mode. `overflow-clip-margin` moves the edge `clip` and paint containment
 cut at: out from the box it names by its length, or in where the length is
 negative, the rounded corners moving out as a browser's do. A box that
-scrolls cuts at its padding box whatever the margin says. A table clips to its table box, with its
+scrolls cuts at its padding box, or nearer where the margin names its
+content box or moves the edge in, and never past it: `border-box` and a
+length out are nothing to it. A table clips to its table box, with its
 captions outside the clip. A box that clips is no stacking context, and
 is painted in the passes of the flow around it as a block is (CSS 2.1
 Appendix E), as Chrome, Firefox and Safari paint it. Its own background
@@ -8600,7 +8607,7 @@ the selection, in `Mark` under `MarkText` where no rule says otherwise: see
 a text field's hint its colour and its opacity, which its widget draws:
 see [Forms](#forms).
 
-**Lengths:** `px`, `em`, `rem`, `ex`, `ch`, `lh`, `rlh`, `vw`, `vh`,
+**Lengths:** `px`, `em`, `rem`, `ex`, `ch`, `ic`, `lh`, `rlh`, `vw`, `vh`,
 `vi`, `vb` (the element's own inline and block axes, so the height and
 the width in a vertical writing mode), `vmin`, `vmax` — and the small,
 large and dynamic viewports'
@@ -8608,7 +8615,8 @@ large and dynamic viewports'
 viewport — and the absolute units, and `calc()`, `min()`, `max()` and
 `clamp()` over them (CSS Values 4). An `ex` is the font's x-height and a
 `ch` the advance of its "0", as the text engine reports them, or half an em
-where it cannot say; an `lh` is the element's line height, `normal` as its
+where it cannot say; an `ic` the advance of its "水", or an em, and an em
+down a vertical line, where an ideograph stands upright; an `lh` is the element's line height, `normal` as its
 font's own — in `line-height` itself its parent's, as an `em` in
 `font-size` is — and an `rlh` the root's. A `rem` is the root element's font
 size, so `html { font-size: 62.5% }` makes it ten pixels, and in the root's

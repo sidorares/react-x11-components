@@ -3838,7 +3838,7 @@ export class HtmlViewNode extends Node {
         this._viewportHeight(),
         this._scale,
         fonts ? (face) => xHeightOf(fonts, face) : null,
-        fonts ? (face) => zeroWidthOf(fonts, face) : null,
+        fonts ? (face, text) => zeroWidthOf(fonts, face, text) : null,
         fonts ? (face) => normalLineOf(fonts, face) : null,
         faces.length || this._webFonts.scripted ? this._webFonts : null,
         null,
@@ -22716,6 +22716,8 @@ const FACE_FIELDS = [
   'style',
   'letterSpacing',
   'features',
+  // which of a family's faces sets the text (`axes.ts`)
+  'slant',
   // marks take room on the line (`finishLine`)
   'emphasis',
 ] as const;
@@ -23917,15 +23919,19 @@ export type {
   ResourceResult,
 };
 
-/** The advance of a face's "0", laid out: null where the engine cannot
- *  lay it out. */
-function zeroWidthOf(fonts: FontsLike, face: MetricFace): number | null {
+/** The advance of a face's "0", or of `text`, laid out: null where the
+ *  engine cannot lay it out. */
+function zeroWidthOf(
+  fonts: FontsLike,
+  face: MetricFace,
+  text = '0',
+): number | null {
   const { family, size, weight, stretch } = face;
   // a run is upright or slanted, as `inline.ts` sets one
   const style = face.style === 'normal' ? 'normal' : 'italic';
   try {
     const run = { family, size, weight, style, stretch } as const;
-    return fonts.layout([{ text: '0', ...run }], run, {}).width;
+    return fonts.layout([{ text, ...run }], run, {}).width;
   } catch {
     return null;
   }

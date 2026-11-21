@@ -983,6 +983,10 @@ export interface ColumnPiece {
   /** Whether it is a whole box of its own, its edges cloned at the breaks
    *  it is cut at (`box-decoration-break: clone`). */
   cloned?: boolean;
+  /** For such a piece, how far down its content stands from where it would
+   *  in a piece that clones nothing: its top is the piece's own, and not
+   *  the whole box's. What the box holds is placed by the whole box's. */
+  unclone?: number;
 }
 
 /** The pieces of each block a column break falls inside, in the order of

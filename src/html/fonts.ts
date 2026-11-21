@@ -289,7 +289,7 @@ export class WebFonts implements FontFamilies {
   /** Lists → weight and slant → width → how text in them is set. */
   private _settings = new Map<
     string,
-    Map<number, Map<number, FaceSetting | null>>
+    Map<number | string, Map<number, FaceSetting | null>>
   >();
   /** Whether any loaded face has an axis to set, or a family faces of more
    *  than one width; null for not yet asked since the faces changed. */
@@ -395,8 +395,11 @@ export class WebFonts implements FontFamilies {
         // a name for each width where there is more than one, the first
         // width's the group's: the engine picks among a name's faces by
         // weight and slant alone
+        const sloped = members.some((m) => m.rule.oblique);
+        const nameKey = (rule: FontFaceRule) =>
+          sloped ? `${widthKey(rule)}/${slantKind(rule)}` : widthKey(rule);
         const widths = new Map<string, string>();
-        for (const m of members) widths.set(widthKey(m.rule), name);
+        for (const m of members) widths.set(nameKey(m.rule), name);
         if (widths.size > 1) {
           let first = true;
           for (const width of widths.keys()) {
@@ -422,7 +425,7 @@ export class WebFonts implements FontFamilies {
             family,
             state: 'idle',
             local: null,
-            name: widths.get(widthKey(m.rule))!,
+            name: widths.get(nameKey(m.rule))!,
             wght: null,
             wdth: null,
           };
@@ -519,15 +522,15 @@ export class WebFonts implements FontFamilies {
     return (style) => {
       const list = style.familyWritten;
       if (!list) return false;
-      const italic = style.fontStyle !== 'normal';
-      const key = `${style.fontWeight}|${italic ? 1 : 0}|${style.fontStretch}|${list}`;
+      const slant = slantOf(style);
+      const key = `${style.fontWeight}|${slant}|${style.fontStretch}|${list}`;
       let answer = known.get(key);
       if (answer === undefined) {
         answer = this._nearest(
           list,
           arrived,
           style.fontWeight,
-          italic,
+          slant,
           style.fontStretch,
         );
         known.set(key, answer);
@@ -542,7 +545,7 @@ export class WebFonts implements FontFamilies {
     list: string,
     faces: readonly Face[],
     weight: number,
-    italic: boolean,
+    italic: Slant,
     stretch: number,
   ): boolean {
     for (const raw of list.split(',')) {
@@ -560,7 +563,7 @@ export class WebFonts implements FontFamilies {
   note(style: ComputedStyle): void {
     const families = this._sources.get(style.fontFamily);
     if (!families) return;
-    const want = `${style.fontWeight}|${style.fontStyle !== 'normal' ? 1 : 0}|${style.fontStretch}`;
+    const want = `${style.fontWeight}|${slantOf(style)}|${style.fontStretch}`;
     for (const family of families) family.wants.add(want);
   }
 
@@ -620,13 +623,20 @@ export class WebFonts implements FontFamilies {
   setting(
     list: string,
     weight: number,
-    italic: boolean,
+    italic: boolean | Slant,
     stretch: number,
   ): FaceSetting | null {
     if (!this.active) return null;
     let byFace = this._settings.get(list);
     if (!byFace) this._settings.set(list, (byFace = new Map()));
-    const slanted = italic ? -weight : weight;
+    // the upright and the italic by the weight's sign, as most runs ask;
+    // an oblique, or an italic that takes no oblique face, by its name
+    const slanted =
+      italic === true || italic === 'italic'
+        ? -weight
+        : italic === false || italic === 'normal'
+          ? weight
+          : `${italic}|${weight}`;
     let byWidth = byFace.get(slanted);
     if (!byWidth) byFace.set(slanted, (byWidth = new Map()));
     let setting = byWidth.get(stretch);
@@ -695,7 +705,7 @@ export class WebFonts implements FontFamilies {
         for (const group of family.groups) {
           if (group.coverage <= 0) continue;
           if (
-            this._pick(group, Number(weight), italic === '1', Number(stretch))
+            this._pick(group, Number(weight), italic as Slant, Number(stretch))
           ) {
             stale = true;
           }
@@ -960,7 +970,7 @@ export class WebFonts implements FontFamilies {
   private _pick(
     group: Group,
     weight: number,
-    italic: boolean,
+    italic: Slant,
     stretch: number,
   ): boolean {
     for (;;) {
@@ -1582,7 +1592,7 @@ function faceSignature(rule: FontFaceRule): string {
         ? `bytes(${serialOf(s.bytes)})`
         : s.url,
   );
-  return `${sources.join(' ')}@${rule.weight.join('-')}${rule.style}~${widthKey(rule)}#${range}`;
+  return `${sources.join(' ')}@${rule.weight.join('-')}${slantKind(rule)}~${widthKey(rule)}#${range}`;
 }
 
 /** What is asked of a font manager to find a `local()`: a match, and the
@@ -1666,9 +1676,13 @@ function orderedGroups(family: Family): Group[] {
 export function bestFace<T extends { rule: FontFaceRule }>(
   faces: T[],
   weight: number,
-  italic: boolean,
+  italic: boolean | Slant,
   stretch = 100,
 ): T | null {
+  const order =
+    SLANT_ORDER[
+      italic === true ? 'italic' : italic === false ? 'normal' : italic
+    ];
   let best: T | null = null;
   let bestWidth: [number, number] = [Infinity, Infinity];
   let bestScore = Infinity;
@@ -1678,7 +1692,7 @@ export function bestFace<T extends { rule: FontFaceRule }>(
     if (nearer > 0) continue;
     const score =
       weightDistance(weight, face.rule.weight) +
-      ((face.rule.style === 'italic') === italic ? 0 : 10000);
+      order[slantKind(face.rule)] * 10000;
     if (nearer < 0 || score < bestScore) {
       best = face;
       bestWidth = width;
@@ -1689,6 +1703,47 @@ export function bestFace<T extends { rule: FontFaceRule }>(
 }
 
 const NORMAL: [number, number] = [100, 100];
+
+/**
+ * How text is slanted, as matching a face goes by it: `font-style`, and for
+ * an italic whether `font-synthesis-style: oblique-only` keeps it off an
+ * oblique face (csswg-drafts#9390). An engine knows only upright and
+ * slanted, which is what a run's `style` says; the rest is the document's.
+ */
+export type Slant = 'normal' | 'italic' | 'oblique' | 'italic-only';
+
+/** The slant a style's text is set at. */
+export function slantOf(style: ComputedStyle): Slant {
+  if (style.fontStyle === 'normal') return 'normal';
+  if (style.fontStyle === 'oblique') return 'oblique';
+  return style.passiveInherited['font-synthesis-style'] === 'oblique-only'
+    ? 'italic-only'
+    : 'italic';
+}
+
+/** What a face's rule declares it: upright, italic or oblique. */
+function slantKind(rule: FontFaceRule): 'normal' | 'italic' | 'oblique' {
+  return rule.style === 'normal'
+    ? 'normal'
+    : rule.oblique
+      ? 'oblique'
+      : 'italic';
+}
+
+/** The order CSS tries a face's slant in for each slant asked (CSS Fonts 4,
+ *  5.2): an italic its italic faces, then its oblique ones, then the
+ *  upright; an oblique the other way round; upright text upright faces
+ *  first, then oblique ones. An italic that takes no oblique face tries
+ *  the upright before them. */
+const SLANT_ORDER: Record<
+  Slant,
+  Record<'normal' | 'italic' | 'oblique', number>
+> = {
+  normal: { normal: 0, oblique: 1, italic: 2 },
+  italic: { italic: 0, oblique: 1, normal: 2 },
+  oblique: { oblique: 0, italic: 1, normal: 2 },
+  'italic-only': { italic: 0, normal: 1, oblique: 2 },
+};
 
 /** How far a width is from a face's range, as the order CSS tries widths
  *  in: inside it, then the preferred direction by distance, then the other

@@ -551,6 +551,62 @@ test('overflow-clip-margin moves the edge overflow: clip cuts at', async () => {
   );
 });
 
+test('what overflow: clip lets past its padding box is scrollable overflow of the scroller around it', async () => {
+  // WPT's overflow-clip-margin-002 and -005: out to its overflow clip edge,
+  // and no further, as paint containment's
+  const scroller = (id: string, inner: string) =>
+    `<div id="${id}" style="overflow:auto;width:100px;height:100px">` +
+    `<div style="width:100px;height:100px;${inner}">` +
+    '<div style="width:200px;height:200px;position:relative;top:-50px;' +
+    'left:-50px"></div></div></div>';
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      scroller('a', 'overflow:clip;overflow-clip-margin:10px') +
+      scroller('b', 'contain:paint;overflow-clip-margin:100px') +
+      scroller('c', 'overflow:clip'),
+  );
+  const el = view(node);
+  const size = (id: string) => {
+    const state = el.scrollStateOf(findById(el.document, id)!);
+    return [state?.width, state?.height];
+  };
+  assert.deepStrictEqual(size('a'), [110, 110], 'to the clip edge');
+  assert.deepStrictEqual(size('b'), [150, 150], 'to what it holds');
+  assert.deepStrictEqual(size('c'), [100, 100], 'nothing past the box');
+});
+
+test('overflow-clip-margin narrows a scroller to its content box, or in by a length', async () => {
+  // WPT's overflow-clip-margin-018 to -022: a scroll container cuts at its
+  // padding box, and a content box or a length in cuts it further, where
+  // a border box or a length out is nothing to it
+  const box = (id: string, extra: string) =>
+    `<div id="${id}" style="width:100px;height:50px;padding:10px;` +
+    `border:5px solid #0000fe;overflow:hidden;${extra}">` +
+    '<div style="height:200px;background:#fe0000"></div></div>';
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      box('a', 'overflow-clip-margin:content-box') +
+      box('b', 'overflow-clip-margin:-4px') +
+      box('c', 'overflow-clip-margin:border-box -20px') +
+      box('d', 'overflow-clip-margin:padding-box 20px'),
+  );
+  const el = view(node);
+  const ops: PaintOp[] = [];
+  await fillsOf(el, ops);
+  const top = (id: string) => Math.round(boxOf(el, id).y);
+  assert.deepStrictEqual(
+    clipsAround(ops, '#fe0000').map(
+      ([c]) => c.op === 'clip' && [c.x, c.y, c.w, c.h],
+    ),
+    [
+      [15, top('a') + 15, 100, 50],
+      [9, top('b') + 9, 112, 62],
+      [5, top('c') + 5, 120, 70],
+      [5, top('d') + 5, 120, 70],
+    ],
+  );
+});
+
 test('an overflow clip edge rounds out as a spread shadow does', async () => {
   // The corners grow with the margin, by less where the radius is small
   // beside it — but an ellipse stays an ellipse (CSS Backgrounds 3, 4.2) —

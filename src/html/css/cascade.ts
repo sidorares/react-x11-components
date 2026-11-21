@@ -4446,7 +4446,7 @@ export interface MetricFace {
 }
 
 /** What a face measures, where the fonts can say. */
-export type FaceMetric = (face: MetricFace) => number | null;
+export type FaceMetric = (face: MetricFace, text?: string) => number | null;
 
 /** What a style's face is read from: a computed style, or the part of one
  *  a declaration's font-relative units are measured against. */
@@ -4700,6 +4700,7 @@ export class Cascade {
   /** The advance of a face's "0", for `ch`, likewise. */
   private _zeroWidthOf: FaceMetric | null;
   private _zeroWidths = new Map<string, number>();
+  private _waterWidths = new Map<string, number>();
   /** A face's own line height, for `lh` where `line-height` is `normal`,
    *  likewise. */
   private _normalLineOf: FaceMetric | null;
@@ -8990,6 +8991,7 @@ export class Cascade {
   facesChanged(): void {
     this._xHeights.clear();
     this._zeroWidths.clear();
+    this._waterWidths.clear();
     this._normalLines.clear();
   }
 
@@ -9014,6 +9016,7 @@ export class Cascade {
       zoom,
       ex: () => this._exOf(style),
       ch: () => this._chIn(style, style),
+      ic: () => this._icIn(style, style),
       lh: () => this._lineHeightOf(style),
       rlh: () => this._lineHeightOf(root) * rootZoom,
     };
@@ -9052,6 +9055,31 @@ export class Cascade {
       return face.fontSize;
     }
     return this._chOf(face);
+  }
+
+  /** An `ic` for an element: the advance of its "水" along its inline
+   *  axis (CSS Values 4, 6.1.1), which in a vertical line is an em, since
+   *  an ideograph is set upright there an em tall, and otherwise the
+   *  font's "水" across. */
+  private _icIn(
+    style: Pick<ComputedStyle, 'writingMode'>,
+    face: FaceSource,
+  ): number {
+    if (
+      style.writingMode === 'vertical-rl' ||
+      style.writingMode === 'vertical-lr'
+    ) {
+      return face.fontSize;
+    }
+    this._faceRead = true;
+    const key = faceKey(face);
+    let ic = this._waterWidths.get(key);
+    if (ic === undefined) {
+      ic = this._zeroWidthOf?.(faceOf(face), '\u6c34') ?? NaN;
+      if (!(ic > 0)) ic = face.fontSize;
+      this._waterWidths.set(key, ic);
+    }
+    return ic;
   }
 
   /** The advance of a style's font's "0": the font's own, asked once per
@@ -9813,6 +9841,7 @@ export class Cascade {
       zoom,
       ex: () => this._exOf(parentStyle),
       ch: () => this._chIn(parentStyle, parentStyle),
+      ic: () => this._icIn(parentStyle, parentStyle),
       families: this._mapFamilies,
       lh: () => this._lineHeightOf(parentStyle),
       rlh: () => {
@@ -9916,6 +9945,7 @@ export class Cascade {
       rem: root ? style.fontSize : ctxParent.rem,
       ex: () => this._exOf(face),
       ch: () => this._chIn(style, face),
+      ic: () => this._icIn(style, face),
       lh: () => this._lineHeightOf(line ?? style),
     };
     // an `lh` in `line-height` is the parent's line height, as an `em` in

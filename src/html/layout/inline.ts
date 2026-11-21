@@ -43,6 +43,7 @@ import {
 } from '../css/style.js';
 import { inkColor, isTransparent, parseColor, resolve } from '../css/values.js';
 import { passiveValue } from '../css/passive-properties.js';
+import { slantOf } from '../fonts.js';
 import { bidiJs } from '../direction.js';
 import { isInputButton, tagOf } from '../dom.js';
 import type { Element } from '../dom.js';
@@ -119,6 +120,12 @@ const FIT_SLACK = 1 / 64;
  */
 export interface DocumentRun extends TextRun {
   stretch?: number;
+  /** Where the slant `style` says is not all there is to choosing a face
+   *  of the document's: `oblique`, which prefers an oblique face to an
+   *  italic one, or `italic-only`, an italic under `font-synthesis-style:
+   *  oblique-only`, which takes none (`slantOf`). Read below the layout
+   *  cache, as `stretch` is (`axes.ts`); absent for any other run. */
+  slant?: 'oblique' | 'italic-only';
   /** The emphasis marks drawn over or under each character (CSS Text
    *  Decoration 3, 3): `emphasisOf`'s, which `emphasisMark` reads back. */
   emphasis?: string;
@@ -1243,6 +1250,7 @@ function linesOf(
     size: style.fontSize,
     weight: style.fontWeight,
     style: style.fontStyle,
+    ...slantField(style),
     color: style.color,
   };
   const lineHeightMul = lineHeightMultiplier(fonts, style);
@@ -2099,7 +2107,7 @@ function linesOf(
         const text: LineText = {
           layout,
           layoutLine: i,
-          drawX: band.left,
+          drawX: band.left - Math.min(0, natural.x),
           drawY: y - lift,
           textStart: segment.spans.documentAt(natural.start),
           textEnd: segment.spans.documentAt(natural.end),
@@ -2327,8 +2335,10 @@ function linesOf(
     const placed: LineText = {
       layout: fragment,
       layoutLine: 0,
-      // laid out `left`, so the fragment starts at the cursor
-      drawX: band.left + open.x,
+      // laid out `left`, so the fragment starts at the cursor — but for
+      // a right-to-left one wider than its room, which an engine sets past
+      // the room's left, as a line overflows from its start
+      drawX: band.left + open.x - Math.min(0, fragment.lines[0]?.x ?? 0),
       drawY: 0, // filled in by `finishLine`, which is where the top is known
       textStart: segment.spans.documentAt(first.start),
       textEnd: segment.spans.documentAt(first.end),
@@ -6361,6 +6371,7 @@ function firstLineSetting(
     size: style.fontSize,
     weight: style.fontWeight,
     style: style.fontStyle,
+    ...slantField(style),
     color: style.color,
   };
   const own = strutOf(fonts, style);
@@ -6680,7 +6691,7 @@ function spaceIn(box: Box): string {
 /** A text's font, the part of a run a character's advance depends on. */
 type Face = Pick<
   DocumentRun,
-  'family' | 'size' | 'weight' | 'style' | 'stretch'
+  'family' | 'size' | 'weight' | 'style' | 'stretch' | 'slant'
 >;
 
 /** A block's font, as its runs name it (`runFor`). */
@@ -6691,8 +6702,17 @@ export function fontOf(style: ComputedStyle): Face {
     weight: style.fontWeight,
     style: style.fontStyle === 'normal' ? 'normal' : 'italic',
     stretch: style.fontStretch,
+    ...slantField(style),
   };
 }
+
+/** A run's `slant`, where its style has one to say: few do. */
+function slantField(style: ComputedStyle): Pick<DocumentRun, 'slant'> {
+  const slant = slantOf(style);
+  return slant === 'oblique' || slant === 'italic-only' ? { slant } : NO_SLANT;
+}
+
+const NO_SLANT: Pick<DocumentRun, 'slant'> = Object.freeze({});
 
 /** One character's advance in a font, kept per font manager. */
 function advanceOf(fonts: FontsLike, font: Face, char: string): number {
@@ -7168,6 +7188,11 @@ export function runFor(
     shapeApart: false,
   };
   if (style.letterSpacing) run.letterSpacing = style.letterSpacing;
+  // set only where it says something, which few runs' styles do
+  if (style.fontStyle !== 'normal') {
+    const slant = slantOf(style);
+    if (slant !== 'italic') run.slant = slant as 'oblique' | 'italic-only';
+  }
   // set only where there are marks, which few runs have
   if (style.passiveInherited['text-emphasis-style']) {
     const emphasis = emphasisOf(style, el);

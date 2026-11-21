@@ -245,6 +245,7 @@ export const RUN_FIELDS = [
   'kernAcross',
   'inline',
   'stretch',
+  'slant',
   'emphasis',
 ] as const satisfies readonly (keyof DocumentRun)[];
 
@@ -287,6 +288,7 @@ function sameRun(a: DocumentRun, b: DocumentRun): boolean {
     a.kernAcross === b.kernAcross &&
     a.inline === b.inline &&
     a.stretch === b.stretch &&
+    a.slant === b.slant &&
     a.emphasis === b.emphasis
   );
 }
@@ -320,6 +322,7 @@ function sameStyle(
     a.kernAcross === b.kernAcross &&
     a.inline === b.inline &&
     a.stretch === b.stretch &&
+    a.slant === b.slant &&
     a.emphasis === b.emphasis
   );
 }

@@ -304,6 +304,7 @@ export function parseAnchorMath<R extends AnchorRef | AnchorSizeRef>(
     zoom: ctx.zoom,
     ex: fixed(ctx.ex, 'ex'),
     ch: fixed(ctx.ch, 'ch'),
+    ic: fixed(ctx.ic, 'ic'),
     lh: fixed(ctx.lh, 'lh'),
     rlh: fixed(ctx.rlh, 'rlh'),
   };

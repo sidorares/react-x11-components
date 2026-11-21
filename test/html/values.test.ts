@@ -239,6 +239,28 @@ metric('a ch is the advance of the font\'s "0"', async () => {
   );
 });
 
+metric(
+  'an ic is the advance of the font\'s "水", and an em down a vertical line',
+  async () => {
+    // CSS Values 4, 6.1.1: it was no unit, and `calc(120px + 4ic)` was no
+    // width, so WPT's text-overflow-string-011 was a box the page wide
+    const { node } = await render(
+      '<style>body{margin:0} div{font:20px monospace}</style>' +
+        '<div id="a" style="width:calc(10px + 4ic);height:10px"></div>' +
+        '<div><span id="b" style="display:inline-block">水水水水</span></div>' +
+        '<div id="c" style="writing-mode:vertical-rl;height:3ic;width:10px">' +
+        '</div>',
+    );
+    const el = view(node);
+    const b = boxOf(el, 'b').width;
+    assert.ok(
+      Math.abs(boxOf(el, 'a').width - 10 - b) <= 1 / 64 + 1e-9,
+      `four of an ic are four ideographs: ${boxOf(el, 'a').width}, ${b}`,
+    );
+    assert.strictEqual(boxOf(el, 'c').height, 60, 'an em down the line');
+  },
+);
+
 test('a negative size is no size, and the declaration goes', async () => {
   // CSS 2.1 10.2, 10.4, 10.5, 10.7: -1px was taken as a maximum height
   const { node } = await render(
