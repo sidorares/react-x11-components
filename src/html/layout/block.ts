@@ -3701,14 +3701,19 @@ function hideClamped(box: Box): void {
  * point is the last after which the container does not overflow). A line
  * in a box of a height of its own is past the container where that box is,
  * however high the line, and one that overflows a box of no height, or of
- * a `max-height`, is not.
+ * a `max-height`, or of size containment, is not.
  */
 function bottomIfCut(box: Box, container: Box, bottom: number): number {
   let margin = 0;
   for (let at: Box | null = box; at && at !== container; at = at.parent) {
     const top = at.y + at.borderTop + at.padTop;
     const edge = at.padBottom + at.borderBottom;
-    const content = Math.max(0, bottom + (edge ? margin : 0) - top);
+    // a box under size containment is as tall as though it held nothing,
+    // what it holds overflowing it (CSS Containment 2, 3.2; WPT's
+    // `line-clamp-auto-046`)
+    const content = contained(at, CONTAIN_SIZE)
+      ? (at.style.containIntrinsicHeight ?? 0)
+      : Math.max(0, bottom + (edge ? margin : 0) - top);
     const natural = content + at.verticalExtra;
     const set = resolveOrNull(at.style.height, at.percentHeightBase);
     const outer =
