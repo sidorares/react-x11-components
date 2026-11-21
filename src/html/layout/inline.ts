@@ -915,6 +915,56 @@ export interface InlineOptions {
  * relative to the containing block's content box; the caller translates.
  */
 export function layoutInline(block: Box, options: InlineOptions): InlineResult {
+  // `unicode-bidi: plaintext` on a block: its paragraph's direction is its
+  // text's, by its first strong letter (CSS Writing Modes 3, 2.4.2;
+  // UAX #9 P2, P3), not its `direction`, which aligns it and orders it as
+  // the text says. Laid out in a style that says so, and given its own
+  // back after
+  const style = block.style;
+  const plain =
+    style.unicodeBidi === 'plaintext' ? plaintextDirection(block) : null;
+  if (plain === null || plain === style.direction) {
+    return layoutInlineIn(block, options);
+  }
+  block.style = { ...style, direction: plain };
+  try {
+    return layoutInlineIn(block, options);
+  } finally {
+    block.style = style;
+  }
+}
+
+/** The direction a block's text gives its paragraph by its first strong
+ *  letter, or null where it has none: what is in an atomic inline, which
+ *  is a paragraph of its own, and out of the flow, is passed over. */
+function plaintextDirection(block: Box): 'ltr' | 'rtl' | null {
+  const stack: Box[] = [...block.children].reverse();
+  while (stack.length) {
+    const box = stack.pop()!;
+    if (box.outOfFlow || box.isFloat) continue;
+    if (box.kind === 'text') {
+      for (const char of box.text) {
+        if (STRONG_RTL.test(char)) return 'rtl';
+        if (STRONG_LTR.test(char)) return 'ltr';
+      }
+      continue;
+    }
+    if (box.kind !== 'inline') continue;
+    for (let i = box.children.length - 1; i >= 0; i -= 1) {
+      stack.push(box.children[i]);
+    }
+  }
+  return null;
+}
+
+/** A letter of a right-to-left script: Hebrew, Arabic and their kin (UAX
+ *  #9's R and AL), and a letter of any other script, which reads left to
+ *  right (L). */
+const STRONG_RTL =
+  /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc]|[\u{10800}-\u{10fff}\u{1e800}-\u{1efff}]/u;
+const STRONG_LTR = /\p{L}/u;
+
+function layoutInlineIn(block: Box, options: InlineOptions): InlineResult {
   const result = layoutLines(block, options);
   const clamp = options.clamp?.lines;
   // A clamped block shows its first lines and is as tall as they are. The
