@@ -8320,7 +8320,7 @@ and WebKit cut it, where the newer property keeps whole words; `line-clamp: auto
 box's `height` or `max-height` holds, a line counted where the box would
 end were it cut after it: a box around the line ends where its own height
 and limits say, so a line in a box taller than the room is past it, and
-one that overflows a box of no height is not; a box of a formatting
+one that overflows a box of no height, or of size containment, is not; a box of a formatting
 context of its own, a `flow-root`, that ends in the room after the last
 line that does is the clamp point, kept with its lines and no ellipsis; and `max-lines`, `continue` and
 `block-ellipsis` are read, a string in `line-clamp` or `block-ellipsis`
