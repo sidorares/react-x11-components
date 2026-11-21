@@ -6161,7 +6161,7 @@ positioned boxes are laid out after the columns are set, so the container
 keeps how far down they reached, and where that moves what it is balanced
 over the document is laid out once more, and only once. Each row of columns about a
 spanner is balanced over what is positioned in it, a row at a time, though
-not rows `column-wrap` sets. A container with a `height` or a
+not rows `column-wrap` sets; what is positioned in a row nothing balances is that row's, and makes none taller. A container with a `height` or a
 `max-height` has columns no taller than it, and what they do not hold goes
 on in columns past its edge; under `column-fill: auto` its columns are that
 tall, each filled before the next is started, and with no height to fill
