@@ -180,6 +180,8 @@ export const PASSIVE: Record<string, PassiveProperty> = Object.assign(
       keyword('auto', 'none', 'oblique-only'),
     ),
     'font-synthesis-small-caps': inherited('auto', keyword('auto', 'none')),
+    // `none` is read as the boxes are built, and takes a soft hyphen's
+    // break away (`noSoftBreaks`); no hyphen is drawn at a break
     hyphens: inherited('manual', keyword('none', 'manual', 'auto')),
     'offset-anchor': own('auto', (v) =>
       /^auto$/i.test(v.trim()) ? 'auto' : positionOf(v),
