@@ -67,6 +67,28 @@ metric("an inline element's start side is its direction's", async () => {
   );
 });
 
+metric(
+  "unicode-bidi: plaintext takes a block's direction from its first strong letter",
+  async () => {
+    // CSS Writing Modes 3, 2.4.2 (WPT's text-overflow-string-008): Latin in
+    // a right-to-left block starts at the left, and Hebrew in a left-to-right
+    // one at the right, each line and the text on it
+    const { node } = await render(
+      '<style>body{margin:0} div{width:300px;unicode-bidi:plaintext}</style>' +
+        '<div id="a" dir="rtl">ab cd</div>' +
+        '<div id="b">\u05d0\u05d1 ab</div>' +
+        '<div id="c" dir="rtl">\u05d0\u05d1 ab</div>',
+    );
+    const el = view(node);
+    const [a] = linesOf(el, 'a');
+    assert.ok(extentOf(a.texts[0])[0] < 1, 'Latin from the left');
+    const [b] = linesOf(el, 'b');
+    assert.ok(extentOf(b.texts[0])[1] > 299, 'Hebrew from the right');
+    const [c] = linesOf(el, 'c');
+    assert.ok(extentOf(c.texts[0])[1] > 299, 'as its direction has it too');
+  },
+);
+
 metric('a right-to-left block starts at the right', async () => {
   // CSS 2.1 10.3.3: the margin that takes the slack is the one at the end,
   // the left one in a right-to-left containing block; 16.1: the indent is
