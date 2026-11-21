@@ -6740,6 +6740,9 @@ The rows of columns `column-wrap` makes are a grid of columns for its rules:
 a row rule is drawn in each row gap between them, across the columns, and a
 column rule stops at a row gap under `normal`, which is `intersection` there
 as at a spanner, its ends there junctions where the row rule is drawn. A
+vertical container's frame has its rows of columns, their gaps and their
+rules, all of them logical, and a `vertical-lr` one's are put back across
+from its left, as its rows are. A
 row of columns balanced shorter than its row, before a spanner, has rules as
 tall as its columns, and under `column-rule-break: none` a gap's rule runs on
 through the spanner and every row.

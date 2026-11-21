@@ -2012,6 +2012,36 @@ test("a multicol container another's columns break has its rules in each piece, 
   ]);
 });
 
+test('a vertical multicol container has its rows of columns and their row rules, a vertical-lr one from its left', async () => {
+  // WPT's multicol-gap-decorations-writing-mode and -multi-value-writing-mode:
+  // rows of two columns 50px tall, three of them, the row rules orange then
+  // purple. The frame turns the container, and the rules are drawn in it:
+  // a vertical-rl container's first row gap is at the frame's top, which
+  // is the page's right, and a vertical-lr one's at its foot, the page's
+  // left, as its rows are put back across
+  const doc = (mode: string) =>
+    `<div style="writing-mode:${mode};column-count:2;column-width:50px;` +
+    'column-height:50px;gap:10px;column-wrap:wrap;width:170px;' +
+    'height:110px;row-rule-color:#ffa500,#800080;row-rule-style:solid;' +
+    'row-rule-width:10px">' +
+    '<div style="width:50px;height:50px"></div>'.repeat(6) +
+    '</div>';
+  const at = async (mode: string, color: string) =>
+    (await rulesIn(doc(mode), color)).map((r) => r.map(Math.round));
+  assert.deepStrictEqual(await at('vertical-rl', '#ffa500'), [
+    [170, 50, 110, 10],
+  ]);
+  assert.deepStrictEqual(await at('vertical-rl', '#800080'), [
+    [170, 110, 110, 10],
+  ]);
+  assert.deepStrictEqual(await at('vertical-lr', '#ffa500'), [
+    [170, 110, 110, 10],
+  ]);
+  assert.deepStrictEqual(await at('vertical-lr', '#800080'), [
+    [170, 50, 110, 10],
+  ]);
+});
+
 test('column-height and column-wrap set the columns in rows, a row gap apart', async () => {
   // Rows of two columns 30px tall, 10px apart: six boxes of 20px that go
   // whole take a column each, three rows, and the last row is as tall as

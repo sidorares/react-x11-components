@@ -144,6 +144,15 @@ export function makeFrame(
     style.columnGapNormal = own.columnGapNormal;
     style.columnFill = own.columnFill;
     style.columnRule = own.columnRule;
+    // and the rows `column-height` and `column-wrap` set them in, a row gap
+    // apart, and the rules in those gaps (CSS Multi-column 2, 3.7; CSS Gap
+    // Decorations 1): all of them logical, so none is turned
+    style.columnHeight = own.columnHeight;
+    style.columnWrap = own.columnWrap;
+    style.rowGap = own.rowGap;
+    style.rowGapNormal = own.rowGapNormal;
+    style.rowRule = own.rowRule;
+    style.ruleOverlap = own.ruleOverlap;
     // and as tall as the root's block size, which its columns are filled to
     // (3.4): the root's content box, which the frame fills across
     if (own.boxSizing === 'content-box' && !own.widthKeyword) {
@@ -657,7 +666,9 @@ export function reflectFrame(
       REFLECTED.set(box, box.layoutSerial);
       const top = box.contentY;
       const bottom = top + (box === frame ? extent : box.contentHeight);
-      if (grid) ROWS_MIRRORED.set(box, bottom - top);
+      // and a multicol container's rows of columns, which its rules are
+      // worked out from as `vertical-rl`'s
+      if (grid || box.style.columns) ROWS_MIRRORED.set(box, bottom - top);
       if (box.lines) {
         // what is on a line is moved with it (`moveLine`)
         for (const line of box.lines) {
