@@ -2193,6 +2193,27 @@ test("a multicol container another's columns break, its edges cloned, has its ru
   ]);
 });
 
+test('a row of columns a spanner ends is balanced over what is positioned in it', async () => {
+  // WPT's css-break/out-of-flow-in-multicolumn-015: a block 100px tall
+  // before a spanner, a box positioned in it 160px tall. The row is
+  // balanced over the box, two columns of 80px, and the spanner comes
+  // under them
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="m" style="columns:2;width:100px;height:100px;' +
+      'column-fill:auto;column-gap:0"><div style="height:100px;' +
+      'position:relative"><div id="a" style="position:absolute;top:0;' +
+      'height:160px;width:50px"></div></div>' +
+      '<div id="s" style="column-span:all;height:20px"></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 's').y, 80);
+  assert.deepStrictEqual(piecesAt(el, 'a', 'm'), [
+    [0, 0, 50, 80],
+    [50, 0, 50, 80],
+  ]);
+});
+
 test('column-height and column-wrap set the columns in rows, a row gap apart', async () => {
   // Rows of two columns 30px tall, 10px apart: six boxes of 20px that go
   // whole take a column each, three rows, and the last row is as tall as
