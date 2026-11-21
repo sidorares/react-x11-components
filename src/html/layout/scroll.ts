@@ -18,7 +18,8 @@
 // scrolling `main` stays where it is.
 import type { Element } from 'domhandler';
 
-import { scrolls, scrollsAlong } from '../css/style.js';
+import { CONTAIN_PAINT, scrolls, scrollsAlong } from '../css/style.js';
+import { contained } from './block.js';
 import { CLAMPED, clampBox, unclampBox } from './boxes.js';
 import {
   FRAME_ROOTS,
@@ -619,6 +620,50 @@ function frameBounds(frame: Box): {
   return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
 }
 
+/**
+ * Where a box that clips without scrolling cuts what it holds, as far as it
+ * lets it past its padding box: its overflow clip edge (CSS Overflow 4,
+ * 3.2), the box `overflow-clip-margin` names moved out by its length, on
+ * an axis that clips, and nowhere on one that lets overflow show. Null for
+ * a scroll container, and for an edge no further out than the padding
+ * box, which lets nothing past it.
+ */
+function clipEdgeOf(
+  box: Box,
+): { x1: number; y1: number; x2: number; y2: number } | null {
+  const style = box.style;
+  if (scrolls(style)) return null;
+  const painted = contained(box, CONTAIN_PAINT);
+  const clipX = painted || style.overflowX === 'clip';
+  const clipY = painted || style.overflowY === 'clip';
+  const margin = style.overflowClipMargin;
+  const which = style.overflowClipBox;
+  const inset = (border: number, pad: number) =>
+    which === 'border-box'
+      ? 0
+      : which === 'content-box'
+        ? border + pad
+        : border;
+  const t = inset(box.borderTop, box.padTop) - margin;
+  const r = inset(box.borderRight, box.padRight) - margin;
+  const b = inset(box.borderBottom, box.padBottom) - margin;
+  const l = inset(box.borderLeft, box.padLeft) - margin;
+  // nothing past the padding box on an axis that clips
+  if (
+    (!clipX || (l >= box.borderLeft && r >= box.borderRight)) &&
+    (!clipY || (t >= box.borderTop && b >= box.borderBottom)) &&
+    (clipX || clipY)
+  ) {
+    return null;
+  }
+  return {
+    x1: clipX ? box.x + l : -Infinity,
+    y1: clipY ? box.y + t : -Infinity,
+    x2: clipX ? box.x + box.width - r : Infinity,
+    y2: clipY ? box.y + box.height - b : Infinity,
+  };
+}
+
 /** How far content reaches, raw: the furthest right and down, and the
  *  least left and up, of what is in the flow and of what is out of it,
  *  each its own (`reachOf`). */
@@ -747,8 +792,32 @@ function reachOf(
         outOfFlow,
       );
     }
-    // what a box clips is its own to scroll
-    if (clipsOverflow(child)) return;
+    // what a box clips is its own to scroll; but what one that does not
+    // scroll lets show past its padding box, out to its overflow clip edge,
+    // reaches the scroll container as what it holds would
+    if (clipsOverflow(child)) {
+      const edge = clipEdgeOf(child);
+      if (edge) {
+        const inner = reachOf(
+          left,
+          child.lines,
+          child.children,
+          escaping,
+          null,
+          0,
+        );
+        const x1 = Math.max(
+          edge.x1,
+          Math.min(inner.leftmost, inner.outLeftmost),
+        );
+        const y1 = Math.max(edge.y1, Math.min(inner.topmost, inner.outTopmost));
+        const x2 = Math.min(edge.x2, Math.max(inner.right, inner.outRight));
+        const y2 = Math.min(edge.y2, Math.max(inner.bottom, inner.outBottom));
+        if (x2 > x1 && y2 > y1)
+          take(x1 + dx, y1 + dy, x2 + dx, y2 + dy, outOfFlow);
+      }
+      return;
+    }
     linesOf(child.lines, outOfFlow, dx, dy);
     for (const inner of child.children) walk(inner, outOfFlow, false, dx, dy);
     aside(child, outOfFlow, dy);
