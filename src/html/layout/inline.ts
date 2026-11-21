@@ -311,6 +311,12 @@ function placeMarks(fonts: FontsLike, text: LineText): void {
       : baseline - room.ascent - room.height;
     const first = drawn.lines[0];
     const y = top + room.baseline - (first ? first.y + first.baseline : 0);
+    // centred on the character and not on the room `letter-spacing` adds
+    // after it, which the engine sets to its right whichever way the text
+    // runs (WPT's letter-spacing-211)
+    const spacing = Number.isFinite(span.letterSpacing)
+      ? (span.letterSpacing as number)
+      : 0;
     for (let i = run.start; i < run.end; i += 1) {
       const char = chars[i - from];
       if (char === undefined || !takesEmphasis(char)) continue;
@@ -321,7 +327,11 @@ function placeMarks(fonts: FontsLike, text: LineText): void {
           : { x: line.x + run.x + run.width, line: left.line };
       const x0 = left.x;
       const x1 = right.line === left.line ? right.x : x0;
-      (marks ??= []).push({ x: (x0 + x1) / 2 - width / 2, y, layout: drawn });
+      (marks ??= []).push({
+        x: (x0 + x1) / 2 - (x1 === x0 ? 0 : spacing / 2) - width / 2,
+        y,
+        layout: drawn,
+      });
     }
   }
   if (marks) EMPHASIS_MARKS.set(text, marks);
@@ -1111,10 +1121,12 @@ function layoutParagraphs(
 
 /** A letter of a right-to-left script: Hebrew, Arabic and their kin (UAX
  *  #9's R and AL), and a letter of any other script, which reads left to
- *  right (L). */
+ *  right (L) — and the marks that are strong and no letter, RIGHT-TO-LEFT
+ *  MARK and LEFT-TO-RIGHT MARK, which a `dir=auto` paragraph starts with to
+ *  say its direction (WPT's text-align-start-009). */
 const STRONG_RTL =
-  /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc]|[\u{10800}-\u{10fff}\u{1e800}-\u{1efff}]/u;
-const STRONG_LTR = /\p{L}/u;
+  /[\u0590-\u08ff\u200f\ufb1d-\ufdff\ufe70-\ufefc]|[\u{10800}-\u{10fff}\u{1e800}-\u{1efff}]/u;
+const STRONG_LTR = /[\p{L}\u200e]/u;
 
 function layoutInlineIn(block: Box, options: InlineOptions): InlineResult {
   const result = layoutLines(block, options);

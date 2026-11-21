@@ -2708,6 +2708,36 @@ test('a grid row that fits whole in its column is broken no item at a time', asy
 });
 
 metric(
+  'a multicol container of continue: discard keeps what fits in its columns',
+  async () => {
+    // CSS Overflow 4, 5.2: what does not fit in its columns makes no
+    // overflow column and is discarded (WPT's
+    // line-clamp/discard/discard-multicol-001), the last line kept ending
+    // in an ellipsis where block-ellipsis asks for one (-002)
+    const lines = Array.from({ length: 7 }, (_, i) => `Line ${i + 1}`).join(
+      '<br>',
+    );
+    const { node } = await render(
+      '<style>body{margin:0} div{font:16px/20px monospace;width:300px;' +
+        'columns:3;gap:0;height:40px}</style>' +
+        `<div id="a" style="continue:discard">${lines}</div>` +
+        `<div id="b" style="continue:discard;block-ellipsis:auto">${lines}</div>`,
+    );
+    const el = view(node);
+    assert.strictEqual(linesOf(el, 'a').length, 6, 'three columns of two');
+    const b = linesOf(el, 'b');
+    assert.strictEqual(b.length, 6);
+    const last = b[5].texts[b[5].texts.length - 1];
+    const runs = (
+      last.layout as unknown as {
+        lines: { runs: { span?: { text: string } }[] }[];
+      }
+    ).lines[last.layoutLine].runs;
+    assert.strictEqual(runs[runs.length - 1]?.span?.text, '\u2026');
+  },
+);
+
+metric(
   'what overflows a box that clips it stays in the column the box ends in',
   async () => {
     // CSS Overflow 3, 3: what runs past an `overflow: clip` box of a height
@@ -2725,5 +2755,27 @@ metric(
     );
     // three columns, and a rule between each two of them
     assert.strictEqual(rules.length, 2, JSON.stringify(rules));
+  },
+);
+
+metric(
+  'what is positioned in a box that clips it stays in the column the box ends in',
+  async () => {
+    // an absolutely positioned box in an `overflow: clip` box is cut into
+    // the columns as far as the clip box reaches, and what reaches past it
+    // stays in the column the clip box ends in, clipped there, where it
+    // went on into columns of its own past the container (WPT's
+    // css-break/overflow-clip-014)
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="columns:2;gap:0;width:100px;height:100px;' +
+        'column-fill:auto"><div style="position:relative;overflow-y:clip;' +
+        'height:200px"><div style="position:absolute;width:100%;' +
+        'height:300px"><div style="height:200px"></div>' +
+        '<div id="past" style="height:200px"></div></div>' +
+        '<div style="height:1000px"></div></div></div>',
+    );
+    const past = boxOf(view(node), 'past');
+    assert.deepStrictEqual([past.x, past.y], [50, 100], 'in the second');
   },
 );

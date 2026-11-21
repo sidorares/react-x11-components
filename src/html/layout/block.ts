@@ -2148,8 +2148,11 @@ function layoutDocumentPass(
         strip.geometry.container,
         containingBlockFor,
       );
-      cutIntoColumns(box, strip.geometry, (b, dx, dy) =>
-        translate(b, dx, dy, () => false),
+      cutIntoColumns(
+        box,
+        strip.geometry,
+        (b, dx, dy) => translate(b, dx, dy, () => false),
+        clipDownStrip(containing, strip.geometry.container),
       );
     }
     if (finish && ctx.positioned.length > found) {
@@ -3827,6 +3830,23 @@ function escapingClamp(hidden: Box): Box[] | null {
   return out;
 }
 
+/** Where down a multicol container's strip the nearest box from a
+ *  positioned box's containing block out to the container that clips
+ *  what overflows it, `overflow: clip`, ends, or Infinity: what is
+ *  positioned in it is clipped there, in the column the box ends in
+ *  (`cutIntoColumns`). */
+function clipDownStrip(containing: Box, container: Box): number {
+  let bottom = Infinity;
+  for (let at: Box | null = containing; at && at !== container;) {
+    if (at.style.overflowY === 'clip' && !at.style.columns) {
+      const strip = stripOf(at);
+      if (strip) bottom = Math.min(bottom, strip.y + strip.height);
+    }
+    at = at.parent;
+  }
+  return bottom;
+}
+
 /** Mark a box past a clamp point, and take from everything in it the lines
  *  a layout before gave it: a hidden box is not laid out, and nothing —
  *  a selection, a caret — may find text in it where it stood. */
@@ -4487,6 +4507,16 @@ function layoutInternals(
   const lines = ctx.probing ? null : box.style.lineClamp;
   if (
     lines === null &&
+    box.style.clampContinue === 'discard' &&
+    box.style.columns &&
+    !ctx.probing
+  ) {
+    layoutDiscarded(box, ctx, borderBoxWidth, x, y, outerFloats);
+    ctx.clamp = outer;
+    return;
+  }
+  if (
+    lines === null &&
     (outer === null || !establishesBFC(box) || framesClamp(outer, box))
   ) {
     layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
@@ -4532,6 +4562,47 @@ function layoutClamped(
   }
   const fit: NonNullable<Clamp['fit']> = {
     floor,
+    lines: 0,
+    seen: 0,
+    over: false,
+  };
+  ctx.clamp = { box, left: Infinity, done: false, fit };
+  const positioned = ctx.positioned.length;
+  layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
+  if (!fit.over) return;
+  ctx.positioned.length = positioned;
+  ctx.clamp = clampFromFit(box, fit);
+  layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
+}
+
+/**
+ * A multicol container of `continue: discard`: what does not fit in its
+ * columns makes no overflow column and is discarded, the last line it keeps
+ * ending in a block ellipsis where `block-ellipsis` asks for one (CSS
+ * Overflow 4, 5.2; WPT's line-clamp/discard/discard-multicol-001). Its
+ * content is laid out down one strip a column wide, so it is clamped as an
+ * `auto` clamp is, at a floor as many column heights down the strip as it
+ * has columns. One with no height of its own has no floor, and is laid out
+ * as any.
+ */
+function layoutDiscarded(
+  box: Box,
+  ctx: LayoutContext,
+  borderBoxWidth: number,
+  x: number,
+  y: number,
+  outerFloats?: FloatContext,
+): void {
+  const end = autoFloor(box, y);
+  const columns = columnsOf(box, borderBoxWidth - box.horizontalExtra);
+  ctx.clamp = null;
+  if (end === Infinity || !columns || columns.count < 1) {
+    layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
+    return;
+  }
+  const top = y + box.borderTop + box.padTop;
+  const fit: NonNullable<Clamp['fit']> = {
+    floor: top + (end - top) * columns.count,
     lines: 0,
     seen: 0,
     over: false,

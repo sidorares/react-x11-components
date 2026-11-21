@@ -6127,7 +6127,9 @@ of, and is broken in as a last resort — with
 `orphans` and `widows` lines of a block kept at either side of a break, two
 of each unless they say otherwise, and a margin at a break dropped. What
 overflows a box of `overflow: clip` stays in the column the box ends in,
-clipped there, and a break in it makes no column. A
+clipped there, and a break in it makes no column; so does what is
+absolutely positioned in it, cut into the columns only as far as it
+reaches. A
 table breaks between its rows and inside its cells, as a grid does between
 its rows and inside its items, a row's cells side by side down the strip
 and an empty cell cut where a column ends. Its first header group and its
@@ -8375,7 +8377,10 @@ empty block that clears a float keeping the float; and `max-lines`, `continue` a
 `block-ellipsis` are read, a string in `line-clamp` or `block-ellipsis`
 drawn in place of the `…`, on one line, which `text-overflow` cuts where
 it is wider than the line; a line of the string alone keeps none of it
-where the `…` leaves no room for a character. A block laid out a line at a time, around an
+where the `…` leaves no room for a character; `continue: discard` on a
+multicol container of a height of its own keeps what fits in its columns
+and discards the rest, which makes no overflow column, where on any other
+block container it clamps as `collapse` does. A block laid out a line at a time, around an
 image, a float or an inline box with a border, ends in the ellipsis as one laid out at once does, at
 its left in a right-to-left block, where its lines end and are cut for
 `text-overflow` too, and
@@ -8478,7 +8483,8 @@ part of the document's: a copy, a caret and a selection skip them. HTML's
 `dir` isolates its element, `dir="auto"` and `<bdi>` take their first
 strong letter's direction, and `<bdo>` overrides. A block of
 `unicode-bidi: plaintext` takes its paragraph's direction from its first
-strong letter, to order and align its lines by, and so does each paragraph
+strong letter, a right-to-left or left-to-right mark among them, to order
+and align its lines by, and so does each paragraph
 a forced break starts, laid out under the one before it; a paragraph with
 anything but text on its lines still takes the first's. `vertical-align` raises and lowers text as well as
 images and inline blocks: the UA sheet's `<sup>` and `<sub>`, a length, a
@@ -8540,7 +8546,8 @@ there, which a selection across it shows.
 `text-emphasis-color` and `text-emphasis-position`, and their `-webkit-`
 spellings (CSS Text Decoration 3, 3). A mark is drawn over or under each
 character but a space, a separator, a punctuation mark and a control or
-format character, centred on it, and where a ruby annotation of the mark
+format character, centred on it and not on the `letter-spacing` after it,
+and where a ruby annotation of the mark
 would be: at half the text's size, on a line of `line-height: normal`
 against the edge of the text's face (`placeMarks`). A line makes room for
 its marks as for an annotation, so a paragraph with marks is laid out a
