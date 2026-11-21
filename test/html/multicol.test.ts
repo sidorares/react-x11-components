@@ -7,7 +7,7 @@ import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { parseColor } from '../../src/html/css/values.js';
 import { COLUMN_PIECES } from '../../src/html/layout/boxes.js';
-import { REPEATED } from '../../src/html/layout/multicol.js';
+import { REPEATED, stripReach } from '../../src/html/layout/multicol.js';
 import { resolvedInsets } from '../../src/html/layout/block.js';
 import {
   FONTS,
@@ -2138,6 +2138,53 @@ test('a rule shown between every column is drawn between the columns there are, 
       [111, 0, 5, 100],
     ],
   );
+});
+
+test('a multicol container its content sizes is balanced over what is positioned in it', async () => {
+  // WPT's css-break/out-of-flow-in-multicolumn-069: four columns with no
+  // height and nothing in their flow but a box positioned 400px tall. It
+  // is laid out after the columns are set, so the container is laid out
+  // once more with how far it reached: 100px tall, the box cut into each
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="m" style="column-count:4;column-gap:0;width:100px">' +
+      '<div style="position:relative"><div id="a" style="position:absolute;' +
+      'height:400px;width:25px"></div></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'm').height, 100);
+  assert.deepStrictEqual(piecesAt(el, 'a', 'm'), [
+    [0, 0, 25, 100],
+    [25, 0, 25, 100],
+    [50, 0, 25, 100],
+    [75, 0, 25, 100],
+  ]);
+});
+
+test('a multicol container is laid out once more for what is positioned in it, and no more', async () => {
+  // where what it is balanced over moved every time, the document would be
+  // laid out again for good: it is laid out twice, and no more
+  const settle = stripReach.settle;
+  let passes = 0;
+  stripReach.settle = function (this: typeof stripReach) {
+    passes += 1;
+    const decided = this.decided.map((d) => d.box);
+    settle.call(this);
+    return decided;
+  };
+  try {
+    passes = 0;
+    await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="column-count:4;column-gap:0;width:100px">' +
+        '<div style="position:relative"><div style="position:absolute;' +
+        'height:400px;width:25px"></div></div></div>',
+    );
+  } finally {
+    stripReach.settle = settle;
+  }
+  // a layout that ends at all, which took both passes
+  assert.ok(passes >= 2, `${passes} passes`);
 });
 
 test("a multicol container another's columns break, its edges cloned, has its rules in each piece inside them", async () => {

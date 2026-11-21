@@ -1480,6 +1480,22 @@ export function layoutColumns(
       reach = rowTop(end) + rowHeight(end) - top;
     }
   }
+  // where the content sets how tall the columns are, what is positioned in
+  // them sets it too: an absolutely positioned box the container holds is
+  // shared out between its columns with the flow, as Chromium balances
+  // it (WPT's css-break/out-of-flow-in-multicolumn-069), from how far down
+  // the strip it reached the last time (`stripReach`)
+  if (
+    !filled &&
+    !row &&
+    (box.style.columnFill !== 'auto' ||
+      beforeSpanner ||
+      !Number.isFinite(limit))
+  ) {
+    const flow = strip;
+    strip = Math.max(strip, stripReach.hintOf(box));
+    stripReach.note(box, from, flow);
+  }
   if (filled) {
     // set in rows, above
   } else if (box.style.columnFill === 'auto' && !beforeSpanner) {
@@ -1669,6 +1685,86 @@ function wholeBetween(box: Box, outer: Box): boolean {
   }
   return false;
 }
+
+/**
+ * How far down its strip what is absolutely positioned in a multicol
+ * container whose content sets how tall its columns are reaches, which its
+ * columns are balanced over too. Positioned boxes are laid out after every
+ * column is set (`layoutDocument`), so a container keeps how far they reached
+ * the last time as a hint, and where a layout finds that it moved, the
+ * document is laid out once more with the new one (`settle`): once, so it
+ * always ends. A document with no such container notes nothing.
+ */
+export const stripReach = {
+  /** The hints, by container. */
+  hints: new WeakMap<Box, number>(),
+  /** The containers this layout balanced, where their strip starts and how
+   *  far their flow reached down it; and how far what is positioned in
+   *  each reached. */
+  decided: [] as { box: Box; from: number; flow: number }[],
+  reached: new Map<Box, number>(),
+  hintOf(box: Box): number {
+    return this.hints.get(box) ?? 0;
+  },
+  note(box: Box, from: number, flow: number): void {
+    this.decided.push({ box, from, flow });
+  },
+  /** A positioned box laid out in a container's strip, against a box in
+   *  it. */
+  reach(
+    box: Box,
+    containing: Box,
+    container: Box,
+    /** What a box out of the flow is positioned against. */
+    against: (box: Box) => Box | null,
+  ): void {
+    if (!this.decided.length) return;
+    const entry = this.decided.find((d) => d.box === container);
+    if (!entry) return;
+    // only where what it is positioned against is in the container's
+    // columns: in its flow, or itself out of the flow against a box in
+    // them, and so on out. A box positioned against the container itself,
+    // or past it, is no part of the columns, and nor is what is positioned
+    // in it, as Chromium leaves them (WPT's css-break/
+    // out-of-flow-in-multicolumn-083, css-multicol/
+    // nested-oofs-in-relative-multicol)
+    let at: Box | null = containing;
+    while (at !== container) {
+      if (!at) return;
+      if (at.outOfFlow) {
+        const cb = against(at);
+        if (!cb || cb === container) return;
+        at = cb;
+      } else at = at.parent;
+    }
+    // a box no break may fall inside goes to a column whole, and is not
+    // shared out (WPT's css-contain/contain-size-monolithic-002)
+    if (whole(box)) return;
+    const need = Math.max(0, flowReach(box) - entry.from);
+    this.reached.set(
+      container,
+      Math.max(this.reached.get(container) ?? 0, need),
+    );
+  },
+  /** Take what this layout found as the hints, and the containers whose
+   *  hint moved what they are balanced over, which a layout that keeps
+   *  their last one would not see (`forgetSizes`). */
+  settle(): Box[] {
+    const moved: Box[] = [];
+    for (const { box, flow } of this.decided) {
+      const need = this.reached.get(box) ?? 0;
+      const had = this.hints.get(box) ?? 0;
+      if (need > EPS) this.hints.set(box, need);
+      else this.hints.delete(box);
+      if (Math.abs(Math.max(flow, need) - Math.max(flow, had)) > EPS) {
+        moved.push(box);
+      }
+    }
+    this.decided = [];
+    this.reached = new Map();
+    return moved;
+  },
+};
 
 /** The multicol containers in another's columns whose rows those columns
  *  cut (`layoutColumns`): broken as a box that can be cut anywhere, at the

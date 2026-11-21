@@ -155,6 +155,7 @@ import {
   setStripPlace,
   columnsSet,
   cutIntoColumns,
+  stripReach,
   moveColumns,
   stripOf,
   stripStatic,
@@ -1906,6 +1907,50 @@ export function layoutDocument(
   above?: number,
   seenAt?: { box: Box; below: number },
 ): LayoutResult {
+  // a multicol container whose columns its content sizes is balanced over
+  // what is absolutely positioned in it too, which is laid out after it:
+  // where that moved, the document is laid out once more with what it
+  // reached, and only once (`stripReach`)
+  const outer = { decided: stripReach.decided, reached: stripReach.reached };
+  stripReach.decided = [];
+  stripReach.reached = new Map();
+  try {
+    const args = [
+      tree,
+      fonts,
+      viewportWidth,
+      viewportHeight,
+      scale,
+      until,
+      above,
+      seenAt,
+    ] as const;
+    const result = layoutDocumentPass(...args);
+    const moved = stripReach.settle();
+    if (!moved.length) return result;
+    // laid out again, what it holds as much as the container: a block a
+    // layout keeps hands on none of the positioned boxes in it
+    const up = new Set<Box>();
+    for (const box of moved) forgetSizesIn(box, up);
+    const again = layoutDocumentPass(...args);
+    stripReach.settle();
+    return again;
+  } finally {
+    stripReach.decided = outer.decided;
+    stripReach.reached = outer.reached;
+  }
+}
+
+function layoutDocumentPass(
+  tree: BoxTree,
+  fonts: FontsLike | null,
+  viewportWidth: number,
+  viewportHeight: number,
+  scale = 1,
+  until?: number,
+  above?: number,
+  seenAt?: { box: Box; below: number },
+): LayoutResult {
   // what the last layout set aside is laid out, or set aside again
   putBack(tree);
   // where the last layout put it, which a layout keeps what it kept of
@@ -2096,6 +2141,12 @@ export function layoutDocument(
       reflectFrame(box, box.contentHeight, translate, moveLine);
     }
     if (strip) {
+      stripReach.reach(
+        box,
+        containing,
+        strip.geometry.container,
+        containingBlockFor,
+      );
       cutIntoColumns(box, strip.geometry, (b, dx, dy) =>
         translate(b, dx, dy, () => false),
       );
