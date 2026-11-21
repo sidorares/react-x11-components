@@ -2290,7 +2290,8 @@ test('an inline box broken around blocks is the containing block of what is posi
   // broken around, a piece after the first holds the absolute box, and
   // both are placed from where its first piece starts, as Chrome has them
   const { node } = await render(
-    '<div style="font:20px/20px monospace;width:300px;padding:30px 0 0 40px">' +
+    '<style>body{margin:0}</style>' +
+      '<div style="font:20px/20px monospace;width:300px;padding:30px 0 0 40px">' +
       '<span id="s" style="filter:blur(0px);margin-left:10px">ab' +
       '<div style="height:50px"></div><div style="position:relative">' +
       '<div id="f" style="position:fixed;top:0;left:0;width:5px;height:5px"></div></div>' +
@@ -2299,7 +2300,10 @@ test('an inline box broken around blocks is the containing block of what is posi
   );
   const el = view(node);
   const [f, g] = ['f', 'g'].map((id) => boxOf(el, id));
-  for (const [name, b] of [['fixed', f], ['absolute', g]] as const) {
+  for (const [name, b] of [
+    ['fixed', f],
+    ['absolute', g],
+  ] as const) {
     assert.equal(b.x, 50, `${name}: from the first piece's start`);
     assert.ok(b.y >= 25 && b.y < 30, `${name}: on its line: ${b.y}`);
   }

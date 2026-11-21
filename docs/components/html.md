@@ -9923,6 +9923,15 @@ it, which take no room on a line, count all the same. It is painted with the
 positioned boxes, as a relative inline box with an inset is, so what scrolls
 under it goes under it.
 
+An inline box broken around blocks is one containing block for what is
+positioned in it (CSS 2.1, 10.1): a box in a block it was broken around, or
+in one of its later pieces, is placed against the rectangle from where its
+first piece starts to where its last ends, in columns as much as on a page.
+A piece that holds nothing before the block that broke it starts where that
+block's content does, as Chrome has it. The block was the box's sibling in
+the tree, and a fixed box in it, under a filter on the inline box, was placed
+against the viewport.
+
 **The scroll keys scroll a container** — the arrows a line of 40 CSS
 pixels, Page Up, Page Down and Space seven eighths of the scrollport, Home
 and End to its ends, as Chrome steps them — where the focus is on the
