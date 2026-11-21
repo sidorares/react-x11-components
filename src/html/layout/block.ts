@@ -3255,16 +3255,15 @@ function layoutChildren(
         child.borderBottom +
         closingBelow(child, clamp!.box);
       if (bottom > fit.floor) fit.over = true;
-      // and after it where it ends in the room, where it is one of its
-      // own (WPT's `line-clamp-auto-034`): its lines are none of the
-      // clamp's to count, and the box is the last thing that fits; or
-      // where no line is counted yet, whatever it is, since a clamp point
-      // before all of the content would hide what fits (`-069`: a spacer
-      // and a float lifted beside it, then a line past the room)
-      else if (
-        (child.kind !== 'replaced' && establishesBFC(child)) ||
-        fit.lines === 0
-      ) {
+      // and after it where it ends in the room: the box is the last thing
+      // that fits, and the clamp point after it where no line after it
+      // does (`clampFromFit`). A box of a formatting context of its own
+      // holds lines that are none of the clamp's to count (WPT's
+      // `line-clamp-auto-034`); a spacer before a first line past the
+      // room is all that fits, and a clamp point before all of the content
+      // hid it (`-069`); and an empty block that clears a float after the
+      // last line that fits keeps the float with it (`-045`)
+      else {
         fit.after = child;
         fit.afterLines = fit.lines;
       }
