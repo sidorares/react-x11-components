@@ -2012,6 +2012,43 @@ test("a multicol container another's columns break has its rules in each piece, 
   ]);
 });
 
+test('a rule shown between every column is drawn between the columns there are, as tall as the content box', async () => {
+  // WPT's multicol-gap-decorations-visibility-all-empty-columns: three
+  // columns filled to a height of their own, only the first holding
+  // something; the rules are between all three, as tall as the container
+  assert.deepStrictEqual(
+    await rulesIn(
+      '<div style="width:320px;height:100px;columns:3;column-fill:auto;' +
+        'column-gap:20px;column-rule:6px solid #0000ff;' +
+        'column-rule-visibility-items:all"><div style="height:80px"></div>' +
+        '</div>',
+      '#0000ff',
+    ),
+    [
+      [100, 0, 6, 100],
+      [214, 0, 6, 100],
+    ],
+  );
+  // and -026: balanced columns are only those that hold something, three
+  // past a spanner, and the rules between them run on through every row
+  // to the content box's foot
+  assert.deepStrictEqual(
+    await rulesIn(
+      '<div style="width:400px;height:100px;column-width:50px;gap:5px;' +
+        'column-rule:5px solid #ffd700;rule-visibility-items:all;' +
+        'rule-break:none"><div style="height:20px;contain:size"></div>' +
+        '<div style="column-span:all;height:20px"></div>' +
+        '<div style="height:20px;contain:size"></div>'.repeat(3) +
+        '</div>',
+      '#ffd700',
+    ),
+    [
+      [53, 0, 5, 100],
+      [111, 0, 5, 100],
+    ],
+  );
+});
+
 test('column-height and column-wrap set the columns in rows, a row gap apart', async () => {
   // Rows of two columns 30px tall, 10px apart: six boxes of 20px that go
   // whole take a column each, three rows, and the last row is as tall as

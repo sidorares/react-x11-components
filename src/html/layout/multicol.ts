@@ -1555,8 +1555,11 @@ export function layoutColumns(
       // balanced columns are only as many as hold something, as Blink makes
       // a column box for content alone, where filled ones are all there are
       // (WPT's multicol-gap-decorations-026, -visibility-all-empty-columns)
+      // — but for a count the container asks for, which it has however few
+      // hold something (WPT's multicol-gap-decorations-028 and -032)
       exists:
-        box.style.columnFill === 'auto' && !beforeSpanner
+        (box.style.columnFill === 'auto' && !beforeSpanner) ||
+        box.style.columnCount !== null
           ? Math.max(used, columns.count)
           : used,
     });
