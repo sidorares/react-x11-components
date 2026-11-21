@@ -964,6 +964,11 @@ export const BROKEN_BY = new WeakMap<Box, Box>();
  *  it comes to (`applyRelativeOffsets`), and its first piece moves the rest. */
 export const CUT_PIECES = new WeakMap<Box, Box[]>();
 
+/** The first piece of the box each later piece is of (`breakAround`): what
+ *  is positioned in a later piece is in all of the box, whose containing
+ *  block runs from its first piece to its last (`inlineContainingBlock`). */
+export const CUT_HEAD = new WeakMap<Box, Box>();
+
 /** How large a sticky inline box's rect is (`setStickyRect`), beside it: a
  *  box of any size paints as a rectangle, and one here was filled with its
  *  background over its text. Its `x` and `y` are where the rect stands, and
@@ -7252,6 +7257,7 @@ function breakAround(inline: Box): Box[] | null {
   }
   CUT_BLOCKS.set(pieces[0], blocks);
   CUT_PIECES.set(pieces[0], pieces.slice(1));
+  for (let i = 1; i < pieces.length; i += 1) CUT_HEAD.set(pieces[i], pieces[0]);
   // an inline box inside this one broke them first, and is nearer
   for (const block of blocks) {
     if (!BROKEN_BY.has(block)) BROKEN_BY.set(block, pieces[0]);
