@@ -132,6 +132,12 @@ export interface DocumentRun extends TextRun {
   emphasis?: string;
 }
 
+/** A run with `text-autospace` room in its letter spacing, in ems of its
+ *  own size (`autospaced`): a `::first-line` of another size gives it as
+ *  many of its ems (`restyledRun`). No engine reads it, so it is no field
+ *  of `DocumentRun`'s, and two runs alike but for it are one layout. */
+type AutospacedRun = DocumentRun & { autospace?: number };
+
 /** A run's emphasis marks: which side of the text they are on, their
  *  colour and the string each is. */
 export interface EmphasisMark {
@@ -6475,6 +6481,7 @@ function autospaced(items: Item[], marks: { index: number }[]): Item[] {
             ? {
                 letterSpacing: (run.letterSpacing ?? 0) + extra,
                 kernAcross: true,
+                autospace: style.textAutospaceSize,
               }
             : null),
         },
@@ -6785,7 +6792,15 @@ function restyledRun(
     if (fresh[name] === undefined) delete out[name];
     else out[name] = fresh[name];
   }
-  const added = (run.letterSpacing ?? 0) - (own.letterSpacing || 0);
+  let added = (run.letterSpacing ?? 0) - (own.letterSpacing || 0);
+  // the autospace room is ems of the text before the boundary, which are
+  // the line's here (CSS Text 4, 6.4)
+  const autospace = (run as AutospacedRun).autospace;
+  if (autospace) {
+    added +=
+      autospace * ((fresh.size as number | undefined) ?? style.fontSize) -
+      autospace * (run.size ?? own.fontSize);
+  }
   if (added) out.letterSpacing = ((out.letterSpacing as number) ?? 0) + added;
   return out as unknown as TextRun;
 }
