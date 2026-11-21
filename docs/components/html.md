@@ -8532,7 +8532,8 @@ there, which a selection across it shows.
 `text-emphasis-color` and `text-emphasis-position`, and their `-webkit-`
 spellings (CSS Text Decoration 3, 3). A mark is drawn over or under each
 character but a space, a separator, a punctuation mark and a control or
-format character, centred on it, and where a ruby annotation of the mark
+format character, centred on it and not on the `letter-spacing` after it,
+and where a ruby annotation of the mark
 would be: at half the text's size, on a line of `line-height: normal`
 against the edge of the text's face (`placeMarks`). A line makes room for
 its marks as for an annotation, so a paragraph with marks is laid out a

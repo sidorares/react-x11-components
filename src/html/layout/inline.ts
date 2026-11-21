@@ -311,6 +311,12 @@ function placeMarks(fonts: FontsLike, text: LineText): void {
       : baseline - room.ascent - room.height;
     const first = drawn.lines[0];
     const y = top + room.baseline - (first ? first.y + first.baseline : 0);
+    // centred on the character and not on the room `letter-spacing` adds
+    // after it, which the engine sets to its right whichever way the text
+    // runs (WPT's letter-spacing-211)
+    const spacing = Number.isFinite(span.letterSpacing)
+      ? (span.letterSpacing as number)
+      : 0;
     for (let i = run.start; i < run.end; i += 1) {
       const char = chars[i - from];
       if (char === undefined || !takesEmphasis(char)) continue;
@@ -321,7 +327,11 @@ function placeMarks(fonts: FontsLike, text: LineText): void {
           : { x: line.x + run.x + run.width, line: left.line };
       const x0 = left.x;
       const x1 = right.line === left.line ? right.x : x0;
-      (marks ??= []).push({ x: (x0 + x1) / 2 - width / 2, y, layout: drawn });
+      (marks ??= []).push({
+        x: (x0 + x1) / 2 - (x1 === x0 ? 0 : spacing / 2) - width / 2,
+        y,
+        layout: drawn,
+      });
     }
   }
   if (marks) EMPHASIS_MARKS.set(text, marks);
