@@ -2302,12 +2302,15 @@ function paintOwnBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
       return;
     }
   }
+  // a box past a clamp point paints nothing, but where it is the group of
+  // what escapes it (`escapeGroup`), which says itself what it meets
+  const group = CLAMPED.has(box) && escapeGroup(box);
   if (
     options.lifted?.has(box) ||
     options.captured?.has(box) ||
-    !intersects(box, options) ||
+    (!group && !intersects(box, options)) ||
     COLLAPSED_CELLS.has(box) ||
-    CLAMPED.has(box)
+    (CLAMPED.has(box) && !group)
   ) {
     return;
   }
@@ -3868,10 +3871,11 @@ function paintGroup(
   ) {
     return true;
   }
-  let x0 = Math.floor(box.boundsX + options.originX);
-  let y0 = Math.floor(box.boundsY + options.originY);
-  let x1 = Math.ceil(box.boundsX + box.boundsWidth + options.originX);
-  let y1 = Math.ceil(box.boundsY + box.boundsHeight + options.originY);
+  const ink = groupInk(box);
+  let x0 = Math.floor(ink.x + options.originX);
+  let y0 = Math.floor(ink.y + options.originY);
+  let x1 = Math.ceil(ink.x + ink.width + options.originX);
+  let y1 = Math.ceil(ink.y + ink.height + options.originY);
   const damage = options.damage;
   if (damage) {
     x0 = Math.max(x0, Math.floor(damage.x));
@@ -5035,6 +5039,15 @@ function paintContent(
   box: Box,
   options: PaintOptions,
 ): void {
+  // a box past a clamp point that is the group of what escapes it paints
+  // those and nothing of its own (`escapeGroup`)
+  if (CLAMPED.has(box)) {
+    const below = options.negative ? NEGATIVE.get(box) : undefined;
+    if (below) for (const child of below) paintStacked(ctx, child, options);
+    const stacked = STACKED.get(box);
+    if (stacked) for (const child of stacked) paintStacked(ctx, child, options);
+    return;
+  }
   const visible = box.style.visibility === 'visible';
   if (visible && box.style.backdropFilter) paintBackdrop(ctx, box, options);
   if (visible) paintOwnBackground(ctx, box, options);
@@ -9888,7 +9901,7 @@ function gatherLayers(
     // one positioned against something the clamp does not hide
     if (CLAMPED.has(child)) {
       const escapes = CLAMP_ESCAPES.get(child);
-      if (escapes) gatherEscapes(escapes, context, into, nested);
+      if (escapes) gatherEscapes(child, escapes, context, into, nested);
       continue;
     }
     // one below the flow is on its stacking context's list already
@@ -9919,6 +9932,63 @@ function gatherLayers(
 /** The layers a box past a clamp point holds that the clamp does not hide
  *  (`CLAMP_ESCAPES`), gathered as the box's own would be were it shown. */
 function gatherEscapes(
+  hidden: Box,
+  escapes: readonly Box[],
+  context: Box,
+  into: Box[],
+  nested: boolean,
+): void {
+  // a hidden box that makes a group of what it holds — an opacity, a
+  // filter, a mask — still makes it of what escapes it, as a browser draws
+  // it: it is a layer of its own that paints nothing but them
+  if (escapeGroup(hidden)) {
+    const clips = clipsFor(hidden, context);
+    if (clips.length) CLIPS_BETWEEN.set(hidden, clips);
+    else CLIPS_BETWEEN.delete(hidden);
+    into.push(hidden);
+    if (!nested) return;
+    const own: Box[] = [];
+    gatherEscaped(escapes, hidden, own, nested);
+    settleLayers(hidden, own);
+    return;
+  }
+  gatherEscaped(escapes, context, into, nested);
+}
+
+/** How far what a group paints reaches: a box's ink, or for a box past a
+ *  clamp point, which has none, what escapes it (`escapeGroup`). */
+function groupInk(box: Box): Rect {
+  if (!CLAMPED.has(box)) {
+    return {
+      x: box.boundsX,
+      y: box.boundsY,
+      width: box.boundsWidth,
+      height: box.boundsHeight,
+    };
+  }
+  let x1 = Infinity;
+  let y1 = Infinity;
+  let x2 = -Infinity;
+  let y2 = -Infinity;
+  for (const at of CLAMP_ESCAPES.get(box) ?? []) {
+    if (at.boundsY === Infinity) continue;
+    x1 = Math.min(x1, at.boundsX);
+    y1 = Math.min(y1, at.boundsY);
+    x2 = Math.max(x2, at.boundsX + at.boundsWidth);
+    y2 = Math.max(y2, at.boundsY + at.boundsHeight);
+  }
+  return x1 === Infinity
+    ? { x: 0, y: 0, width: 0, height: 0 }
+    : { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+}
+
+/** Whether a box past a clamp point paints what escapes it as a group of
+ *  its own (`gatherEscapes`): it stacks what it holds, and something does. */
+function escapeGroup(box: Box): boolean {
+  return CLAMPED.has(box) && CLAMP_ESCAPES.has(box) && stacksLayers(box);
+}
+
+function gatherEscaped(
   escapes: readonly Box[],
   context: Box,
   into: Box[],
@@ -10586,7 +10656,9 @@ function paintStacked(
   options: PaintOptions,
 ): void {
   options = atViewport(box, options);
-  if (!intersects(box, options)) return;
+  // a box past a clamp point has no ink of its own, and the group of what
+  // escapes it says itself what it meets (`escapeGroup`)
+  if (!intersects(box, options) && !escapeGroup(box)) return;
   const between = CLIPS_BETWEEN.get(box);
   if (!between) {
     paintPositioned(ctx, box, options);
