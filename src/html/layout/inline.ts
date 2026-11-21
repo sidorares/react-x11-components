@@ -957,6 +957,158 @@ function plaintextDirection(block: Box): 'ltr' | 'rtl' | null {
   return null;
 }
 
+/**
+ * The paragraphs of a block of `unicode-bidi: plaintext`, split after each
+ * forced break, each with the direction its first strong letter gives it,
+ * or the block's where it has none (UAX #9, P1 to P3; CSS Writing Modes 3,
+ * 2.4.2) — or null where they all read in the block's direction, which
+ * `layoutInline` set from the first, or where something besides text is on
+ * the lines, which is laid out as one paragraph as before.
+ */
+function plaintextParagraphs(
+  block: Box,
+  items: readonly Item[],
+): { items: Item[]; direction: 'ltr' | 'rtl' }[] | null {
+  const groups: Item[][] = [[]];
+  for (const item of items) {
+    if (item.kind !== 'text' && item.kind !== 'edge') return null;
+    if (item.kind !== 'text' || item.control) {
+      groups[groups.length - 1].push(item);
+      continue;
+    }
+    let text = item.run.text;
+    let start = item.start;
+    for (;;) {
+      const at = text.indexOf('\n');
+      if (at < 0 || at === text.length - 1) {
+        groups[groups.length - 1].push(
+          text === item.run.text
+            ? item
+            : {
+                ...item,
+                run: { ...item.run, text },
+                start,
+                length: text.length,
+              },
+        );
+        if (at >= 0) groups.push([]);
+        break;
+      }
+      const head = text.slice(0, at + 1);
+      groups[groups.length - 1].push({
+        ...item,
+        run: { ...item.run, text: head },
+        start,
+        length: head.length,
+      });
+      groups.push([]);
+      start += head.length;
+      text = text.slice(at + 1);
+    }
+  }
+  if (!groups[groups.length - 1].length) groups.pop();
+  if (groups.length < 2) return null;
+  const own = block.style.direction;
+  let differs = false;
+  const out = groups.map((group) => {
+    let direction: 'ltr' | 'rtl' = own;
+    find: for (const item of group) {
+      if (item.kind !== 'text' || item.control) continue;
+      for (const char of item.run.text) {
+        if (STRONG_RTL.test(char)) {
+          direction = 'rtl';
+          break find;
+        }
+        if (STRONG_LTR.test(char)) {
+          direction = 'ltr';
+          break find;
+        }
+      }
+    }
+    if (direction !== own) differs = true;
+    return { items: group, direction };
+  });
+  return differs ? out : null;
+}
+
+/**
+ * The lines of a block's paragraphs laid out one under another, each in
+ * its own direction (`plaintextParagraphs`): the block's style lent the
+ * paragraph's direction while it is laid out. A clamp counts their lines
+ * together, and more of the block follows each but the last.
+ */
+function layoutParagraphs(
+  block: Box,
+  options: InlineOptions,
+  paragraphs: { items: Item[]; direction: 'ltr' | 'rtl' }[],
+): InlineResult {
+  const style = block.style;
+  const lines: LineBox[] = [];
+  let y = 0;
+  let width = 0;
+  let cut = false;
+  const clamp = options.clamp;
+  let left = clamp ? clamp.lines : Infinity;
+  for (let i = 0; i < paragraphs.length; i += 1) {
+    if (left <= 0) {
+      cut = true;
+      break;
+    }
+    const { items, direction } = paragraphs[i];
+    const last = i === paragraphs.length - 1;
+    block.style =
+      direction === style.direction ? style : { ...style, direction };
+    let laid: InlineResult;
+    try {
+      laid = linesOf(
+        block,
+        {
+          ...options,
+          startY: options.startY + y,
+          clamp: clamp
+            ? { ...clamp, lines: left, follows: clamp.follows || !last }
+            : undefined,
+          // a `::first-line` is the first paragraph's
+          ...(i > 0 && {
+            firstLine: undefined,
+            firstLineStyle: undefined,
+            firstStrut: undefined,
+          }),
+        },
+        items,
+        0,
+      );
+    } finally {
+      block.style = style;
+    }
+    // a paragraph ends in its forced break, which an engine sets a line of
+    // its own after: that line is the next paragraph's
+    let own = laid.lines;
+    const end = own[own.length - 1];
+    if (!last && own.length > 1 && end && end.textStart === end.textEnd) {
+      own = own.slice(0, -1);
+    }
+    for (const line of own) {
+      if (y) {
+        line.y += y;
+        for (const text of line.texts) text.drawY += y;
+      }
+      lines.push(line);
+      width = Math.max(width, line.width);
+    }
+    const bottom = own.length
+      ? own[own.length - 1].y + own[own.length - 1].height
+      : y;
+    y = bottom;
+    left -= own.length;
+    if (laid.cut) {
+      cut = !last || laid.cut;
+      break;
+    }
+  }
+  return cut ? { lines, height: y, width, cut } : { lines, height: y, width };
+}
+
 /** A letter of a right-to-left script: Hebrew, Arabic and their kin (UAX
  *  #9's R and AL), and a letter of any other script, which reads left to
  *  right (L). */
@@ -1153,12 +1305,15 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
   );
   const items = autospaced(collected, statics);
   if (options.fonts) rubyOverhang(items, options.fonts);
-  let result = linesOf(
-    block,
-    roomForCluster(block, options, items),
-    items,
-    floatCount,
-  );
+  // the paragraphs of a block of `unicode-bidi: plaintext`, each in the
+  // direction its own text gives it, where they are not all of one
+  const paragraphs =
+    block.style.unicodeBidi === 'plaintext' && floatCount === 0
+      ? plaintextParagraphs(block, items)
+      : null;
+  let result = paragraphs
+    ? layoutParagraphs(block, options, paragraphs)
+    : linesOf(block, roomForCluster(block, options, items), items, floatCount);
   // `text-wrap: balance` on lines made a piece at a time, which the
   // one-layout paths balance for themselves
   if (LINE_AT_A_TIME.has(result) && options.balanceInset === undefined) {
@@ -7775,7 +7930,8 @@ function ellipsized(
   legacy = false,
 ): { layout: TextLayoutLike; runs: TextRun[]; spans: SpanMap } {
   const mark = runFor(style.blockEllipsisMark, style);
-  const room = width - fonts.layout([mark], base, {}).width;
+  const markWidth = fonts.layout([mark], base, {}).width;
+  const room = width - markWidth;
   const last = layout.lines[layout.lines.length - 1];
   let end = last.end;
   if (last.width > room) {
@@ -7847,7 +8003,27 @@ function ellipsized(
   const ending = displaced ? { ...whole, text: '\n' + whole.text } : whole;
   spans.add(at, ending.text.length, null);
   kept.push(ending);
-  return { layout: fonts.layout(kept, base, options), runs: kept, spans };
+  // the ellipsis takes the room its advance leaves, which is what the line
+  // was cut to: where the line is fitted as a browser fits it, in items
+  // each rounded up to a 64th of a pixel (`fit`), the ellipsis is an item
+  // of its own and is given back what its rounding adds, or words and an
+  // ellipsis that fill the line between them come out a hair past it, and
+  // the last word breaks onto the lines the clamp hides with the ellipsis
+  // glued to it (WPT's `block-ellipsis-bidi-002`)
+  const rounding = options?.fit
+    ? fonts.layout([mark], base, { fit: options.fit }).width - markWidth
+    : 0;
+  return {
+    layout: fonts.layout(
+      kept,
+      base,
+      rounding > 0 && options?.maxWidth !== undefined
+        ? { ...options, maxWidth: options.maxWidth + rounding }
+        : options,
+    ),
+    runs: kept,
+    spans,
+  };
 }
 
 /** Whether a line has been cut short a piece at a time (`ellipsizeLines`):
