@@ -1694,7 +1694,7 @@ function linesOf(
     // a clamp's lines that run past the box are cut by `text-overflow`
     // too, each but where the clamp's own ellipsis left room
     let clampWidest = widest;
-    if (clamp && !rtl && linesCut(over, options.width)) {
+    if (clamp && linesCut(over, options.width)) {
       clampWidest = ellipsizeLines(
         lines,
         style,
@@ -2425,7 +2425,7 @@ function linesOf(
   placeDeferred();
   // `text-overflow` on what the lines a piece at a time hold, which the
   // one-layout paths above leave to the engine
-  if (ellipsizes.any || (!rtl && linesCut(over, options.width))) {
+  if (ellipsizes.any || linesCut(over, options.width)) {
     widest = ellipsizeLines(
       lines,
       style,
@@ -2442,7 +2442,6 @@ function linesOf(
   const clamping = options.clamp;
   if (
     clamping?.ellipsis &&
-    !rtl &&
     lines.length >= clamping.lines &&
     (lines.length > clamping.lines || clamping.follows)
   ) {
@@ -2454,7 +2453,8 @@ function linesOf(
         last,
         style,
         style.blockEllipsisMark,
-        options.width - inset,
+        // at the line's end, its left in a right-to-left block
+        rtl ? inset : options.width - inset,
         fonts,
         base,
         lineHeightMul,
@@ -7792,8 +7792,9 @@ const CUT_SLACK = 0.01;
  * cut where the ellipsis starts, and the ellipsis is set after it — after
  * what is before it, where what does not fit is an atomic, which is hidden
  * (`CLAMPED`). All that comes after on the line is hidden too. A line
- * ordered by bidi into another order than the document's, and a
- * right-to-left block, are left as they were. Answers the widest line.
+ * ordered by bidi into another order than the document's is left as it
+ * was; a right-to-left block's lines end at their left, and are cut
+ * there (`ellipsizeLine`). Answers the widest line.
  */
 function ellipsizeLines(
   lines: LineBox[],
@@ -7816,13 +7817,19 @@ function ellipsizeLines(
   const edge = options.width;
   // a clamp's lines are cut as any are, the ellipsis the clamp ends in
   // aside (CSS Overflow 4, 5.3.1): it leaves its line room for itself
-  const cuts = style.direction !== 'rtl' && linesCut(over, edge);
+  const cuts = linesCut(over, edge);
+  const rtl = style.direction === 'rtl';
   let widest = 0;
   for (const line of lines) {
     // the end of the line box, which a float beside it moves in from the
-    // block's (WPT's `text-overflow-006`)
-    const end = cuts ? bandAt(options, line.y, line.height).right : edge;
-    if (cuts && line.x + line.width > end + CUT_SLACK) {
+    // block's (WPT's `text-overflow-006`): its left in a right-to-left
+    // block, which a line runs past to the left
+    const band = cuts ? bandAt(options, line.y, line.height) : null;
+    const end = band ? (rtl ? band.left : band.right) : rtl ? 0 : edge;
+    const past = rtl
+      ? line.x < end - CUT_SLACK
+      : line.x + line.width > end + CUT_SLACK;
+    if (cuts && past) {
       ellipsizeLine(
         line,
         // the first line's ellipsis is in its `::first-line` style
@@ -7918,7 +7925,12 @@ function ellipsizeLine(
   const mark = fonts.layout(markRuns, base, { direction: style.direction });
   const markLine = mark.lines[0];
   if (!markLine) return;
-  const room = edge - mark.width;
+  // A right-to-left line ends at its left, and is walked from its right:
+  // the walk below is in coordinates mirrored about 0, where its end is
+  // at its right as a left-to-right line's is, and so is `edge`.
+  const rtl = style.direction === 'rtl';
+  const flip = (x: number) => (rtl ? -x : x);
+  const room = flip(edge) - mark.width;
   // the line's texts and atomics in the document's order, each where it
   // starts and ends across the line
   const pieces: { text?: LineText; atomic?: AtomicPlacement }[] = [];
@@ -7928,7 +7940,7 @@ function ellipsizeLine(
     }
     if (i < line.texts.length) pieces.push({ text: line.texts[i] });
   }
-  const span = (piece: (typeof pieces)[number]): [number, number] => {
+  const across = (piece: (typeof pieces)[number]): [number, number] => {
     if (piece.atomic) {
       const { box, x } = piece.atomic;
       return [x - box.marginLeft, x + box.width + box.marginRight];
@@ -7938,8 +7950,12 @@ function ellipsizeLine(
     const left = text.drawX + (natural?.x ?? 0);
     return [left, left + (natural?.width ?? 0)];
   };
+  const span = (piece: (typeof pieces)[number]): [number, number] => {
+    const [left, right] = across(piece);
+    return rtl ? [-right, -left] : [left, right];
+  };
   let at = -1;
-  let before = line.x;
+  let before = flip(rtl ? line.x + line.width : line.x);
   let last = -Infinity;
   for (let i = 0; i < pieces.length; i += 1) {
     const [left, right] = span(pieces[i]);
@@ -7969,9 +7985,10 @@ function ellipsizeLine(
       base,
       lineHeight,
       first,
+      rtl,
     );
     if (end !== null) {
-      before = end;
+      before = flip(end);
       at += 1;
     }
   } else if (first) {
@@ -7995,7 +8012,9 @@ function ellipsizeLine(
     text: {
       layout: mark,
       layoutLine: 0,
-      drawX: before - markLine.x,
+      // after what is kept, which is to its left, or in a right-to-left
+      // line to its right
+      drawX: rtl ? -before - markLine.width - markLine.x : before - markLine.x,
       drawY: line.y + line.baseline - markLine.baseline,
       textStart: index,
       textEnd: index,
@@ -8017,7 +8036,11 @@ function ellipsizeLine(
     }
   }
   line.texts = texts;
-  line.width = Math.max(0, end - line.x);
+  if (rtl) {
+    const right = line.x + line.width;
+    line.x = Math.min(right, -end);
+    line.width = right - line.x;
+  } else line.width = Math.max(0, end - line.x);
   CUT_LINES.add(line);
 }
 
@@ -8037,6 +8060,9 @@ function clipText(
   lineHeight: number,
   /** Keep a character at least: the line's first is clipped, not cut. */
   least = false,
+  /** Keep the text's right edge where it is, and answer where it ends at
+   *  its left: a right-to-left line's end. */
+  rtl = false,
 ): number | null {
   const natural = text.layout.lines[text.layoutLine];
   const runs = LAYOUT_RUNS.get(text.layout);
@@ -8059,6 +8085,7 @@ function clipText(
     fonts,
     base,
     lineHeight,
+    rtl,
   );
 }
 
@@ -8077,6 +8104,8 @@ function relaidText(
   fonts: FontsLike,
   base: Record<string, unknown>,
   lineHeight: number,
+  /** Keep its right edge, and answer where it ends at its left. */
+  rtl = false,
 ): number | null {
   const natural = text.layout.lines[text.layoutLine];
   const kept = sliceRuns(runs, from, to);
@@ -8090,10 +8119,11 @@ function relaidText(
   if (!line) return null;
   LAYOUT_RUNS.set(laid, kept);
   const left = text.drawX + natural.x;
+  const right = left + natural.width;
   const baseline = text.drawY + natural.baseline;
   text.layout = laid;
   text.layoutLine = 0;
-  text.drawX = left - line.x;
+  text.drawX = rtl ? right - line.x - line.width : left - line.x;
   text.drawY = baseline - line.baseline;
   if (from) {
     text.layoutStart -= from;
@@ -8107,7 +8137,9 @@ function relaidText(
   delete text.trailRun;
   // a space it was cut after stands before the ellipsis, as it does in a
   // browser: "will …", not "will…"
-  return left + (line.advance ?? line.width);
+  return rtl
+    ? right - (line.advance ?? line.width)
+    : left + (line.advance ?? line.width);
 }
 
 /** A layout's span map read from `by` code units into the text it maps:
