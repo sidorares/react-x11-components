@@ -8477,7 +8477,10 @@ alike are two rules, each in from its own ends. Not here: an element inside
 one that sets the same line, whose line replaces the outer one's over its
 text where browsers draw both. `unicode-bidi` is carried out as
 the bidi controls it stands for, laid out around the element's text and no
-part of the document's: a copy, a caret and a selection skip them. HTML's
+part of the document's: a copy, a caret and a selection skip them. The
+controls open at a forced break are opened again after it, since UAX #9
+ends them all at a line feed, so an override holds for every paragraph of
+a `pre-wrap` block. HTML's
 `dir` isolates its element, `dir="auto"` and `<bdi>` take their first
 strong letter's direction, and `<bdo>` overrides. A block of
 `unicode-bidi: plaintext` takes its paragraph's direction from its first

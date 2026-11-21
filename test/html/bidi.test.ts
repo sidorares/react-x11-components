@@ -432,3 +432,23 @@ metric(
     assert.ok(extentOf(b.texts[0])[0] < 1, 'from the left');
   },
 );
+
+metric(
+  'an override holds past a line feed it keeps, in every paragraph',
+  async () => {
+    // a line feed ends every override open at it to UAX #9, where the box's
+    // `unicode-bidi` is for all of its text (WPT's pre-wrap-align-*-003)
+    const { node } = await render(
+      '<div id="t" dir="rtl" style="font:20px monospace;width:30ch;' +
+        'white-space:pre-wrap;unicode-bidi:bidi-override">ab\ncd\n<b>ef\ngh</b></div>',
+      600,
+    );
+    const el = view(node);
+    // each pair reversed: the first letter of each to the right of the second
+    for (const at of [0, 3, 6, 9]) {
+      const first = el.textCaretRect(at)!;
+      const second = el.textCaretRect(at + 1)!;
+      assert.ok(first.x > second.x, `the pair at ${at} reversed`);
+    }
+  },
+);
