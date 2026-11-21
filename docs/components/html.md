@@ -6744,9 +6744,10 @@ row of columns balanced shorter than its row, before a spanner, has rules as
 tall as its columns, and under `column-rule-break: none` a gap's rule runs on
 through the spanner and every row.
 
-A grid or a flex container that columns break has its rules drawn in each
-piece, as the whole box has them, where its pieces stand; a row gap a break
-falls in has no rule (3.6). Not here: a grid lanes container that columns
+A grid, a flex container or a multicol container that columns break has its
+rules drawn in each piece, as the whole box has them, where its pieces
+stand; a row gap a break falls in has no rule (3.6), and nor has one a piece
+starts or ends with, since a break comes straight before or after it. Not here: a grid lanes container that columns
 break, a container in a vertical writing mode, whose rules are drawn as a
 horizontal one's are.
 
