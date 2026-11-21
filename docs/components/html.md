@@ -8330,7 +8330,10 @@ off a line of its own where Chrome keeps it off — see
 formatting context, counted through the blocks in it, and is as tall as
 they are; what comes after them is invisible and takes no room, and the
 last line ends in an ellipsis where more follows, placed after the words
-that fit beside it, or alone on the line it displaced where none do. Tailwind's `line-clamp-2` writes it as
+that fit beside it, or alone on the line it displaced where none do; the
+ellipsis is an item of its own, rounded up to a 64th of a pixel as the
+line's text is, and words and an ellipsis that fill the line exactly stay
+on it. Tailwind's `line-clamp-2` writes it as
 `-webkit-line-clamp` on a vertical `-webkit-box`, the one place that form
 clamps, as in a browser, and that form's ellipsis cuts inside a word where
 the line has no room for it, as `text-overflow`'s does — as Chrome, Firefox
