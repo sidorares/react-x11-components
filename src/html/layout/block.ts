@@ -453,7 +453,11 @@ interface Clamp {
    */
   fit: {
     floor: number;
+    /** The lines up to the last that ends in the room, of `seen`. */
     lines: number;
+    /** Every line met. A line past the room may be followed by one that
+     *  is not, where a box around them is cut at a limit of its own. */
+    seen: number;
     over: boolean;
     /** The last box of a formatting context of its own that ends in the
      *  room, after `afterLines` lines: the clamp point is after it where no
@@ -3149,7 +3153,7 @@ function layoutChildren(
       } else if (clearance > childY) childY = clearance;
     }
 
-    const counted = clamp?.fit?.lines ?? 0;
+    const counted = clamp?.fit?.seen ?? 0;
     const floatMark = floats.count;
     // A probe takes a block it laid out before in the same room, from the
     // same things, for what it came to then (`Stand`), where nothing but
@@ -3247,7 +3251,7 @@ function layoutChildren(
     // formatting context of its own — puts the clamp point of an `auto`
     // clamp before it where it ends below the room
     const fit = clamp?.fit;
-    if (fit && !fit.over && fit.lines === counted) {
+    if (fit && fit.seen === counted) {
       const bottom =
         child.y +
         child.height -
@@ -3265,7 +3269,7 @@ function layoutChildren(
       // last line that fits keeps the float with it (`-045`)
       else {
         fit.after = child;
-        fit.afterLines = fit.lines;
+        fit.afterLines = fit.seen;
       }
     }
     if (clamp?.after === child) clamp.done = true;
@@ -3646,14 +3650,15 @@ function countLines(
 ): void {
   const fit = clamp.fit;
   if (fit !== null) {
-    if (fit.over) return;
+    // every line is asked, not only those before the first past the room:
+    // a line that overflows a box of a `max-height` keeps the margin after
+    // it in the box, so the container cut after it can end higher than cut
+    // after the line before (WPT's `line-clamp-auto-063`)
     for (const line of result.lines) {
       const bottom = contentTop + line.y + line.height;
-      if (bottomIfCut(box, clamp.box, bottom) > fit.floor) {
-        fit.over = true;
-        return;
-      }
-      fit.lines += 1;
+      fit.seen += 1;
+      if (bottomIfCut(box, clamp.box, bottom) > fit.floor) fit.over = true;
+      else fit.lines = fit.seen;
     }
     return;
   }
@@ -4364,7 +4369,12 @@ function layoutClamped(
     layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
     return;
   }
-  const fit: NonNullable<Clamp['fit']> = { floor, lines: 0, over: false };
+  const fit: NonNullable<Clamp['fit']> = {
+    floor,
+    lines: 0,
+    seen: 0,
+    over: false,
+  };
   ctx.clamp = { box, left: Infinity, done: false, fit };
   const positioned = ctx.positioned.length;
   layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
@@ -4401,7 +4411,7 @@ function framedFloor(box: Box): number {
  *  out again under: after the lines that fit, or after the box of a
  *  formatting context of its own that fits after them. */
 function clampFromFit(box: Box, fit: NonNullable<Clamp['fit']>): Clamp {
-  return fit.after && fit.afterLines === fit.lines
+  return fit.after && fit.afterLines! >= fit.lines
     ? { box, left: Infinity, done: false, fit: null, after: fit.after }
     : { box, left: fit.lines, done: fit.lines === 0, fit: null };
 }
@@ -4783,7 +4793,12 @@ function framedWidth(box: Box, frame: Box, ctx: LayoutContext): number {
       }
       layFrame(frame, ctx, inline, NaN);
     } else {
-      const fit: NonNullable<Clamp['fit']> = { floor, lines: 0, over: false };
+      const fit: NonNullable<Clamp['fit']> = {
+        floor,
+        lines: 0,
+        seen: 0,
+        over: false,
+      };
       ctx.clamp = { box, left: Infinity, done: false, fit };
       layFrame(frame, ctx, inline, NaN);
       if (fit.over) {
