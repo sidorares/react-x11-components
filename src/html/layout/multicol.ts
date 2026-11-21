@@ -2199,6 +2199,23 @@ const STRIP_STATIC = new WeakMap<
   { x: number; y: number; right: number }
 >();
 
+/** Forget where columns had an out-of-flow box's static position, as a
+ *  layout places it anew (`placeStatic`). */
+export function forgetStripStatic(box: Box): void {
+  STRIP_STATIC.delete(box);
+}
+
+/** Move where an out-of-flow box's static position is from the box it is
+ *  from, in the strip, by `dy`: a box a spanner breaks is in the strip as
+ *  its first row has it, and what was laid out in a later row stood from
+ *  where that row had it (`layoutRows`). */
+export function restateStripStatic(box: Box, dy: number): void {
+  const at = box.staticPosition;
+  if (!at || at.inside || Math.abs(dy) <= EPS) return;
+  const kept = STRIP_STATIC.get(box) ?? { x: at.x, y: at.y, right: at.right };
+  STRIP_STATIC.set(box, { ...kept, y: kept.y + dy });
+}
+
 /**
  * Where a box inside a multicol container's columns is in the strip they
  * were cut from — its border box, unfragmented — and those columns; null

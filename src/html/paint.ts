@@ -118,6 +118,7 @@ import {
   contained,
   containmentApplies,
   placedMatrix,
+  fragmentMatrix,
   holdsOutOfFlow,
   viewBoxOf,
 } from './layout/block.js';
@@ -2509,6 +2510,82 @@ function paintTurned(ctx: PaintContext, box: Box, options: PaintOptions): void {
     paintPlaced(ctx, box, options);
     return;
   }
+  // A box columns broke is transformed a fragment at a time, each about
+  // its own `transform-origin` and holding what its column holds (CSS
+  // Fragmentation 3, 4.1): turned about the rectangle around its pieces, a
+  // box scaled from its bottom drew its second column's content over its
+  // first (WPT's css-break/transform-019)
+  const pieces = columned.any ? COLUMN_PIECES.get(box) : undefined;
+  if (
+    pieces &&
+    pieces.length > 1 &&
+    matrix.length === 6 &&
+    ctx.beginPath &&
+    ctx.moveTo &&
+    ctx.lineTo &&
+    ctx.clip
+  ) {
+    const each = pieces.map((piece) => fragmentMatrix(box, piece));
+    if (each.every((m) => m !== null)) {
+      pieces.forEach((piece, i) => {
+        paintThrough(
+          ctx,
+          box,
+          options,
+          each[i]!,
+          fragmentRegion(box, pieces, piece),
+          piece,
+        );
+      });
+      return;
+    }
+  }
+  paintThrough(ctx, box, options, matrix, null);
+}
+
+/**
+ * Where a fragment of a box columns broke holds its content, in the
+ * document's coordinates as laid out: its column, across, and down as far
+ * as what the box holds reaches, or the piece itself where another piece
+ * shares its column, a row of columns above or below it.
+ */
+function fragmentRegion(
+  box: Box,
+  pieces: readonly ColumnPiece[],
+  piece: ColumnPiece,
+): { x: number; y: number; width: number; height: number } {
+  const x = piece.x;
+  const right = piece.x + piece.width;
+  const shared = pieces.some(
+    (other) =>
+      other !== piece &&
+      other.x < right - 0.5 &&
+      other.x + other.width > x + 0.5,
+  );
+  let top = piece.y;
+  let bottom = piece.y + piece.height;
+  if (!shared) {
+    for (const child of box.children) {
+      if (!(child.boundsWidth > 0 || child.boundsHeight > 0)) continue;
+      top = Math.min(top, child.boundsY);
+      bottom = Math.max(bottom, child.boundsY + child.boundsHeight);
+    }
+  }
+  return { x, y: top, width: right - x, height: bottom - top };
+}
+
+/** `paintTurned`'s box through `matrix`, and only what `region` holds of it
+ *  where one is given (`fragmentRegion`). */
+function paintThrough(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  matrix: Placed,
+  region: { x: number; y: number; width: number; height: number } | null,
+  /** The corner snapped to the pixel grid: the box's, or the fragment's
+   *  for one of a box columns broke. */
+  corner: { x: number; y: number } = box,
+): void {
   // In the window's coordinates, where the document's origin is the
   // options': T(origin) · matrix · T(-origin). And about an origin moved
   // with the box's corner to the pixel it is drawn from: what is painted is
@@ -2517,8 +2594,8 @@ function paintTurned(ctx: PaintContext, box: Box, options: PaintOptions): void {
   // it was laid out it came back off the grid — a square mirrored onto
   // itself showed a line of what was under it along each side. A browser
   // snaps a transformed box's corner before its transform the same way.
-  const left = box.x + options.originX;
-  const top = box.y + options.originY;
+  const left = corner.x + options.originX;
+  const top = corner.y + options.originY;
   let ox = options.originX + Math.round(left) - left;
   let oy = options.originY + Math.round(top) - top;
   if (matrix.length === 9) {
@@ -2566,6 +2643,56 @@ function paintTurned(ctx: PaintContext, box: Box, options: PaintOptions): void {
   }
   const back = invert(through);
   if (!back) return;
+  if (region) {
+    // the fragment's region where its matrix draws it, in the window's
+    // coordinates, which everything drawn after is cut to
+    const { x, y, width, height } = region;
+    const square = through[1] === 0 && through[2] === 0;
+    const corners = [
+      [x, y],
+      [x + width, y],
+      [x + width, y + height],
+      [x, y + height],
+    ].map(([px, py]) => {
+      // on the pixel grid before the matrix, as each piece of what the box
+      // holds is clipped to its column (`paintColumnPieces`): taken from
+      // the fragment's own fraction of a pixel, the edge came out a pixel
+      // inside what a scale drew of those pieces, and left a line of what
+      // is under them at the fragment's head (WPT's css-break/transform-018)
+      const wx = Math.round(px + within.originX);
+      const wy = Math.round(py + within.originY);
+      const cx = through[0] * wx + through[2] * wy + through[4];
+      const cy = through[1] * wx + through[3] * wy + through[5];
+      // on whole pixels where the matrix keeps a rectangle one, as every
+      // other clip of a column is: a fraction left the edge of what is
+      // drawn on each side of it half covered, a line of what is under
+      return square ? [Math.round(cx), Math.round(cy)] : [cx, cy];
+    });
+    ctx.save();
+    ctx.beginPath!();
+    ctx.moveTo!(corners[0][0], corners[0][1]);
+    for (let i = 1; i < 4; i += 1) ctx.lineTo!(corners[i][0], corners[i][1]);
+    ctx.closePath?.();
+    ctx.clip!();
+    try {
+      paintThroughInside(ctx, box, options, within, through, back);
+    } finally {
+      ctx.restore();
+    }
+    return;
+  }
+  paintThroughInside(ctx, box, options, within, through, back);
+}
+
+function paintThroughInside(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  within: PaintOptions,
+  through: Matrix,
+  back: Matrix,
+): void {
+  const [a, b, c, d] = through;
   const damage = options.damage;
   const inside: PaintOptions = {
     ...within,
@@ -2615,7 +2742,7 @@ function paintTurned(ctx: PaintContext, box: Box, options: PaintOptions): void {
     return;
   }
   ctx.save();
-  ctx.transform(a, b, c, d, through[4], through[5]);
+  ctx.transform!(a, b, c, d, through[4], through[5]);
   paintPlaced(ctx, box, inside);
   ctx.restore();
 }
@@ -5123,7 +5250,7 @@ function paintBarsOf(
     try {
       paintBarsOf(ctx, box, 0, 0, scale, options, true);
     } finally {
-      ctx.restore!();
+      ctx.restore();
     }
     return;
   }
@@ -5253,7 +5380,7 @@ function paintBackgroundOf(
         originX: options.originX - sx,
         originY: options.originY - sy,
       });
-      ctx.restore!();
+      ctx.restore();
     } else paintGapRules(ctx, box, options);
   }
   if (box.kind === 'table') paintPartBackgrounds(ctx, box, options);

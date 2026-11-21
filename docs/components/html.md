@@ -6182,7 +6182,8 @@ in a spanner, and in nothing positioned in it, is positioned in the
 container, its offset parent with it, and an anchor in it is in none of the
 boxes it is laid out through. A box a break falls inside has a piece in each
 column: its background and its borders are drawn a piece at a time, with no
-edge at the break. Under `box-decoration-break: clone` each piece is a box of
+edge at the break, and a transform turns or scales each piece about its own
+`transform-origin`, with what its column holds of the box. Under `box-decoration-break: clone` each piece is a box of
 its own, with its borders, padding, shadows and outline all round it, a piece a break ends running on to the column's foot as Blink fills it, and
 the edges take room: the column before a break keeps the end edges of every
 cloned box the break falls inside at its foot, and the one after starts
@@ -6218,7 +6219,8 @@ Positioning 1, 2). A multicol container in a vertical writing mode sets its
 columns in its frame, along the inline axis down the page and as tall as its
 block size, and what is positioned in them is cut where they are. A box positioned in a block a spanner breaks is laid out
 against all of the block, its rows one after another down the strip, and
-cut into the columns of each row it reaches.
+cut into the columns of each row it reaches. Its static position is where
+the row it is in has the block, so one after a spanner starts under it.
 
 `column-height` and `column-wrap` (CSS Multi-column 2) set the columns in
 rows, a `row-gap` apart, each row as many columns as there are and as tall
@@ -8468,7 +8470,10 @@ of 20px ones makes a 60px line, with its text in the middle. A paragraph
 holding either is laid out a line at a time. A box whose own line height is
 less keeps the paragraph's multiple of its font's natural one, which in a
 font with taller lines than the paragraph's — a `<code>` in Menlo beside
-Helvetica — is a little more than CSS gives it. Underlines an element outside a raised text draws through it stay on
+Helvetica — is a little more than CSS gives it. A line's half-leading is
+floored above its text, as Blink floors it, on every line of a paragraph:
+one whose lines in other fonts would move by different amounts is laid out
+a line at a time rather than keep the text engine's baselines. Underlines an element outside a raised text draws through it stay on
 the line's baseline. White space collapses across element boundaries as CSS
 2.1 16.6.1 has it — none at the start or the end of a line, one between two
 words whatever elements they are in — and text at `font-size: 0` takes no

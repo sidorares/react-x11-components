@@ -122,7 +122,7 @@ import {
   wantedScrollTop,
 } from './scroll.js';
 import type { ScrollOffset, Viewport } from './scroll.js';
-import type { Placed } from '../css/transform.js';
+import type { Matrix, Placed } from '../css/transform.js';
 import {
   affineOf,
   facesAway,
@@ -150,6 +150,8 @@ import {
   isSpanner,
   containingParent,
   joinedGeometry,
+  forgetStripStatic,
+  restateStripStatic,
   setStripPlace,
   columnsSet,
   cutIntoColumns,
@@ -5179,6 +5181,9 @@ function layoutRows(
   // had, where no row before this one broke anything. The content after
   // the last spanner was the row before's, empty, and was never laid out.
   columned.any = true;
+  /** What is out of the flow in a box a spanner breaks, and where the
+   *  strip had that box in the row it is in. */
+  const rowStatics: [Box, Box, number][] = [];
   /** Where the next row's content starts down the strip, and the columns
    *  of all the rows (`joinedGeometry`). */
   let from = top;
@@ -5213,6 +5218,18 @@ function layoutRows(
         // down a strip that goes on from the row before's, which the row's
         // columns are cut from and set at `y`
         const flow = layoutChildren(box, ctx, floats, from, columns.width);
+        // what is out of the flow in a box a spanner breaks stands from
+        // where the strip has that box in this row, which is not where it
+        // has it in its first, whose top the whole box is taken from
+        // (`setStripPlace`): here, before the columns move it
+        for (const [b, piece] of broken) {
+          if (r < piece.first || r > piece.last) continue;
+          for (const child of b.children) {
+            if (child.outOfFlow && child.staticPosition?.from === b) {
+              rowStatics.push([child, b, b.y]);
+            }
+          }
+        }
         box.width = borderBoxWidth;
         const strip = Math.max(
           flow.height,
@@ -5328,6 +5345,10 @@ function layoutRows(
       );
     }
     COLUMN_PIECES.set(b, pieces);
+  }
+  for (const [child, b, at] of rowStatics) {
+    const first = stripOf(b)?.y;
+    if (first !== undefined) restateStripStatic(child, at - first);
   }
   // and one at its end, nothing set after it, its bottom margin
   if (trim & 2 && margin !== null) {
@@ -12104,6 +12125,9 @@ function placeStatic(
     right: x + width - parent.x,
     y: y - parent.y,
   };
+  // and where columns had it before they moved it, which is this layout's
+  // to say again, or no one's
+  if (columned.any) forgetStripStatic(box);
 }
 
 /**
@@ -13007,6 +13031,30 @@ export function placedMatrix(box: Box): Placed | null {
   const ox = box.x + resolve(origin[0], box.width, 0);
   const oy = box.y + resolve(origin[1], box.height, 0);
   return linear ? about(linear, ox, oy) : projectedMatrix(box, ox, oy);
+}
+
+/**
+ * `placedMatrix` for one fragment of a box columns broke: about the
+ * `transform-origin` resolved against that fragment's border box, as each
+ * fragment is transformed on its own (CSS Fragmentation 3, 4.1; CSS
+ * Transforms 1, 3: the transform of a fragmented box applies to each of its
+ * fragments). Null where the box has no matrix in the plane, which is drawn
+ * whole as it was.
+ */
+export function fragmentMatrix(
+  box: Box,
+  piece: { x: number; y: number; width: number; height: number },
+): Matrix | null {
+  const style = box.style;
+  if (!drawnThrough(style) || outOfPlane(style)) return null;
+  const linear = linearOf(style);
+  if (!linear) return null;
+  const origin = style.transformOrigin;
+  return about(
+    linear,
+    piece.x + resolve(origin[0], piece.width, 0),
+    piece.y + resolve(origin[1], piece.height, 0),
+  );
 }
 
 /** A matrix that flattens the plane to nothing, which draws nothing and is
