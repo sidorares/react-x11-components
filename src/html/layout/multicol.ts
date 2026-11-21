@@ -1485,16 +1485,19 @@ export function layoutColumns(
   // shared out between its columns with the flow, as Chromium balances
   // it (WPT's css-break/out-of-flow-in-multicolumn-069), from how far down
   // the strip it reached the last time (`stripReach`)
+  // — in each row of columns about a spanner as well, each its own
+  // (WPT's out-of-flow-in-multicolumn-015 and -097), though not in rows
+  // `column-wrap` sets
   if (
     !filled &&
-    !row &&
+    (!row || row.grid === null) &&
     (box.style.columnFill !== 'auto' ||
       beforeSpanner ||
       !Number.isFinite(limit))
   ) {
     const flow = strip;
-    strip = Math.max(strip, stripReach.hintOf(box));
-    stripReach.note(box, from, flow);
+    const index = stripReach.note(box, from, flow);
+    strip = Math.max(strip, stripReach.hintOf(box, index));
   }
   if (filled) {
     // set in rows, above
@@ -1696,21 +1699,26 @@ function wholeBetween(box: Box, outer: Box): boolean {
  * always ends. A document with no such container notes nothing.
  */
 export const stripReach = {
-  /** The hints, by container. */
-  hints: new WeakMap<Box, number>(),
-  /** The containers this layout balanced, where their strip starts and how
-   *  far their flow reached down it; and how far what is positioned in
-   *  each reached. */
-  decided: [] as { box: Box; from: number; flow: number }[],
-  reached: new Map<Box, number>(),
-  hintOf(box: Box): number {
-    return this.hints.get(box) ?? 0;
+  /** The hints, by container, a row of its columns at a time: one where
+   *  no spanner breaks them into rows. */
+  hints: new WeakMap<Box, number[]>(),
+  /** The rows of columns this layout balanced, in order: the container,
+   *  which of its rows, where the row's strip starts and how far its flow
+   *  reached down it; and how far what is positioned in each reached. */
+  decided: [] as { box: Box; index: number; from: number; flow: number }[],
+  reached: new Map<object, number>(),
+  hintOf(box: Box, index: number): number {
+    return this.hints.get(box)?.[index] ?? 0;
   },
-  note(box: Box, from: number, flow: number): void {
-    this.decided.push({ box, from, flow });
+  /** A row of a container's columns balanced: which of its rows it is. */
+  note(box: Box, from: number, flow: number): number {
+    let index = 0;
+    for (const d of this.decided) if (d.box === box) index += 1;
+    this.decided.push({ box, index, from, flow });
+    return index;
   },
   /** A positioned box laid out in a container's strip, against a box in
-   *  it. */
+   *  it: in the row of columns whose strip it starts in. */
   reach(
     box: Box,
     containing: Box,
@@ -1719,7 +1727,11 @@ export const stripReach = {
     against: (box: Box) => Box | null,
   ): void {
     if (!this.decided.length) return;
-    const entry = this.decided.find((d) => d.box === container);
+    let entry: (typeof this.decided)[number] | null = null;
+    for (const d of this.decided) {
+      if (d.box !== container) continue;
+      if (!entry || d.from <= box.y + EPS) entry = d;
+    }
     if (!entry) return;
     // only where what it is positioned against is in the container's
     // columns: in its flow, or itself out of the flow against a box in
@@ -1741,28 +1753,32 @@ export const stripReach = {
     // shared out (WPT's css-contain/contain-size-monolithic-002)
     if (whole(box)) return;
     const need = Math.max(0, flowReach(box) - entry.from);
-    this.reached.set(
-      container,
-      Math.max(this.reached.get(container) ?? 0, need),
-    );
+    this.reached.set(entry, Math.max(this.reached.get(entry) ?? 0, need));
   },
   /** Take what this layout found as the hints, and the containers whose
-   *  hint moved what they are balanced over, which a layout that keeps
-   *  their last one would not see (`forgetSizes`). */
+   *  hint moved what a row of their columns is balanced over, which a
+   *  layout that keeps their last one would not see (`forgetSizes`). */
   settle(): Box[] {
-    const moved: Box[] = [];
-    for (const { box, flow } of this.decided) {
-      const need = this.reached.get(box) ?? 0;
-      const had = this.hints.get(box) ?? 0;
-      if (need > EPS) this.hints.set(box, need);
-      else this.hints.delete(box);
+    const moved = new Set<Box>();
+    const hints = new Map<Box, number[]>();
+    for (const entry of this.decided) {
+      const { box, index, flow } = entry;
+      const need = this.reached.get(entry) ?? 0;
+      const had = this.hints.get(box)?.[index] ?? 0;
+      let list = hints.get(box);
+      if (!list) hints.set(box, (list = []));
+      list[index] = need;
       if (Math.abs(Math.max(flow, need) - Math.max(flow, had)) > EPS) {
-        moved.push(box);
+        moved.add(box);
       }
+    }
+    for (const [box, list] of hints) {
+      if (list.some((need) => need > EPS)) this.hints.set(box, list);
+      else this.hints.delete(box);
     }
     this.decided = [];
     this.reached = new Map();
-    return moved;
+    return [...moved];
   },
 };
 
