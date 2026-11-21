@@ -4482,7 +4482,9 @@ function layoutInternals(
   outerFloats?: FloatContext,
 ): void {
   const outer = ctx.clamp ?? null;
-  const lines = box.style.lineClamp;
+  // a probe measures how wide the content is, which the clamp is no part
+  // of (WPT's `line-clamp-intrinsic-size-001` to `-004`)
+  const lines = ctx.probing ? null : box.style.lineClamp;
   if (
     lines === null &&
     box.style.clampContinue === 'discard' &&
