@@ -171,6 +171,7 @@ import {
   CLEARED_FROM,
   COLUMN_PIECES,
   CUT_BLOCKS,
+  CUT_HEAD,
   CUT_PIECES,
   GRID_TRACKS,
   FIRST_LINE,
@@ -11968,6 +11969,12 @@ function inlineContainingBlock(
   box: Box,
   ctx: LayoutContext,
 ): CbRect {
+  // an inline box broken around blocks is one box in pieces, each in a
+  // block of its own: from its first piece's first fragment to its last
+  // piece's last (`brokenContainingBlock`)
+  const head = inline.cut & 1 ? (CUT_HEAD.get(inline) ?? inline) : inline;
+  const rest = CUT_PIECES.get(head);
+  if (rest?.length) return brokenContainingBlock(head, rest, ctx);
   let block = inline.parent;
   while (block && block.kind === 'inline') block = block.parent;
   const face = ctx.fonts ? faceExtentOf(ctx.fonts, inline.style) : null;
@@ -12053,6 +12060,68 @@ function inlineContainingBlock(
     width = Math.max(first.x + first.width, last.x + last.width) - x;
   }
   return { x, y: first.y, width, height: last.y + last.height - first.y };
+}
+
+/**
+ * The containing block an inline box broken around blocks makes (CSS 2.1
+ * 10.1, item 4): from where its first piece starts to where its last ends,
+ * in the strip where columns cut them (`inlineContainingBlock`). A piece
+ * with no fragment on any line — one that holds nothing before the block
+ * that broke it — starts where its block's content does, as Blink keeps an
+ * empty first fragment there (WPT's css-break/
+ * out-of-flow-in-multicolumn-086).
+ */
+function brokenContainingBlock(
+  inline: Box,
+  rest: Box[],
+  ctx: LayoutContext,
+): CbRect {
+  const face = ctx.fonts ? faceExtentOf(ctx.fonts, inline.style) : null;
+  const fragments = (piece: Box): CbRect[] => {
+    let block = piece.parent;
+    while (block && block.kind === 'inline') block = block.parent;
+    const out: CbRect[] = [];
+    for (const line of block?.lines ?? []) {
+      const span = spanOn(line, piece);
+      if (!span) continue;
+      const [top, bottom] = fragmentRow(line, piece, face, false);
+      const moved = columned.any ? stripShiftOf(line) : undefined;
+      out.push({
+        x: span[0] - (moved?.dx ?? 0),
+        y: top - (moved?.dy ?? 0),
+        width: span[1] - span[0],
+        height: bottom - top,
+      });
+    }
+    if (out.length || !block) return out;
+    // where the strip had the block, where columns moved it
+    const strip = columned.any ? stripOf(block) : null;
+    out.push({
+      x: (strip?.x ?? block.x) + block.borderLeft + block.padLeft,
+      y: (strip?.y ?? block.y) + block.borderTop + block.padTop,
+      width: 0,
+      height: 0,
+    });
+    return out;
+  };
+  const first = fragments(inline)[0];
+  const ends = fragments(rest[rest.length - 1]);
+  const last = ends[ends.length - 1];
+  const rtl = inline.style.direction === 'rtl';
+  const start = rtl ? first.x + first.width : first.x;
+  const end = rtl ? last.x : last.x + last.width;
+  let x = Math.min(start, end);
+  let width = Math.abs(end - start);
+  if (rtl ? end > start : end < start) {
+    x = Math.min(first.x, last.x);
+    width = Math.max(first.x + first.width, last.x + last.width) - x;
+  }
+  return {
+    x,
+    y: first.y,
+    width,
+    height: Math.max(0, last.y + last.height - first.y),
+  };
 }
 
 /** How far an inline box's padding box reaches across a line, left and

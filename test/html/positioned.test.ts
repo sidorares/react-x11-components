@@ -2284,6 +2284,31 @@ test('an inline anchor broken around a block is all of it: its pieces, and the l
   );
 });
 
+test('an inline box broken around blocks is the containing block of what is positioned in any of it, from its first piece', async () => {
+  // CSS 2.1 10.1, item 4; WPT css-break/out-of-flow-in-multicolumn-085 to
+  // 089. A filter makes the box contain the fixed box in the block it was
+  // broken around, a piece after the first holds the absolute box, and
+  // both are placed from where its first piece starts, as Chrome has them
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="font:20px/20px monospace;width:300px;padding:30px 0 0 40px">' +
+      '<span id="s" style="filter:blur(0px);margin-left:10px">ab' +
+      '<div style="height:50px"></div><div style="position:relative">' +
+      '<div id="f" style="position:fixed;top:0;left:0;width:5px;height:5px"></div></div>' +
+      '<div id="g" style="position:absolute;top:0;left:0;width:5px;height:5px"></div>' +
+      'cd</span></div>',
+  );
+  const el = view(node);
+  const [f, g] = ['f', 'g'].map((id) => boxOf(el, id));
+  for (const [name, b] of [
+    ['fixed', f],
+    ['absolute', g],
+  ] as const) {
+    assert.equal(b.x, 50, `${name}: from the first piece's start`);
+    assert.ok(b.y >= 25 && b.y < 30, `${name}: on its line: ${b.y}`);
+  }
+});
+
 test('an anchor in a horizontal scroller in a vertical flow is followed and seen, and the scroller has its bar at the right', async () => {
   // WPT anchor-center-scroll-vertical-wm-001: the scroller is a frame in
   // the vertical flow's frame, which turns back what that one turned. What

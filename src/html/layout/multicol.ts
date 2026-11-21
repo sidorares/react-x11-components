@@ -49,6 +49,7 @@ import {
   COLUMN_LINES,
   COLUMN_PIECES,
   COLUMN_ROWS,
+  BROKEN_BY,
   GRID_TRACKS,
   columned,
 } from './boxes.js';
@@ -3266,7 +3267,11 @@ export function containingParent(box: Box): Box | null {
       if (at.style.columns) return at;
     }
   }
-  return box.parent;
+  // a block an inline box was broken around is in that box, which the tree
+  // has beside it: a relative or a filtered `<span>` around a block is the
+  // containing block of what is positioned in the block (WPT's css-break/
+  // out-of-flow-in-multicolumn-085)
+  return BROKEN_BY.get(box) ?? box.parent;
 }
 
 /** Whether a block in a multicol container's flow is one a spanner is laid
