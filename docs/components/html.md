@@ -8373,7 +8373,8 @@ ellipsis, as Chrome and Safari have it),
 `text-overflow` on a block that clips (`truncate`: each line that runs past
 the box's end — or a float's, beside it — cut there, inside a word if need
 be but never inside a grapheme cluster, with an ellipsis, as a browser cuts
-it; a word too long for a line that wraps is cut the same way, and so are
+it, the ellipsis in the block's font and colour whatever text it ends; a
+word too long for a line that wraps is cut the same way, and so are
 the lines a clamp leaves. `text-overflow: "<string>"` draws the string in
 the ellipsis's place, in the paragraph's direction, a run of forced breaks
 in it made one space, or nothing between two wide characters, and a line's
