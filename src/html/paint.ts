@@ -14991,7 +14991,10 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const size = style.fontSize / scale;
   const inherited = svgInherited(style);
   const units = options.drawingUnits?.() ?? null;
-  const cut = drawingCut(box);
+  // cut past its box by `overflow-clip-margin`, which the drawing cannot
+  // do: drawn uncut, under a clip of that edge (`drawingClip`)
+  const clip = drawingClip(box, options);
+  const cut = clip ? NO_CUT : drawingCut(box);
   const set = (on: PaintContext, left: number, top: number): void =>
     drawing.draw(
       on,
@@ -15048,7 +15051,58 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
         )
       : null;
   if (kept) ctx.drawImage!(kept, x, y);
-  else set(ctx, x, y);
+  else if (clip && ctx.save && ctx.restore && ctx.beginPath && ctx.rect) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(clip.x, clip.y, clip.width, clip.height);
+    ctx.clip!();
+    set(ctx, x, y);
+    ctx.restore();
+  } else set(ctx, x, y);
+}
+
+const NO_CUT: DrawingCut = { x: false, y: false };
+
+/**
+ * Where an inline drawing cut on both axes is cut where that is not its
+ * content box: a replaced element's `overflow` clips it, which its
+ * `overflow-clip-margin` moves out from the box it names (CSS Overflow 4,
+ * 3.2; WPT's overflow-clip-margin-svg). Null where it is cut at its content
+ * box, which the drawing does itself, or where it shows its overflow.
+ */
+function drawingClip(
+  box: Box,
+  options: { originX: number; originY: number; scale?: number },
+): Rect | null {
+  const style = box.style;
+  if (box.el && isRootElement(box.el)) return null;
+  if (style.overflowX === 'visible' || style.overflowY === 'visible') {
+    return null;
+  }
+  const [it, ir, ib, il] = edgeInsets(box, style.overflowClipBox);
+  const margin = style.overflowClipMargin * (options.scale ?? 1);
+  const t = it - box.borderTop - box.padTop;
+  const r = ir - box.borderRight - box.padRight;
+  const b = ib - box.borderBottom - box.padBottom;
+  const l = il - box.borderLeft - box.padLeft;
+  // how far out of the content box the edge is on each side
+  const top = margin - t;
+  const right = margin - r;
+  const bottom = margin - b;
+  const left = margin - l;
+  if (!top && !right && !bottom && !left) return null;
+  const x = box.contentX + options.originX - left;
+  const y = box.contentY + options.originY - top;
+  return {
+    x: Math.round(x),
+    y: Math.round(y),
+    width:
+      Math.round(box.contentX + options.originX + box.contentWidth + right) -
+      Math.round(x),
+    height:
+      Math.round(box.contentY + options.originY + box.contentHeight + bottom) -
+      Math.round(y),
+  };
 }
 
 /** The axes an inline drawing is cut to its content box on: those its
@@ -15080,6 +15134,13 @@ export function drawingOverflows(box: Box): boolean {
 function drawingOverflow(box: Box): Rect | null {
   const style = box.style;
   if (!box.el || box.replaced !== 'svg') return null;
+  // cut where its `overflow-clip-margin` puts the edge, past its box
+  const clip = drawingClip(box, {
+    originX: 0,
+    originY: 0,
+    scale: DRAWING_SCALE.get(box) ?? style.effectiveZoom,
+  });
+  if (clip) return clip;
   const cut = drawingCut(box);
   if (cut.x && cut.y) return null;
   const scale = DRAWING_SCALE.get(box) ?? style.effectiveZoom;

@@ -7092,7 +7092,9 @@ cut at: out from the box it names by its length, or in where the length is
 negative, the rounded corners moving out as a browser's do. A box that
 scrolls cuts at its padding box, or nearer where the margin names its
 content box or moves the edge in, and never past it: `border-box` and a
-length out are nothing to it. A table clips to its table box, with its
+length out are nothing to it. An inline `<svg>` that clips is cut at the
+same edge, its drawing shown past its box as far as the margin reaches.
+A table clips to its table box, with its
 captions outside the clip. A box that clips is no stacking context, and
 is painted in the passes of the flow around it as a block is (CSS 2.1
 Appendix E), as Chrome, Firefox and Safari paint it. Its own background
@@ -8381,7 +8383,9 @@ container with no clamp point in it does the same: it cuts its floats at its
 content box foot and is no taller for them. An absolutely positioned box
 in a block or a float past the clamp point is hidden only where what it is
 placed against is: one placed against the container, or a box around it,
-is drawn, and the box it is in is not. An inline box all of whose text the
+is drawn, and the box it is in is not. The clamp is no part of how wide
+the content is: a container's min-content and max-content widths are those
+of all its lines, with no ellipsis. An inline box all of whose text the
 clamp drops, or the ellipsis displaces, is past the clamp point, and what is
 positioned against it is hidden. Where
 the last line's first word is too wide to leave the ellipsis room, a line
