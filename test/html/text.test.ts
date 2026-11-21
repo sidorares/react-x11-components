@@ -2031,6 +2031,38 @@ metric(
 );
 
 metric(
+  'a clamped line that its words and the ellipsis fill exactly keeps them both',
+  async () => {
+    // A line is fitted in items, each rounded up to a 64th of a pixel: a
+    // box 14ch wide holds 13ch of text and a 1ch ellipsis, where the
+    // ellipsis's own rounding took the line a hair past the box, and the
+    // last word went with the ellipsis to the hidden lines (WPT's
+    // `block-ellipsis-bidi-002`)
+    const { node } = await render(
+      '<style>body{margin:0} p{margin:0;width:14ch;line-height:20px;' +
+        'font:13px monospace;line-clamp:2}</style>' +
+        '<p id="a">Story time:<br>"abcd efghijk lmn opq</p>',
+    );
+    const el = view(node);
+    const lines = linesOf(el, 'a');
+    assert.strictEqual(lines.length, 2);
+    const last = lines[1];
+    assert.strictEqual(lastRunText(last), '\u2026');
+    const text = last.texts
+      .map((t) => {
+        const layout = t.layout as unknown as {
+          lines: { runs: { span?: { text: string } }[] }[];
+        };
+        return layout.lines[t.layoutLine].runs
+          .map((r) => r.span?.text ?? '')
+          .join('');
+      })
+      .join('');
+    assert.ok(text.includes('efghijk'), `its last word: ${text}`);
+  },
+);
+
+metric(
   'a clamp ends in the string it names, and a line laid out a piece at a time takes it too',
   async () => {
     // CSS Overflow 4, 5.4: `line-clamp: 2 "…more"` draws its string where
@@ -2322,6 +2354,37 @@ metric(
     assert.strictEqual(truncated('a'), true);
     assert.strictEqual(truncated('b'), false);
     assert.ok(linesOf(el, 'c')[0].width > 120, 'run past the box');
+  },
+);
+
+metric(
+  "text-overflow's ellipsis is in the block's font and colour, not the text it ends",
+  async () => {
+    // CSS Overflow 3, 5.1: the ellipsis is rendered in the block
+    // container's style, where the engine's own took the style of the span
+    // the line ends in (WPT's `text-overflow-011` and `-014`)
+    const { node } = await render(
+      '<style>body{margin:0} div{width:120px;overflow:hidden;' +
+        'text-overflow:ellipsis;white-space:nowrap;color:rgb(0, 128, 0);' +
+        'font-size:16px} span{color:rgb(255, 0, 0);font-size:8px}</style>' +
+        '<div id="a">ab <span>leslie.alexander@example.com and more</span>' +
+        '</div>',
+    );
+    const el = view(node);
+    const lines = linesOf(el, 'a');
+    assert.strictEqual(lines.length, 1);
+    const text = lines[0].texts[lines[0].texts.length - 1];
+    const layout = text.layout as unknown as {
+      lines: {
+        runs: { span?: { text: string; color?: string; size?: number } }[];
+      }[];
+    };
+    const runs = layout.lines[text.layoutLine].runs;
+    const mark = runs[runs.length - 1]?.span;
+    assert.strictEqual(mark?.text, '\u2026');
+    assert.strictEqual(mark?.size, 16, "the block's size");
+    assert.match(String(mark?.color), /0, 128, 0|#008000/i, 'and colour');
+    assert.ok(lines[0].width <= 120, `within the box: ${lines[0].width}`);
   },
 );
 
