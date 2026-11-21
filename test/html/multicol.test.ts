@@ -2706,3 +2706,24 @@ test('a grid row that fits whole in its column is broken no item at a time', asy
   );
   assert.ok(gridRowsBroken() > before, 'one, where the column ends inside');
 });
+
+metric(
+  'what overflows a box that clips it stays in the column the box ends in',
+  async () => {
+    // CSS Overflow 3, 3: what runs past an `overflow: clip` box of a height
+    // of its own is clipped where the box ends, and a break in it, forced
+    // or not, makes no column of its own (WPT's css-break/overflow-clip-005)
+    const rules = await rulesIn(
+      '<style>body{margin:0}</style>' +
+        '<div style="columns:5;column-gap:20px;column-rule:20px solid ' +
+        '#00aa00;column-fill:auto;width:180px;height:100px">' +
+        '<div style="overflow:clip;height:300px">' +
+        '<div style="height:300px"></div><div style="height:200px"></div>' +
+        '<div style="break-before:column;height:10px"></div>' +
+        '</div></div>',
+      '#00aa00',
+    );
+    // three columns, and a rule between each two of them
+    assert.strictEqual(rules.length, 2, JSON.stringify(rules));
+  },
+);

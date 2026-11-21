@@ -21,6 +21,7 @@ import {
   lineTextsOf,
   linesOf,
   metric,
+  pixelsIn,
   render,
   render2x,
   textRunsOf,
@@ -2080,6 +2081,26 @@ metric(
 );
 
 metric(
+  "a clamp leaves a box's min-content and max-content widths as they were",
+  async () => {
+    // CSS Overflow 4, 5.3.1: the clamp hides lines and puts an ellipsis on
+    // the last it keeps, and neither is part of how wide the content is
+    // (WPT's `line-clamp-intrinsic-size-001` to `-004`)
+    const lines = 'ab<br>abc<br>abcdefghij<br>abcdefghijklmnop<br>a';
+    const { node } = await render(
+      '<style>body{margin:0} div{line-height:20px}</style>' +
+        `<div id="a" style="width:max-content">${lines}</div>` +
+        `<div id="b" style="width:max-content;line-clamp:3">${lines}</div>` +
+        `<div id="c" style="width:min-content">${lines}</div>` +
+        `<div id="d" style="width:min-content;line-clamp:2">${lines}</div>`,
+    );
+    const el = view(node);
+    assert.strictEqual(boxOf(el, 'b').width, boxOf(el, 'a').width, 'max');
+    assert.strictEqual(boxOf(el, 'd').width, boxOf(el, 'c').width, 'min');
+  },
+);
+
+metric(
   'a positioned box in a box a clamp hides is drawn where what it is placed against is not hidden',
   async () => {
     // CSS Overflow 4, 5.3.1: an absolutely positioned box past the clamp
@@ -2108,6 +2129,31 @@ metric(
       0,
       'and neither box they are in',
     );
+  },
+);
+
+metric(
+  'a positioned box that escapes a faded box a clamp hides is faded with it',
+  async () => {
+    // the hidden block's opacity makes a group of what it holds, and what
+    // escapes the clamp is still in it, as Chromium draws it
+    const { result } = await render(
+      '<style>body{margin:0;background:#ffffff} .c{line-clamp:2;' +
+        'position:relative;line-height:20px;white-space:pre}' +
+        ' .h{opacity:0.5} .a{position:absolute;left:100px;top:0;' +
+        'width:20px;height:20px;background:#00aa00}</style>' +
+        '<div class="c">one\ntwo\n<div class="h">three<div class="a">' +
+        '</div></div></div>',
+    );
+    const [r, g, b] = await pixelsIn(result.ctx, {
+      x: 110,
+      y: 10,
+      width: 1,
+      height: 1,
+    });
+    // green at half over white
+    assert.ok(Math.abs(r - 128) < 8 && Math.abs(g - 212) < 8, `${r} ${g} ${b}`);
+    assert.ok(Math.abs(b - 128) < 8, `${r} ${g} ${b}`);
   },
 );
 

@@ -763,3 +763,36 @@ metric(
     await clipped.result.unmount();
   },
 );
+
+metric(
+  "an inline drawing is cut at its overflow-clip-margin's edge",
+  async () => {
+    // a replaced element's `overflow` clips it, and `overflow-clip-margin`
+    // moves where, out from its content box: a drawing a hundred pixels on a
+    // side with ten more shows what it draws ten pixels past it (WPT's
+    // overflow-clip-margin-svg), where it was cut at its box
+    const { node, result } = await render(
+      '<style>body{margin:0;background:#ffffff}svg{width:100px;' +
+        'height:100px;overflow-clip-margin:10px;display:block}</style>' +
+        '<svg><rect width="150" height="150" fill="#00aa00"></rect></svg>',
+    );
+    const { abs } = view(node) as unknown as { abs: { x: number; y: number } };
+    const at = async (x: number, y: number) =>
+      Array.from(
+        (
+          await pixelsIn(result.ctx, {
+            x: abs.x + x,
+            y: abs.y + y,
+            width: 1,
+            height: 1,
+          })
+        ).slice(0, 3),
+      );
+    assert.deepStrictEqual(
+      await at(105, 105),
+      [0, 170, 0],
+      'inside the margin',
+    );
+    assert.deepStrictEqual(await at(115, 115), [255, 255, 255], 'past it');
+  },
+);

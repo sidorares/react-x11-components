@@ -518,6 +518,12 @@ function gather(
   ) {
     clip = Math.min(clip, box.y + box.height);
   }
+  // and what overflows a box that clips it at its end, `overflow: clip`,
+  // stays in the column the box ends in, clipped there: it makes no column
+  // of its own (CSS Overflow 3, 3; WPT's css-break/overflow-clip-005)
+  if (!box.style.columns && box.style.overflowY === 'clip') {
+    clip = Math.min(clip, box.y + box.height);
+  }
   // a flex container's items, and a grid's, stand side by side down the
   // strip: its first is the one that starts highest, its last the one that
   // ends lowest, which need not be the last in the tree
@@ -614,7 +620,9 @@ function gather(
     // margin after it (CSS Fragmentation 3, 5.2): the column starts above
     // the box's own
     const force = (unit: Unit): void => {
-      if (before) {
+      // and none past where a box around it is clipped, which makes no
+      // column (WPT's css-break/overflow-clip-005)
+      if (before && child.y - Math.max(0, child.marginTop) < clip - EPS) {
         const at = child.y - Math.max(0, child.marginTop);
         unit.forced = Math.min(unit.forced ?? Infinity, at);
       }
