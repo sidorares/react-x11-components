@@ -1564,7 +1564,9 @@ function linesOf(
 
   // Inline boxes' edges as spacers in one layout, where the engine left
   // every edge on the line of the content it belongs to (`layoutSpaced`);
-  // the lines a piece at a time, below, where it did not.
+  // the lines a piece at a time, below, where it did not, and where a
+  // clamp ends them in an ellipsis, which that layout has no way to place
+  // (WPT's `block-ellipsis-004` to `-006`)
   if (
     spaced &&
     !floated &&
@@ -1572,7 +1574,8 @@ function linesOf(
     !alignedApart &&
     !restyled &&
     !apart &&
-    !cutsApart
+    !cutsApart &&
+    !options.clamp?.ellipsis
   ) {
     const laid = layoutSpaced(
       items,
