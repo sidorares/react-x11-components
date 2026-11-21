@@ -1194,6 +1194,33 @@ metric("an empty inline box's line height makes its line taller", async () => {
   assert.strictEqual(boxOf(el, 'm').height, 100, 'a line');
 });
 
+metric(
+  'a line keeps its baseline beside a line in a larger font in the same paragraph',
+  async () => {
+    // a paragraph laid out in one layout moves all its baselines by one
+    // amount, to where a browser floors the half-leading (`layoutLift`),
+    // or by none where its lines want different amounts: the lines of a
+    // paragraph with a larger span on one sat a fraction of a pixel lower
+    // than the same lines alone (WPT's `block-ellipsis-004`)
+    const { node } = await render(
+      '<style>body{margin:0} p{margin:0}</style>' +
+        '<p id="a">Line 1<br>Line 2</p>' +
+        '<p id="b">Line 1<br>Line 2<br>' +
+        '<span style="font-size:1.5em">Line 3</span><br>Line 4</p>',
+    );
+    const el = view(node);
+    const a = linesOf(el, 'a');
+    const b = linesOf(el, 'b');
+    for (const i of [0, 1]) {
+      assert.ok(
+        Math.abs(a[i].baseline - b[i].baseline) < 0.01,
+        `line ${i + 1}: ${a[i].baseline} and ${b[i].baseline}`,
+      );
+    }
+    assert.ok(Math.abs(b[3].baseline - a[0].baseline) < 0.01, 'and line 4');
+  },
+);
+
 metric("an inline box's own line height makes its line taller", async () => {
   // CSS gives every inline box its own line height, and the line box holds
   // them all (CSS 2.1 10.8.1): a span of 60px lines in a paragraph of 20px
