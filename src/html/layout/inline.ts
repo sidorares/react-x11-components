@@ -38,6 +38,7 @@ import type { BoxShadow, ComputedStyle } from '../css/style.js';
 import {
   CONTAIN_LAYOUT,
   copyStyle,
+  holdsItems,
   INLINE_BEFORE_ABSOLUTE,
   scrolls,
 } from '../css/style.js';
@@ -9522,8 +9523,14 @@ function blockIndents(
   if (!raw) return NO_INDENTS;
   const each = style.textIndentEachLine;
   const hanging = style.textIndentHanging;
+  // an anonymous flex or grid item is a block container of its own, whose
+  // first line is a first formatted line wherever it stands among the items
+  // (WPT's anonymous-flex-item-001 and anonymous-grid-item-001)
   const opens =
-    !!block.el || !block.parent || block.parent.children[0] === block;
+    !!block.el ||
+    !block.parent ||
+    block.parent.children[0] === block ||
+    holdsItems(block.parent.style);
   const pick = (would: boolean): number => (would !== hanging ? raw : 0);
   return { first: pick(opens || each), forced: pick(each), soft: pick(false) };
 }
