@@ -2109,6 +2109,43 @@ test('a rule shown between every column is drawn between the columns there are, 
   );
 });
 
+test("a multicol container another's columns break, its edges cloned, has its rules in each piece inside them", async () => {
+  // WPT's multicol-gap-decorations-006: a container of two columns, 10px
+  // of cloned padding at each break, in outer columns 100px tall. Its rule
+  // is drawn in both pieces, where what it holds stands in each: 80px of
+  // its content in the first, the 45px its second row of columns comes to
+  // in the second, and in neither piece's padding
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:3;column-fill:auto;height:100px;width:620px;' +
+      'gap:10px"><div style="columns:2;box-decoration-break:clone;' +
+      'padding:10px;column-rule:1px solid #008000;gap:10px">' +
+      '<div style="height:250px"></div></div></div>',
+  );
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops);
+  const ink = parseColor('#008000');
+  const shown: number[][] = [];
+  let clip: number[] | null = null;
+  for (const op of ops) {
+    if (op.op === 'clip') clip = [op.x, op.y, op.x + op.w, op.y + op.h];
+    else if (op.op === 'fill' && op.style === ink && clip) {
+      const top = Math.max(op.y, clip[1]);
+      const bottom = Math.min(op.y + op.h, clip[3]);
+      if (bottom <= top) continue;
+      // one rule, where two pieces of it meet
+      const last = shown[shown.length - 1];
+      if (last && last[0] === op.x && last[1] + last[2] === top) {
+        last[2] += bottom - top;
+      } else shown.push([op.x, top, bottom - top]);
+    }
+  }
+  assert.deepStrictEqual(shown, [
+    [100, 10, 80],
+    [310, 10, 45],
+  ]);
+});
+
 test('column-height and column-wrap set the columns in rows, a row gap apart', async () => {
   // Rows of two columns 30px tall, 10px apart: six boxes of 20px that go
   // whole take a column each, three rows, and the last row is as tall as

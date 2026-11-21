@@ -6761,7 +6761,9 @@ through the spanner and every row.
 A grid, a flex container or a multicol container that columns break has its
 rules drawn in each piece, as the whole box has them, where its pieces
 stand; a row gap a break falls in has no rule (3.6), and nor has one a piece
-starts or ends with, since a break comes straight before or after it. Not here: a grid lanes container that columns
+starts or ends with, since a break comes straight before or after it. A piece
+that clones its edges has its part of the rules inside them, where what the
+box holds stands in it. Not here: a grid lanes container that columns
 break, a container in a vertical writing mode, whose rules are drawn as a
 horizontal one's are.
 

@@ -2508,6 +2508,7 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
         wholeY: clone ? y : was.y + to.dy(c),
         wholeHeight: clone ? Math.max(0, height) : was.height,
         cloned: clone || undefined,
+        unclone: clone ? was.y + to.dy(c) - y : undefined,
       };
       pieces.push(piece);
       x1 = Math.min(x1, piece.x);
