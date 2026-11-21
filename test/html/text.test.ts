@@ -2138,6 +2138,32 @@ metric(
 );
 
 metric(
+  'a positioned box placed against an inline box a clamp drops is hidden with it',
+  async () => {
+    // CSS Overflow 4, 5.3.1: an absolutely positioned box past the clamp
+    // point is hidden where its containing block is, and an inline box all
+    // of whose text the clamp drops is past it (WPT's
+    // `line-clamp-with-abspos-015`), where one whose text starts on a line
+    // the clamp keeps is not
+    const { node } = await render(
+      '<style>body{margin:0} .c{line-clamp:2;line-height:20px;' +
+        'white-space:pre} .r{position:relative} .a{position:absolute;' +
+        'left:0;top:0;width:20px;height:20px}' +
+        ' #gone{background:#ff0000} #kept{background:#00aa00}</style>' +
+        '<div class="c">one\ntwo\n<span class="r"><i class="a" id="gone">' +
+        '</i>three</span></div>' +
+        '<div class="c">one\n<span class="r"><i class="a" id="kept"></i>' +
+        'two</span>\nthree</div>',
+    );
+    const fills = await fillsOf(view(node));
+    const of = (color: string) =>
+      fills.filter((f) => f.style === color && f.w === 20 && f.h === 20);
+    assert.strictEqual(of('#ff0000').length, 0, 'hidden');
+    assert.strictEqual(of('#00aa00').length, 1, 'shown');
+  },
+);
+
+metric(
   'a clamp ends in the string it names, and a line laid out a piece at a time takes it too',
   async () => {
     // CSS Overflow 4, 5.4: `line-clamp: 2 "…more"` draws its string where

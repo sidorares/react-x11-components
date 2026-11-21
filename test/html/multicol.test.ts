@@ -1162,6 +1162,32 @@ test('a box that spans the columns from inside a block breaks the block about it
   assert.deepStrictEqual(at(el, 'c', 'n'), [0, 0, 210, 20], 'in both');
 });
 
+test('a box its content runs out of is its height across its pieces, the room a break leaves taken out of it', async () => {
+  // Chrome's numbers, from WPT's css-break/grid/grid-item-fragmentation-017
+  // as a block and as a grid item: lines of 50, 100 and 100 in a box 200
+  // tall, the second pushed to the next column. The box is 100 in each of
+  // two columns, and the third line runs out of it; the room the push left
+  // was added to it, and it went on 50 into a third column
+  const { node } = await render(
+    '<style>body{margin:0}.m{columns:2;column-gap:0;width:100px;' +
+      'height:100px;margin-bottom:10px}.m i{display:inline-block;' +
+      'width:50px}</style>' +
+      '<div class="m"><div id="b" style="line-height:0;height:200px">' +
+      '<i style="height:50px"></i><i style="height:100px"></i>' +
+      '<i style="height:100px"></i></div></div>' +
+      '<div class="m"><div style="display:grid;grid-template-rows:200px">' +
+      '<div id="g" style="line-height:0"><i style="height:50px"></i>' +
+      '<i style="height:100px"></i><i style="height:100px"></i></div>' +
+      '</div></div>',
+    300,
+  );
+  const el = view(node);
+  const heights = (id: string) =>
+    COLUMN_PIECES.get(boxOf(el, id) as never)?.map((p) => p.height);
+  assert.deepStrictEqual(heights('b'), [100, 100], 'the block');
+  assert.deepStrictEqual(heights('g'), [100, 100], 'the grid item');
+});
+
 test('what is positioned after a spanner in a block it breaks stands where that row of columns starts', async () => {
   // the block is in the strip as its first row has it, and the box out of
   // the flow in its second row stood from where that row had the block:
