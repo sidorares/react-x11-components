@@ -122,7 +122,7 @@ import {
   wantedScrollTop,
 } from './scroll.js';
 import type { ScrollOffset, Viewport } from './scroll.js';
-import type { Placed } from '../css/transform.js';
+import type { Matrix, Placed } from '../css/transform.js';
 import {
   affineOf,
   facesAway,
@@ -12901,6 +12901,30 @@ export function placedMatrix(box: Box): Placed | null {
   const ox = box.x + resolve(origin[0], box.width, 0);
   const oy = box.y + resolve(origin[1], box.height, 0);
   return linear ? about(linear, ox, oy) : projectedMatrix(box, ox, oy);
+}
+
+/**
+ * `placedMatrix` for one fragment of a box columns broke: about the
+ * `transform-origin` resolved against that fragment's border box, as each
+ * fragment is transformed on its own (CSS Fragmentation 3, 4.1; CSS
+ * Transforms 1, 3: the transform of a fragmented box applies to each of its
+ * fragments). Null where the box has no matrix in the plane, which is drawn
+ * whole as it was.
+ */
+export function fragmentMatrix(
+  box: Box,
+  piece: { x: number; y: number; width: number; height: number },
+): Matrix | null {
+  const style = box.style;
+  if (!drawnThrough(style) || outOfPlane(style)) return null;
+  const linear = linearOf(style);
+  if (!linear) return null;
+  const origin = style.transformOrigin;
+  return about(
+    linear,
+    piece.x + resolve(origin[0], piece.width, 0),
+    piece.y + resolve(origin[1], piece.height, 0),
+  );
 }
 
 /** A matrix that flattens the plane to nothing, which draws nothing and is

@@ -410,6 +410,32 @@ metric('a transform turns and scales about its transform-origin', async () => {
   assert.deepStrictEqual(rect('c'), { x: 210, y: 40, width: 10, height: 20 });
 });
 
+metric(
+  'a box columns broke is transformed a fragment at a time, about its own origin',
+  async () => {
+    // WPT's css-break/transform-019: scaled from its bottom, the box's
+    // second fragment, 50px of its second column, holds a box 25px tall
+    // under that fragment's foot, which the scale takes down to the
+    // column's. Turned about the rectangle around both fragments, it drew
+    // it at the top of the second column, over the first fragment's red
+    const { result } = await render(
+      PAGE +
+        '<div style="columns:2;gap:0;column-fill:auto;width:100px;' +
+        'height:100px;background:#ff0000">' +
+        '<div style="height:50px"><div style="height:150px;' +
+        'background:#0000ff"></div></div>' +
+        '<div style="transform:scaleY(2);transform-origin:bottom;' +
+        'width:50px;height:100px"><div><div style="position:absolute;' +
+        'top:100px;width:50px;height:25px;background:#0000ff"></div>' +
+        '</div></div></div>',
+    );
+    await act();
+    await expectPixel(result.ctx, 75, 25, BLUE);
+    await expectPixel(result.ctx, 75, 60, BLUE);
+    await expectPixel(result.ctx, 75, 95, BLUE);
+  },
+);
+
 metric('an inline icon turned a quarter points the other way', async () => {
   // GitHub's menu buttons hold a triangle pointing right, turned to point
   // down with `transform: rotate(90deg)`, and it pointed right
