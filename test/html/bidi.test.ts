@@ -412,3 +412,23 @@ test('a right-to-left line of inline-blocks wider than its room starts at its ri
   const state = el.scrollStateOf(findById(el.document, 's')!);
   assert.strictEqual(state?.width, 200, 'and scrolls');
 });
+
+metric(
+  'a right-to-left mark gives a dir=auto paragraph its direction',
+  async () => {
+    // RIGHT-TO-LEFT MARK is a strong character with no letter, and a
+    // `dir=auto` paragraph that starts with one is right to left, its Latin
+    // set from the right (WPT's text-align-start-009); a LEFT-TO-RIGHT MARK
+    // before Hebrew makes it left to right
+    const { node } = await render(
+      '<style>body{margin:0} div{width:300px;text-align:start}</style>' +
+        '<div id="a" dir="auto">\u200fab cd</div>' +
+        '<div id="b" dir="auto">\u200e\u05d0\u05d1</div>',
+    );
+    const el = view(node);
+    const [a] = linesOf(el, 'a');
+    assert.ok(extentOf(a.texts[0])[1] > 299, 'from the right');
+    const [b] = linesOf(el, 'b');
+    assert.ok(extentOf(b.texts[0])[0] < 1, 'from the left');
+  },
+);

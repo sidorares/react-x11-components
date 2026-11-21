@@ -1111,10 +1111,12 @@ function layoutParagraphs(
 
 /** A letter of a right-to-left script: Hebrew, Arabic and their kin (UAX
  *  #9's R and AL), and a letter of any other script, which reads left to
- *  right (L). */
+ *  right (L) — and the marks that are strong and no letter, RIGHT-TO-LEFT
+ *  MARK and LEFT-TO-RIGHT MARK, which a `dir=auto` paragraph starts with to
+ *  say its direction (WPT's text-align-start-009). */
 const STRONG_RTL =
-  /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc]|[\u{10800}-\u{10fff}\u{1e800}-\u{1efff}]/u;
-const STRONG_LTR = /\p{L}/u;
+  /[\u0590-\u08ff\u200f\ufb1d-\ufdff\ufe70-\ufefc]|[\u{10800}-\u{10fff}\u{1e800}-\u{1efff}]/u;
+const STRONG_LTR = /[\p{L}\u200e]/u;
 
 function layoutInlineIn(block: Box, options: InlineOptions): InlineResult {
   const result = layoutLines(block, options);
