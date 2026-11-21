@@ -2148,8 +2148,11 @@ function layoutDocumentPass(
         strip.geometry.container,
         containingBlockFor,
       );
-      cutIntoColumns(box, strip.geometry, (b, dx, dy) =>
-        translate(b, dx, dy, () => false),
+      cutIntoColumns(
+        box,
+        strip.geometry,
+        (b, dx, dy) => translate(b, dx, dy, () => false),
+        clipDownStrip(containing, strip.geometry.container),
       );
     }
     if (finish && ctx.positioned.length > found) {
@@ -3774,6 +3777,23 @@ function escapingClamp(hidden: Box): Box[] | null {
     for (const child of at.children) stack.push(child);
   }
   return out;
+}
+
+/** Where down a multicol container's strip the nearest box from a
+ *  positioned box's containing block out to the container that clips
+ *  what overflows it, `overflow: clip`, ends, or Infinity: what is
+ *  positioned in it is clipped there, in the column the box ends in
+ *  (`cutIntoColumns`). */
+function clipDownStrip(containing: Box, container: Box): number {
+  let bottom = Infinity;
+  for (let at: Box | null = containing; at && at !== container;) {
+    if (at.style.overflowY === 'clip' && !at.style.columns) {
+      const strip = stripOf(at);
+      if (strip) bottom = Math.min(bottom, strip.y + strip.height);
+    }
+    at = at.parent;
+  }
+  return bottom;
 }
 
 /** Mark a box past a clamp point, and take from everything in it the lines

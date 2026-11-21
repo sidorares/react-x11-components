@@ -2311,9 +2311,16 @@ export function cutIntoColumns(
   box: Box,
   geometry: ColumnGeometry,
   move: (box: Box, dx: number, dy: number) => void,
+  /** Where down the strip a box around it that clips its overflow, an
+   *  `overflow: clip` one, ends: what reaches past it stays in the column
+   *  that box ends in, clipped there, and goes into none after (WPT's
+   *  css-break/overflow-clip-014). */
+  clip = Infinity,
 ): void {
   const { tops, height, ends } = geometry;
   if (!(height >= 1)) return;
+  // a point past the clip is taken for one just above it
+  const held = (y: number): number => Math.min(y, clip - 2 * EPS);
   const topOf = (c: number) =>
     c < tops.length
       ? tops[c]
@@ -2321,7 +2328,7 @@ export function cutIntoColumns(
   const endOf = (c: number) =>
     ends && c < ends.length ? ends[c] : topOf(c) + height;
   let c = 0;
-  while (c + 1 < MOST_COLUMNS && topOf(c + 1) <= box.y + EPS) c += 1;
+  while (c + 1 < MOST_COLUMNS && topOf(c + 1) <= held(box.y) + EPS) c += 1;
   // a box of no height where a column ends stays in it, as Blink keeps
   // one at the end of a row of columns a spanner ends rather than in the
   // row after it
@@ -2333,7 +2340,7 @@ export function cutIntoColumns(
   // a box short enough for one, whose content runs on past it, is cut by
   // what runs on, as Blink fragments an out-of-flow box's overflow (WPT's
   // css-break/out-of-flow-in-multicolumn-002)
-  if (flowReach(box) <= endOf(c) + EPS) {
+  if (Math.min(flowReach(box), clip) <= endOf(c) + EPS) {
     const dx = geometry.dx(c);
     const dy = geometry.dy(c);
     STRIP.set(box, { geometry, dx, dy, width: was.width, height: was.height });
@@ -2345,7 +2352,7 @@ export function cutIntoColumns(
   let y1 = Infinity;
   let x2 = -Infinity;
   let y2 = -Infinity;
-  for (let k = c; topOf(k) < was.y + was.height - EPS; k += 1) {
+  for (let k = c; topOf(k) < Math.min(was.y + was.height, clip) - EPS; k += 1) {
     const from = Math.max(was.y, topOf(k));
     const until = Math.min(was.y + was.height, endOf(k));
     const piece: ColumnPiece = {
@@ -2368,14 +2375,16 @@ export function cutIntoColumns(
   // out of the flow in it is laid out after it, and cut by itself)
   for (const line of box.lines ?? []) {
     let k = 0;
-    while (k + 1 < MOST_COLUMNS && topOf(k + 1) <= line.y + EPS) k += 1;
+    while (k + 1 < MOST_COLUMNS && topOf(k + 1) <= held(line.y) + EPS) {
+      k += 1;
+    }
     shiftLine(line, geometry.dx(k), geometry.dy(k));
   }
   for (const child of box.children) {
     if (child.outOfFlow || child.kind === 'text' || child.kind === 'break') {
       continue;
     }
-    cutIntoColumns(child, geometry, move);
+    cutIntoColumns(child, geometry, move, clip);
   }
   COLUMN_PIECES.set(box, pieces);
   columned.any = true;

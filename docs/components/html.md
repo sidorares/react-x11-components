@@ -6127,7 +6127,9 @@ of, and is broken in as a last resort — with
 `orphans` and `widows` lines of a block kept at either side of a break, two
 of each unless they say otherwise, and a margin at a break dropped. What
 overflows a box of `overflow: clip` stays in the column the box ends in,
-clipped there, and a break in it makes no column. A
+clipped there, and a break in it makes no column; so does what is
+absolutely positioned in it, cut into the columns only as far as it
+reaches. A
 table breaks between its rows and inside its cells, as a grid does between
 its rows and inside its items, a row's cells side by side down the strip
 and an empty cell cut where a column ends. Its first header group and its
