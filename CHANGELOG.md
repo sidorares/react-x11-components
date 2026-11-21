@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.48.1](https://github.com/sidorares/react-x11-components/compare/v0.48.0...v0.48.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* **html:** a ::first-line's autospace room is in the line's ems ([#1838](https://github.com/sidorares/react-x11-components/issues/1838)) ([e8b6618](https://github.com/sidorares/react-x11-components/commit/e8b6618f87d3d1279b6d9007c0aa770c171fc163))
+* **html:** a box out of the flow in columns is cut where the relative offsets inside its containing block put it ([#1833](https://github.com/sidorares/react-x11-components/issues/1833)) ([41e331b](https://github.com/sidorares/react-x11-components/commit/41e331b392295fc37d656dc8d59d79c9a664524a))
+* **html:** a grid row the columns end inside is broken an item at a time, each going on from its own break ([#1828](https://github.com/sidorares/react-x11-components/issues/1828)) ([550f071](https://github.com/sidorares/react-x11-components/commit/550f071b529f872de07b41d90ff0bd55da8a1b5e))
+* **html:** a multicol container of continue: discard keeps what fits in its columns ([#1826](https://github.com/sidorares/react-x11-components/issues/1826)) ([1002cf5](https://github.com/sidorares/react-x11-components/commit/1002cf57b3aaa37b54c917a43d3dc1dbcf850119))
+* **html:** a right-to-left or left-to-right mark gives a plaintext paragraph its direction ([#1830](https://github.com/sidorares/react-x11-components/issues/1830)) ([82e09e7](https://github.com/sidorares/react-x11-components/commit/82e09e737935711788b48302a9bcbccc46a525c3))
+* **html:** an anonymous flex or grid item's first line takes text-indent wherever it stands ([#1836](https://github.com/sidorares/react-x11-components/issues/1836)) ([e4e6bdf](https://github.com/sidorares/react-x11-components/commit/e4e6bdf2bb56e38e3752c62ff612bd3ec0838a5f))
+* **html:** an emphasis mark is centred on its character, not on its letter spacing ([#1827](https://github.com/sidorares/react-x11-components/issues/1827)) ([23be357](https://github.com/sidorares/react-x11-components/commit/23be357b9f0f67720f2214f2634b722113c1716d))
+* **html:** an override holds past a line feed it keeps ([#1835](https://github.com/sidorares/react-x11-components/issues/1835)) ([37a3741](https://github.com/sidorares/react-x11-components/commit/37a37412b54a76be5bcd6d9556e0f7a374ed8b66))
+* **html:** break-all overflows with what it may not break, and cuts no word ([#1832](https://github.com/sidorares/react-x11-components/issues/1832)) ([3db0613](https://github.com/sidorares/react-x11-components/commit/3db0613558bb84ffb84aae3bcf9299c92024b6fb))
+* **html:** hyphens: none breaks at no soft hyphen ([#1831](https://github.com/sidorares/react-x11-components/issues/1831)) ([895097d](https://github.com/sidorares/react-x11-components/commit/895097d10d931ae1925268ac863813fb34a5ecdf))
+* **html:** what is positioned in an inline box broken around blocks is placed against all of it, from its first piece ([#1837](https://github.com/sidorares/react-x11-components/issues/1837)) ([57392a5](https://github.com/sidorares/react-x11-components/commit/57392a54c07c32dcb72d1b25476c2f110229909d))
+* **html:** what is positioned in an overflow: clip box stays in the column the box ends in ([#1824](https://github.com/sidorares/react-x11-components/issues/1824)) ([d0b8c2a](https://github.com/sidorares/react-x11-components/commit/d0b8c2a85a05f7c7e7171c60418e2041f8167cc0))
+
 ## [0.48.0](https://github.com/sidorares/react-x11-components/compare/v0.47.1...v0.48.0) (2026-11-21)
 
 
