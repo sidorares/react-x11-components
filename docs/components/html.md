@@ -8313,7 +8313,9 @@ the line has no room for it, as `text-overflow`'s does — as Chrome, Firefox
 and WebKit cut it, where the newer property keeps whole words; `line-clamp: auto` shows as many lines as the
 box's `height` or `max-height` holds, and `max-lines`, `continue` and
 `block-ellipsis` are read, a string in `line-clamp` or `block-ellipsis`
-drawn in place of the `…`. A block laid out a line at a time, around an
+drawn in place of the `…`, on one line, which `text-overflow` cuts where
+it is wider than the line; a line of the string alone keeps none of it
+where the `…` leaves no room for a character. A block laid out a line at a time, around an
 image or a float, ends in the ellipsis as one laid out at once does, at
 its left in a right-to-left block, where its lines end and are cut for
 `text-overflow` too, and

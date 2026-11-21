@@ -7758,7 +7758,18 @@ function ellipsized(
     left -= length;
     at = item.start + length;
   }
-  const ending = displaced ? { ...mark, text: '\n' + mark.text } : mark;
+  // one piece, which breaks at none of its spaces: a block ellipsis wider
+  // than its line stays on it, and runs past it for `text-overflow` to cut
+  // (WPT's `line-clamp-with-text-overflow-bidi-001`), where it wrapped onto
+  // lines the clamp hides. As `holdNoWrap` keeps a `nowrap` element's
+  // text: a `nowrap` of its own, and no-break spaces for an engine that
+  // reads none
+  const whole = {
+    ...mark,
+    text: mark.text.replace(/ /g, '\u00a0'),
+    nowrap: mark,
+  };
+  const ending = displaced ? { ...whole, text: '\n' + whole.text } : whole;
   spans.add(at, ending.text.length, null);
   kept.push(ending);
   return { layout: fonts.layout(kept, base, options), runs: kept, spans };
@@ -7975,7 +7986,9 @@ function ellipsizeLine(
   // than ellipsed (5.1), where the ellipsis leaves no room for it
   const crossing = pieces[at]?.text;
   const [left, right] = pieces[at] ? span(pieces[at]) : [before, before];
-  const first = at === 0 && at < pieces.length;
+  // — the document's character, not a block ellipsis's, which holds none
+  const first =
+    at === 0 && at < pieces.length && !(crossing && startsWithNoBox(crossing));
   if (crossing && (left < room || first)) {
     const end = clipText(
       crossing,
@@ -8042,6 +8055,13 @@ function ellipsizeLine(
     line.width = right - line.x;
   } else line.width = Math.max(0, end - line.x);
   CUT_LINES.add(line);
+}
+
+/** Whether a line's text starts with what is no text of the document's, a
+ *  block ellipsis a clamp put there (`ellipsized`): its spans name no box. */
+function startsWithNoBox(text: LineText): boolean {
+  const boxAt = text.spans.boxAt;
+  return !!boxAt && boxAt.call(text.spans, text.layoutStart) === null;
 }
 
 /**
