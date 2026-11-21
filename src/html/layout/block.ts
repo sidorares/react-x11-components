@@ -150,6 +150,8 @@ import {
   isSpanner,
   containingParent,
   joinedGeometry,
+  forgetStripStatic,
+  restateStripStatic,
   setStripPlace,
   columnsSet,
   cutIntoColumns,
@@ -5015,6 +5017,9 @@ function layoutRows(
     });
   }
   const all = box.children;
+  /** What is out of the flow in a box a spanner breaks, and where the
+   *  strip had that box in the row it is in. */
+  const rowStatics: [Box, Box, number][] = [];
   /** Where the next row's content starts down the strip, and the columns
    *  of all the rows (`joinedGeometry`). */
   let from = top;
@@ -5067,6 +5072,17 @@ function layoutRows(
       }
       for (const [b, piece] of broken) {
         if (r < piece.first || r > piece.last) continue;
+        // what is out of the flow in this row stands from where the strip
+        // has the box in this row, which is not where it has it in its
+        // first, whose top the whole box is taken from (`setStripPlace`)
+        const at = stripOf(b)?.y;
+        if (at !== undefined) {
+          for (const child of b.children) {
+            if (child.outOfFlow && child.staticPosition?.from === b) {
+              rowStatics.push([child, b, at]);
+            }
+          }
+        }
         notePiece(b, piece, r);
       }
       const child = spanners[r];
@@ -5164,6 +5180,10 @@ function layoutRows(
       );
     }
     COLUMN_PIECES.set(b, pieces);
+  }
+  for (const [child, b, at] of rowStatics) {
+    const first = stripOf(b)?.y;
+    if (first !== undefined) restateStripStatic(child, at - first);
   }
   // and one at its end, nothing set after it, its bottom margin
   if (trim & 2 && margin !== null) {
@@ -11940,6 +11960,9 @@ function placeStatic(
     right: x + width - parent.x,
     y: y - parent.y,
   };
+  // and where columns had it before they moved it, which is this layout's
+  // to say again, or no one's
+  if (columned.any) forgetStripStatic(box);
 }
 
 /**
