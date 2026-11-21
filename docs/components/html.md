@@ -6719,7 +6719,13 @@ A multicol container has its column rules between the columns of each row
 of them, broken at a box that spans its columns, `normal` being
 `intersection` there and `none` running a gap's rule from the first row to
 the last; `normal` visibility is `between` there, between columns that hold
-something, `around` and `all` drawing beside one or none. A grid lanes
+something, `around` and `all` drawing beside one or none. The columns a
+gap is between are the columns there are: as many as a balanced container
+fills where it names no count, and all it asks for where it names one or they
+are filled to a height, the most of
+any row through every row. The last row's columns, a spanner's or not,
+reach the content box's foot, as Blink's column boxes do, but for rows
+`column-wrap` sets, which are as tall as they say. A grid lanes
 container has its grid-axis rules down the gaps between lanes, the length
 of its stacking track — the content box where its alignment stretches it,
 the items' range where it is aligned — broken a stacking gap before and
@@ -8325,7 +8331,9 @@ end were it cut after it: a box around the line ends where its own height
 and limits say, so a line in a box taller than the room is past it, and
 one that overflows a box of no height, or of size containment, is not; a box of a formatting
 context of its own, a `flow-root`, that ends in the room after the last
-line that does is the clamp point, kept with its lines and no ellipsis; and `max-lines`, `continue` and
+line that does is the clamp point, kept with its lines and no ellipsis,
+as any box with no lines that fits after the last line that does is, an
+empty block that clears a float keeping the float; and `max-lines`, `continue` and
 `block-ellipsis` are read, a string in `line-clamp` or `block-ellipsis`
 drawn in place of the `…`, on one line, which `text-overflow` cuts where
 it is wider than the line; a line of the string alone keeps none of it
