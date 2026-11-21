@@ -307,6 +307,12 @@ export interface FontFaceRule {
    *  range for a variable face. */
   weight: [number, number];
   style: 'normal' | 'italic';
+  /** Whether the face was declared `oblique` rather than `italic`: both are
+   *  a slanted face to an engine, and CSS matches them apart (CSS Fonts 4,
+   *  5.2) — an italic falls back to an oblique face where the family has no
+   *  italic one, unless `font-synthesis-style: oblique-only` says not to.
+   *  Absent for any other face. */
+  oblique?: true;
   /** The widths the face covers, as `font-stretch` percentages: `[75, 75]`
    *  for a condensed face, a range for a variable one. Null for `auto`,
    *  which is matched as `normal` and sets no bound on a `wdth` axis
@@ -3294,6 +3300,7 @@ function parseFontFace(
   let src: string | null = null;
   let weight: [number, number] = [400, 400];
   let style: 'normal' | 'italic' = 'normal';
+  let oblique = false;
   let stretch: [number, number] | null = null;
   let unicodeRange: [number, number][] | null = null;
   const metrics: Pick<
@@ -3321,8 +3328,10 @@ function parseFontFace(
       weight = faceWeight(d.value) ?? weight;
     } else if (d.prop === 'font-style') {
       const v = d.value.trim().toLowerCase();
-      if (v === 'normal') style = 'normal';
-      else if (v === 'italic' || /^oblique\b/.test(v)) style = 'italic';
+      if (v === 'normal' || v === 'italic' || /^oblique\b/.test(v)) {
+        style = v === 'normal' ? 'normal' : 'italic';
+        oblique = /^oblique\b/.test(v);
+      }
     } else if (d.prop === 'font-stretch') {
       const range = faceStretch(d.value);
       if (range !== undefined) stretch = range;
@@ -3338,6 +3347,7 @@ function parseFontFace(
     sources,
     weight,
     style,
+    ...(oblique && { oblique: true as const }),
     stretch,
     unicodeRange,
     media,
@@ -3422,7 +3432,7 @@ export function scriptFontFace(
  *  them is no value of its descriptor. */
 export function faceMatching(
   init: FontFaceInit,
-): Pick<FontFaceRule, 'weight' | 'style' | 'stretch'> | null {
+): Pick<FontFaceRule, 'weight' | 'style' | 'oblique' | 'stretch'> | null {
   const weight = faceWeight(init.weight ?? 'normal');
   const stretch = init.stretch === undefined ? null : faceStretch(init.stretch);
   const slant = (init.style ?? 'normal').trim().toLowerCase();
@@ -3433,6 +3443,7 @@ export function faceMatching(
   return {
     weight,
     style: slant === 'normal' ? 'normal' : 'italic',
+    ...(/^oblique\b/.test(slant) && { oblique: true as const }),
     stretch,
   };
 }
