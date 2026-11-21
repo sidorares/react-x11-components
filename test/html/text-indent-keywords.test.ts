@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { cleanup } from 'react-x11/test';
 
-import { findById, metric, render, view } from './harness.js';
+import { findById, linesOf, metric, render, view } from './harness.js';
 
 afterEach(cleanup);
 
@@ -58,5 +58,29 @@ metric(
     assert.deepEqual(starts('e'), [4, 0, 4]);
     assert.deepEqual(starts('h'), [0, 4, 4]);
     assert.deepEqual(starts('x'), [0, 4, 0]);
+  },
+);
+
+metric(
+  "an anonymous flex or grid item's first line is indented after an item before it",
+  async () => {
+    // a block container of its own, where the text after a block in a
+    // block's flow starts a line of no indent (WPT's anonymous-flex-item-001)
+    const box = (display: string) =>
+      `<div id="${display}" style="display:${display};text-indent:40px;width:300px;font:20px/1 monospace">` +
+      '<div style="width:0"></div>x y</div>';
+    const { node } = await render(
+      box('flex') + box('grid') + box('block'),
+      400,
+    );
+    const el = view(node);
+    const x = (id: string) =>
+      Math.round(
+        linesOf(el, id)[0].texts[0].drawX -
+          el.elementRect(findById(el.document, id)!)!.x,
+      );
+    assert.equal(x('flex'), 40, 'a flex item');
+    assert.equal(x('grid'), 40, 'a grid item');
+    assert.equal(x('block'), 0, 'a block after a block');
   },
 );

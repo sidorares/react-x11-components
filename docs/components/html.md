@@ -8310,7 +8310,9 @@ start edge and overflows its end, the left of a right-to-left one, whether
 it holds text or inline-blocks),
 `text-indent` (with `hanging`, which indents every line but those that
 would be, and `each-line`, which indents a line after a forced break or
-a block-level box as the first; CSS Text 3, 7.1), `text-transform` (a case, `full-width` and `full-size-kana`
+a block-level box as the first; CSS Text 3, 7.1; an anonymous flex or grid
+item's first line is indented wherever it stands among the items, where the
+text after a block in a block's flow starts a line of none), `text-transform` (a case, `full-width` and `full-size-kana`
 together in any order, and `math-auto`, which sets a text of one letter in
 its mathematical italic; a case is the language's where the element is in
 Dutch, Turkish, Azeri, Lithuanian or Greek, so `ijsland` capitalized in
