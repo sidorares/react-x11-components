@@ -351,6 +351,23 @@ test("an empty block's margins collapse through it", async () => {
   assert.strictEqual(f.y, p.y + 200, 'and stays inside its parent');
 });
 
+test("a last child's margin stays in a box whose max-height its content overflows", async () => {
+  // as Chrome has it: the box ends at its maximum, and the margin goes with
+  // the content that runs past it, where a maximum that does not cut the
+  // content lets it collapse through (WPT's line-clamp-auto-063 reference)
+  const { node } = await render(
+    '<style>body{margin:0}p{margin:0 0 30px;height:40px}</style>' +
+      '<div id="a" style="max-height:20px"><p></p></div><div id="n"></div>' +
+      '<div id="b" style="max-height:100px"><p></p></div><div id="o"></div>',
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  assert.strictEqual(box('a').height, 20);
+  assert.strictEqual(box('n').y, 20, 'the margin stays in the box');
+  assert.strictEqual(box('b').height, 40);
+  assert.strictEqual(box('o').y, box('b').y + 70, 'and collapses through');
+});
+
 test("a last child's margin collapses through a percentage height of an auto height, and not a definite one", async () => {
   // a percentage of a height that depends on content computes to `auto`
   // (CSS 2.1 10.5), and a last child's bottom margin collapses through a
@@ -453,10 +470,12 @@ test("a height a minimum sets spends its last child's margin", async () => {
     await nextAfter('min-height:20px', 'height:49px;margin-bottom:10px'),
     [49, 59],
   );
-  // and so does a maximum, as CSS 2.1 8.3.1 has it
+  // and a maximum that cuts the content short parts it too, as Chrome and
+  // Firefox have it (WPT's max-height-separates-margin, which they pass and
+  // CSS 2.1's margin-collapse-038 the other way, which they fail)
   assert.deepStrictEqual(
     await nextAfter('max-height:50px', 'height:51px;margin-bottom:10px'),
-    [50, 60],
+    [50, 50],
   );
 });
 

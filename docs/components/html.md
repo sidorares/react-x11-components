@@ -5809,7 +5809,10 @@ open web. How much of CSS 2.1 that comes to, measured against the W3C's own
 test suite on both backends, is in
 [`<Html>` against the CSS 2.1 test suite](../html-conformance.md).
 
-**Layout:** block flow with margin collapsing, inline formatting with
+**Layout:** block flow with margin collapsing (a last child's bottom
+margin kept in a box whose `min-height` makes it taller or whose
+`max-height` cuts it short, as Chrome and Firefox keep it), inline
+formatting with
 bidi and full shaping — a word that runs across elements shaped as one,
 kerned and joined across them, but for an element with a margin, border or
 padding at a side, whose text is shaped on its own — `inline-block`, floats
