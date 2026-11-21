@@ -3588,8 +3588,15 @@ function layoutOwnBreaks(
   // to cut, whose layout of the whole paragraph is what a min-content
   // width reads the word off, where a line of it cut here would say the
   // word is as wide as the piece on it (CSS Text 3, 5.5: those cuts are no
-  // part of a min-content width)
-  const cuts = overflowWrapOf(style, items) === 'break-word';
+  // part of a min-content width). Only `overflow-wrap` cuts one, and
+  // `word-break: break-word`, which is it: `break-all` and `anywhere` are
+  // places among `breaks` already, and what is wider than the room between
+  // two of them overflows — `a‐` in `break-all`, whose hyphen keeps its
+  // letter (WPT's line-break-*-hyphens-002). Handed to the engine, which
+  // knows nothing of `breaks`, it was cut before the hyphen
+  const cuts = [style, ...items.map((item) => item.box.style)].some(
+    (s) => s.overflowWrap !== 'normal' || s.wordBreak === 'break-word',
+  );
   // where a line ends: the last place that fits from `from`, the first past
   // the room where none does, and a forced break wherever it comes
   let b = 0;
