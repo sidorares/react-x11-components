@@ -581,8 +581,16 @@ function multicolSegments(box: Box): {
   type Piece = { at: number; from: number; to: number; gap: number };
   const pieces: Piece[] = [];
   let most = 0;
+  // the gaps between the columns there are in any row, which a rule shown
+  // between every column, under `all`, is drawn in through each row
+  let exist = 0;
   for (const row of rows) {
-    const every = (row.every ?? row.lefts).slice().sort((a, b) => a - b);
+    exist = Math.max(exist, row.exists ?? (row.every ?? row.lefts).length);
+  }
+  for (const row of rows) {
+    const every = (row.every ?? row.lefts)
+      .slice(0, Math.max(exist, row.lefts.length))
+      .sort((a, b) => a - b);
     const holds = new Set(row.lefts.map((l) => Math.round(l * 64)));
     const filled = (l: number) => holds.has(Math.round(l * 64));
     most = Math.max(most, every.length - 1);

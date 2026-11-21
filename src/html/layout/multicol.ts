@@ -1549,6 +1549,13 @@ export function layoutColumns(
       every: Array.from({ length: Math.max(used, columns.count) }, (_, c) =>
         left(c),
       ),
+      // balanced columns are only as many as hold something, as Blink makes
+      // a column box for content alone, where filled ones are all there are
+      // (WPT's multicol-gap-decorations-026, -visibility-all-empty-columns)
+      exists:
+        box.style.columnFill === 'auto' && !beforeSpanner
+          ? Math.max(used, columns.count)
+          : used,
     });
   }
   // where each column is, for what is out of the flow inside it, which is
