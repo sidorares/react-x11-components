@@ -2012,6 +2012,36 @@ test("a multicol container another's columns break has its rules in each piece, 
   ]);
 });
 
+test("a right-to-left multicol container's rule lists go from its right", async () => {
+  // WPT's multicol-gap-decorations-multi-value-direction: four columns,
+  // red, green and blue rules, the first gap at the start of the line,
+  // which is its right, in rows of columns and in one row
+  const doc = (wrap: boolean) =>
+    '<div style="direction:rtl;width:230px;height:170px;column-count:4;' +
+    'column-width:50px;gap:10px;' +
+    (wrap ? 'column-height:50px;column-wrap:wrap;' : 'column-fill:auto;') +
+    'column-rule-color:#ff0000,#00ff00,#0000ff;column-rule-style:solid;' +
+    'column-rule-width:10px">' +
+    `<div style="height:${wrap ? 50 : 170}px;contain:size"></div>`.repeat(
+      wrap ? 8 : 4,
+    ) +
+    '</div>';
+  assert.deepStrictEqual(await rulesIn(doc(true), '#ff0000'), [
+    [170, 0, 10, 50],
+    [170, 60, 10, 50],
+  ]);
+  assert.deepStrictEqual(await rulesIn(doc(true), '#0000ff'), [
+    [50, 0, 10, 50],
+    [50, 60, 10, 50],
+  ]);
+  assert.deepStrictEqual(await rulesIn(doc(false), '#ff0000'), [
+    [170, 0, 10, 170],
+  ]);
+  assert.deepStrictEqual(await rulesIn(doc(false), '#0000ff'), [
+    [50, 0, 10, 170],
+  ]);
+});
+
 test('column-height and column-wrap set the columns in rows, a row gap apart', async () => {
   // Rows of two columns 30px tall, 10px apart: six boxes of 20px that go
   // whole take a column each, three rows, and the last row is as tall as
