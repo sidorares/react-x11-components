@@ -6716,7 +6716,13 @@ A multicol container has its column rules between the columns of each row
 of them, broken at a box that spans its columns, `normal` being
 `intersection` there and `none` running a gap's rule from the first row to
 the last; `normal` visibility is `between` there, between columns that hold
-something, `around` and `all` drawing beside one or none. A grid lanes
+something, `around` and `all` drawing beside one or none. The columns a
+gap is between are the columns there are: as many as a balanced container
+fills where it names no count, and all it asks for where it names one or they
+are filled to a height, the most of
+any row through every row. The last row's columns, a spanner's or not,
+reach the content box's foot, as Blink's column boxes do, but for rows
+`column-wrap` sets, which are as tall as they say. A grid lanes
 container has its grid-axis rules down the gaps between lanes, the length
 of its stacking track — the content box where its alignment stretches it,
 the items' range where it is aligned — broken a stacking gap before and

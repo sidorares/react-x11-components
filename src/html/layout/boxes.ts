@@ -901,6 +901,10 @@ export interface ColumnRow {
   /** The rows of columns `column-wrap` made together share this, which
    *  the row gaps between them are of, and a row rule is drawn in. */
   wrap?: object;
+  /** How many of `every` there are, from the start of the line: balanced
+   *  columns are as many as hold something, which `every` may count past,
+   *  and a container whose columns are filled has all it asks for. */
+  exists?: number;
 }
 export const COLUMN_BOXES = new WeakMap<Box, ColumnRow[]>();
 
