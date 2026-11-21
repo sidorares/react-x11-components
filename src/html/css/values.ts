@@ -135,6 +135,9 @@ export interface UnitContext {
   /** The advance of that font's "0", asked only for a length in `ch`; half
    *  an em where it is missing. */
   ch?: () => number;
+  /** The advance of that font's "水", asked only for a length in `ic`; an
+   *  em where it is missing. */
+  ic?: () => number;
   /** A computed `font-family` list with the families the document loads
    *  itself, with `@font-face`, put as the text engine knows them — see
    *  `fonts.ts`. Absent, the list is the one the author wrote. */
@@ -180,7 +183,7 @@ export interface UnitContext {
 const NUMBER_SRC = '[+-]?(?:\\d*\\.\\d+|\\d+)(?:e[+-]?\\d+)?';
 
 const LENGTH_RE = new RegExp(
-  `^(${NUMBER_SRC})(px|em|rem|pt|pc|in|cm|mm|ex|ch|lh|rlh|[sld]?v(?:w|h|i|b|min|max)|cq(?:w|h|i|b|min|max)|q|%)?$`,
+  `^(${NUMBER_SRC})(px|em|rem|pt|pc|in|cm|mm|ex|ch|ic|lh|rlh|[sld]?v(?:w|h|i|b|min|max)|cq(?:w|h|i|b|min|max)|q|%)?$`,
 );
 
 /**
@@ -299,6 +302,11 @@ function unitScale(unit: string, ctx: UnitContext): number {
     // Arial's, and half of Ahem's and a monospace font's
     case 'ch':
       return ctx.ch ? ctx.ch() : ctx.em * 0.5;
+    // the advance of the font's "水", the ideograph CSS Values 4, 6.1.1
+    // names, where the cascade can ask for it: an em, as an ideograph is
+    // across, where it cannot
+    case 'ic':
+      return ctx.ic ? ctx.ic() : ctx.em;
     // the computed `line-height`, `normal` as the font's own (CSS Values
     // 4, 6.1.1)
     case 'lh':
