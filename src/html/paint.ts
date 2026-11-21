@@ -2637,8 +2637,13 @@ function paintThrough(
       [x + width, y + height],
       [x, y + height],
     ].map(([px, py]) => {
-      const wx = px + within.originX;
-      const wy = py + within.originY;
+      // on the pixel grid before the matrix, as each piece of what the box
+      // holds is clipped to its column (`paintColumnPieces`): taken from
+      // the fragment's own fraction of a pixel, the edge came out a pixel
+      // inside what a scale drew of those pieces, and left a line of what
+      // is under them at the fragment's head (WPT's css-break/transform-018)
+      const wx = Math.round(px + within.originX);
+      const wy = Math.round(py + within.originY);
       const cx = through[0] * wx + through[2] * wy + through[4];
       const cy = through[1] * wx + through[3] * wy + through[5];
       // on whole pixels where the matrix keeps a rectangle one, as every
