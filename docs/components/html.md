@@ -8319,7 +8319,9 @@ and limits say, so a line in a box taller than the room is past it, and
 one that overflows a box of no height is not; and `max-lines`, `continue` and
 `block-ellipsis` are read, a string in `line-clamp` or `block-ellipsis`
 drawn in place of the `…`. A block laid out a line at a time, around an
-image or a float, ends in the ellipsis as one laid out at once does, and
+image or a float, ends in the ellipsis as one laid out at once does, at
+its left in a right-to-left block, where its lines end and are cut for
+`text-overflow` too, and
 where the lines after a float are one layout, the lines the clamp drops are
 cut from it rather than drawn with the line it keeps. A float the dropped
 lines reach is past the clamp point and hidden with them, and one on a line
