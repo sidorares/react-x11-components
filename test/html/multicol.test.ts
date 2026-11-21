@@ -2662,3 +2662,25 @@ metric(
     assert.strictEqual(rules.length, 2, JSON.stringify(rules));
   },
 );
+
+metric(
+  'what is positioned in a box that clips it stays in the column the box ends in',
+  async () => {
+    // an absolutely positioned box in an `overflow: clip` box is cut into
+    // the columns as far as the clip box reaches, and what reaches past it
+    // stays in the column the clip box ends in, clipped there, where it
+    // went on into columns of its own past the container (WPT's
+    // css-break/overflow-clip-014)
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="columns:2;gap:0;width:100px;height:100px;' +
+        'column-fill:auto"><div style="position:relative;overflow-y:clip;' +
+        'height:200px"><div style="position:absolute;width:100%;' +
+        'height:300px"><div style="height:200px"></div>' +
+        '<div id="past" style="height:200px"></div></div>' +
+        '<div style="height:1000px"></div></div></div>',
+    );
+    const past = boxOf(view(node), 'past');
+    assert.deepStrictEqual([past.x, past.y], [50, 100], 'in the second');
+  },
+);
