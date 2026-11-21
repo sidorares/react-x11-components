@@ -8355,7 +8355,7 @@ empty block that clears a float keeping the float; and `max-lines`, `continue` a
 drawn in place of the `…`, on one line, which `text-overflow` cuts where
 it is wider than the line; a line of the string alone keeps none of it
 where the `…` leaves no room for a character. A block laid out a line at a time, around an
-image or a float, ends in the ellipsis as one laid out at once does, at
+image, a float or an inline box with a border, ends in the ellipsis as one laid out at once does, at
 its left in a right-to-left block, where its lines end and are cut for
 `text-overflow` too, and
 where the lines after a float are one layout, the lines the clamp drops are

@@ -2063,6 +2063,23 @@ metric(
 );
 
 metric(
+  'a clamp ends in its ellipsis where an inline box with a border is on its lines',
+  async () => {
+    // a paragraph whose inline boxes' edges are spacers in its one layout
+    // was cut at the clamp with no ellipsis at all (WPT's
+    // `block-ellipsis-004` to `-006`)
+    const { node } = await render(
+      '<style>body{margin:0} #a{line-clamp:3;width:200px}' +
+        ' span{border:2px solid blue;font-size:1.5em}</style>' +
+        '<div id="a">Line 1<br>Line 2<br><span>Line 3</span><br>Line 4</div>',
+    );
+    const lines = linesOf(view(node), 'a');
+    assert.strictEqual(lines.length, 3);
+    assert.strictEqual(lastRunText(lines[2]), '\u2026');
+  },
+);
+
+metric(
   'a clamp ends in the string it names, and a line laid out a piece at a time takes it too',
   async () => {
     // CSS Overflow 4, 5.4: `line-clamp: 2 "…more"` draws its string where
