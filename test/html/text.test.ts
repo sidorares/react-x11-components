@@ -2492,6 +2492,27 @@ metric(
 );
 
 metric(
+  'a right-to-left line made a piece at a time that overflows is drawn from its right',
+  async () => {
+    // WPT's text-overflow-string-007: a word wider than its room, in text of
+    // another size, was set past the room's left twice over, once by the
+    // engine and once by the line's alignment, and drew nothing in the box
+    const { node } = await render(
+      '<style>body{margin:0} div{font-size:10px;width:111px;overflow:hidden;' +
+        'text-overflow:ellipsis} span{font-family:monospace;font-size:30px}' +
+        '</style>' +
+        '<div id="a" dir="rtl"><span>TestChecksThatTheBrokenContent</span></div>',
+    );
+    const el = view(node);
+    const [a] = linesOf(el, 'a');
+    for (const text of a.texts) {
+      const [from, to] = extentOf(text);
+      assert.ok(from >= -0.01 && to <= 111.01, `in the box: ${from}, ${to}`);
+    }
+  },
+);
+
+metric(
   "an anonymous block's lines are cut by its container's text-overflow",
   async () => {
     // `text-overflow` does not inherit, and the lines it is for are an

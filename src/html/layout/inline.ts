@@ -2099,7 +2099,7 @@ function linesOf(
         const text: LineText = {
           layout,
           layoutLine: i,
-          drawX: band.left,
+          drawX: band.left - Math.min(0, natural.x),
           drawY: y - lift,
           textStart: segment.spans.documentAt(natural.start),
           textEnd: segment.spans.documentAt(natural.end),
@@ -2327,8 +2327,10 @@ function linesOf(
     const placed: LineText = {
       layout: fragment,
       layoutLine: 0,
-      // laid out `left`, so the fragment starts at the cursor
-      drawX: band.left + open.x,
+      // laid out `left`, so the fragment starts at the cursor — but for
+      // a right-to-left one wider than its room, which an engine sets past
+      // the room's left, as a line overflows from its start
+      drawX: band.left + open.x - Math.min(0, fragment.lines[0]?.x ?? 0),
       drawY: 0, // filled in by `finishLine`, which is where the top is known
       textStart: segment.spans.documentAt(first.start),
       textEnd: segment.spans.documentAt(first.end),
