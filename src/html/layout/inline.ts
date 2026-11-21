@@ -6997,12 +6997,20 @@ function advanceOf(fonts: FontsLike, font: Face, char: string): number {
 const ADVANCES = new WeakMap<FontsLike, Map<string, number>>();
 
 function heldText(box: Box): string {
-  if (box.style.whiteSpace !== 'pre' || !box.text.includes(' ')) {
-    return box.text;
-  }
+  const spaces = box.style.whiteSpace === 'pre' && box.text.includes(' ');
+  // `hyphens: none` takes a soft hyphen's break away too (CSS Text 3, 5.4):
+  // the engine is handed a word joiner in its place, which UAX #14 breaks
+  // on neither side of, draws nothing either and keeps every offset. Only
+  // the engine's: the box's text, which a copy reads, keeps the hyphen
+  const soft =
+    box.text.includes('\u00ad') &&
+    passiveValue(box.style.passiveInherited, 'hyphens') === 'none';
+  if (!spaces && !soft) return box.text;
   let held = HELD.get(box);
   if (held === undefined) {
-    held = box.text.replace(/ /g, '\u00a0');
+    held = box.text;
+    if (spaces) held = held.replace(/ /g, '\u00a0');
+    if (soft) held = held.replace(/\u00ad/g, '\u2060');
     HELD.set(box, held);
   }
   return held;
