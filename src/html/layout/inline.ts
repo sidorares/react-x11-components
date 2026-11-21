@@ -1471,6 +1471,7 @@ function linesOf(
       pushControls(items, own[1], block, last.start + last.length);
     }
   }
+  reopenAfterBreaks(items);
   if (options.firstLine) firstLineColour(items, options.firstLine);
   if (options.prettyAt) separateAt(items, options.prettyAt);
 
@@ -6233,6 +6234,75 @@ function pushControls(
       start,
       control: true,
     });
+  }
+}
+
+/** The controls that open an embedding, an override or an isolate. */
+const OPENS = /^[‪‫‭‮⁦-⁨]$/;
+
+/**
+ * The bidi controls open at each forced break opened again after it. A
+ * line feed is a paragraph separator to UAX #9, which ends every
+ * embedding, override and isolate open at it (X8), where CSS has a box's
+ * `unicode-bidi` hold for all of its content (CSS Writing Modes 3, 2.4.2):
+ * a `pre-wrap` block of `bidi-override` read its first paragraph reversed
+ * and the rest as they were written (WPT's `pre-wrap-align-*-003`). The
+ * text is cut after the line feed, and each control open there put in
+ * again, a copy of the item that opened it, at no document index.
+ */
+function reopenAfterBreaks(items: Item[]): void {
+  let open: Extract<Item, { kind: 'text' }>[] | null = null;
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    if (item.kind !== 'text') continue;
+    if (item.control) {
+      const c = item.run.text;
+      if (OPENS.test(c)) (open ??= []).push(item);
+      else if (open?.length) {
+        // a PDF closes the last embedding or override, a PDI the last
+        // isolate and all opened after it
+        const pdi = c === '⁩';
+        for (let k = open.length - 1; k >= 0; k -= 1) {
+          const kind = open[k].run.text;
+          const isolate = kind >= '⁦' && kind <= '⁨';
+          if (pdi && isolate) {
+            open.length = k;
+            break;
+          }
+          if (!pdi) {
+            // no further out than the isolate it is in
+            if (!isolate) open.splice(k, 1);
+            break;
+          }
+        }
+      }
+      continue;
+    }
+    if (!open?.length) continue;
+    const text = item.run.text;
+    const at = text.indexOf('\n');
+    if (at < 0) continue;
+    const again = open.map((opener) => ({
+      ...opener,
+      start: item.start + at + 1,
+    }));
+    if (at + 1 < text.length) {
+      const rest = {
+        ...item,
+        run: { ...item.run, text: text.slice(at + 1) },
+        start: item.start + at + 1,
+        length: item.length - (at + 1),
+      };
+      items[i] = {
+        ...item,
+        run: { ...item.run, text: text.slice(0, at + 1) },
+        length: at + 1,
+      };
+      items.splice(i + 1, 0, ...again, rest);
+    } else {
+      items.splice(i + 1, 0, ...again);
+    }
+    i += again.length;
   }
 }
 
