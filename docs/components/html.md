@@ -6143,7 +6143,14 @@ column ends and goes on at the head of the next. A block that is a
 formatting context of its own, a `flow-root` say, breaks as any block does;
 only one that scrolls or clips, a multicol container, a clamp and an
 orthogonal flow go to a column whole, as does a box whose only content is a
-float that cannot be cut. A forced break before the first child of a box
+float that cannot be cut. A grid's row the columns end inside is broken
+an item at a time, as Blink breaks it: each item goes on at the head of the
+next column from where it broke, the row as tall there as its longest item,
+a stretched item as tall as the row and one aligned in it as tall as what
+it holds, and what comes after the row starts under it. A row an item of
+which would leave nothing behind goes to the next column whole. A row with
+a forced break inside an item is broken where its items' content breaks
+together, as before. A forced break before the first child of a box
 with layout containment is none, since it would be the box's own. A forced
 break after a grid or flex item is after its row, and comes before the next
 row; after one in its box's last row it is the box's own, and goes out to
@@ -6222,7 +6229,11 @@ line, holding nothing, where it starts there with a box out of the flow
 and all its text goes on to the next, as Blink keeps it, but not after a
 forced break, which ends the line before with nothing of the box on it —
 and is then cut
-into them as a float with a height is, with what it holds; an anchor it
+into them as a float with a height is, with what it holds. Its static
+position is moved first by the relative offsets of the boxes between it and
+its containing block, so a fixed box in a relative box in a transformed one
+is cut where the offset puts it; its containing block's own offset moves it
+after the cut, with all the containing block holds, as Blink places both. An anchor it
 refers to in the same columns it sees unbroken, where the strip had it,
 and one outside them the rectangle around the anchor's pieces (CSS Anchor
 Positioning 1, 2). A multicol container in a vertical writing mode sets its
@@ -6430,7 +6441,12 @@ paints by yet (`passive-properties.ts`): `accent-color`, `resize`,
 behaviours and the rest of the table. `el.style` takes each only as its
 grammar does, an inherited one passes to the children, and
 `getComputedStyle` and Typed OM read each at what was set or its initial
-value; what each would draw, a resize handle or a hyphen, is not drawn. A
+value; what each would draw, a resize handle or a hyphen, is not drawn.
+`hyphens: none` is laid out by in one way: a soft hyphen in its text is no
+place to break, handed to the engine as a word joiner, which draws nothing
+either and keeps every offset; the document's text keeps the soft hyphen, so
+a copy has it as a browser's does. A line `manual` breaks at a soft hyphen still
+draws no hyphen: the text engines draw no mark at a break but an ellipsis. A
 computed style answers them by name as it answers its shorthands, so they
 are no items of its list, which a computed style made a dictionary would
 otherwise cost every read of.

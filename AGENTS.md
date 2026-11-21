@@ -8509,11 +8509,25 @@ anywhere — an item with a height and nothing in it, room a box is taller
 than its content by — is never grouped with it: it is cut in whatever of
 the strip the solid groups leave, and a unit knows the group it starts in
 and the one it ends in (`group`, `ends`). Four things are load-bearing.
-**A break is at one place down the strip for everything beside it**, where
-a browser breaks each item on its own account: a line that does not fit
-in one item takes the others' content with it to the next column, which
-is the case to build next, and it needs the strip's offsets by flow and
-not by column alone. **What overflows a flex container or an item takes no
+**A break is at one place down the strip for everything beside it**, but
+in a grid's row, where a browser breaks each item on its own account and
+so does this (`GridRow`, `breakRow`): the row is one group, `fill` sets each
+item's units in the column as far as they fit and goes on with each from
+its own break at the head of the next, the row ending where its longest
+item does, and each item placed by column tops of its own (`rowTops`,
+through `holds`), a stretched item as tall as the row and an aligned one as
+what it holds (`ownLast`). Four rules keep it no worse than before. **A row
+that fits whole is never broken an item at a time** (`gridRowsBroken`
+counts the rows that are): anything new it does is behind `breakRow`'s
+first test. **A row an item of which has nothing to leave behind goes to
+the next column whole**, as Blink moves it. **A row with a forced break
+inside an item, a row an item spans, and a flex row or a table's row break
+as they did** (`gridRows`), until Blink's rules for them are this one's:
+Blink ends the row's piece at the column's foot at a forced break and
+chooses balanced columns around it by rules of its own. And **the fixture is
+Chromium's** (`scripts/conformance/grid-rows.ts` writes
+`test/html/grid-rows.ts`): every case it made is in it, and those that
+differ are named in its `KNOWN`, which only shrinks. **What overflows a flex container or an item takes no
 part in where the columns break** (`clipped`, `below`): a box of a height
 of its own holds what follows it to that height, and content past it
 grouped with what follows would push it a column on. **A flex box its

@@ -2104,7 +2104,13 @@ test('no op is begun so near the ceiling that it could be cut half way: it is re
   assert.equal(doc.timeouts, 1);
 });
 
-test('an op the ceiling cuts half way leaves the document to be styled and laid out again, and nothing of what it was in the middle of', async () => {
+test('an op the ceiling cuts half way leaves the document to be styled and laid out again, and nothing of what it was in the middle of', async (t) => {
+  // the engine's clock held still: the cut is the runtime's watchdog's,
+  // which is the wall clock's whatever this says, and the page's own time
+  // is then none. On the wall clock, a runner busy enough to hold the
+  // second task's few lines past the page's time refused its op, and the
+  // style it reads never reached the page
+  t.mock.method(taskClock, 'now', () => 0);
   const doc = await hosted('<p id="out">-</p><p id="p">text</p>', {
     timeout: 200,
   });
