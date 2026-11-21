@@ -2641,3 +2641,33 @@ test('an inline box that starts with a box out of the flow after a forced break 
   const a = boxOf(view(node), 'a');
   assert.ok(a.y >= 32, `on the second line, at ${a.y}`);
 });
+
+metric(
+  'a multicol container of continue: discard keeps what fits in its columns',
+  async () => {
+    // CSS Overflow 4, 5.2: what does not fit in its columns makes no
+    // overflow column and is discarded (WPT's
+    // line-clamp/discard/discard-multicol-001), the last line kept ending
+    // in an ellipsis where block-ellipsis asks for one (-002)
+    const lines = Array.from({ length: 7 }, (_, i) => `Line ${i + 1}`).join(
+      '<br>',
+    );
+    const { node } = await render(
+      '<style>body{margin:0} div{font:16px/20px monospace;width:300px;' +
+        'columns:3;gap:0;height:40px}</style>' +
+        `<div id="a" style="continue:discard">${lines}</div>` +
+        `<div id="b" style="continue:discard;block-ellipsis:auto">${lines}</div>`,
+    );
+    const el = view(node);
+    assert.strictEqual(linesOf(el, 'a').length, 6, 'three columns of two');
+    const b = linesOf(el, 'b');
+    assert.strictEqual(b.length, 6);
+    const last = b[5].texts[b[5].texts.length - 1];
+    const runs = (
+      last.layout as unknown as {
+        lines: { runs: { span?: { text: string } }[] }[];
+      }
+    ).lines[last.layoutLine].runs;
+    assert.strictEqual(runs[runs.length - 1]?.span?.text, '\u2026');
+  },
+);

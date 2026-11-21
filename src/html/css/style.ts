@@ -1231,7 +1231,7 @@ export interface ComputedStyle {
   /** `continue`: `collapse` hides what is past the clamp point, and
    *  `-webkit-line-clamp`'s `-webkit-legacy` does so only in a vertical
    *  `-webkit-box`; `discard` is read as `collapse`. */
-  clampContinue: 'auto' | 'collapse' | 'legacy';
+  clampContinue: 'auto' | 'collapse' | 'discard' | 'legacy';
   /** `block-ellipsis`, inherited: whether the line before a clamp point
    *  ends in an ellipsis. */
   blockEllipsis: boolean;
@@ -3395,9 +3395,9 @@ export function applyDeclaration(
     case 'continue': {
       const v = value.trim().toLowerCase();
       if (v === 'auto') style.clampContinue = 'auto';
-      else if (v === 'collapse' || v === 'discard') {
-        style.clampContinue = 'collapse';
-      } else if (v === '-webkit-legacy') style.clampContinue = 'legacy';
+      else if (v === 'collapse') style.clampContinue = 'collapse';
+      else if (v === 'discard') style.clampContinue = 'discard';
+      else if (v === '-webkit-legacy') style.clampContinue = 'legacy';
       return;
     }
     case 'block-ellipsis': {
@@ -12273,8 +12273,12 @@ export function settleClamp(
 ): void {
   const box = style.webkitBox;
   const vertical = style.webkitBoxOrient === 'vertical';
+  // `discard` on what is no fragmentation container clamps it as
+  // `collapse` does; on a multicol container it discards what overflows its
+  // columns (`layoutDiscarded`)
   const collapses =
     style.clampContinue === 'collapse' ||
+    style.clampContinue === 'discard' ||
     (style.clampContinue === 'legacy' && box !== null && vertical);
   if (box !== null) {
     if (collapses && vertical) {
