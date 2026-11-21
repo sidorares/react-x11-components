@@ -5812,15 +5812,6 @@ class Builder {
         expandedSeparator(style.wordSpaceTransform)!,
       );
     }
-    // `hyphens: none` takes a soft hyphen's break away too (CSS Text 3,
-    // 5.4): it is handed on as a word joiner, as wide as it and as long,
-    // which UAX #14 breaks on neither side of (`noSoftBreaks`)
-    if (
-      text.includes('­') &&
-      passiveValue(style.passiveInherited, 'hyphens') === 'none'
-    ) {
-      text = noSoftBreaks(text);
-    }
     text = transformText(
       text,
       style.textTransform,
@@ -7548,12 +7539,6 @@ function removesSegmentBreak(cp: number): boolean {
 /** White space that collapsing would change: anything but a lone space.
  *  Most of a document's text has none, and is its own collapsed form. */
 const COLLAPSIBLE = /[\t\n\r\f]| {2}/;
-
-/** A text whose soft hyphens are no places to break: each is a word joiner
- *  in its place, which draws nothing either and keeps every offset. */
-function noSoftBreaks(text: string): string {
-  return text.replace(/\u00ad/g, '\u2060');
-}
 
 function isRelative(style: ComputedStyle): boolean {
   return style.position === 'relative' || style.position === 'sticky';

@@ -3,7 +3,7 @@
 // `css/css-text/word-break/` and `line-break/` hold the rest.
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { cleanup } from 'react-x11/test';
+import { act, cleanup, fireEvent } from 'react-x11/test';
 
 import { breakOpportunities } from '../../src/html/layout/word-break.js';
 import type { BreakRule } from '../../src/html/layout/word-break.js';
@@ -162,4 +162,13 @@ metric('hyphens: none breaks at no soft hyphen, and manual does', async () => {
   const lines = lineTextsOf(view(node), 't');
   assert.equal(lines.length, 2, `the word whole: ${lines.join(' | ')}`);
   assert.equal(lines[1].trim(), 'acid');
+  // a copy is of the document's text, its soft hyphens as they were
+  await act(async () => {
+    fireEvent.mouseDown(node, {});
+    fireEvent.mouseUp(node, {});
+  });
+  await act(async () => {
+    fireEvent.key(0x61 /* a */, { modifiers: ['Control'] });
+  });
+  assert.equal(JSON.stringify(node.selectedText()), JSON.stringify(word));
 });

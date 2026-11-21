@@ -6433,7 +6433,8 @@ grammar does, an inherited one passes to the children, and
 value; what each would draw, a resize handle or a hyphen, is not drawn.
 `hyphens: none` is laid out by in one way: a soft hyphen in its text is no
 place to break, handed to the engine as a word joiner, which draws nothing
-either and keeps every offset. A line `manual` breaks at a soft hyphen still
+either and keeps every offset; the document's text keeps the soft hyphen, so
+a copy has it as a browser's does. A line `manual` breaks at a soft hyphen still
 draws no hyphen: the text engines draw no mark at a break but an ellipsis. A
 computed style answers them by name as it answers its shorthands, so they
 are no items of its list, which a computed style made a dictionary would
