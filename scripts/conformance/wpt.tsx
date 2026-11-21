@@ -29,7 +29,7 @@ import { basename, dirname, extname, join, resolve } from 'node:path';
 import React from 'react';
 import { createRoot, loadFont, ThemeProvider } from 'react-x11';
 import { WindowNode } from 'react-x11/node';
-import { act, renderX11 } from 'react-x11/test';
+import { act, cleanup, renderX11 } from 'react-x11/test';
 import type { RenderX11Result } from 'react-x11/test';
 
 import { Html } from '../../src/html/index.js';
@@ -468,23 +468,48 @@ interface Mounted {
   /** Device pixels per logical one: what the viewport is read at. */
   scale: number;
   render(element: React.ReactElement): Promise<void>;
+  /** Whether a page has registered a face the mount began without, which
+   *  every page after it would have in its fallbacks. */
+  fontsAdded(): boolean;
+  dispose(): Promise<void>;
 }
 
 let mounted: Mounted | null = null;
 
+/** What the font manager has registered: a document's `@font-face` adds to
+ *  it, and nothing takes from it (`src/html/fonts.ts`). The harness's own
+ *  fonts are its font source's, so a mount starts with none. Read off ntk's
+ *  `FontManager`, which says nothing of it in its declarations. */
+const registeredOf = (app: unknown): unknown[] =>
+  (app as { fonts: { _registered: unknown[] } }).fonts._registered;
+
 /** The X11 harness: node-x11's in-process server, the fonts as files. */
 async function mountX11(first: React.ReactElement): Promise<Mounted> {
-  const result: RenderX11Result = await renderX11(first, {
+  // mounted with nothing in it, so what the first page registers is seen
+  const result: RenderX11Result = await renderX11(h('box'), {
     width: WIDTH,
     height: HEIGHT,
     fonts: FONTS,
   });
+  // A face a page registers stays in the font manager for good, and the
+  // fallback for a character no family a later page names walks every face
+  // registered before the font source's: a later page drew a glyph an
+  // earlier page's font had, and a result turned on what ran before it in
+  // its shard. So a mount a page registered a face in is made again before
+  // the next page, test or reference. That is every page that links
+  // `/fonts/ahem.css` too: a registered Ahem comes ahead of the source's
+  // faces in that walk.
+  const registered = registeredOf(result.app);
+  const at = registered.length;
+  await result.rerender(first);
   return {
     // taken once: the harness's `ctx` getter makes a new context on every
     // read, and each subscribes to the window for good
     ctx: result.ctx as Mounted['ctx'],
     scale: 1,
     render: (element) => result.rerender(element),
+    fontsAdded: () => registered.length > at,
+    dispose: () => cleanup(),
   };
 }
 
@@ -515,6 +540,10 @@ async function mountCocoa(first: React.ReactElement): Promise<Mounted> {
     ctx: windowNode!.window.getContext('2d') as Mounted['ctx'],
     scale: windowNode!.scale ?? 1,
     render,
+    // CoreText's fonts are the system's, and a window is slow to make: the
+    // faces a page registers stay, as they did
+    fontsAdded: () => false,
+    dispose: async () => root.unmount(),
   };
 }
 
@@ -534,6 +563,10 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
  *  or two after the first paint. */
 async function shoot(path: string): Promise<Uint8ClampedArray> {
   const before = frames;
+  if (mounted?.fontsAdded()) {
+    await mounted.dispose();
+    mounted = null;
+  }
   if (!mounted) {
     mounted =
       BACKEND === 'cocoa'

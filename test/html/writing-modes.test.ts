@@ -164,6 +164,24 @@ test('a ch in a vertical line set upright is an em, the advance a glyph stands i
   assert.strictEqual(rectOf(el, 'side').width, rectOf(el, 'flat').width);
 });
 
+test('a line-clamp container in a vertical writing mode clamps its lines, and is as wide as those it keeps', async () => {
+  // WPT's line-clamp-wm-vrl-001 and line-clamp-auto-wm-vrl-001: the clamp
+  // counts the lines of the frame its content is turned in, and an `auto`
+  // clamp fills the container's block size, which is its width
+  const { node } = await render(
+    '<style>body{margin:0} div{font:20px/1 monospace;inline-size:8ch;' +
+      'writing-mode:vertical-rl}</style>' +
+      '<div id="n" style="line-clamp:2">A<br>B<br>C<br>D</div>' +
+      '<div id="a" style="line-clamp:auto;max-block-size:3lh">' +
+      'A<br>B<br>C<br>D</div>' +
+      '<div id="x">A<br>B<br>C<br>D</div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'x').width, 80);
+  assert.strictEqual(boxOf(el, 'n').width, 40);
+  assert.strictEqual(boxOf(el, 'a').width, 60);
+});
+
 test('logical properties map by the writing mode, wherever it is declared', async () => {
   // CSS Writing Modes 4, 6.4: the block axis starts at the right of
   // vertical-rl and at the left of vertical-lr and sideways-lr, and the

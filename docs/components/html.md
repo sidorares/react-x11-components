@@ -6141,7 +6141,12 @@ with layout containment is none, since it would be the box's own. A break
 `break-before` or `break-after` avoids (`avoid`, `avoid-column`), on a box
 or on what is about it, a flex item's included, goes to the last break
 before it in the column that is not avoided and has something with a height
-before it, and falls where it would where there is none. The
+before it, and falls where it would where there is none. A box
+taller than its content, by a height of its own or one a column flex box
+gave it, that a break falls inside uses up the rest of that column, as
+Blink counts it: its height is not pushed on by what the break left at the
+column's foot, down to the height its content needs, and what follows it
+starts that much higher. A row flex box's items are not taken so yet. The
 columns balance, and CSS leaves how to the user agent; this does as Blink
 does — the content's height shared out between the columns, no less than
 the tallest thing that cannot break, then as much
@@ -8311,10 +8316,15 @@ that fit beside it, or alone on the line it displaced where none do. Tailwind's 
 clamps, as in a browser, and that form's ellipsis cuts inside a word where
 the line has no room for it, as `text-overflow`'s does — as Chrome, Firefox
 and WebKit cut it, where the newer property keeps whole words; `line-clamp: auto` shows as many lines as the
-box's `height` or `max-height` holds, and `max-lines`, `continue` and
+box's `height` or `max-height` holds, a line counted where the box would
+end were it cut after it: a box around the line ends where its own height
+and limits say, so a line in a box taller than the room is past it, and
+one that overflows a box of no height is not; and `max-lines`, `continue` and
 `block-ellipsis` are read, a string in `line-clamp` or `block-ellipsis`
 drawn in place of the `…`. A block laid out a line at a time, around an
-image or a float, ends in the ellipsis as one laid out at once does, and
+image or a float, ends in the ellipsis as one laid out at once does, at
+its left in a right-to-left block, where its lines end and are cut for
+`text-overflow` too, and
 where the lines after a float are one layout, the lines the clamp drops are
 cut from it rather than drawn with the line it keeps. A float the dropped
 lines reach is past the clamp point and hidden with them, and one on a line
@@ -8684,8 +8694,10 @@ algorithm places a neutral. An image, a background image and a gradient in
 a vertical flow are drawn upright, level with the page, as its lines are
 not: the frame turns all it draws a quarter, and they are turned back about
 its origin, an image scaled on a surface of its own first so that the turn
-copies it pixel for pixel. An inline element in a writing mode its
-parent is not in is an inline-block (3.1). The root is laid out by its
+copies it pixel for pixel. A root that is a line-clamp container clamps
+the lines of its frame, and is as wide as the lines it keeps; an `auto`
+clamp fills its block size, which is its width. An inline element in a
+writing mode its parent is not in is an inline-block (3.1). The root is laid out by its
 parent as any box is, in the page's axes. Its width is its block size,
 which is its content's where it has none of its own (7.3.2): a block, a
 float, an inline-block, a table cell and an absolute box alike are as wide
