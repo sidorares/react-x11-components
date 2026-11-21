@@ -25,6 +25,7 @@ import type {
 import { absoluteUrls, parseStylesheet } from '../src/html/css/parse.js';
 import type { FontFaceRule } from '../src/html/css/parse.js';
 import { bestFace, refusal } from '../src/html/fonts.js';
+import type { Slant } from '../src/html/fonts.js';
 import { GifCanvas, decodeGif, readGif } from '../src/html/gif.js';
 import { AnimatedImage, gifAnimation } from '../src/html/animated.js';
 import { WebPCanvas, readAnimatedWebP } from '../src/html/webp.js';
@@ -473,6 +474,7 @@ test('@font-face rules are read, descriptor by descriptor', () => {
     ],
     weight: [300, 800],
     style: 'italic',
+    oblique: true,
     stretch: [75, 100],
     unicodeRange: [
       [0, 0xff],
@@ -560,6 +562,41 @@ test('a face is matched as CSS Fonts 4 matches one', () => {
     'normal',
     'the width before the slant',
   );
+});
+
+test('an oblique face is matched apart from an italic one, and oblique-only keeps an italic off it', () => {
+  // CSS Fonts 4 (5.2): an italic tries the italic faces, then the oblique
+  // ones, then the upright; an oblique the other way round; and an italic
+  // under `font-synthesis-style: oblique-only` takes no oblique face, but
+  // the upright (csswg-drafts#9390)
+  const face = (style: 'normal' | 'italic' | 'oblique') => ({
+    rule: {
+      family: 'F',
+      sources: [],
+      weight: [400, 400] as [number, number],
+      style: style === 'normal' ? ('normal' as const) : ('italic' as const),
+      ...(style === 'oblique' && { oblique: true as const }),
+      stretch: null,
+      unicodeRange: null,
+      media: null,
+    },
+    style,
+  });
+  const upright = face('normal');
+  const italic = face('italic');
+  const oblique = face('oblique');
+  const pick = (faces: ReturnType<typeof face>[], slant: Slant) =>
+    bestFace(faces, 400, slant)?.style;
+  assert.strictEqual(pick([upright, oblique], 'italic'), 'oblique');
+  assert.strictEqual(pick([upright, oblique], 'oblique'), 'oblique');
+  assert.strictEqual(pick([upright, oblique], 'italic-only'), 'normal');
+  assert.strictEqual(pick([upright, oblique], 'normal'), 'normal');
+  assert.strictEqual(pick([upright, italic, oblique], 'italic'), 'italic');
+  assert.strictEqual(pick([upright, italic, oblique], 'oblique'), 'oblique');
+  assert.strictEqual(pick([upright, italic], 'oblique'), 'italic');
+  assert.strictEqual(pick([italic, oblique], 'normal'), 'oblique');
+  assert.strictEqual(pick([upright, italic], 'italic-only'), 'italic');
+  assert.strictEqual(bestFace([upright, oblique], 400, true)?.style, 'oblique');
 });
 
 // --- GIF ----------------------------------------------------------------------
@@ -2191,7 +2228,7 @@ test('a run is handed on with the family and the axis values it has', () => {
   const asked: string[] = [];
   const faces = {
     active: true,
-    setting(list: string, weight: number, italic: boolean, stretch: number) {
+    setting(list: string, weight: number, italic: Slant, stretch: number) {
       asked.push(`${list}|${weight}|${italic}|${stretch}`);
       if (!list.startsWith('web')) return null;
       return {
@@ -2209,14 +2246,16 @@ test('a run is handed on with the family and the axis values it has', () => {
     { text: 'c', family: 'serif', weight: 700 },
     { text: 'd', weight: 'bold' as const, style: 'italic' as const },
     { text: 'e', stretch: 75 },
+    { text: 'f', style: 'italic' as const, slant: 'italic-only' as const },
   ];
   assert.strictEqual(fonts.layout(runs, base, {}), 'laid out');
   assert.deepStrictEqual(asked, [
-    'web, serif|400|false|100',
-    'web, serif|700|false|100',
-    'serif|700|false|100',
-    'web, serif|700|true|100',
-    'web, serif|400|false|75',
+    'web, serif|400|normal|100',
+    'web, serif|700|normal|100',
+    'serif|700|normal|100',
+    'web, serif|700|italic|100',
+    'web, serif|400|normal|75',
+    'web, serif|400|italic-only|100',
   ]);
   const handed = seen[0].content as Array<Record<string, unknown>>;
   assert.deepStrictEqual(handed, [
@@ -2228,6 +2267,12 @@ test('a run is handed on with the family and the axis values it has', () => {
       text: 'e',
       stretch: 75,
       family: 'narrow, web, serif',
+      variations: { wght: 400 },
+    },
+    {
+      text: 'f',
+      style: 'italic',
+      slant: 'italic-only',
       variations: { wght: 400 },
     },
   ]);
@@ -2617,6 +2662,51 @@ withFonts(
     same('c', 'b', '80% is the condensed face');
     same('u', 'b', 'and so is 50%');
     same('e', 'r', '110% is the normal face');
+  },
+);
+
+withFonts(
+  'an italic under font-synthesis-style: oblique-only is set in the upright face, not the oblique one',
+  async () => {
+    // WPT's font-synthesis-style-oblique-only: a family of an upright face
+    // and an oblique one, and no italic. An italic falls back to the oblique
+    // face, unless `oblique-only` says not to, when it is set upright. Both
+    // faces are slanted to the font manager, which picks among one name's
+    // faces by weight and slant alone, so the oblique face has a name of its
+    // own. Each face has every letter here: this is the face matched, not a
+    // fallback to another for a letter it lacks.
+    const asked: string[] = [];
+    const { node } = await mount(
+      '<style>' +
+        '@font-face { font-family: Sl; src: url(r.woff2) }' +
+        '@font-face { font-family: Sl; font-style: oblique; src: url(b.woff2) }' +
+        '@font-face { font-family: Plain; src: url(r.woff2) }' +
+        '@font-face { font-family: Heavy; src: url(b.woff2) }' +
+        'p { font-family: Sl, monospace; margin: 0; font-size: 40px }' +
+        '</style>' +
+        '<p><span id="n">mm</span> <span id="o" style="font-style: oblique">' +
+        'mm</span> <span id="i" style="font-style: italic">mm</span>' +
+        ' <span id="x" style="font-style: italic;' +
+        ' font-synthesis-style: oblique-only">mm</span></p>' +
+        '<p style="font-family: Plain"><span id="r">mm</span></p>' +
+        '<p style="font-family: Heavy"><span id="b">mm</span></p>',
+      fontHost(asked),
+      {},
+      true,
+    );
+    await settle(node);
+    const width = (id: string) =>
+      node.elementRect(boxOf(node, id).el as never)!.width;
+    const same = (id: string, face: string, message: string) =>
+      assert.ok(
+        Math.abs(width(id) - width(face)) < 0.01,
+        `${message}: ${width(id)} against ${width(face)}`,
+      );
+    assert.ok(width('b') > width('r') + 1, 'the two faces are told apart');
+    same('n', 'r', 'upright is the upright face');
+    same('o', 'b', 'oblique is the oblique face');
+    same('i', 'b', 'italic falls back to the oblique face');
+    same('x', 'r', 'oblique-only keeps an italic off it');
   },
 );
 

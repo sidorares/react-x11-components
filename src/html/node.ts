@@ -22716,6 +22716,8 @@ const FACE_FIELDS = [
   'style',
   'letterSpacing',
   'features',
+  // which of a family's faces sets the text (`axes.ts`)
+  'slant',
   // marks take room on the line (`finishLine`)
   'emphasis',
 ] as const;

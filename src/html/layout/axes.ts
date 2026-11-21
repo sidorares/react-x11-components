@@ -33,7 +33,11 @@
 // face is the system's family under its own name, which another list may
 // name as well, so `map` marks the one it came to with the group's name
 // after it, and the setting is the list without it (`WebFonts.setting`).
-import type { FaceMetrics as FaceRuleMetrics, FaceSetting } from '../fonts.js';
+import type {
+  FaceMetrics as FaceRuleMetrics,
+  FaceSetting,
+  Slant,
+} from '../fonts.js';
 import type { DocumentRun, FaceMetrics, FontsLike } from './inline.js';
 import { withLayout } from './shaping.js';
 
@@ -45,12 +49,25 @@ export interface FaceSettings {
   setting(
     list: string,
     weight: number,
-    italic: boolean,
+    italic: boolean | Slant,
     stretch: number,
   ): FaceSetting | null;
 }
 
 const NUMERIC: Record<string, number> = { normal: 400, bold: 700 };
+
+/** The slant a run asks a face at: its own `slant` where it says one, else
+ *  upright or italic by its `style`, and where it has neither the
+ *  paragraph's. */
+function slantOfRun(
+  run: Partial<DocumentRun>,
+  style: Partial<DocumentRun>,
+): Slant {
+  const slant =
+    run.slant ?? (run.style === undefined ? style.slant : undefined);
+  if (slant) return slant;
+  return (run.style ?? style.style) === 'italic' ? 'italic' : 'normal';
+}
 
 /** `engine`, laying each run out in the family list, at the axis values
  *  and at the size `faces` gives its family list, weight, slant and width,
@@ -74,7 +91,7 @@ export function fontAxes(engine: FontsLike, faces: FaceSettings): FontsLike {
           ? faces.setting(
               family,
               numeric(weight),
-              (run.style ?? style.style) === 'italic',
+              slantOfRun(run, style),
               typeof stretch === 'number' ? stretch : 100,
             )
           : null;
@@ -105,7 +122,7 @@ export function fontAxes(engine: FontsLike, faces: FaceSettings): FontsLike {
       ? faces.setting(
           family,
           numeric(style.weight ?? 400),
-          style.style === 'italic',
+          slantOfRun(style, style),
           100,
         )
       : null;
