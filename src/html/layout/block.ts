@@ -3736,18 +3736,69 @@ function countLines(
   // point, and hidden with them (CSS Overflow 4, 5.3.1; WPT's
   // line-clamp-with-floats-003), where one on the last line kept stays
   // (-005)
-  if (result.cut) {
-    const last = result.lines[result.lines.length - 1];
-    const foot = last ? contentTop + last.y + last.height : contentTop;
-    const stack = [...box.children];
-    while (stack.length) {
-      const at = stack.pop()!;
-      if (at.isFloat && !at.outOfFlow) {
-        if (at.y - Math.max(0, at.marginTop) >= foot - 0.01) hideClamped(at);
-        else unclampBox(at);
-      } else if (at.kind === 'inline') stack.push(...at.children);
+  //
+  // and an inline box all of whose text the clamp dropped, or the ellipsis
+  // displaced, is past the clamp point too, and what is positioned against
+  // it is hidden with it (WPT's `line-clamp-with-abspos-015` and `-017`)
+  const last = result.cut ? result.lines[result.lines.length - 1] : null;
+  const foot = last ? contentTop + last.y + last.height : contentTop;
+  const kept = result.cut ? (last?.textEnd ?? 0) : Infinity;
+  const stack = [...box.children];
+  while (stack.length) {
+    const at = stack.pop()!;
+    if (at.isFloat && !at.outOfFlow) {
+      if (!result.cut) continue;
+      if (at.y - Math.max(0, at.marginTop) >= foot - 0.01) hideClamped(at);
+      else unclampBox(at);
+    } else if (at.kind === 'inline') {
+      placedAgainst(at, firstTextAt(at) >= kept);
+      stack.push(...at.children);
     }
   }
+}
+
+/**
+ * Hide, or show, what is absolutely positioned against an inline box or a
+ * box in it: an inline box past the clamp point is drawn as its lines are,
+ * which the clamp cut, and its opacity and its filter still reach what in
+ * it is positioned against something the clamp does not hide (WPT's
+ * `line-clamp-with-abspos-024`), so it is not hidden itself.
+ */
+function placedAgainst(inline: Box, hidden: boolean): void {
+  const stack = [...inline.children];
+  while (stack.length) {
+    const at = stack.pop()!;
+    if (at.kind === 'text' || at.kind === 'break' || at.isFloat) continue;
+    if (at.outOfFlow) {
+      let against = false;
+      for (let up = containingBlockFor(at); up; up = up.parent) {
+        if (up === inline) {
+          against = true;
+          break;
+        }
+      }
+      if (against && hidden) hideClamped(at);
+      else unclampBox(at);
+      continue;
+    }
+    if (at.kind === 'inline') stack.push(...at.children);
+  }
+}
+
+/** Where an inline box's text starts in its block's, or -Infinity where it
+ *  holds none, which no clamp is taken to have dropped: an inline box keeps
+ *  no place of its own (`countLines`). */
+function firstTextAt(box: Box): number {
+  const stack = [box];
+  while (stack.length) {
+    const at = stack.pop()!;
+    if (at.outOfFlow || at.isFloat) continue;
+    if (at.kind === 'text' || at.kind === 'break') return at.textStart;
+    for (let i = at.children.length - 1; i >= 0; i -= 1) {
+      stack.push(at.children[i]);
+    }
+  }
+  return -Infinity;
 }
 
 /** What a box past a clamp point holds that is absolutely positioned
