@@ -66,3 +66,24 @@ metric(
     assert.ok(near(x('punct'), x('punct-off')), `${x('punct')}`);
   },
 );
+
+metric(
+  "a ::first-line's text is spaced in the line's ems, not the block's",
+  async () => {
+    // the room is an eighth of the size of the text before the boundary,
+    // which on the first line is the pseudo-element's (WPT's
+    // text-autospace-first-line-001)
+    const { node } = await render(
+      '<style>.t{font-size:40px;text-autospace:normal}' +
+        '#a::first-line{font-size:200%}#b{font-size:80px}</style>' +
+        '<div id="a" class="t">国国XX国<br>国</div>' +
+        '<div id="b" class="t">国国XX国</div>',
+      1000,
+    );
+    const el = view(node);
+    const a = el.textCaretRect(4)!.x;
+    // the second block starts six characters further into the document
+    const b = el.textCaretRect(11)!.x;
+    assert.ok(Math.abs(a - b) < 0.5, `${a} where ${b}`);
+  },
+);

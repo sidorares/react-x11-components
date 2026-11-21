@@ -8322,7 +8322,8 @@ before `text-transform`, but for one beside a line feed the text keeps;
 `text-autospace` and `text-autospace-size` (an eighth of an em, or what the
 size says, between an ideograph and a letter or a numeral of another script
 beside it, inside a text and across the inline boxes the two are in, put
-after the character before the boundary in its style; `normal` and `auto`
+after the character before the boundary in its style, in the ems of its
+`::first-line` where it is on the first line; `normal` and `auto`
 space both, as Chrome does; an atomic between them parts them, and the
 `punctuation` class and `replace` are read and do nothing), `letter-spacing`
 and `word-spacing` (the first is the text engine's; the second is spacing added to each space and
