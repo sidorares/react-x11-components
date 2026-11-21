@@ -1737,6 +1737,9 @@ export const stripReach = {
         at = cb;
       } else at = at.parent;
     }
+    // a box no break may fall inside goes to a column whole, and is not
+    // shared out (WPT's css-contain/contain-size-monolithic-002)
+    if (whole(box)) return;
     const need = Math.max(0, flowReach(box) - entry.from);
     this.reached.set(
       container,

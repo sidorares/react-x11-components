@@ -6155,7 +6155,8 @@ does — the content's height shared out between the columns, no less than
 the tallest thing that cannot break, then as much
 taller as lets the next line or box into a column, until they hold it all —
 so a page breaks where Chrome breaks it. What is absolutely positioned in
-the columns, against a box in their flow, is shared out with the content:
+the columns, against a box in their flow, is shared out with the content, but
+for a box no break may fall inside:
 positioned boxes are laid out after the columns are set, so the container
 keeps how far down they reached, and where that moves what it is balanced
 over the document is laid out once more, and only once. A container with a `height` or a
