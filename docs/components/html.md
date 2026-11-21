@@ -6736,14 +6736,16 @@ under `intersection`: in a row the first are its column rules and the second
 its row rules, and in a column the other way round. `rule-overlap:
 column-over-row` draws the row rules under the column rules, where they are
 over them. A right-to-left container's horizontal rules start at their right.
+The rows of columns `column-wrap` makes are a grid of columns for its rules:
+a row rule is drawn in each row gap between them, across the columns, and a
+column rule stops at a row gap under `normal`, which is `intersection` there
+as at a spanner, its ends there junctions where the row rule is drawn.
 
 A grid or a flex container that columns break has its rules drawn in each
 piece, as the whole box has them, where its pieces stand; a row gap a break
 falls in has no rule (3.6). Not here: a grid lanes container that columns
 break, a container in a vertical writing mode, whose rules are drawn as a
-horizontal one's are, and multicol's `column-height` and `column-wrap`,
-whose rows of columns the layout does not make, nor the row rules between
-them.
+horizontal one's are.
 
 **Boxes:** `width`/`height` with `min-`/`max-`, `margin` (a negative one
 on an inline box takes its room back from the line), `padding`,
@@ -8311,7 +8313,10 @@ that fit beside it, or alone on the line it displaced where none do. Tailwind's 
 clamps, as in a browser, and that form's ellipsis cuts inside a word where
 the line has no room for it, as `text-overflow`'s does — as Chrome, Firefox
 and WebKit cut it, where the newer property keeps whole words; `line-clamp: auto` shows as many lines as the
-box's `height` or `max-height` holds, and `max-lines`, `continue` and
+box's `height` or `max-height` holds, a line counted where the box would
+end were it cut after it: a box around the line ends where its own height
+and limits say, so a line in a box taller than the room is past it, and
+one that overflows a box of no height is not; and `max-lines`, `continue` and
 `block-ellipsis` are read, a string in `line-clamp` or `block-ellipsis`
 drawn in place of the `…`, on one line, which `text-overflow` cuts where
 it is wider than the line; a line of the string alone keeps none of it
@@ -8688,8 +8693,10 @@ algorithm places a neutral. An image, a background image and a gradient in
 a vertical flow are drawn upright, level with the page, as its lines are
 not: the frame turns all it draws a quarter, and they are turned back about
 its origin, an image scaled on a surface of its own first so that the turn
-copies it pixel for pixel. An inline element in a writing mode its
-parent is not in is an inline-block (3.1). The root is laid out by its
+copies it pixel for pixel. A root that is a line-clamp container clamps
+the lines of its frame, and is as wide as the lines it keeps; an `auto`
+clamp fills its block size, which is its width. An inline element in a
+writing mode its parent is not in is an inline-block (3.1). The root is laid out by its
 parent as any box is, in the page's axes. Its width is its block size,
 which is its content's where it has none of its own (7.3.2): a block, a
 float, an inline-block, a table cell and an absolute box alike are as wide

@@ -1945,6 +1945,26 @@ test('a piece of a box that clones its edges fills the column a break ends it in
   );
 });
 
+test('a row rule is drawn in the row gaps between rows of columns, and a column rule stops at them', async () => {
+  // WPT's multicol-gap-decorations-001 and
+  // multicol-column-rule-final-row-overflow: two rows of three columns 60px
+  // tall, a 10px gap between them, with a row rule across it and the
+  // column rules broken at it
+  const doc =
+    '<div style="width:200px;height:130px;column-count:3;' +
+    'column-width:60px;column-height:60px;gap:10px;column-wrap:wrap;' +
+    'column-rule:10px solid #0000ff;row-rule:10px solid #ffd700">' +
+    '<p style="height:60px;margin:0"></p>'.repeat(6) +
+    '</div>';
+  assert.deepStrictEqual(await rulesIn(doc, '#ffd700'), [[0, 60, 200, 10]]);
+  assert.deepStrictEqual(await rulesIn(doc, '#0000ff'), [
+    [60, 0, 10, 60],
+    [60, 70, 10, 60],
+    [130, 0, 10, 60],
+    [130, 70, 10, 60],
+  ]);
+});
+
 test('column-height and column-wrap set the columns in rows, a row gap apart', async () => {
   // Rows of two columns 30px tall, 10px apart: six boxes of 20px that go
   // whole take a column each, three rows, and the last row is as tall as

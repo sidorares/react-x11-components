@@ -4,6 +4,7 @@
 // of rules gives a value by. Drawing them is `paint.ts`'s.
 import type { GapRule } from './css/style.js';
 import { Box, COLUMN_BOXES, GRID_TRACKS } from './layout/boxes.js';
+import type { ColumnRow } from './layout/boxes.js';
 import { ROWS_MIRRORED } from './layout/writing.js';
 import { lanesAreRows } from './layout/css-grid.js';
 
@@ -153,13 +154,16 @@ function gridRuleSegments(
   other: GapRule,
   laneOrigin: number,
   acrossOrigin: number,
+  /** What `normal` visibility is: `all` in a grid, `between` in rows of
+   *  columns. */
+  fallback: 'all' | 'between' = 'all',
 ): RuleSegment[] {
   const out: RuleSegment[] = [];
   const n = across.length;
   if (!n) return out;
   const brk = rule.break;
-  const visibility = shown(rule, 'all');
-  const crossing = shown(other, 'all');
+  const visibility = shown(rule, fallback);
+  const crossing = shown(other, fallback);
   const gaps = lanes.length - 1;
   /** Whether an item covers lane `lane` from track `t` to `t + more`. */
   const covers = (lane: number, t: number, more: number): boolean =>
@@ -526,7 +530,54 @@ function multicolSegments(box: Box): {
 } {
   const rule = box.style.columnRule;
   const visibility = shown(rule, 'between');
-  const rows = COLUMN_BOXES.get(box) ?? [];
+  const all = COLUMN_BOXES.get(box) ?? [];
+  // rows `column-wrap` set, a row gap apart, are a grid of columns: their
+  // column rules and row rules are a grid's (CSS Gap Decorations 1, 3.1.3)
+  const rows: typeof all = [];
+  const wrapped: RuleSegment[] = [];
+  const across: RuleSegment[] = [];
+  for (let i = 0; i < all.length;) {
+    let j = i + 1;
+    while (j < all.length && all[i].wrap && all[j].wrap === all[i].wrap) {
+      j += 1;
+    }
+    if (j - i < 2) {
+      rows.push(all[i]);
+    } else {
+      const grid = gridOfRows(all.slice(i, j));
+      const { lanes, tracks, areas } = grid;
+      // a column rule stops at a row gap under `normal`, which is
+      // `intersection` here, as it does at a spanner: the row gap is no
+      // part of the column gap (WPT's multicol-column-rule-final-row-overflow)
+      const down: GapRule =
+        rule.break === 'normal' ? { ...rule, break: 'intersection' } : rule;
+      wrapped.push(
+        ...gridRuleSegments(
+          lanes,
+          tracks,
+          areas,
+          down,
+          box.style.rowRule,
+          box.contentX,
+          box.contentY,
+          'between',
+        ),
+      );
+      across.push(
+        ...gridRuleSegments(
+          tracks,
+          lanes,
+          areas.map(([c, cs, r, rs]) => [r, rs, c, cs]),
+          box.style.rowRule,
+          rule,
+          box.contentY,
+          box.contentX,
+          'between',
+        ),
+      );
+    }
+    i = j;
+  }
   type Piece = { at: number; from: number; to: number; gap: number };
   const pieces: Piece[] = [];
   let most = 0;
@@ -570,7 +621,29 @@ function multicolSegments(box: Box): {
       of: most,
     });
   }
-  return { columns, rows: [] };
+  return { columns: [...columns, ...wrapped], rows: across };
+}
+
+/** Rows of columns as a grid's tracks, from the content box's corner: the
+ *  columns across, the rows down, and a one-cell area for each column that
+ *  holds something. */
+function gridOfRows(rows: readonly ColumnRow[]): {
+  lanes: [number, number][];
+  tracks: [number, number][];
+  areas: [number, number, number, number][];
+} {
+  const every = (rows[0].every ?? rows[0].lefts).slice().sort((a, b) => a - b);
+  const width = rows[0].width;
+  const lanes = every.map((l): [number, number] => [l, l + width]);
+  const tracks = rows.map((r): [number, number] => [r.top, r.top + r.height]);
+  const areas: [number, number, number, number][] = [];
+  rows.forEach((row, r) => {
+    for (const left of row.lefts) {
+      const c = every.findIndex((l) => Math.abs(l - left) < 1 / 64);
+      if (c >= 0) areas.push([c, 1, r, 1]);
+    }
+  });
+  return { lanes, tracks, areas };
 }
 
 /**

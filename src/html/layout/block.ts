@@ -3618,9 +3618,9 @@ function countLines(
   const fit = clamp.fit;
   if (fit !== null) {
     if (fit.over) return;
-    const below = closingBelow(box, clamp.box);
     for (const line of result.lines) {
-      if (contentTop + line.y + line.height + below > fit.floor) {
+      const bottom = contentTop + line.y + line.height;
+      if (bottomIfCut(box, clamp.box, bottom) > fit.floor) {
         fit.over = true;
         return;
       }
@@ -3667,6 +3667,41 @@ function hideClamped(box: Box): void {
  * margin of the box and of each block around it in the container, the
  * margins collapsed where nothing parts them.
  */
+/**
+ * Where a line-clamp container's content would end, were it clamped after a
+ * line that ends at `bottom` in a block in it: each box around the line
+ * ending where its own height says, its `height` and its limits applied to
+ * what it would hold to the line, and a bottom margin collapsing out of it
+ * only where nothing ends it first (CSS Overflow 4, 5.3.1: an `auto` clamp
+ * point is the last after which the container does not overflow). A line
+ * in a box of a height of its own is past the container where that box is,
+ * however high the line, and one that overflows a box of no height, or of
+ * a `max-height`, is not.
+ */
+function bottomIfCut(box: Box, container: Box, bottom: number): number {
+  let margin = 0;
+  for (let at: Box | null = box; at && at !== container; at = at.parent) {
+    const top = at.y + at.borderTop + at.padTop;
+    const edge = at.padBottom + at.borderBottom;
+    const content = Math.max(0, bottom + (edge ? margin : 0) - top);
+    const natural = content + at.verticalExtra;
+    const set = resolveOrNull(at.style.height, at.percentHeightBase);
+    const outer =
+      set === null
+        ? natural
+        : at.style.boxSizing === 'border-box'
+          ? Math.max(set, at.verticalExtra)
+          : set + at.verticalExtra;
+    const used = clampHeight(at, outer);
+    bottom = at.y + used;
+    // a margin that hangs out of a box goes on hanging where the box ends
+    // with its content, and stops where an edge or a height ends it
+    if (edge || used !== natural) margin = 0;
+    margin = Math.max(margin, at.marginBottom);
+  }
+  return bottom + margin;
+}
+
 function closingBelow(box: Box, container: Box): number {
   let below = 0;
   let margin = 0;
@@ -4250,7 +4285,10 @@ function layoutInternals(
 ): void {
   const outer = ctx.clamp ?? null;
   const lines = box.style.lineClamp;
-  if (lines === null && (outer === null || !establishesBFC(box))) {
+  if (
+    lines === null &&
+    (outer === null || !establishesBFC(box) || framesClamp(outer, box))
+  ) {
     layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
     return;
   }
@@ -4278,7 +4316,13 @@ function layoutClamped(
   y: number,
   outerFloats?: FloatContext,
 ): void {
-  const floor = lines === Infinity ? autoFloor(box, y) : Infinity;
+  const frame = framed.any ? FRAMES.get(box) : undefined;
+  const floor =
+    lines !== Infinity
+      ? Infinity
+      : frame
+        ? framedFloor(box)
+        : autoFloor(box, y);
   if (floor === Infinity) {
     // counted against the number, or where `auto` has no height to fill,
     // against none: the boxes a clamp hid before show again
@@ -4294,6 +4338,29 @@ function layoutClamped(
   ctx.positioned.length = positioned;
   ctx.clamp = { box, left: fit.lines, done: fit.lines === 0, fit: null };
   layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
+}
+
+/** Whether a box is the frame of a line-clamp container in a vertical
+ *  writing mode (`makeFrame`): what the container holds, turned, which
+ *  its clamp counts the lines of, where any other formatting context of
+ *  its own is laid out outside the clamp around it. */
+function framesClamp(clamp: Clamp, box: Box): boolean {
+  return framed.any && FRAMES.get(clamp.box) === box;
+}
+
+/** Where an `auto` clamp's lines have to end by in the frame of a
+ *  container in a vertical writing mode: its block size is its width, and
+ *  the frame is laid out from 0, its lines down what is across the page. */
+function framedFloor(box: Box): number {
+  const set = resolveOrNull(box.style.width, NaN);
+  const outer =
+    set === null
+      ? Infinity
+      : box.style.boxSizing === 'border-box'
+        ? Math.max(set, box.horizontalExtra)
+        : set + box.horizontalExtra;
+  const width = clampWidth(box, outer, NaN);
+  return Number.isFinite(width) ? width - box.horizontalExtra : Infinity;
 }
 
 /** Where an `auto` clamp's lines have to end by, in document coordinates:
@@ -4663,7 +4730,24 @@ function framedWidth(box: Box, frame: Box, ctx: LayoutContext): number {
   const queued = ctx.positioned.length;
   ctx.clamp = null;
   try {
-    layFrame(frame, ctx, inline, NaN);
+    // and its own clamp, which the frame's block size, the root's width,
+    // is cut to (`layoutClamped`)
+    const lines = box.style.lineClamp;
+    const floor = lines === Infinity ? framedFloor(box) : Infinity;
+    if (floor === Infinity) {
+      if (lines !== null) {
+        ctx.clamp = { box, left: lines, done: false, fit: null };
+      }
+      layFrame(frame, ctx, inline, NaN);
+    } else {
+      const fit = { floor, lines: 0, over: false };
+      ctx.clamp = { box, left: Infinity, done: false, fit };
+      layFrame(frame, ctx, inline, NaN);
+      if (fit.over) {
+        ctx.clamp = { box, left: fit.lines, done: fit.lines === 0, fit: null };
+        layFrame(frame, ctx, inline, NaN);
+      }
+    }
   } finally {
     ctx.clamp = outer;
   }
