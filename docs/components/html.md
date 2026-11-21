@@ -8336,7 +8336,10 @@ off a line of its own where Chrome keeps it off — see
 formatting context, counted through the blocks in it, and is as tall as
 they are; what comes after them is invisible and takes no room, and the
 last line ends in an ellipsis where more follows, placed after the words
-that fit beside it, or alone on the line it displaced where none do. Tailwind's `line-clamp-2` writes it as
+that fit beside it, or alone on the line it displaced where none do; the
+ellipsis is an item of its own, rounded up to a 64th of a pixel as the
+line's text is, and words and an ellipsis that fill the line exactly stay
+on it. Tailwind's `line-clamp-2` writes it as
 `-webkit-line-clamp` on a vertical `-webkit-box`, the one place that form
 clamps, as in a browser, and that form's ellipsis cuts inside a word where
 the line has no room for it, as `text-overflow`'s does — as Chrome, Firefox
@@ -8446,8 +8449,9 @@ part of the document's: a copy, a caret and a selection skip them. HTML's
 `dir` isolates its element, `dir="auto"` and `<bdi>` take their first
 strong letter's direction, and `<bdo>` overrides. A block of
 `unicode-bidi: plaintext` takes its paragraph's direction from its first
-strong letter, to order and align its lines by; not yet each paragraph a
-forced break starts, which takes the first's. `vertical-align` raises and lowers text as well as
+strong letter, to order and align its lines by, and so does each paragraph
+a forced break starts, laid out under the one before it; a paragraph with
+anything but text on its lines still takes the first's. `vertical-align` raises and lowers text as well as
 images and inline blocks: the UA sheet's `<sup>` and `<sub>`, a length, a
 percentage of the line height, `text-top`, `text-bottom`, `middle`, and
 `top` and `bottom` against the line box, whose height each raised box adds

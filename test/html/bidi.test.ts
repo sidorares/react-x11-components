@@ -89,6 +89,32 @@ metric(
   },
 );
 
+metric(
+  'unicode-bidi: plaintext gives each paragraph a forced break starts its own direction',
+  async () => {
+    // UAX #9, P1: a forced break ends a paragraph, and each takes the
+    // direction of its own first strong letter (WPT's
+    // text-wrap-balance-bidi-001)
+    const { node } = await render(
+      '<style>body{margin:0} div{width:300px;unicode-bidi:plaintext;' +
+        'white-space:pre-line}</style>' +
+        '<div id="a">ab\n\u05d0\u05d1</div>' +
+        '<div id="b">\u05d0\u05d1\nab<br>cd</div>',
+    );
+    const el = view(node);
+    const a = linesOf(el, 'a');
+    assert.strictEqual(a.length, 2, 'two lines');
+    assert.ok(extentOf(a[0].texts[0])[0] < 1, 'Latin from the left');
+    assert.ok(extentOf(a[1].texts[0])[1] > 299, 'then Hebrew from the right');
+    assert.ok(a[1].y > a[0].y, 'under it');
+    const b = linesOf(el, 'b');
+    assert.strictEqual(b.length, 3, 'three lines');
+    assert.ok(extentOf(b[0].texts[0])[1] > 299, 'Hebrew from the right');
+    assert.ok(extentOf(b[1].texts[0])[0] < 1, 'Latin from the left');
+    assert.ok(extentOf(b[2].texts[0])[0] < 1, 'and after a <br>');
+  },
+);
+
 metric('a right-to-left block starts at the right', async () => {
   // CSS 2.1 10.3.3: the margin that takes the slack is the one at the end,
   // the left one in a right-to-left containing block; 16.1: the indent is
