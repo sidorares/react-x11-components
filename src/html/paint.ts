@@ -7395,9 +7395,21 @@ function clipEdge(box: Box, options: ClipSpace): ClipEdge {
 function rectClipEdge(box: Box, options: ClipSpace): ClipEdge {
   const style = box.style;
   const painted = contained(box, CONTAIN_PAINT);
+  // A scroll container's clip is its padding box, which a content box, or a
+  // length that moves the edge in, cuts further: what lies past the padding
+  // box is scrolled to, never shown beside it, so `border-box` and a
+  // length out are nothing there (WPT's overflow-clip-margin-018 to -022)
+  const scroller = scrolls(style);
+  const narrows =
+    scroller &&
+    style.overflowClipBox !== 'border-box' &&
+    (style.overflowClipBox === 'content-box' || style.overflowClipMargin < 0);
   if (
-    scrolls(style) ||
-    (!painted && style.overflowX !== 'clip' && style.overflowY !== 'clip')
+    (scroller && !narrows) ||
+    (!scroller &&
+      !painted &&
+      style.overflowX !== 'clip' &&
+      style.overflowY !== 'clip')
   ) {
     return {
       rect: overflowClip(box, options),
@@ -7438,8 +7450,19 @@ function rectClipEdge(box: Box, options: ClipSpace): ClipEdge {
         l,
       )
     : null;
-  const openX = !painted && style.overflowX === 'visible';
-  const openY = !painted && style.overflowY === 'visible';
+  if (scroller) {
+    // no further out than the padding box, where the margin moves the
+    // content box's edge past it
+    const pad = overflowClip(box, options);
+    const right = Math.min(x + w, pad.x + pad.w);
+    const bottom = Math.min(y + h, pad.y + pad.h);
+    x = Math.max(x, pad.x);
+    y = Math.max(y, pad.y);
+    w = Math.max(0, right - x);
+    h = Math.max(0, bottom - y);
+  }
+  const openX = !painted && !scroller && style.overflowX === 'visible';
+  const openY = !painted && !scroller && style.overflowY === 'visible';
   if (openX || openY) {
     // as far as the damage reaches, or the coordinates a clip can carry
     const damage = options.damage;
