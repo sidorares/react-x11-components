@@ -6745,7 +6745,9 @@ over them. A right-to-left container's horizontal rules start at their right.
 The rows of columns `column-wrap` makes are a grid of columns for its rules:
 a row rule is drawn in each row gap between them, across the columns, and a
 column rule stops at a row gap under `normal`, which is `intersection` there
-as at a spanner, its ends there junctions where the row rule is drawn. A
+as at a spanner, its ends there junctions where the row rule is drawn. In a
+right-to-left container the gaps a rule's lists go by are counted from its
+right. A
 row of columns balanced shorter than its row, before a spanner, has rules as
 tall as its columns, and under `column-rule-break: none` a gap's rule runs on
 through the spanner and every row.
