@@ -8462,7 +8462,10 @@ of 20px ones makes a 60px line, with its text in the middle. A paragraph
 holding either is laid out a line at a time. A box whose own line height is
 less keeps the paragraph's multiple of its font's natural one, which in a
 font with taller lines than the paragraph's — a `<code>` in Menlo beside
-Helvetica — is a little more than CSS gives it. Underlines an element outside a raised text draws through it stay on
+Helvetica — is a little more than CSS gives it. A line's half-leading is
+floored above its text, as Blink floors it, on every line of a paragraph:
+one whose lines in other fonts would move by different amounts is laid out
+a line at a time rather than keep the text engine's baselines. Underlines an element outside a raised text draws through it stay on
 the line's baseline. White space collapses across element boundaries as CSS
 2.1 16.6.1 has it — none at the start or the end of a line, one between two
 words whatever elements they are in — and text at `font-size: 0` takes no
