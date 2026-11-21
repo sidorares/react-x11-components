@@ -7,7 +7,11 @@ import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { parseColor } from '../../src/html/css/values.js';
 import { COLUMN_PIECES, columned } from '../../src/html/layout/boxes.js';
-import { REPEATED, stripReach } from '../../src/html/layout/multicol.js';
+import {
+  REPEATED,
+  gridRowsBroken,
+  stripReach,
+} from '../../src/html/layout/multicol.js';
 import { resolvedInsets } from '../../src/html/layout/block.js';
 import {
   FONTS,
@@ -23,6 +27,11 @@ import {
   view,
 } from './harness.js';
 import type { PaintOp } from './harness.js';
+import {
+  GRID_ROWS_DOCUMENT,
+  GRID_ROWS_KNOWN,
+  GRID_ROWS_RECTS,
+} from './grid-rows.js';
 
 afterEach(cleanup);
 
@@ -2640,6 +2649,62 @@ test('an inline box that starts with a box out of the flow after a forced break 
   );
   const a = boxOf(view(node), 'a');
   assert.ok(a.y >= 32, `on the second line, at ${a.y}`);
+});
+
+test('a grid row the columns end inside is broken an item at a time, where Chromium breaks it', async () => {
+  // every rectangle Chromium's, from `scripts/conformance/grid-rows.ts`:
+  // each item goes on at the head of the next column from its own break,
+  // the row as tall there as its longest item, a stretched item as tall as
+  // the row and an aligned one as what it holds, and the rows after it
+  // under that
+  const { node } = await render(GRID_ROWS_DOCUMENT, 800);
+  const el = view(node);
+  const wrong: string[] = [];
+  for (const [id, want] of Object.entries(GRID_ROWS_RECTS)) {
+    // the cases the script knows differ, an item aligned in its row
+    const at = id.replace(/[gi]\d*$/, '');
+    if (GRID_ROWS_KNOWN.includes(at)) continue;
+    const box = boxOf(el, id);
+    const root = boxOf(el, at);
+    const pieces = COLUMN_PIECES.get(box as never) ?? [box];
+    const got = pieces
+      .filter((p) => p.width > 0 && p.height > 0)
+      .map((p) => [p.x - root.x, p.y - root.y, p.width, p.height]);
+    const same =
+      got.length === want.length &&
+      got.every((r, k) => r.every((v, j) => Math.abs(v - want[k][j]) < 0.05));
+    if (!same) {
+      wrong.push(
+        `${id}: ${JSON.stringify(got)}, where Chromium has ${JSON.stringify(want)}`,
+      );
+    }
+  }
+  assert.deepStrictEqual(wrong, []);
+});
+
+test('a grid row that fits whole in its column is broken no item at a time', async () => {
+  // what a row its column holds whole does is what it did: no item of it
+  // is a flow of its own (`gridRowsBroken` counts the rows that are)
+  const grid = (h: number) =>
+    '<div style="display:grid;grid-template-columns:20px 20px;line-height:0">' +
+    `<div><i style="display:inline-block;width:20px;height:${h}px"></i></div>` +
+    '<div><i style="display:inline-block;width:20px;height:30px"></i>' +
+    '<i style="display:inline-block;width:20px;height:30px"></i></div></div>';
+  const before = gridRowsBroken();
+  await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:2;column-gap:0;column-fill:auto;width:100px;' +
+      `height:100px">${grid(40)}<div style="height:40px"></div>${grid(20)}</div>`,
+    300,
+  );
+  assert.strictEqual(gridRowsBroken(), before, 'none, where each row fits');
+  await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:2;column-gap:0;column-fill:auto;width:100px;' +
+      `height:100px"><div style="height:50px"></div>${grid(40)}</div>`,
+    300,
+  );
+  assert.ok(gridRowsBroken() > before, 'one, where the column ends inside');
 });
 
 metric(
