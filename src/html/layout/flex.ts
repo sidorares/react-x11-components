@@ -2744,7 +2744,11 @@ function autoMinimums(
       holdAt(node, laid, row, least, hold);
     } else {
       // its height, or where it has one of its own and its content comes to
-      // less, its content's: the lesser of the two (4.5)
+      // less, its content's: the lesser of the two (4.5), which one it was
+      // not shrunk under needs no measure of
+      const tall =
+        box.kind === 'replaced' && style.height === AUTO ? Infinity : height;
+      if (!ofAuto && laid.main >= tall - 0.01) continue;
       let content = Number.isNaN(read)
         ? columnContent(box, ctx, laid, width, containingWidth)
         : read;
@@ -2752,8 +2756,6 @@ function autoMinimums(
       if (box.kind !== 'replaced') {
         content = transferredHeight(box, content, containingWidth);
       }
-      const tall =
-        box.kind === 'replaced' && style.height === AUTO ? Infinity : height;
       least = worked(Math.min(tall, content));
       const extra = style.boxSizing === 'border-box' ? 0 : box.verticalExtra;
       if (style.maxHeight !== 'none') {
