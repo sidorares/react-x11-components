@@ -2804,6 +2804,89 @@ function widthRange(
   return null;
 }
 
+/** The operator read from the other side of it. */
+const FLIPPED: Record<string, string> = {
+  '<': '>',
+  '<=': '>=',
+  '>': '<',
+  '>=': '<=',
+  '=': '=',
+};
+
+/**
+ * A range in Media Queries 4's syntax of a feature that is no size of the
+ * viewport (`widthRange`): an aspect ratio, a resolution, or one a desktop
+ * screen answers with a number, as the bounds it sets or its answer. Null
+ * where a value is none of the feature's, and undefined for a term that is no
+ * such range. A strict bound is one `RATIO_EDGE` inside the value.
+ */
+function featureRange(
+  term: string,
+): MediaCondition | boolean | null | undefined {
+  const inner = /^\(\s*(.*?)\s*\)$/s.exec(term)?.[1];
+  if (!inner || !/[<>=]/.test(inner)) return undefined;
+  const parts = inner.split(/\s*(<=|>=|<|>|=)\s*/);
+  if (parts.length !== 3 && parts.length !== 5) return undefined;
+  const isFeature = (part: string) =>
+    RANGED_FEATURES.test(part) || RANGED_NUMBERS.has(part.toLowerCase());
+  const at = parts.length === 3 && isFeature(parts[0]) ? 0 : 2;
+  if (!isFeature(parts[at])) return undefined;
+  const name = parts[at].toLowerCase();
+  // each `name op value`, the operator read from the name's side
+  const tests: [string, string][] = [];
+  if (at === 2) tests.push([FLIPPED[parts[1]], parts[0]]);
+  if (at === 0) tests.push([parts[1], parts[2]]);
+  if (parts.length === 5) {
+    // the two the same way round, and neither an `=`
+    if (parts[1][0] !== parts[3][0] || parts[1] === '=') return null;
+    tests.push([parts[3], parts[4]]);
+  }
+  const numeric = RANGED_NUMBERS.get(name);
+  if (numeric !== undefined) {
+    let holds = true;
+    for (const [op, value] of tests) {
+      if (!/^[+-]?\d+$/.test(value)) return null;
+      const n = Number(value);
+      holds &&=
+        op === '='
+          ? numeric === n
+          : op[0] === '<'
+            ? numeric < n || (op === '<=' && numeric === n)
+            : numeric > n || (op === '>=' && numeric === n);
+    }
+    return holds;
+  }
+  const ratio = name.endsWith('aspect-ratio');
+  const [lo, hi]: [Bound, Bound] = ratio
+    ? ['minAspect', 'maxAspect']
+    : ['minResolution', 'maxResolution'];
+  let out: MediaCondition = {};
+  for (const [op, value] of tests) {
+    const n = ratio ? ratioOf(value) : resolutionOf(value, false);
+    if (n === null) return null;
+    const bound: MediaCondition = {};
+    if (op === '=' || op[0] === '>') {
+      bound[lo] = op === '>' ? n + RATIO_EDGE : n;
+    }
+    if (op === '=' || op[0] === '<') {
+      bound[hi] = op === '<' ? n - RATIO_EDGE : n;
+    }
+    const both = meet(out, bound);
+    if (!both) return false;
+    out = both;
+  }
+  return out;
+}
+
+const RANGED_FEATURES = /^(?:(?:device-)?aspect-ratio|resolution)$/i;
+
+/** What a desktop screen answers the numeric features with. */
+const RANGED_NUMBERS = new Map([
+  ['color', 8],
+  ['monochrome', 0],
+  ['color-index', 0],
+]);
+
 /** How deep rules may nest before the ones further in are dropped: far
  *  past anything written by hand or by a framework, and short of what a
  *  generated sheet could make of the stack. */
@@ -4032,6 +4115,8 @@ function featureTest(term: string): MediaCondition | boolean | null {
     if (heights.max !== undefined) out.maxHeight = heights.max;
     return out;
   }
+  const range = featureRange(term);
+  if (range !== undefined) return range;
   const feature = mediaFeature(term);
   if (!feature) {
     // a feature in the boolean context, `(hover)`: true where its value is
