@@ -1610,9 +1610,11 @@ function applyItem(
         containingWidth !== MIN_CONTENT_PROBE &&
         replacedContent(box, null) === null
       ) {
-        // with a ratio alone, as wide as the column
+        // with a ratio alone, as wide as the column, within what its limits
+        // down make of it
         const edges = box.marginLeft + box.marginRight + box.horizontalExtra;
-        return Math.max(0, containingWidth - edges);
+        const room = Math.max(0, containingWidth - edges);
+        return replacedContent(box, null, room)! - box.horizontalExtra;
       }
       ctx.layoutSubtree(box, Infinity);
       return Math.max(0, box.width - box.horizontalExtra);
