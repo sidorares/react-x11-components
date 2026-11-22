@@ -8422,7 +8422,7 @@ export function intrinsicWidth(
   // under size containment, as though it held nothing: the size
   // `contain-intrinsic-size` gives it, or none (CSS Containment 2, 3.2)
   if (contained(box, CONTAIN_WIDTH)) {
-    return box.style.containIntrinsicWidth ?? 0;
+    return box.style.containIntrinsicWidth ?? columnsWide(box, 0);
   }
   // the root of an orthogonal flow is as wide as its frame came to down
   // its block axis, at its least and its most (CSS Writing Modes 4, 7.3.2),
@@ -8681,20 +8681,25 @@ export function intrinsicWidth(
     }
     widest = Math.max(widest, lined);
   }
-  // A multicol container is as wide as its columns side by side, each as
-  // wide as its content or as `column-width` where that is wider, and the
-  // gaps between them (as Blink measures one,
-  // `NGColumnLayoutAlgorithm::ComputeMinMaxSizes`)
+  // and no narrower than a box that spans them
   if (box.style.columns && box.kind === 'block') {
-    const count = box.style.columnCount ?? 1;
-    const gap = box.style.columnGapNormal
-      ? box.style.fontSize
-      : gapOf(box.style.columnGap, NaN);
-    widest = Math.max(widest, box.style.columnWidth ?? 0);
-    // and no narrower than a box that spans them
-    widest = Math.max(widest * count + gap * (count - 1), spanned);
+    return Math.max(columnsWide(box, widest), spanned);
   }
   return widest;
+}
+
+/** How wide a multicol container is whose content is `widest`: as its columns
+ *  side by side, each as wide as that or as `column-width` where that is
+ *  wider, and the gaps between them (as Blink measures one,
+ *  `NGColumnLayoutAlgorithm::ComputeMinMaxSizes`). Any other box's content. */
+function columnsWide(box: Box, widest: number): number {
+  const style = box.style;
+  if (!style.columns || box.kind !== 'block') return widest;
+  const count = style.columnCount ?? 1;
+  const gap = style.columnGapNormal
+    ? style.fontSize
+    : gapOf(style.columnGap, NaN);
+  return Math.max(widest, style.columnWidth ?? 0) * count + gap * (count - 1);
 }
 
 /**

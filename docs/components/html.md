@@ -6243,7 +6243,9 @@ columns in its frame, along the inline axis down the page and as tall as its
 block size, and what is positioned in them is cut where they are. A box positioned in a block a spanner breaks is laid out
 against all of the block, its rows one after another down the strip, and
 cut into the columns of each row it reaches. Its static position is where
-the row it is in has the block, so one after a spanner starts under it.
+the row it is in has the block, so one after a spanner starts under it. Under
+size containment it is as wide as its `column-width`s and the gaps between
+them.
 
 `column-height` and `column-wrap` (CSS Multi-column 2) set the columns in
 rows, a `row-gap` apart, each row as many columns as there are and as tall
