@@ -395,6 +395,29 @@ metric(
   },
 );
 
+metric(
+  'a flex item a layout keeps and then lays out again takes its offsets off what it holds once',
+  async () => {
+    // kept as the last layout had it, its content is measured where it is
+    // squeezed, and what it holds is kept in that
+    const { node } = await render(
+      '<style>body{margin:0}#c{display:flex;flex-direction:column}' +
+        '#i{display:flex;flex-direction:column;height:80px}' +
+        '#r{position:relative;top:7px;left:3px;height:20px}</style>' +
+        '<div id="c" style="height:300px"><div id="i"><div><div id="r"></div>' +
+        '</div></div><div style="flex:none;height:100px"></div></div>',
+      300,
+    );
+    const el = view(node);
+    const at = () => [boxOf(el, 'r').x, boxOf(el, 'r').y];
+    assert.deepStrictEqual(at(), [3, 7]);
+    el.touchDocument([setAttr(byId(el, 'c'), 'style', 'height:120px')]);
+    await act();
+    assert.strictEqual(boxOf(el, 'i').height, 20);
+    assert.deepStrictEqual(at(), [3, 7]);
+  },
+);
+
 test('getComputedStyle of what nothing draws works its style out once, and again once a change can have moved it', async () => {
   // Apple's product pages read the styles of their closed dialogs a
   // property at a time, and each read styled the chain down from the
