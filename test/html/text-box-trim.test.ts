@@ -115,6 +115,31 @@ metric(
 );
 
 metric(
+  'a vertical block is trimmed at its block-start, across the page',
+  async () => {
+    // its lines are its frame's, which trims them as a horizontal block
+    // does, and the root is as wide as what is left (WPT's
+    // text-box-trim-half-leading-block-box-002)
+    const { node } = await render(
+      '<style>body{margin:0} div{font:20px/3 monospace;writing-mode:vertical-lr}</style>' +
+        '<div id="plain">x</div>' +
+        '<div id="start" style="text-box-trim:trim-start">x</div>' +
+        '<div id="both" style="text-box-trim:trim-both">x</div>',
+    );
+    const el = view(node);
+    await act();
+    const width = (id: string) =>
+      el.elementRect(findById(el.document, id)!)!.width;
+    assert.ok(Math.abs(width('plain') - 60) < 0.5, `${width('plain')}`);
+    assert.ok(width('start') < 55, `trimmed at its start: ${width('start')}`);
+    assert.ok(
+      width('both') < width('start') - 5,
+      `and at its end: ${width('both')} under ${width('start')}`,
+    );
+  },
+);
+
+metric(
   "a list item's marker reaches no higher than the trimmed line it is on",
   async () => {
     // an outside marker on the first line of a nested list pushed that
