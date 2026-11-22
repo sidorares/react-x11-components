@@ -1618,6 +1618,46 @@ test('a script focusing what is fixed to the viewport scrolls the pane for none 
   }
 });
 
+test("what overflows a box of layout containment is no one's to scroll", async () => {
+  // it is ink (CSS Containment 2, 3.3); every size is Chromium's
+  const box = (id: string, style: string, inner = '<i></i>') =>
+    `<div id="${id}" class="s"><div class="k" style="${style}">${inner}</div></div>`;
+  const { el: node } = await renderScrolled(
+    '<style>body{margin:0}.s{overflow:auto;width:100px;height:100px}' +
+      'i{display:block;width:200px;height:150px}.k{width:50px;height:50px}' +
+      '</style>' +
+      box('a', '') +
+      box('b', 'contain:layout') +
+      box('c', 'contain:layout;width:150px;height:120px') +
+      box('d', 'contain:size') +
+      box('e', 'contain:layout', '<i style="float:left"></i>') +
+      box(
+        'f',
+        'contain:layout;position:relative',
+        '<i style="position:absolute"></i>',
+      ) +
+      // and the document's own
+      '<div class="k" style="contain:layout;position:relative">' +
+      '<i style="height:900px"></i><i style="position:absolute;top:900px">' +
+      '</i></div>',
+    300,
+  );
+  const size = (id: string) => {
+    const state = node.scrollStateOf(el(node, id))!;
+    return [state.width, state.height];
+  };
+  assert.deepEqual(size('a'), [200, 150]);
+  assert.deepEqual(size('b'), [100, 100]);
+  assert.deepEqual(size('c'), [150, 120]);
+  assert.deepEqual(size('d'), [200, 150]);
+  assert.deepEqual(size('e'), [100, 100]);
+  assert.deepEqual(size('f'), [100, 100]);
+  assert.equal(
+    (node as unknown as { abs: { height: number } }).abs.height,
+    650,
+  );
+});
+
 test('a fixed box in a fixed box anchored across a scroll follows its own anchor, and is not moved with the box it is in as well', async () => {
   // WPT css-anchor-position/anchor-scroll-fixedpos-nested-001 and -002: a
   // fixed box is the viewport's, so the scroll that moves the box it is in
@@ -1660,4 +1700,49 @@ test('a fixed box in a fixed box anchored across a scroll follows its own anchor
     );
     cleanup();
   }
+});
+
+test("a grid's tracks are in what it scrolls, with its end padding past them, whatever is in them", async () => {
+  // CSS Overflow 3, 2.2: the areas its content is aligned in. Every size is
+  // Chromium's, from a grid with nothing in it on
+  const grid = (id: string, style: string, item = '') =>
+    `<div id="${id}" style="${style}">${item}</div>`;
+  const item = '<i></i>';
+  const { el: node } = await renderScrolled(
+    '<style>body{margin:0}div{display:grid;overflow:auto;width:100px;' +
+      'height:100px}i{width:20px;height:20px}</style>' +
+      grid('a', 'grid:150px/150px') +
+      grid('b', 'grid:150px/150px', item) +
+      grid('c', 'grid:150px/150px;direction:rtl') +
+      grid(
+        'd',
+        'grid:100px/100px;box-sizing:border-box;padding:0 50px 50px 0',
+      ) +
+      // past the end alone, where they are centred or ended
+      grid('e', 'grid:150px/150px;place-content:center', item) +
+      grid('f', 'grid:150px/150px;place-content:end', item) +
+      // in a frame of a writing mode, and the tracks put back across
+      grid('g', 'grid:150px/120px;writing-mode:vertical-rl') +
+      grid('h', 'grid:150px/120px;writing-mode:vertical-lr;padding:5px') +
+      // and not what one that does not scroll lets show
+      '<div id="i" style="display:block"><div style="overflow:visible;' +
+      'grid:150px/150px;width:50px;height:50px"></div></div>',
+    600,
+  );
+  const size = (id: string) => {
+    const state = node.scrollStateOf(el(node, id))!;
+    return [state.width, state.height];
+  };
+  assert.deepEqual(size('a'), [150, 150]);
+  assert.deepEqual(size('b'), [150, 150]);
+  assert.deepEqual(size('c'), [150, 150]);
+  assert.deepEqual(size('d'), [150, 150]);
+  assert.deepEqual(size('e'), [125, 125]);
+  assert.deepEqual(size('f'), [100, 100]);
+  assert.deepEqual(size('g'), [150, 120]);
+  assert.deepEqual(size('h'), [160, 130]);
+  assert.deepEqual(size('i'), [100, 100]);
+  // and they are where they were once it has been scrolled
+  node.scrollElementTo(el(node, 'b'), { x: 30, y: 20 });
+  assert.deepEqual(size('b'), [150, 150]);
 });

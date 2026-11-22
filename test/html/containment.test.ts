@@ -23,6 +23,38 @@ import type { PaintOp, ReplacedBox } from './harness.js';
 
 afterEach(cleanup);
 
+test('a table caption takes every containment', async () => {
+  // a block container, whatever is said of a table's inner parts (CSS
+  // Containment 2, 3), and dropped here as if it were one of them; every
+  // size and place is Chromium's
+  const { node } = await render(
+    '<style>body{margin:0}table{border-spacing:0}td{padding:0;width:60px;' +
+      'height:20px}i{display:block;width:40px;height:30px}</style>' +
+      '<table><caption id="a" style="contain:size"><i></i></caption>' +
+      '<tr><td id="b"></td></tr></table>' +
+      '<table><caption id="c" style="contain:size;' +
+      'contain-intrinsic-size:80px 15px"><i></i></caption>' +
+      '<tr><td id="d"></td></tr></table>' +
+      '<table><caption id="e" style="contain:inline-size"><i></i></caption>' +
+      '<tr><td></td></tr></table>' +
+      '<table><caption style="contain:layout">' +
+      '<i id="f" style="position:absolute;right:0;top:0"></i>' +
+      '<i></i></caption><tr><td></td></tr></table>',
+    400,
+  );
+  const el = view(node);
+  const of = (id: string) => {
+    const { x, y, width, height } = boxOf(el, id);
+    return [x, y, width, height];
+  };
+  assert.deepStrictEqual(of('a'), [0, 0, 60, 0]);
+  assert.deepStrictEqual(of('b'), [0, 0, 60, 20]);
+  assert.deepStrictEqual(of('c'), [0, 20, 80, 15]);
+  assert.deepStrictEqual(of('d'), [0, 35, 80, 20]);
+  assert.deepStrictEqual(of('e'), [0, 55, 60, 30]);
+  assert.deepStrictEqual(of('f'), [20, 105, 40, 30]);
+});
+
 metric(
   'a positioned box a clipping box holds makes the document no taller',
   async () => {
@@ -396,6 +428,42 @@ test('overflow: clip cuts what overflows, and is no scroll container', async () 
   assert.deepStrictEqual(overflow('e'), ['clip', 'visible']);
 });
 
+metric(
+  'paint containment cuts the absolute boxes it holds, as it is what they are placed in',
+  async () => {
+    // a box with layout or paint containment holds the absolute boxes in it
+    // (CSS Containment 2, 3.3 and 3.5), which the layout placed them by and
+    // the paint did not: it drew each past the box, as one placed by
+    // something outside the clip is (WPT's contain-paint-clip-001,
+    // contain-paint-014)
+    const { node, result } = await render(
+      '<style>body{margin:0;background:#ffffff}div{width:50px;height:50px;' +
+        'margin:0 50px 50px}i{position:absolute;left:-20px;top:0;width:60px;' +
+        'height:80px;background:#ff0000}</style>' +
+        '<div style="contain:paint"><i></i></div>' +
+        '<div style="contain:layout;overflow:hidden"><i></i></div>' +
+        // and through a box it positions, a layer of the box's context
+        '<div style="contain:paint"><p style="margin:0"><i style="z-index:1">' +
+        '</i></p></div>',
+    );
+    const { abs } = view(node) as unknown as { abs: { x: number; y: number } };
+    for (const top of [0, 100, 200]) {
+      const drawn = async (x: number, y: number) =>
+        (
+          await pixelsIn(result.ctx, {
+            x: abs.x + x,
+            y: abs.y + top + y,
+            width: 1,
+            height: 1,
+          })
+        )[1] === 0;
+      assert.ok(await drawn(60, 25), `inside, at ${top}`);
+      assert.ok(!(await drawn(40, 25)), `past the side, at ${top}`);
+      assert.ok(!(await drawn(60, 65)), `past the foot, at ${top}`);
+    }
+  },
+);
+
 test('contain: size lays a box out as though it held nothing', async () => {
   // `contain` was dropped whole (CSS Containment 2): a size-contained box
   // is its `contain-intrinsic-size`, or nothing, whatever it holds
@@ -685,16 +753,16 @@ test('what a style-contained element resets, its subtree does not count on', asy
       )
     ).includes('[3]<1><2>[3]'),
   );
-  // and with one, which it reaches only what it holds for: what a build of
-  // the element apart, which sees no `n`, has to come to as well. What is
-  // beside it reads 10 in Chromium alone, and 3 in Firefox and WebKit
+  // and with one, which its reset nests in: what a build of the element
+  // apart, which sees no `n`, has to come to as well. What is beside it
+  // reads 3 in Firefox and WebKit, and in Chromium from 160
   assert.ok(
     (
       await text(
         '<div style="counter-reset:n 10"><div class="c r"><span class="i">' +
           '</span><span class="i"></span></div><span class="s"></span></div>',
       )
-    ).includes('<1><2>[10]'),
+    ).includes('<1><2>[3]'),
   );
   // a child's reset is in its subtree, as its later siblings are: all three
   assert.ok(
@@ -794,5 +862,31 @@ metric(
       'inside the margin',
     );
     assert.deepStrictEqual(await at(115, 115), [255, 255, 255], 'past it');
+  },
+);
+
+metric(
+  'a size-contained select is as large as one with no options',
+  async () => {
+    const options = '<option>One with a long label to it</option>';
+    const select = (id: string, style: string, held = options) =>
+      `<p><select id="${id}" style="${style}">${held}</select></p>`;
+    const { node } = await render(
+      select('a', '', '') +
+        select('b', 'contain:size') +
+        select('c', 'background:#ffffff;border:1px solid', '') +
+        select('d', 'background:#ffffff;border:1px solid;contain:size') +
+        select('e', '') +
+        select('f', 'contain:size;contain-intrinsic-size:70px 9px;border:0'),
+    );
+    const el = view(node);
+    const size = (id: string) => {
+      const { width, height } = boxOf(el, id);
+      return [width, height];
+    };
+    assert.deepStrictEqual(size('b'), size('a'));
+    assert.deepStrictEqual(size('d'), size('c'));
+    assert.ok(size('e')[0] > size('a')[0]);
+    assert.ok(size('f')[0] >= 70 && size('f')[0] < size('e')[0]);
   },
 );

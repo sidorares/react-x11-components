@@ -322,6 +322,13 @@ function selfAgainst(
   return startsHigh(item, x) !== startsHigh(grid, x);
 }
 
+/** Whether a position that runs an item past its area's start keeps it at
+ *  the start instead: a `safe` one, and a last baseline's fallback, `safe
+ *  end` (CSS Box Alignment 3, 4.2 and 4.4). */
+export function keptIn(text: string): boolean {
+  return text.startsWith('safe ') || text === 'last baseline';
+}
+
 /** An alignment's start for its end and its end for its start. */
 function otherEnd<T extends string>(keyword: T): T {
   return (
@@ -529,6 +536,7 @@ export function layoutGrid(
         colGap,
         inlineAligned(style.justifyContent, style.justifyContentText, rtl),
         contentWidth,
+        style.justifyContentText.startsWith('safe '),
       ),
     };
   };
@@ -689,7 +697,13 @@ export function layoutGrid(
       style.minHeight === AUTO;
     const room =
       own && !grows ? definite : Math.max(own ? definite : least, height);
-    const tops = starts(heights, rowGap, style.alignContent, room);
+    const tops = starts(
+      heights,
+      rowGap,
+      style.alignContent,
+      room,
+      style.alignContentText.startsWith('safe '),
+    );
     return { heights, tops, height };
   };
   const placeSizedRows = () => {
@@ -811,16 +825,11 @@ export function layoutGrid(
     }
     let align =
       child.style.alignSelf === AUTO ? style.alignItems : child.style.alignSelf;
-    if (
-      selfAgainst(
-        child.style.alignSelf === AUTO
-          ? style.alignItemsText
-          : child.style.alignSelfText,
-        child.style,
-        style,
-        false,
-      )
-    ) {
+    const alignText =
+      child.style.alignSelf === AUTO
+        ? style.alignItemsText
+        : child.style.alignSelfText;
+    if (selfAgainst(alignText, child.style, style, false)) {
       align = otherEnd(align);
     }
     const outerWidth = child.width + child.marginLeft + child.marginRight;
@@ -832,15 +841,23 @@ export function layoutGrid(
     const [left, right] = autoMargins(child, 'x');
     const [atStart, atEnd] = rtl ? [right, left] : [left, right];
     const [top, bottom] = autoMargins(child, 'y');
+    // An item past its area is at its start where its margins are `auto` (CSS
+    // Grid 1, 10.2) or its alignment is `safe`, and runs past both sides of
+    // it, or its start, where a position says so and no more (CSS Box
+    // Alignment 3, 4.4)
     let dx = 0;
+    let safeX = true;
     if (subgrid?.cols) {
       // a subgrid is stretched across its area, whatever aligns it
     } else if (atStart || atEnd) {
       dx = (area - outerWidth) * (atStart && atEnd ? 0.5 : atStart ? 1 : 0);
     } else if (item.shimX !== undefined) dx = item.shimX;
-    else if (justify === 'center') dx = (area - outerWidth) / 2;
-    else if (justify === 'flex-end') dx = area - outerWidth;
+    else if (justify === 'center' || justify === 'flex-end') {
+      dx = (area - outerWidth) / (justify === 'center' ? 2 : 1);
+      safeX = keptIn(justifyText);
+    }
     let dy = 0;
+    let safeY = true;
     if (subgrid?.rows) {
       // A subgrid is its area's height whatever its own height and
       // alignment say (CSS Grid 2, 9), and laid out again in it, its rows
@@ -860,11 +877,14 @@ export function layoutGrid(
       child.height = height;
     } else if (top || bottom) {
       dy = (tall - outerHeight) * (top && bottom ? 0.5 : top ? 1 : 0);
-    } else if (align === 'center') dy = (tall - outerHeight) / 2;
-    else if (align === 'flex-end') {
+    } else if (align === 'center') {
+      dy = (tall - outerHeight) / 2;
+      safeY = keptIn(alignText);
+    } else if (align === 'flex-end') {
       // at the end, or for one aligned by its last baseline as far above
       // it as meets its row's
       dy = tall - outerHeight - (item.shimEnd ?? 0);
+      safeY = item.shimEnd !== undefined || keptIn(alignText);
     }
     // one aligned by its baseline meets its row's, and is not stretched
     else if (item.shim !== undefined) dy = item.shim;
@@ -951,11 +971,17 @@ export function layoutGrid(
         ? box.contentX +
             mirror -
             lefts[item.col] -
-            Math.max(0, dx) -
+            (safeX ? Math.max(0, dx) : dx) -
             outerWidth +
             child.marginLeft
-        : box.contentX + lefts[item.col] + child.marginLeft + Math.max(0, dx),
-      box.contentY + tops[item.row] + child.marginTop + Math.max(0, dy),
+        : box.contentX +
+            lefts[item.col] +
+            child.marginLeft +
+            (safeX ? Math.max(0, dx) : dx),
+      box.contentY +
+        tops[item.row] +
+        child.marginTop +
+        (safeY ? Math.max(0, dy) : dy),
     );
   }
   // what is from the cut on is set aside, where it was and as tall
@@ -1344,7 +1370,7 @@ export function laneSubgrid(
     // same axis, and never in their stacking axis (CSS Grid 3, 3.2)
     (style.gridLanes && lanesAreRows(style) !== (axis === 'rows')) ||
     !names ||
-    contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
+    laidOutApart(child)
   ) {
     SUBGRIDS.delete(child);
     return false;
@@ -1516,13 +1542,22 @@ export function inherited(axis: SubgridAxis): ReturnType<typeof trackList> {
   };
 }
 
+/** Whether a grid in a grid lays out what it holds apart from it, as an
+ *  independent formatting context, and so subgrids nothing of it. */
+function laidOutApart(child: Box): boolean {
+  return (
+    child.style.containerType !== 'normal' ||
+    contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
+  );
+}
+
 /**
  * Whether an item of a grid is a subgrid, and on which axes: a grid
  * container with `subgrid` for its rows or its columns, which is no
  * subgrid where it lays out what it holds apart from the grid — as layout
- * or paint containment has it do — and its template on that axis `none`
- * (CSS Grid 2, 7.2.4). An item is in flow: an absolutely positioned box
- * is none either.
+ * or paint containment has it do, or being a size container — and its
+ * template on that axis `none` (CSS Grid 2, 7.2.4; CSS Conditional 5, 5.1).
+ * An item is in flow: an absolutely positioned box is none either.
  */
 function subgridOf(
   item: Item,
@@ -1543,11 +1578,7 @@ function subgridOf(
     : null;
   const across = lanes === 'rows' ? undefined : style.gridColumns?.subgrid;
   const down = lanes === 'cols' ? undefined : style.gridRows?.subgrid;
-  if (
-    !style.grid ||
-    (!across && !down) ||
-    contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
-  ) {
+  if (!style.grid || (!across && !down) || laidOutApart(child)) {
     return null;
   }
   const axis = (
@@ -1827,10 +1858,13 @@ export function trackList(
   const outer = template.tracks;
   const unit = repeat.tracks;
   // what one repetition takes: its tracks' maximums where those are
-  // lengths, and their minimums where not (7.2.3.2)
+  // lengths, no less than a minimum that is one, and their minimums where
+  // they are not (7.2.3.2)
   const base = Number.isFinite(width) ? width : 0;
-  const fixed = (track: GridTrack): number =>
-    lengthOf(track.max, base) ?? lengthOf(track.min, base) ?? 0;
+  const fixed = (track: GridTrack): number => {
+    const least = lengthOf(track.min, base) ?? 0;
+    return Math.max(lengthOf(track.max, base) ?? least, least);
+  };
   const others = outer.reduce((sum, t) => sum + fixed(t), 0);
   const each = unit.reduce((sum, t) => sum + fixed(t), 0);
   let count = repetitions ?? 1;
@@ -2689,14 +2723,15 @@ export function leastHeight(box: Box): number {
  * tracks leave placed as `justify-content` or `align-content` has it (CSS
  * Box Alignment 3, 5.1): before them, after them, between them or around
  * each — none where the axis has no size of its own. `center` and `end`
- * overflow the start as well, where the tracks are larger than the room;
- * the distributions fall back to the start.
+ * overflow the start as well, where the tracks are larger than the room,
+ * unless they are `safe`; the distributions fall back to the start.
  */
 export function starts(
   sizes: number[],
   gap: number,
   distribution: string,
   room: number,
+  safe = false,
 ): number[] {
   let used = gap * Math.max(0, sizes.length - 1);
   for (const size of sizes) used += size;
@@ -2704,7 +2739,7 @@ export function starts(
   const n = sizes.length;
   let at = 0;
   let between = 0;
-  if (n && free !== 0) {
+  if (n && (safe ? free > 0 : free !== 0)) {
     if (distribution === 'center') at = free / 2;
     else if (
       distribution === 'end' ||

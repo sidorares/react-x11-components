@@ -24,6 +24,7 @@ import {
   FONTS,
   PAGE,
   boxOf,
+  findById,
   metric,
   pixelsIn,
   render,
@@ -65,6 +66,50 @@ async function treeOf(source: string, contentType?: string): Promise<string> {
   const { node } = await render(source, 400, { contentType });
   return shape(view(node).document);
 }
+
+test("an attr() names an attribute in ASCII's case in HTML, and as it is written in XML", async () => {
+  // HTML's parser folds an attribute's name in ASCII alone (13.2.5.33), and
+  // an `attr()` is folded the same (CSS Values 5, 7.7): WPT css-values/
+  // html-attr-case-insensitivity and CSS2 content-attr-case-002. Chrome's
+  // answers
+  const css =
+    'p{color:#000}' +
+    '.a{color:attr(CoLoR-attr type(<color>), #ff0000)}' +
+    '.b{color:attr(C\u00d8L\u00d8R-\u00c5TTR type(<color>), #00ff00)}' +
+    '.b::before{content:attr(Title)}';
+  const colors = async (type: string, body: string) => {
+    const { node } = await render(
+      type === 'text/html'
+        ? `<style>${css}</style>${body}`
+        : page(body, css.replaceAll('<', '&lt;')),
+      400,
+      { contentType: type },
+    );
+    const el = view(node);
+    return ['p', 'q', 'r', 's'].map(
+      (id) => el.computedStyle(findById(el.document, id)!)?.color,
+    );
+  };
+  const body =
+    '<p id="p" class="a" COLOR-ATTR="#00ff00"></p>' +
+    '<p id="q" class="a" color-attr="#00ff00"></p>' +
+    '<p id="r" class="b" c\u00f8l\u00f8r-\u00e5ttr="#ff0000"></p>' +
+    '<p id="s" class="b" C\u00d8L\u00d8R-\u00c5TTR="#0000ff"></p>';
+  const green = 'rgb(0, 255, 0)';
+  const red = 'rgb(255, 0, 0)';
+  assert.deepEqual(await colors('text/html', body), [
+    green,
+    green,
+    green,
+    'rgb(0, 0, 255)',
+  ]);
+  assert.deepEqual(await colors('application/xhtml+xml', body), [
+    red,
+    red,
+    green,
+    'rgb(0, 0, 255)',
+  ]);
+});
 
 test('a document served as XML keeps what HTML parsing moves or drops', async () => {
   const flex = `<div xmlns="${XHTML}"><td>cell</td><p><div>in</div></p></div>`;

@@ -487,6 +487,10 @@ export function layoutFlex(
   if (sizing) for (const { laid } of items) laid.sizing = true;
   ctx.flexDepth = depth + 1;
   try {
+    if (!row && !hold.frozen && height === null && ceiling < Infinity) {
+      const tall = tallestLine(box.style, items, rowGap, layout);
+      if (tall < ceiling - NEAR) root.setHeight(Math.max(floor, tall));
+    }
     calculate();
     // an item Yoga shrank under what its content comes to is kept to it,
     // and the row is laid out again (`autoMinimums`) — which may shrink
@@ -592,6 +596,7 @@ export function layoutFlex(
     own,
     lined,
     contentWidth,
+    height ?? root.getComputedHeight(),
     started,
     across,
   );
@@ -631,6 +636,7 @@ export function layoutFlex(
       own,
       lined,
       contentWidth,
+      height ?? root.getComputedHeight(),
       started,
     );
   }
@@ -1058,6 +1064,8 @@ function placeItems(
   lined: boolean,
   /** The flex box's content width: its items' containing block's. */
   contentWidth: number,
+  /** The flex box's content height. */
+  contentHeight: number,
   started?: ReadonlySet<Box>,
   /** Where each item is across a column that wraps (`crossLines`). */
   crossed?: ReadonlyMap<Box, Across>,
@@ -1074,28 +1082,25 @@ function placeItems(
   const justified = row
     ? justifyYogaLines(box.style, items, contentWidth)
     : null;
-  for (const { box: child, node, laid } of items) {
+  const placements = items.map(({ box: child, node, laid }) => {
     const placed = crossed?.get(child);
     const across =
       lined && !placed
         ? lineMarginFix(box.style, child, node, row, own, started?.has(child))
         : 0;
-    const itemHeight = row ? heightOf(node, laid) : laid.main;
-    const left =
-      box.contentX +
-      (placed
-        ? placed.x
-        : !Number.isNaN(edge) && byBaseline(box.style, child.style, false)
-          ? edge
-          : node.getComputedLeft() +
-            (row ? (justified?.get(child) ?? 0) : across));
+    const height = row ? heightOf(node, laid) : laid.main;
+    const x = placed
+      ? placed.x
+      : !Number.isNaN(edge) && byBaseline(box.style, child.style, false)
+        ? edge
+        : node.getComputedLeft() +
+          (row ? (justified?.get(child) ?? 0) : across);
     // which Yoga turns an item round in by the height it laid it out at, and
     // not the one it is (`unspace`)
-    const top =
-      box.contentY +
+    const y =
       node.getComputedTop() +
       (row ? across : 0) +
-      (reverse ? node.getComputedHeight() - itemHeight : 0);
+      (reverse ? node.getComputedHeight() - height : 0);
     const width = placed
       ? placed.width
       : meant(
@@ -1105,24 +1110,34 @@ function placeItems(
           laid.width,
           row ? laid.held : NaN,
         );
+    return { x, y, width, height };
+  });
+  if (alignsSafely(box.style, items)) {
+    keepSafe(box.style, items, placements, row, contentWidth, contentHeight);
+  }
+  for (let i = 0; i < items.length; i += 1) {
+    const { box: child, laid } = items[i];
+    const { width, height: itemHeight } = placements[i];
+    const left = box.contentX + placements[i].x;
+    const top = box.contentY + placements[i].y;
     // The item is laid out again at the width the flex pass settled on: the
     // measure function answered a question, and the answer is not a layout —
     // its line breaks were computed against a width that may have changed
     // when a sibling grew. Unless the last answer was at that width, which
     // is a layout the item still has (Yoga's widths are float32s).
     // Its height is definite where the flex layout made it so (CSS Flexbox
-    // 9.8): stretched across a row's line, or flexed in a column of a
-    // height of its own. What is in it takes its percentages of that —
-    // the `h-full` in a stretched sidebar — where they had nothing to be
-    // of, and the item is laid out again for them; and so is one that is a
-    // flex or grid container itself, whose own items are laid out in that
-    // height (9.4, step 11: "redo layout for its contents, treating this
-    // used size as its definite cross size").
+    // 9.8): stretched across a row's line, or flexed in a column of a height
+    // of its own, or from a basis that is one. What is in it takes its
+    // percentages of that — the `h-full` in a stretched sidebar — where they
+    // had nothing to be of, and the item is laid out again for them; and so is
+    // one that is a flex or grid container itself, whose own items are laid
+    // out in that height (9.4, step 11: "redo layout for its contents,
+    // treating this used size as its definite cross size").
     const definite = row
       ? stretches(child, box.style)
         ? itemHeight
         : null
-      : own
+      : own || typeof child.style.flexBasis === 'number'
         ? itemHeight
         : null;
     layoutItemAt(
@@ -1143,6 +1158,96 @@ function placeItems(
     bottom = Math.max(bottom, top + child.height + child.marginBottom);
   }
   return bottom;
+}
+
+/** Where an item is, its border box, from its flex box's content box. */
+interface Placement {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Whether anything in a flex box is aligned `safe`: nothing in a
+ *  `-webkit-box`, which its own properties pack and align. */
+function alignsSafely(
+  style: ComputedStyle,
+  items: readonly { box: Box }[],
+): boolean {
+  if (style.webkitBox !== null) return false;
+  return (
+    style.justifyContentText.startsWith('safe ') ||
+    style.alignItemsText.startsWith('safe ') ||
+    style.alignContentText.startsWith('safe ') ||
+    items.some(({ box }) => box.style.alignSelfText.startsWith('safe '))
+  );
+}
+
+/**
+ * Set what is aligned `safe` and runs past what it is aligned in at the
+ * start of that (CSS Box Alignment 3, 4.4): a line's items along it, an item
+ * across it, and the lines across the box. `start` is the box's own, by its
+ * writing mode, and not an end of its axes: a row reversed or wrapped in
+ * reverse starts at its left and its top as any does. Yoga has no such
+ * alignment, so it is told the position and what it came to is moved. An
+ * item can run past its line only where that is the one line of a box that
+ * does not wrap, a line being as tall as what is on it.
+ */
+function keepSafe(
+  style: ComputedStyle,
+  items: readonly { box: Box; node: FlexNode }[],
+  placements: readonly Placement[],
+  row: boolean,
+  width: number,
+  height: number,
+): void {
+  if (!Number.isFinite(width)) return;
+  const rtl = style.direction === 'rtl';
+  const index = new Map(items.map(({ box }, i) => [box, i]));
+  /** How far these are moved along an axis to start where the room does. */
+  const back = (which: readonly number[], x: boolean): number => {
+    let low = Infinity;
+    let high = -Infinity;
+    for (const i of which) {
+      const { box } = items[i];
+      const at = placements[i];
+      const from = x ? at.x - box.marginLeft : at.y - box.marginTop;
+      const to = x
+        ? at.x + at.width + box.marginRight
+        : at.y + at.height + box.marginBottom;
+      low = Math.min(low, from);
+      high = Math.max(high, to);
+    }
+    const room = x ? width : height;
+    if (high - low <= room + NEAR) return 0;
+    return x && rtl ? room - high : -low;
+  };
+  const move = (which: readonly number[], x: boolean): void => {
+    const by = back(which, x);
+    for (const i of which) {
+      if (x) placements[i].x += by;
+      else placements[i].y += by;
+    }
+  };
+  if (style.justifyContentText.startsWith('safe ')) {
+    for (const line of itemLines(style, items, row)) {
+      move(
+        line.map(({ box }) => index.get(box)!),
+        row,
+      );
+    }
+  }
+  if (style.flexWrap !== 'nowrap') {
+    if (style.alignContentText.startsWith('safe ')) {
+      move([...index.values()], !row);
+    }
+    return;
+  }
+  items.forEach(({ box: { style: own } }, i) => {
+    const text =
+      own.alignSelf === AUTO ? style.alignItemsText : own.alignSelfText;
+    if (text.startsWith('safe ')) move([i], !row);
+  });
 }
 
 function layoutItemAt(
@@ -1211,7 +1316,21 @@ function layoutItemAt(
   // one whose result is kept — or no pass, where the last layout was at
   // this width and this height. An item Yoga never measured has none, NaN,
   // and is laid out.
-  if (sameWidth && Object.is(laid.tall, tall)) box.height = laid.height;
+  if (column && definite === null && basisHidesHeight(box)) {
+    // a height of its own is none to what is in it, as its basis is not it —
+    // but the one its own flex layout shares out
+    FLEXED_HEIGHT.set(box, NaN);
+    if (box.kind === 'flex') {
+      USED_HEIGHT.set(box, Math.max(0, height - box.verticalExtra));
+    }
+    try {
+      layoutAt(box, ctx, width, containing, laid);
+    } finally {
+      FLEXED_HEIGHT.delete(box);
+      USED_HEIGHT.delete(box);
+    }
+    laid.width = NaN;
+  } else if (sameWidth && Object.is(laid.tall, tall)) box.height = laid.height;
   else if (Number.isNaN(tall)) {
     layoutNaturally(box, ctx, width, containing, laid);
   } else {
@@ -1243,6 +1362,22 @@ function layoutItemAt(
   // and a button's content is centred in the height it came to
   centreButton(box);
   moveTo(box, x, y);
+}
+
+/** Whether a column item's height is not the flex layout's to make definite,
+ *  in a column of no definite height: one of its own that its flex basis is
+ *  not, being its content, or a percentage of that column's height, which is
+ *  its content (CSS Flexbox 7.2.3). What is in it has no height to take a
+ *  percentage of, whatever its own says (9.8), as in Chrome. */
+function basisHidesHeight(box: Box): boolean {
+  const { height, flexBasis, flexBasisKeyword } = box.style;
+  return (
+    height !== AUTO &&
+    (flexBasis !== AUTO || flexBasisKeyword !== null) &&
+    typeof flexBasis !== 'number' &&
+    box.kind !== 'replaced' &&
+    percentHeightsIn(box)
+  );
 }
 
 // What a new Yoga node already is is not said again. A call into the
@@ -4551,6 +4686,40 @@ function stretches(
     : style.width === AUTO &&
         style.marginLeft !== AUTO &&
         style.marginRight !== AUTO;
+}
+
+/**
+ * How tall a column that wraps at its `max-height` is, where it has no
+ * height: its tallest line, each item as tall as it is before it flexes (CSS
+ * Flexbox 9.2, step 4). Its lines are broken by the maximum and the box is no
+ * taller than what is on them, where Yoga made it the maximum as soon as a
+ * line was broken. Broken at that height instead the lines are the same: each
+ * fits it, and what came after did not fit the maximum.
+ */
+function tallestLine(
+  style: ComputedStyle,
+  items: readonly { box: Box; node: FlexNode }[],
+  gap: number,
+  layout: () => void,
+): number {
+  for (const { box, node } of items)
+    if (box.style.flexGrow) node.setFlexGrow(0);
+  layout();
+  for (const { box, node } of items) {
+    if (box.style.flexGrow) node.setFlexGrow(box.style.flexGrow);
+  }
+  let tallest = 0;
+  for (const line of itemLines(style, items, false)) {
+    let tall = gap * (line.length - 1);
+    for (const { node } of line) {
+      tall +=
+        node.getComputedHeight() +
+        node.getComputedMargin(Y.EDGE_TOP) +
+        node.getComputedMargin(Y.EDGE_BOTTOM);
+    }
+    tallest = Math.max(tallest, tall);
+  }
+  return tallest;
 }
 
 /** Whether a flex box laid out at a width is a column that wraps, whose

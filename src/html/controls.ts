@@ -46,7 +46,7 @@ import type {
 } from './date-fields.js';
 import { fadeColor } from './css/color.js';
 import { cursorKeyword, inkColor } from './css/values.js';
-import { verticalMode } from './css/style.js';
+import { CONTAIN_SIZE, verticalMode } from './css/style.js';
 import type { ComputedStyle } from './css/style.js';
 import type { WidgetPart } from './css/cascade.js';
 import { invert, mapRect } from './css/transform.js';
@@ -980,14 +980,17 @@ export function measureControl(
         height: lineHeight + chrome,
       };
     case 'select': {
-      const widest = optionWidths(el);
+      // under size containment, as though it had no options: its arrow, and
+      // its line (CSS Containment 2, 3.2)
+      const empty = (style.contain & CONTAIN_SIZE) !== 0;
+      const widest = optionWidths(empty ? [] : optionsOf(el));
       // a select the page styled is its widest option and its arrow, and
       // the room around them is the page's: the arrow's is Blink's, some
       // 1.6em, or where it is more, what core's trigger takes for it, its
       // chevron as tall as the capitals and a gap either side of the
       // spacer before it
       if (styledField(kind, style)) {
-        const text = widestText(el, style, fonts) ?? ch * widest;
+        const text = empty ? 0 : (widestText(el, style, fonts) ?? ch * widest);
         const arrow = Math.max(em * 1.6, 16 * scale + Math.ceil(em * 0.72));
         return {
           width: Math.ceil(text + (style.appearance === 'none' ? 0 : arrow)),
@@ -1241,10 +1244,9 @@ function widestValues(layout: FieldLayout): SegmentValues {
   };
 }
 
-function optionWidths(el: Element): number {
+function optionWidths(options: readonly { label: string }[]): number {
   let widest = 4;
-  for (const option of optionsOf(el))
-    widest = Math.max(widest, option.label.length);
+  for (const option of options) widest = Math.max(widest, option.label.length);
   return widest;
 }
 

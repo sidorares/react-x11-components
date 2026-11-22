@@ -77,6 +77,23 @@ export function matchesSyntax(value: string, syntax: string): boolean {
   });
 }
 
+const ZERO = /^[+-]?(?:0+|0*\.0+)(?:e[+-]?\d+)?$/i;
+
+/**
+ * A registered property's value with a `0` that its syntax reads as a length
+ * written as one, as its computed value is (CSS Properties and Values 1, 2.4):
+ * `calc(1px + var(--x))` takes no `0`.
+ */
+export function lengthZero(value: string, syntax: string): string {
+  if (!ZERO.test(value.trim())) return value;
+  const part = components(syntax)?.find((c) =>
+    matchesComponent('0', { ...c, multiplier: '' }),
+  );
+  return part?.type && /^length(?:-percentage)?$/.test(part.name)
+    ? '0px'
+    : value;
+}
+
 function components(syntax: string): Component[] | null {
   const known = PARSED.get(syntax);
   if (known !== undefined) return known;

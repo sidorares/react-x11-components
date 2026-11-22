@@ -18,11 +18,17 @@
 // scrolling `main` stays where it is.
 import type { Element } from 'domhandler';
 
-import { CONTAIN_PAINT, scrolls, scrollsAlong } from '../css/style.js';
+import {
+  CONTAIN_LAYOUT,
+  CONTAIN_PAINT,
+  scrolls,
+  scrollsAlong,
+} from '../css/style.js';
 import { contained } from './block.js';
-import { CLAMPED, clampBox, unclampBox } from './boxes.js';
+import { CLAMPED, GRID_TRACKS, clampBox, unclampBox } from './boxes.js';
 import {
   FRAME_ROOTS,
+  ROWS_MIRRORED,
   frameTurn,
   frameOf,
   framed,
@@ -574,7 +580,11 @@ export function scrollStateOf(box: Box): ScrollState {
 /** The rectangle around a frame and all it holds, in the frame's own
  *  axes: its box, and the boxes and lines in it, but for what a box in it
  *  clips. */
-function frameBounds(frame: Box): {
+function frameBounds(
+  frame: Box,
+  /** Whether a grid's tracks count (`gridReach`): a scroll container's. */
+  scroller = false,
+): {
   x: number;
   y: number;
   width: number;
@@ -584,6 +594,13 @@ function frameBounds(frame: Box): {
   let y1 = frame.y;
   let x2 = frame.x + frame.width;
   let y2 = frame.y + frame.height;
+  const tracks = scroller ? gridReach(frame) : null;
+  if (tracks) {
+    x1 = Math.min(x1, tracks.x1);
+    y1 = Math.min(y1, tracks.y1);
+    x2 = Math.max(x2, tracks.x2);
+    y2 = Math.max(y2, tracks.y2);
+  }
   const stack: Box[] = [...frame.children];
   const lines = (box: Box) => {
     for (const line of box.lines ?? []) {
@@ -767,7 +784,11 @@ function reachOf(
     // a vertical writing mode's frame is laid out turned, and drawn where
     // its turn has it, with all it holds
     if (FRAME_ROOTS.has(child)) {
-      const at = pageRectOf(child, frameBounds(child), frameTurn(child));
+      const at = pageRectOf(
+        child,
+        frameBounds(child, holder !== null && child.parent === holder),
+        frameTurn(child),
+      );
       take(
         at.x + dx,
         at.y + dy,
@@ -818,6 +839,9 @@ function reachOf(
       }
       return;
     }
+    // and what overflows a box of layout containment is ink, and no one's to
+    // scroll (CSS Containment 2, 3.3)
+    if (contained(child, CONTAIN_LAYOUT)) return;
     linesOf(child.lines, outOfFlow, dx, dy);
     for (const inner of child.children) walk(inner, outOfFlow, false, dx, dy);
     aside(child, outOfFlow, dy);
@@ -941,16 +965,7 @@ function extentOf(box: Box, at: ScrollOffset | undefined): Extent {
   if (extent) return extent;
   const left = box.x + box.borderLeft;
   const top = box.y + box.borderTop;
-  const {
-    right,
-    bottom,
-    outRight,
-    outBottom,
-    leftmost,
-    topmost,
-    outLeftmost,
-    outTopmost,
-  } = reachOf(
+  const { outRight, outBottom, outLeftmost, outTopmost, ...inFlow } = reachOf(
     left,
     box.lines,
     box.children,
@@ -959,6 +974,16 @@ function extentOf(box: Box, at: ScrollOffset | undefined): Extent {
     -(at?.y ?? 0),
   );
   const shift = { x: at?.x ?? 0, y: at?.y ?? 0 };
+  let { right, bottom, leftmost, topmost } = inFlow;
+  // and a grid's tracks, whatever is in them: its areas are what its content
+  // is aligned in (CSS Overflow 3, 2.2)
+  const tracks = gridReach(box);
+  if (tracks) {
+    leftmost = Math.min(leftmost, tracks.x1 - shift.x);
+    topmost = Math.min(topmost, tracks.y1 - shift.y);
+    right = Math.max(right, tracks.x2 - shift.x);
+    bottom = Math.max(bottom, tracks.y2 - shift.y);
+  }
   // the end padding is past the in-flow content, and the out-of-flow boxes
   // reach as far as they reach
   const width = Math.max(
@@ -991,6 +1016,28 @@ function extentOf(box: Box, at: ScrollOffset | undefined): Extent {
   };
   extents.set(box, extent);
   return extent;
+}
+
+/** Where a grid container's tracks reach, in the document's coordinates at
+ *  no scroll; null for a box that is no grid, or has none. */
+function gridReach(
+  box: Box,
+): { x1: number; y1: number; x2: number; y2: number } | null {
+  const tracks = box.style.grid ? GRID_TRACKS.get(box) : undefined;
+  if (!tracks?.cols.length || !tracks.rows.length) return null;
+  const { cols, rows, mirror } = tracks;
+  const left = cols[0][0];
+  const right = cols[cols.length - 1][1];
+  const top = rows[0][0];
+  const bottom = rows[rows.length - 1][1];
+  // in a frame whose blocks were put back across, its rows were with them
+  const down = framed.any ? ROWS_MIRRORED.get(box) : undefined;
+  return {
+    x1: box.contentX + (mirror === undefined ? left : mirror - right),
+    x2: box.contentX + (mirror === undefined ? right : mirror - left),
+    y1: box.contentY + (down === undefined ? top : down - bottom),
+    y2: box.contentY + (down === undefined ? bottom : down - top),
+  };
 }
 
 /**

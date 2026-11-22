@@ -217,6 +217,7 @@ import {
   INLINE_BEFORE_ABSOLUTE,
   COLOR_SOURCE_FIELDS,
   CONTAIN_INLINE_SIZE,
+  CONTAIN_LAYOUT,
   NO_SNAP_ALIGN,
   copyStyle,
   inherit,
@@ -292,6 +293,7 @@ import {
   ANCHOR_FALLBACK_AXES,
   anchorAt,
   carryBlockers,
+  contained,
   containmentApplies,
   containsOutOfFlow,
   forgetLayout,
@@ -3882,7 +3884,7 @@ export class HtmlViewNode extends Node {
         width,
         this._viewportHeight(),
         this._scale,
-        fonts ? (face) => xHeightOf(fonts, face) : null,
+        fonts ? (face, of) => xHeightOf(fonts, face, of === 'cap') : null,
         fonts ? (face, text) => zeroWidthOf(fonts, face, text) : null,
         fonts ? (face) => normalLineOf(fonts, face) : null,
         faces.length || this._webFonts.scripted ? this._webFonts : null,
@@ -23726,7 +23728,9 @@ function sameLines(a: LineBox[] | null, b: LineBox[] | null): boolean {
 function heldByClip(box: Box): boolean {
   if (box.outOfFlow) return false;
   for (let at = box.parent; at?.parent; at = at.parent) {
-    if (hasRect(at) && clipsOverflow(at)) return true;
+    if (hasRect(at) && (clipsOverflow(at) || contained(at, CONTAIN_LAYOUT))) {
+      return true;
+    }
     if (at.outOfFlow) return false;
   }
   return false;
@@ -24013,16 +24017,29 @@ function normalLineOf(fonts: FontsLike, face: MetricFace): number | null {
   }
 }
 
-/** A face's x-height, as the engine reports it: null where the face
- *  states none, or the engine does not say. */
-function xHeightOf(fonts: FontsLike, face: MetricFace): number | null {
+/** A face's x-height, or the height of its capitals (`caps`), as the engine
+ *  reports it: null where the face states none, or the engine does not say
+ *  — but that the capitals of a face that states none are as tall as its
+ *  ascent (CSS Values 4, 6.1.1). */
+function xHeightOf(
+  fonts: FontsLike,
+  face: MetricFace,
+  caps = false,
+): number | null {
   const { family, size, weight, style } = face;
   try {
     const metrics = fonts
       .match(family, { size, weight, style })
       .metrics(size) as {
       xHeight?: number | null;
+      capHeight?: number | null;
+      ascent?: number;
     };
+    if (caps) {
+      const cap = metrics.capHeight;
+      if (typeof cap === 'number' && cap > 0) return cap;
+      return metrics.ascent ?? null;
+    }
     const x = metrics.xHeight;
     // NaN where the face states none, which is a number
     return typeof x === 'number' && x > 0 ? x : null;

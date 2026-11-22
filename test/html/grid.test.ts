@@ -263,6 +263,28 @@ const RULED_GRID = (rules: string, items = '') =>
     '<div></div><div></div><div></div><div></div><div></div><div></div>') +
   '</div>';
 
+test('an auto repetition counts a greatest size under its least one as the least', async () => {
+  // CSS Grid 1, 7.2.3.2; every place is Chromium's
+  const grid = (id: string, track: string) =>
+    `<div class="g" style="grid-template-columns:repeat(auto-fill,${track})">` +
+    [0, 1, 2, 3, 4].map((i) => `<i id="${id}${i}"></i>`).join('') +
+    '</div>';
+  const { node } = await render(
+    '<style>body{margin:0}.g{display:grid;width:200px}.g>*{height:10px}</style>' +
+      grid('a', 'minmax(50px,25px)') +
+      grid('b', 'minmax(60px,10%)') +
+      grid('c', 'minmax(30px,10px) 20px'),
+    400,
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  assert.deepStrictEqual(at('a3'), [150, 0]);
+  assert.deepStrictEqual(at('a4'), [0, 10]);
+  assert.deepStrictEqual(at('b2'), [120, 20]);
+  assert.deepStrictEqual(at('b3'), [0, 30]);
+  assert.deepStrictEqual(at('c4'), [100, 40]);
+});
+
 test("a grid's gaps carry its rules, down its column gaps and across its row gaps", async () => {
   // the column gaps are at 100 to 120 and 220 to 240, the row gap at 50
   // to 70; each rule on its gap's middle, the grid's length, through the
@@ -2500,6 +2522,34 @@ metric(
   },
 );
 
+test('an item past its area runs past its start unless it is aligned `safe`', async () => {
+  // every place is Chromium's (CSS Box Alignment 3, 4.4)
+  const { node } = await render(
+    '<style>body{margin:0}.c{display:grid;grid:40px/60px;width:60px;' +
+      'margin:0 0 60px 40px}.c>*{width:80px;height:70px}</style>' +
+      '<div class="c" style="place-items:center"><i id="a"></i></div>' +
+      '<div class="c" style="place-items:end"><i id="b"></i></div>' +
+      '<div class="c" style="place-items:safe center"><i id="c"></i></div>' +
+      '<div class="c" style="place-items:unsafe end;direction:rtl"><i id="d"></i></div>' +
+      '<div class="c" style="place-items:safe end;direction:rtl"><i id="e"></i></div>' +
+      '<div class="c" style="place-items:end"><i id="f" style="margin:auto"></i></div>' +
+      // and tracks past the grid
+      '<div class="c" style="grid:70px/80px;height:40px;place-content:center"><i id="g"></i></div>' +
+      '<div class="c" style="grid:70px/80px;height:40px;place-content:safe end"><i id="h"></i></div>',
+    400,
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  assert.deepStrictEqual(at('a'), [30, -15]);
+  assert.deepStrictEqual(at('b'), [20, 70]);
+  assert.deepStrictEqual(at('c'), [40, 200]);
+  assert.deepStrictEqual(at('d'), [40, 270]);
+  assert.deepStrictEqual(at('e'), [20, 400]);
+  assert.deepStrictEqual(at('f'), [40, 500]);
+  assert.deepStrictEqual(at('g'), [30, 585]);
+  assert.deepStrictEqual(at('h'), [40, 700]);
+});
+
 metric(
   "grid items aligned by their last baselines line them up at their row's end, and give the grid its last baseline",
   async () => {
@@ -2530,3 +2580,26 @@ metric(
     assert.strictEqual(bottomOf('p'), bottomOf('r2'), "the last row's item");
   },
 );
+
+test('a size container in a grid is no subgrid of it', async () => {
+  // an independent formatting context (CSS Conditional 5, 5.1): its template
+  // of `subgrid` is none, and its row is a row of its own. Every place and
+  // size is Chromium's.
+  const sub = (id: string, style: string) =>
+    '<div class="g"><div style="display:grid;grid:subgrid/auto;' +
+    `grid-row:1/3;height:100px;${style}"><i id="${id}" style="grid-row:1">` +
+    '</i></div></div>';
+  const { node } = await render(
+    '<style>body{margin:0}.g{display:grid;grid:30px 70px/100px}</style>' +
+      sub('a', '') +
+      sub('b', 'container-type:size') +
+      sub('c', 'container-type:inline-size') +
+      sub('d', 'container-type:scroll-state'),
+    400,
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').height, 30);
+  assert.strictEqual(boxOf(el, 'b').height, 100);
+  assert.strictEqual(boxOf(el, 'c').height, 100);
+  assert.strictEqual(boxOf(el, 'd').height, 30);
+});

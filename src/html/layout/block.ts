@@ -22,6 +22,7 @@ import {
 import {
   AUTO,
   gapOf,
+  inkColor,
   isPct,
   isTransparent,
   resolve,
@@ -172,6 +173,7 @@ import {
   COLUMN_PIECES,
   CUT_BLOCKS,
   CUT_HEAD,
+  BROKEN_BY,
   CUT_PIECES,
   GRID_TRACKS,
   FIRST_LINE,
@@ -265,6 +267,7 @@ import type { PhysicalSide } from './writing.js';
 import {
   boundsAfterMove,
   clipsFor,
+  inkOnly,
   computePaintBounds,
   containingBlockOf,
   DOCUMENT_FLOW,
@@ -2262,6 +2265,7 @@ function layoutDocumentPass(
   // is among (`reuseBlockers`)
   for (const box of ctx.keptPositioned ?? []) {
     if (box.style.position === 'fixed' || clipsFor(box, root).length) continue;
+    if (inkOnly(box)) continue;
     bottom = Math.max(bottom, OUT_OF_FLOW_REACH.get(box) ?? box.y + box.height);
   }
   for (const { box } of ctx.positioned) {
@@ -2269,7 +2273,7 @@ function layoutDocumentPass(
       if (fixedToViewport(box)) (fixed ??= []).push(box);
       continue;
     }
-    if (clipsFor(box, root).length) continue;
+    if (clipsFor(box, root).length || inkOnly(box)) continue;
     positionedRight = Math.max(positionedRight, box.x + box.width);
     // and what it holds, where it does not clip it: a page set in an
     // absolute wrapper 497px tall runs on below it, and the document with
@@ -5876,7 +5880,11 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   const face = {
     family: set.fontFamily,
     size: set.fontSize,
-    color: set.color,
+    // its glyphs' fill, as the runs of a line are filled
+    color:
+      set.textFillColor === null
+        ? set.color
+        : inkColor(set.textFillColor, set.color),
     ...(marker.style
       ? {
           weight: set.fontWeight,
@@ -6215,9 +6223,12 @@ export function ownIntrinsic(box: Box): Intrinsic | null {
       : viewed;
   }
   const style = box.style;
+  // a drop-down's arrow and line are its own and not its content's: what it
+  // measures with no options in it (`measureControl`)
+  const kept = box.replaced === 'select' ? box.intrinsic : null;
   return {
-    width: style.containIntrinsicWidth ?? 0,
-    height: style.containIntrinsicHeight ?? 0,
+    width: style.containIntrinsicWidth ?? kept?.width ?? 0,
+    height: style.containIntrinsicHeight ?? kept?.height ?? 0,
     ratio: 0,
     missing: 0,
   };
@@ -11418,6 +11429,9 @@ interface SelfAligned {
    *  would hold it in: `normal` against the one inset it has in a
    *  `position-area` (CSS Anchor Positioning 1, 4.1). */
   unsafe: boolean;
+  /** Whether it is at the start of what it is aligned in where it is too
+   *  big for that (CSS Box Alignment 3, 4.4). */
+  safe: boolean;
   /** Whether the axis starts at its high end: the inline axis of a
    *  right-to-left containing block, where a box too big for all it can be
    *  in starts (`alignedStart`). */
@@ -11453,6 +11467,7 @@ function selfAligned(
 ): SelfAligned | null {
   const style = box.style;
   const value = down ? style.alignSelf : style.justifySelf;
+  const text = down ? style.alignSelfText : style.justifySelfText;
   const anchorCentre = anchoring?.centre
     ? down
       ? anchoring.centre.y
@@ -11482,23 +11497,13 @@ function selfAligned(
               : 0;
   // `self-start` and `self-end` are the box's own sides, which its writing
   // mode or its direction may put at the containing block's end (4.3)
-  if (
-    container &&
-    selfFlips(
-      down ? style.alignSelfText : style.justifySelfText,
-      style,
-      container,
-      down,
-    )
-  ) {
+  if (container && selfFlips(text, style, container, down)) {
     along = 1 - along;
   }
   let centre: number | null = null;
   let stretch = false;
   // an overflow position that says so aligns as it says, overflow or not
-  let unsafe = (down ? style.alignSelfText : style.justifySelfText).startsWith(
-    'unsafe',
-  );
+  let unsafe = text.startsWith('unsafe');
   if (
     (down ? style.alignAnchorCenter : style.justifyAnchorCenter) &&
     anchorCentre !== null
@@ -11549,6 +11554,7 @@ function selfAligned(
     centre,
     stretch,
     unsafe,
+    safe: text.startsWith('safe'),
     rtl,
   };
 }
@@ -11576,6 +11582,7 @@ function alignedStart(
   const want =
     a.centre !== null ? a.centre - outer / 2 : a.start + a.along * free;
   if (a.unsafe) return want;
+  if (a.safe && free < 0) return a.rtl ? a.start + free : a.start;
   const within = (v: number, lo: number, hi: number) =>
     Math.min(Math.max(v, lo), hi);
   if (free >= 0) return within(want, a.start, a.start + free);
@@ -12385,6 +12392,16 @@ export function positionOutOfFlow(
   });
 }
 
+/** Where a static position's one item is in its free room (`room` in
+ *  `Box.staticPosition`): each axis a fraction, and where it is set instead
+ *  where it overflows the room, by a `safe` alignment. */
+interface StaticAlignment {
+  across: number;
+  down: number;
+  safeAcross?: number;
+  safeDown?: number;
+}
+
 /** How far along its free room a flex box's or a grid's one item is set:
  *  0 at the start, ½ in the middle, 1 at the end, across (from the inline
  *  start) and down. A flex box's main axis by `justify-content`, and the
@@ -12394,7 +12411,7 @@ function staticAlignment(
   child: Box,
   container: Box,
   flex: boolean,
-): { across: number; down: number; safeAcross?: number; safeDown?: number } {
+): StaticAlignment {
   const own = child.style;
   const style = container.style;
   const factor = (align: string): number =>
@@ -12430,12 +12447,10 @@ function staticAlignment(
     let down = cross;
     // `self-start` and `self-end` are the item's own sides, which its
     // direction or its writing mode may put at the grid's end (4.3)
-    {
-      if (selfFlips(text, child.style, style, false)) across = 1 - across;
-      const downText =
-        own.alignSelf === AUTO ? style.alignItemsText : own.alignSelfText;
-      if (selfFlips(downText, child.style, style, true)) down = 1 - down;
-    }
+    if (selfFlips(text, child.style, style, false)) across = 1 - across;
+    const downText =
+      own.alignSelf === AUTO ? style.alignItemsText : own.alignSelfText;
+    if (selfFlips(downText, child.style, style, true)) down = 1 - down;
     // and grid lanes turn it round with themselves (CSS Grid 3, 8): to the
     // far edge of the stacking axis where they fill from there, and of the
     // grid axis where the lanes are filled from the last
@@ -12453,8 +12468,12 @@ function staticAlignment(
     }
     // and its start down is its far edge where a `vertical-lr` frame put
     // its rows back across (`ROWS_MIRRORED`)
-    if (framed.any && ROWS_MIRRORED.has(container)) down = 1 - down;
-    return { across, down };
+    const mirrored = framed.any && ROWS_MIRRORED.has(container);
+    if (mirrored) down = 1 - down;
+    const out: StaticAlignment = { across, down };
+    if (text.startsWith('safe ')) out.safeAcross = 0;
+    if (downText.startsWith('safe ')) out.safeDown = mirrored ? 1 : 0;
+    return out;
   }
   return flexStaticAlignment(own, style);
 }
@@ -12495,7 +12514,7 @@ function pageAxis(
 function flexStaticAlignment(
   own: ComputedStyle,
   style: ComputedStyle,
-): { across: number; down: number; safeAcross?: number; safeDown?: number } {
+): StaticAlignment {
   const row = style.flexDirection.startsWith('row');
   const main = pageAxis(style, row);
   const cross = pageAxis(style, !row);
@@ -12590,12 +12609,7 @@ function flexStaticAlignment(
   const rtl = style.direction === 'rtl';
   const fromStart = (v: number | undefined) =>
     v === undefined || !rtl ? v : 1 - v;
-  const out: {
-    across: number;
-    down: number;
-    safeAcross?: number;
-    safeDown?: number;
-  } = {
+  const out: StaticAlignment = {
     across: fromStart(main.down ? crossFrom : mainFrom)!,
     down: main.down ? mainFrom : crossFrom,
   };
@@ -13400,28 +13414,27 @@ export function perspectiveAround(box: Box): Mat4 | null {
 }
 
 /**
- * The box whose `perspective` a box's transform is seen in: the nearest
- * with one up its containing blocks — the box it is positioned in, for one
- * out of the flow, and its parent for one in it (CSS Transforms 2, 6) —
- * through boxes positioned and not transformed, as Blink hangs a box's
- * transform under the perspective of the nearest box above it that has
- * one. Not past a box with a transform of its own: what that holds is
- * flattened into its plane (`transform-style: flat`), which its own
- * transform is all the perspective around it sees of. No inline box's.
- * Null where there is none.
+ * The box whose `perspective` a box's transform is seen in: the one of the
+ * element it is a child of (CSS Transforms 2, 6), in the flat tree, with
+ * what is `display: contents` between them passed over and wherever the box
+ * is positioned — as every browser has it, a grandchild seen flat in the
+ * plane of what is between, but for what is between with a `transform-style`
+ * of `preserve-3d`, which hands on the perspective it is in. Not one with a
+ * transform of its own, which is drawn flat here. No inline box's, which is
+ * not transformable and has no rectangle to be seen from. Null where there
+ * is none.
  */
 function perspectiveFor(box: Box): Box | null {
-  for (let at = holderOf(box); at; at = holderOf(at)) {
-    // an inline box is not transformable, and has no rectangle to be seen
-    // from (CSS Transforms 1, 2)
-    if (at.kind === 'inline') continue;
+  for (let at = parentBox(box); at; at = parentBox(at)) {
     const style = at.style;
+    if (at.kind === 'inline') return null;
     if (style.perspective !== null) return at;
     if (
       style.transform !== null ||
       style.translate !== null ||
       style.rotate !== null ||
-      style.scale !== null
+      style.scale !== null ||
+      style.passive['transform-style'] !== 'preserve-3d'
     ) {
       return null;
     }
@@ -13429,13 +13442,19 @@ function perspectiveFor(box: Box): Box | null {
   return null;
 }
 
-/** The box a box's transform is placed in (`perspectiveFor`): the one it is
- *  positioned in, out of the flow, and its parent in it. */
-function holderOf(box: Box): Box | null {
-  const position = box.style.position;
-  return position === 'absolute' || position === 'fixed'
-    ? containingBlockFor(box)
-    : box.parent;
+/** The box of the element a box is a child of in the flat tree, with what
+ *  is `display: contents` passed over: past the anonymous boxes around it,
+ *  and the inline box around a block it was broken around. Null in the top
+ *  layer, where nothing around a box is its parent, and in the frame of a
+ *  writing mode, whose coordinates its root's are not. */
+function parentBox(box: Box): Box | null {
+  if (box.topLayer) return null;
+  for (let at = box; ;) {
+    const up = BROKEN_BY.get(at) ?? at.parent;
+    if (!up || up.el || up.pseudo) return up;
+    if (up.style.transform !== null) return null;
+    at = up;
+  }
 }
 
 /**

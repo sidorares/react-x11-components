@@ -4507,6 +4507,39 @@ test("an item's automatic minimum has the percentages in its padding in it", asy
   near('e', 12.71875, 33.90625);
 });
 
+test('what is in a column item takes its percentages of a height its basis makes, and of none its basis is not', async () => {
+  // in a column of no height of its own: a basis that is a length is a
+  // definite main size, whether or not the item flexes, and `content`, or a
+  // percentage of no height, is none, whatever its own height says (CSS
+  // Flexbox 9.8). Every height is Chromium's
+  const item = (id: string, style: string) =>
+    `<div class="f"><div style="${style}"><div class="t"></div>` +
+    `<div class="k" id="${id}"></div></div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}.f{display:flex;flex-direction:column}' +
+      '.f>div{width:100px}.k{height:100%;width:20px}' +
+      '.t{height:30px;width:20px}</style>' +
+      item('a', 'flex:0 0 100px') +
+      item('b', 'flex:0 0 100px;height:0') +
+      item('c', 'flex:1 1 50px;min-height:0') +
+      item('d', 'flex:0 0 50px;min-height:80px') +
+      item('e', 'flex:0 0 100px;padding:5px;box-sizing:border-box') +
+      item('f', 'flex:1 1 auto;height:60px') +
+      item('g', 'flex:1 1 content;height:60px') +
+      item('h', 'flex:1 1 0%;height:60px') +
+      item('i', 'flex:0 0 50%;height:60px') +
+      item('j', 'flex:1 1 0px;height:60px;min-height:0') +
+      // its own items still have the height it came to
+      '<div class="f"><div style="display:flex;flex:1 1 content;height:60px">' +
+      '<div class="t"></div><div id="k" style="width:9px"></div>' +
+      '<div class="k"></div></div></div>',
+    400,
+  );
+  const el = view(node);
+  const heights = [...'abcdefghijk'].map((id) => boxOf(el, id).height);
+  assert.deepStrictEqual(heights, [100, 100, 50, 80, 90, 60, 0, 0, 0, 0, 30]);
+});
+
 test('an item of a width of its content has an automatic minimum', async () => {
   // `width: min-content` is a width its basis has the say over, and it is held
   // at its content as any item is; every size is Chromium's
@@ -4523,6 +4556,40 @@ test('an item of a width of its content has an automatic minimum', async () => {
   const el = view(node);
   assert.strictEqual(boxOf(el, 'a').width, 26);
   assert.strictEqual(boxOf(el, 'b').width, 26);
+});
+
+test('a column that wraps at its max-height is as tall as its tallest line', async () => {
+  // broken into lines by the maximum, and no taller than what is on them
+  // (CSS Flexbox 9.3 and 9.2, step 4), where it was the maximum as soon as a
+  // line was broken; every size is Chromium's
+  const { node } = await render(
+    '<style>body{margin:0}.c{display:flex;flex-flow:column wrap;width:200px;' +
+      'max-height:100px;margin-bottom:10px}.c>*{width:50px}</style>' +
+      '<div class="c" id="a"><i style="height:40px"></i>' +
+      '<i id="a2" style="height:80px"></i></div>' +
+      '<div class="c" id="b" style="flex-flow:column-reverse wrap">' +
+      '<i id="b1" style="height:40px"></i><i style="height:80px"></i></div>' +
+      // the items of a shorter line flex to the taller one
+      '<div class="c" id="c"><i id="c1" style="height:30px;flex-grow:1"></i>' +
+      '<i style="height:75px"></i></div>' +
+      '<div class="c" id="d" style="min-height:90px">' +
+      '<i style="height:40px"></i><i style="height:80px"></i></div>' +
+      // and one line, or one past the maximum, as before
+      '<div class="c" id="e"><i style="height:40px"></i></div>' +
+      '<div class="c" id="f"><i style="height:40px"></i>' +
+      '<i style="height:140px"></i></div>',
+    400,
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').height, 80);
+  assert.strictEqual(boxOf(el, 'a2').x, 100);
+  assert.strictEqual(boxOf(el, 'b').height, 80);
+  assert.strictEqual(boxOf(el, 'b1').y - boxOf(el, 'b').y, 40);
+  assert.strictEqual(boxOf(el, 'c').height, 75);
+  assert.strictEqual(boxOf(el, 'c1').height, 75);
+  assert.strictEqual(boxOf(el, 'd').height, 90);
+  assert.strictEqual(boxOf(el, 'e').height, 40);
+  assert.strictEqual(boxOf(el, 'f').height, 100);
 });
 
 test("a line of a row that wraps is justified though another line's item has an auto margin", async () => {
@@ -4544,4 +4611,39 @@ test("a line of a row that wraps is justified though another line's item has an 
   // the line with the margin takes all that is left in it
   assert.strictEqual(boxOf(el, 'e').x, 120);
   assert.strictEqual(boxOf(el, 'f').x, 170);
+});
+
+test('what is aligned `safe` starts where its room does when it runs past it', async () => {
+  // every place is Chromium's; `start` is the box's own, whichever way its
+  // lines run and stack (CSS Box Alignment 3, 4.4)
+  const { node } = await render(
+    '<style>body{margin:0}.c{display:flex;width:60px;height:40px;' +
+      'margin-bottom:60px}.c>*{flex:none}.w{width:80px;height:20px}' +
+      '.t{width:20px;height:70px}</style>' +
+      // a line along its box
+      '<div class="c" style="justify-content:safe center"><i id="a" class="w"></i></div>' +
+      '<div class="c" style="justify-content:safe flex-start;flex-direction:row-reverse"><i id="b" class="w"></i></div>' +
+      '<div class="c" style="justify-content:safe center;direction:rtl"><i id="c" class="w"></i></div>' +
+      // an item across its line, which the one beside it fits in
+      '<div class="c" style="align-items:safe flex-end"><i id="d" class="t"></i><i id="e" class="w" style="width:20px"></i></div>' +
+      '<div class="c" style="flex-direction:column;align-items:center"><i id="f" class="w" style="align-self:safe center"></i><i id="g" class="w"></i></div>' +
+      // the lines across the box
+      '<div class="c" style="flex-wrap:wrap-reverse;align-content:safe flex-start"><i id="h" class="t"></i></div>' +
+      '<div class="c" style="flex-flow:column wrap;align-content:safe center"><i id="i" class="w"></i></div>' +
+      // and what an item of a `-webkit-box` says for itself says nothing
+      '<div class="c" style="display:-webkit-box;-webkit-box-align:end"><div id="j" class="t" style="align-self:safe center"></div></div>',
+    400,
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  assert.deepStrictEqual(at('a'), [0, 0]);
+  assert.deepStrictEqual(at('b'), [0, 100]);
+  assert.deepStrictEqual(at('c'), [-20, 200]);
+  assert.deepStrictEqual(at('d'), [0, 300]);
+  assert.deepStrictEqual(at('e'), [20, 320]);
+  assert.deepStrictEqual(at('f'), [0, 400]);
+  assert.deepStrictEqual(at('g'), [-10, 420]);
+  assert.deepStrictEqual(at('h'), [0, 500]);
+  assert.deepStrictEqual(at('i'), [0, 600]);
+  assert.deepStrictEqual(at('j'), [0, 670]);
 });
