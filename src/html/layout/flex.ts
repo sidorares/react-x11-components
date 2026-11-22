@@ -37,6 +37,7 @@ import { scrolls } from '../css/style.js';
 import type { ComputedStyle, ContentSize, SizeOf } from '../css/style.js';
 import { Box, inOrder, isBlank } from './boxes.js';
 import {
+  selfFlips,
   FLEXED_HEIGHT,
   FLEX_ROOM,
   MIN_CONTENT_PROBE,
@@ -1423,15 +1424,20 @@ function applyItem(
   margin(Y.EDGE_LEFT, style.marginLeft, box.marginLeft);
   if (style.flexGrow) node.setFlexGrow(style.flexGrow);
   if (style.flexShrink) node.setFlexShrink(style.flexShrink);
-  if (style.alignSelf !== AUTO)
-    node.setAlignSelf(ALIGN[style.alignSelf] ?? Y.ALIGN_AUTO);
+  const aligned = box.parent
+    ? crossAlign(box.parent.style, style)
+    : style.alignSelf;
+  if (
+    style.alignSelf !== AUTO ||
+    (box.parent && aligned !== box.parent.style.alignItems)
+  ) {
+    node.setAlignSelf(ALIGN[aligned] ?? Y.ALIGN_AUTO);
+  }
   // `stretch` sets an item whose height is a percentage of none at its
   // line's start, as tall as its content (`heightOfNone`), where Yoga,
   // which is handed no height for it, stretched it across the line
   if (row && box.parent && heightOfNone(style, own)) {
-    const align =
-      style.alignSelf === AUTO ? box.parent.style.alignItems : style.alignSelf;
-    if (align === 'stretch') node.setAlignSelf(Y.ALIGN_FLEX_START);
+    if (aligned === 'stretch') node.setAlignSelf(Y.ALIGN_FLEX_START);
   }
 
   // Yoga's sizes are border boxes, as `box-sizing: border-box` has them;
@@ -4264,7 +4270,7 @@ function lineMarginFix(
   else if (lead === AUTO || trail === AUTO) {
     align = row ? autoAcross(style, reverse) : null;
   } else {
-    align = style.alignSelf === AUTO ? container.alignItems : style.alignSelf;
+    align = crossAlign(container, style);
     // which sets one whose height is a percentage of none at its line's
     // start, as Yoga is told it does (`applyItem`)
     if (align === 'stretch' && row && heightOfNone(style, own)) {
@@ -4802,7 +4808,7 @@ function crossLines(
         // the right past its start, as Chrome sets it
         offset = reach[k] - (fromRight ? itemWidth : 0);
       } else {
-        const align = own.alignSelf === AUTO ? style.alignItems : own.alignSelf;
+        const align = crossAlign(style, own);
         if (align === 'center') offset += free / 2;
         else if (align === 'flex-end') offset += free;
       }
@@ -4883,6 +4889,30 @@ function mainJustify(style: ComputedStyle): string {
   else if (!row) start = true;
   else start = (justify === 'left') === (style.direction !== 'rtl');
   return start !== reverse ? 'flex-start' : 'flex-end';
+}
+
+/**
+ * How an item is aligned across its line, its own way or its flex box's:
+ * `start` and `end` are the box's own edges, which are its lines' cross ends
+ * turned round where the box wraps in reverse, and `self-start` and `self-end`
+ * the item's own (CSS Box Alignment 3, 4.3), on the side its writing mode and
+ * its direction put them.
+ */
+function crossAlign(container: ComputedStyle, item: ComputedStyle): string {
+  const auto = item.alignSelf === AUTO;
+  const align = auto ? container.alignItems : item.alignSelf;
+  if (align !== 'flex-start' && align !== 'flex-end') return align;
+  const reverse = container.flexWrap === 'wrap-reverse';
+  const text = auto ? container.alignItemsText : item.alignSelfText;
+  const self = text.includes('self-');
+  if (!self && (!reverse || !/(?:^|\s)(?:start|end)$/.test(text))) return align;
+  const row = container.flexDirection.startsWith('row');
+  const turned = self && selfFlips(text, item, container, row);
+  return turned === reverse
+    ? align
+    : align === 'flex-start'
+      ? 'flex-end'
+      : 'flex-start';
 }
 
 /**
