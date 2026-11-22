@@ -25,7 +25,15 @@
 //   such as `onload` on an element — is recorded as `script` and not
 //   rendered: the component never executes one, by design.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { basename, dirname, extname, join, resolve } from 'node:path';
+import {
+  basename,
+  dirname,
+  extname,
+  join,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
 import React from 'react';
 import { createRoot, loadFont, ThemeProvider } from 'react-x11';
 import { WindowNode } from 'react-x11/node';
@@ -53,6 +61,21 @@ if (!wptRoot || !listFile || !outFile) {
   process.exit(2);
 }
 const ROOT = resolve(wptRoot);
+
+// Where each file is served from, as WPT's server serves the checkout: the
+// document's `baseUrl`, so `<Html>` resolves what a page names as a browser
+// does — a stylesheet's `url()`s against the stylesheet, which a font
+// stylesheet under `/fonts/` names its files relative to. Handed none,
+// `<Html>` passes each URL on as written, and a relative one was found
+// against the document's directory: `baseline-diagnostic-font.css` named
+// `./BaselineDiagnostic.ttf`, which no test's directory has, and every test
+// linking it was measured in the default serif.
+const ORIGIN = 'http://web-platform.test:8000';
+
+/** The URL a file of the checkout is served at. */
+function urlOf(file: string): string {
+  return `${ORIGIN}/${encodeURI(relative(ROOT, file).split(sep).join('/'))}`;
+}
 
 // The families the suite names, as files on this machine. Every generic a
 // test can fall back to has one, so no layout asks fontconfig anything.
@@ -106,6 +129,9 @@ export interface Outcome {
   allowed?: { maxDifference: number; totalPixels: number };
   ms?: number;
   error?: string;
+  /** URLs of a network scheme off the checkout's origin that the test or
+   *  its reference asked for, each answered with nothing (`resourcesFor`). */
+  outside?: string[];
 }
 
 /** A test's references: `<link rel=match|mismatch href>`, under a prefix
@@ -162,6 +188,19 @@ function fuzzyOf(
 
 /** A URL as a document wrote it, against the document's own path. */
 function fileFor(url: string, docPath: string): string | null {
+  // what `<Html>` resolved against a `baseUrl` (`urlOf`), and nothing else
+  // of that origin's or any other
+  if (url.startsWith(`${ORIGIN}/`)) {
+    const clean = url.slice(ORIGIN.length).split('#')[0].split('?')[0];
+    let path: string;
+    try {
+      path = decodeURIComponent(clean);
+    } catch {
+      return null;
+    }
+    const abs = join(ROOT, path);
+    return abs.startsWith(ROOT) && existsSync(abs) ? abs : null;
+  }
   if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return null;
   const clean = url.split('#')[0].split('?')[0];
   if (!clean) return null;
@@ -180,8 +219,20 @@ function dataUrl(url: string): Uint8Array | string | null {
   return /^text\/css/i.test(m[1]) ? bytes.toString('utf8') : bytes;
 }
 
+/** What a test asked for outside the checkout's origin (`ORIGIN`): a URL
+ *  of a network scheme no file stands for, which this host answers with
+ *  nothing, as it always has. Noted on the test's outcome (`outside`), so a
+ *  run can show that nothing reached for a network. */
+let outside: string[] = [];
+
 function resourcesFor(docPath: string) {
   return (request: ResourceRequest): ResourceResult | null => {
+    if (
+      /^(?:https?|wss?|ftp):/i.test(request.url) &&
+      !request.url.startsWith(`${ORIGIN}/`)
+    ) {
+      outside.push(request.url);
+    }
     const data = request.url.startsWith('data:') ? dataUrl(request.url) : null;
     if (request.kind === 'stylesheet') {
       if (typeof data === 'string') return { kind: 'stylesheet', text: data };
@@ -392,6 +443,7 @@ function embeddedFor(path: string, depth: number) {
       fontSize: 16,
       fontFamily: 'serif',
       monoFamily: 'monospace',
+      baseUrl: urlOf(file ?? path),
       onResource: resourcesFor(base),
       renderEmbedded: embeddedFor(base, depth + 1),
       style: { flexGrow: 1 },
@@ -426,6 +478,7 @@ function tree(path: string): React.ReactElement {
         fontSize: 16,
         fontFamily: 'serif',
         monoFamily: 'monospace',
+        baseUrl: urlOf(path),
         onResource: resourcesFor(path),
         renderEmbedded: embeddedFor(path, 0),
         onLoaded: () => {
@@ -762,6 +815,7 @@ async function against(
 const tests = readFileSync(listFile, 'utf8').split('\n').filter(Boolean);
 for (const test of tests) {
   let outcome: Outcome;
+  outside = [];
   try {
     outcome = await run(test);
   } catch (err) {
@@ -771,6 +825,7 @@ for (const test of tests) {
       error: String((err as Error)?.stack ?? err).slice(0, 400),
     };
   }
+  if (outside.length) outcome.outside = [...new Set(outside)];
   appendFileSync(outFile, JSON.stringify(outcome) + '\n');
 }
 process.exit(0);
