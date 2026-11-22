@@ -2709,6 +2709,85 @@ test('what a drawing paints past its box takes in its strokes, markers, uses and
   assert.ok(twice.x <= 5 - 100, 'and moved with it');
 });
 
+test("a replaced box's keyword limits are its content's size, through its ratio from the size it has the other way", async () => {
+  // CSS Sizing 3, 5.1; every size is Chromium's
+  const cases: [string, string, number, number][] = [
+    ['canvas', 'width:1000px;height:60px;max-width:min-content', 40, 60],
+    ['canvas', 'width:10px;height:60px;min-width:max-content', 40, 60],
+    ['canvas', 'width:10px;min-width:fit-content', 20, 30],
+    ['canvas', 'height:100px;max-height:min-content', 20, 30],
+    ['canvas', 'width:40px;height:10px;min-height:min-content', 40, 60],
+    [
+      'canvas',
+      'height:100px;min-width:min-content;max-height:30px;width:7px',
+      20,
+      30,
+    ],
+    ['svg', 'height:50px;min-width:max-content;max-width:20px', 100, 50],
+    // of a ratio alone, whose width is its room's, no limit
+    ['svg', 'width:10px;min-width:min-content', 10, 5],
+    ['svg', 'width:200px;max-width:min-content', 200, 100],
+  ];
+  const { node } = await render(
+    '<style>body{margin:0}canvas,svg{display:block}</style>' +
+      cases
+        .map(
+          ([tag, style], i) =>
+            `<${tag} id="r${i}" ` +
+            (tag === 'canvas'
+              ? 'width="20" height="30"'
+              : 'viewBox="0 0 20 10"') +
+            ` style="${style}"></${tag}>`,
+        )
+        .join(''),
+    400,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(
+    cases.map(([tag, style], i) => {
+      const { width, height } = boxOf(el, `r${i}`);
+      return [tag, style, width, height];
+    }),
+    cases,
+  );
+});
+
+test('a percentage of a size compresses a control along its line, and a canvas no keyword limit', async () => {
+  // its narrowest is nothing (CSS Sizing 3, 5.2.2), and a range has no least
+  // size across its line; every width and height is Chromium's
+  const cases: [string, number, number][] = [
+    ['<input type="range" style="width:50%;min-width:min-content">', 30, 16],
+    ['<input type="range" style="width:50%;min-width:fit-content">', 60, 16],
+    ['<input type="range" style="width:50%;min-width:max-content">', 129, 16],
+    ['<input type="range" style="width:5px;min-width:min-content">', 129, 16],
+    ['<input type="range" style="height:5px;min-height:min-content">', 129, 5],
+    [
+      '<canvas width="100" height="50" style="width:50%;min-width:min-content"></canvas>',
+      100,
+      50,
+    ],
+  ];
+  const { node } = await render(
+    '<style>body{margin:0}input{margin:0;display:block}canvas{display:block}' +
+      'div{width:60px}</style>' +
+      cases
+        .map(
+          ([html], i) =>
+            `<div>${html.replace(' style', ` id="r${i}" style`)}</div>`,
+        )
+        .join(''),
+    400,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(
+    cases.map(([html], i) => {
+      const { width, height } = boxOf(el, `r${i}`);
+      return [html, width, height];
+    }),
+    cases,
+  );
+});
+
 metric(
   'a shape a <use> draws is styled where its copy is, from a sprite outside the drawing too',
   async () => {

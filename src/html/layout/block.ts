@@ -8820,24 +8820,6 @@ function sizeReplaced(
     stretchedHeight !== null
       ? Math.max(0, stretchedHeight - box.verticalExtra)
       : down(style.height);
-  const minW =
-    (style.minWidthKeyword === 'stretch' ? stretchedWidth : null) ??
-    across(style.minWidth) ??
-    0;
-  const minH = down(style.minHeight) ?? 0;
-  // a maximum below the minimum is the minimum (10.4)
-  const maxW = Math.max(
-    minW,
-    style.maxWidthKeyword === 'stretch' && stretchedWidth !== null
-      ? stretchedWidth
-      : style.maxWidth === 'none'
-        ? Infinity
-        : (across(style.maxWidth) ?? Infinity),
-  );
-  const maxH = Math.max(
-    minH,
-    style.maxHeight === 'none' ? Infinity : (down(style.maxHeight) ?? Infinity),
-  );
   // under size containment, as though it had no size or ratio of its own
   // but the one `contain-intrinsic-size` gives it (`ownIntrinsic`)
   const own = ownIntrinsic(box) ?? NO_INTRINSIC;
@@ -8864,6 +8846,93 @@ function sizeReplaced(
     return Number.isFinite(w) ? Math.max(0, w) : 0;
   };
 
+  // a limit that is its content's: what its ratio makes of the size it has the
+  // other way, and else its natural one (CSS Sizing 3, 5.1), narrowest and
+  // widest alike
+  const tall =
+    height === null
+      ? null
+      : Math.max(
+          down(style.minHeight) ?? 0,
+          Math.min(
+            height,
+            style.maxHeight === 'none'
+              ? Infinity
+              : (down(style.maxHeight) ?? Infinity),
+          ),
+        );
+  const contentWidth = (none: number): number => {
+    if (tall !== null && ratio > 0) return widthOf(tall);
+    // one of a ratio alone is as wide as its room, which is no limit
+    if (iw === null && ih === null && ratio > 0) return none;
+    return iw ?? (ih !== null && ratio > 0 ? widthOf(ih) : own.width);
+  };
+  const contentHeight = (): number => {
+    if (width !== null && ratio > 0) return heightOf(width);
+    if (iw === null && ih === null && ratio > 0) return heightOf(room());
+    return ih ?? (iw !== null && ratio > 0 ? heightOf(iw) : own.height);
+  };
+  // A control is compressed along its line by a percentage of a size, so it
+  // has no narrowest and what fits its room is no more than that (CSS Sizing
+  // 3, 5.2.2); and a range has no least size across it, as in Chrome
+  const least = (
+    keyword: ComputedStyle['minWidthKeyword'],
+    size: Len,
+    inline: boolean,
+    content: number,
+    fits: () => number,
+  ): number => {
+    if (!COMPRESSED.has(box.replaced)) return content;
+    if (!inline) return box.replaced === 'range' ? 0 : content;
+    if (!isPct(size)) return content;
+    if (keyword === 'min-content') return 0;
+    return keyword === 'fit-content' ? Math.min(content, fits()) : content;
+  };
+  const lineAcross = style.writingMode === 'horizontal-tb';
+  const minW =
+    (style.minWidthKeyword === 'stretch'
+      ? stretchedWidth
+      : style.minWidthKeyword
+        ? least(
+            style.minWidthKeyword,
+            style.width,
+            lineAcross,
+            contentWidth(0),
+            room,
+          )
+        : null) ??
+    across(style.minWidth) ??
+    0;
+  const minH = style.minHeightKeyword
+    ? style.minHeightKeyword === 'stretch'
+      ? 0
+      : least(
+          style.minHeightKeyword,
+          style.height,
+          !lineAcross,
+          contentHeight(),
+          () => (Number.isFinite(base) ? base : 0),
+        )
+    : (down(style.minHeight) ?? 0);
+  // a maximum below the minimum is the minimum (10.4)
+  const maxW = Math.max(
+    minW,
+    style.maxWidthKeyword === 'stretch' && stretchedWidth !== null
+      ? stretchedWidth
+      : style.maxWidthKeyword && style.maxWidthKeyword !== 'stretch'
+        ? contentWidth(Infinity)
+        : style.maxWidth === 'none'
+          ? Infinity
+          : (across(style.maxWidth) ?? Infinity),
+  );
+  const maxH = Math.max(
+    minH,
+    style.maxHeightKeyword && style.maxHeightKeyword !== 'stretch'
+      ? contentHeight()
+      : style.maxHeight === 'none'
+        ? Infinity
+        : (down(style.maxHeight) ?? Infinity),
+  );
   let w: number;
   let h: number;
   if (width === null && height === null && ratio > 0) {
@@ -8900,6 +8969,17 @@ function sizeReplaced(
   box.width = w + box.horizontalExtra;
   box.height = h + box.verticalExtra;
 }
+
+/** The controls a percentage of a size compresses (`sizeReplaced`). */
+const COMPRESSED: ReadonlySet<string> = new Set([
+  'input',
+  'textarea',
+  'select',
+  'button',
+  'file',
+  'range',
+  'color',
+]);
 
 /** What a replaced box with nothing to say about its size has: `hr`. */
 const NO_INTRINSIC: Intrinsic = { width: 0, height: 0, missing: 0, ratio: 0 };
