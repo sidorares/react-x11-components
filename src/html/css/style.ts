@@ -10081,8 +10081,13 @@ function parseBoxShadow(
 function radiusOf(text: string, ctx: UnitContext): Len | null {
   const len = parseLength(text, ctx);
   if (len === null || len === AUTO) return null;
-  if (typeof len === 'number') return len < 0 ? null : len;
-  return len.pct < 0 && !len.px && !len.of ? null : len;
+  // a calculation is held to the range, where a length out of it is none
+  // (CSS Values 4, 10.12)
+  if (typeof len === 'number') {
+    return len >= 0 ? len : isMathFunction(text) ? 0 : null;
+  }
+  if (len.pct >= 0 || len.px || len.of) return len;
+  return isMathFunction(text) ? { pct: 0 } : null;
 }
 
 /**
@@ -10095,7 +10100,7 @@ function parseRadii(
   value: string,
   ctx: UnitContext,
 ): [[Len, Len, Len, Len], [Len, Len, Len, Len] | null] | null {
-  const halves = value.split('/');
+  const halves = splitTopLevelSlash(value);
   if (halves.length > 2) return null;
   const [horizontal, vertical] = halves.map((half) =>
     splitValue(half).map((p) => radiusOf(p, ctx)),
