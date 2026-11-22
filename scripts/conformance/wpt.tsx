@@ -46,6 +46,7 @@ import type {
   ResourceRequest,
   ResourceResult,
 } from '../../src/html/index.js';
+import { checkVersions } from './versions.js';
 
 const h = React.createElement;
 
@@ -60,6 +61,7 @@ if (!wptRoot || !listFile || !outFile) {
   console.error('usage: wpt.tsx <wpt root> <list> <out.jsonl>');
   process.exit(2);
 }
+checkVersions();
 const ROOT = resolve(wptRoot);
 
 // Where each file is served from, as WPT's server serves the checkout: the

@@ -30,6 +30,7 @@ import {
 import { cpus } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkVersions } from './versions.js';
 
 const args = process.argv.slice(2);
 const flag = (name: string, fallback: string) => {
@@ -84,6 +85,7 @@ function reftests(dir: string): string[] {
   return found.sort();
 }
 
+checkVersions();
 const tests = (dirs.length ? dirs : ['css/CSS2']).flatMap(reftests);
 console.log(`${tests.length} reftests, ${backend}, ${jobs} jobs`);
 
