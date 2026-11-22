@@ -8451,6 +8451,8 @@ bottom, to its root inline box's `text`, `cap` or `ex` over edge and its
 the blocks between it and the line coming out shorter; border or padding
 between the box and its line, a height of its own on a block between, or
 a flex box or a table on the way holds a side, and the innermost trim wins;
+a block in a vertical writing mode trims its lines across the page, at its
+block-start and block-end, as its frame trims them;
 a `<br>` that clears floats after the last line is passed over for it, and
 the box ends no higher than the floats it cleared; a
 face that says no capital or x height has one of 0.7em or 0.5em; the
