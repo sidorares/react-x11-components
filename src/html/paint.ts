@@ -21,6 +21,14 @@
 // draw.
 import * as ntk from 'react-x11/ntk';
 import {
+  PIXMAP_SIDE,
+  drawImageAt,
+  drawImagePart,
+  drawImageSized,
+  resampled,
+  tooLong,
+} from './draw-image.js';
+import {
   canFill,
   lineBands,
   paintRunBackgrounds,
@@ -6088,31 +6096,6 @@ function paintBoxOutline(
 /** The most pixels a `filter()`'s image is made of: past it, a tile the
  *  size of a page, it is not drawn. */
 const MAX_FILTERED_PIXELS = 4096 * 4096;
-
-/** Straight RGBA at another size, the nearest pixel each. */
-function resampled(
-  src: Uint8Array | Uint8ClampedArray,
-  w: number,
-  h: number,
-  width: number,
-  height: number,
-): Uint8ClampedArray {
-  if (w === width && h === height) return new Uint8ClampedArray(src);
-  const out = new Uint8ClampedArray(width * height * 4);
-  for (let y = 0; y < height; y += 1) {
-    const sy = Math.min(h - 1, Math.floor(((y + 0.5) * h) / height));
-    for (let x = 0; x < width; x += 1) {
-      const sx = Math.min(w - 1, Math.floor(((x + 0.5) * w) / width));
-      const i = (y * width + x) * 4;
-      const j = (sy * w + sx) * 4;
-      out[i] = src[j];
-      out[i + 1] = src[j + 1];
-      out[i + 2] = src[j + 2];
-      out[i + 3] = src[j + 3];
-    }
-  }
-  return out;
-}
 
 /** The images a `filter()` made, by the image and what filtered it. */
 const FILTERED_IMAGES = new WeakMap<object, Map<string, unknown>>();
@@ -12508,7 +12491,7 @@ function tileBlock(
         for (let j = 0; j < ky; j += 1) {
           for (let i = 0; i < kx; i += 1) {
             // the image at the tile's size; a level above it as it is
-            if (level === 0) sctx.drawImage!(from, i * tw, j * th, tw, th);
+            if (level === 0) drawImageSized(sctx, from, i * tw, j * th, tw, th);
             else sctx.drawImage!(from, i * tw, j * th);
           }
         }
@@ -12642,6 +12625,7 @@ function paintBackgroundImage(
     }
   } else if (
     tiles > 1 &&
+    !tooLong(loaded.image) &&
     iw === loaded.width &&
     ih === loaded.height &&
     stepX === iw &&
@@ -12706,7 +12690,7 @@ function paintBackgroundImage(
       }
     }
   } else {
-    ctx.drawImage!(loaded.image, x0, y0, iw, ih);
+    drawImageSized(ctx, loaded.image, x0, y0, iw, ih);
   }
   ctx.restore();
 }
@@ -13191,12 +13175,18 @@ function paintBorderImage(
     const svg = image instanceof SvgDrawing ? image : null;
     const w = Math.max(1, Math.round(cw));
     const h = Math.max(1, Math.round(ch));
+    // no longer a side than a surface has, the picture squeezed to that
+    const across = Math.min(w, PIXMAP_SIDE);
+    const along = Math.min(h, PIXMAP_SIDE);
     const scheme = box.style.colorScheme;
     const drawn = options.cached?.(
       `border-image|${key}|${w}x${h}|${scheme}`,
-      w,
-      h,
+      across,
+      along,
       (sctx) => {
+        if (across !== w || along !== h) {
+          sctx.transform?.(across / w, 0, 0, along / h, 0, 0);
+        }
         if (svg) {
           svg.drawImage(sctx, 0, 0, w, h, scale, scheme, surfaceMaker(options));
         } else if (gradient) {
@@ -13215,8 +13205,8 @@ function paintBorderImage(
     );
     if (!drawn) return false;
     image = drawn;
-    unitX = w / iw;
-    unitY = h / ih;
+    unitX = across / iw;
+    unitY = along / ih;
   }
   // the slices, image pixels in from each edge, and none past the image
   const slices = spec.slice.map((s, i) =>
@@ -13290,7 +13280,7 @@ function paintBorderImage(
         `border-image|${key}|${sized}|${px},${py},${pw},${ph}`,
         pw,
         ph,
-        (sctx) => sctx.drawImage!(image, px, py, pw, ph, 0, 0, pw, ph),
+        (sctx) => drawImagePart(sctx, image, px, py, pw, ph, 0, 0, pw, ph),
       );
     if (piece) {
       source = piece;
@@ -13299,7 +13289,8 @@ function paintBorderImage(
     }
     for (const [x0, x1, cx0, cx1] of runX) {
       for (const [y0, y1, cy0, cy1] of runY) {
-        ctx.drawImage!(
+        drawImagePart(
+          ctx,
           source,
           ox + cx0 * pw,
           oy + cy0 * ph,
@@ -14642,7 +14633,9 @@ function paintMarker(
     if (!loaded || !(width > 0 && height > 0)) return;
     if (loaded.image instanceof SvgDrawing) {
       drawSvg(ctx, loaded.image, x, y, width, height, scheme, options);
-    } else ctx.drawImage?.(loaded.image, x, y, width, height);
+    } else if (ctx.drawImage) {
+      drawImageSized(ctx, loaded.image, x, y, width, height);
+    }
     return;
   }
   marker.layout?.draw(ctx, x, y);
@@ -15455,7 +15448,7 @@ function drawSvg(
         svg.drawImage(sctx, 0, 0, w, h, scale, scheme, surfaceMaker(options)),
     );
     if (kept) {
-      ctx.drawImage(kept, x, y);
+      drawImageAt(ctx, kept, x, y);
       return;
     }
   }
@@ -15554,7 +15547,7 @@ function drawNearest(
     });
     sizes.set(key, scaled);
   }
-  ctx.drawImage(scaled, x, y);
+  drawImageAt(ctx, scaled, x, y);
   return true;
 }
 
@@ -15600,10 +15593,10 @@ function drawRaster(
       `image|${imageId(image as object)}|${w}x${h}`,
       Math.ceil(w),
       Math.ceil(h),
-      (sctx) => sctx.drawImage!(image, 0, 0, w, h),
+      (sctx) => drawImageSized(sctx, image, 0, 0, w, h),
     );
     if (kept) {
-      ctx.drawImage!(kept, x, y);
+      drawImageAt(ctx, kept, x, y);
       return;
     }
     const surface =
@@ -15612,7 +15605,8 @@ function drawRaster(
         : null;
     if (surface) {
       try {
-        (surface.getContext('2d') as PaintContext).drawImage!(
+        drawImageSized(
+          surface.getContext('2d') as PaintContext,
           image,
           0,
           0,
@@ -15626,7 +15620,7 @@ function drawRaster(
       return;
     }
   }
-  ctx.drawImage!(image, x, y, w, h);
+  drawImageSized(ctx, image, x, y, w, h);
 }
 
 /** The side of a tile a large raster is kept in (`drawRasterTiles`), in
@@ -15683,7 +15677,7 @@ function drawRasterTiles(
         `image|${id}|${w}x${h}|${i},${j}`,
         tw,
         th,
-        (sctx) => sctx.drawImage!(image, -tx, -ty, w, h),
+        (sctx) => drawImageSized(sctx, image, -tx, -ty, w, h),
       );
       if (kept) ctx.drawImage!(kept, x + tx, y + ty);
       else missed.push({ x: x + tx, y: y + ty, w: tw, h: th });
@@ -15691,12 +15685,12 @@ function drawRasterTiles(
   }
   if (missed.length === 0) return;
   if (missed.length === tiles || !canClip(ctx)) {
-    ctx.drawImage!(image, x, y, w, h);
+    drawImageSized(ctx, image, x, y, w, h);
     return;
   }
   for (const tile of missed) {
     pushClip(ctx, tile, null);
-    ctx.drawImage!(image, x, y, w, h);
+    drawImageSized(ctx, image, x, y, w, h);
     ctx.restore();
   }
 }
@@ -18702,10 +18696,17 @@ function conicFill(
   currentColor: string,
 ): GradientFill | null {
   if (!ctx.createPattern) return null;
-  const width = Math.max(1, Math.ceil(w));
-  const height = Math.max(1, Math.ceil(h));
-  if (width * height > CONIC_MOST) return null;
-  const key = `${width}x${height} ${currentColor} ${JSON.stringify(gradient)}`;
+  if (Math.ceil(w) * Math.ceil(h) > CONIC_MOST) return null;
+  // one thinner than that and longer than a server makes a picture is made
+  // as long as it makes one and drawn out to its length, with a pixel past
+  // each end for the first and the last to be filtered with
+  const width = Math.min(PIXMAP_SIDE, Math.max(1, Math.ceil(w)));
+  const height = Math.min(PIXMAP_SIDE, Math.max(1, Math.ceil(h)));
+  const endX = w > PIXMAP_SIDE ? 1 : 0;
+  const endY = h > PIXMAP_SIDE ? 1 : 0;
+  const kx = endX ? w / (width - 2) : 1;
+  const ky = endY ? h / (height - 2) : 1;
+  const key = `${width * kx}x${height * ky} ${currentColor} ${JSON.stringify(gradient)}`;
   let image = CONIC_IMAGES.get(key);
   if (image === undefined) {
     const table = conicTable(gradient, currentColor);
@@ -18715,7 +18716,9 @@ function conicFill(
       for (let px = 0; px < width; px += 1) {
         const k = Math.min(
           CONIC_STEPS - 1,
-          Math.floor(turn(px + 0.5, py + 0.5) * CONIC_STEPS),
+          Math.floor(
+            turn((px - endX + 0.5) * kx, (py - endY + 0.5) * ky) * CONIC_STEPS,
+          ),
         );
         const o = (py * width + px) * 4;
         // straight RGBA, as a canvas's pixels are
@@ -18731,5 +18734,5 @@ function conicFill(
   }
   const style = ctx.createPattern(image, 'no-repeat');
   if (!style) return null;
-  return { style, matrix: [1, 0, 0, 1, x, y] };
+  return { style, matrix: [kx, 0, 0, ky, x - endX * kx, y - endY * ky] };
 }

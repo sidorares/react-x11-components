@@ -444,6 +444,7 @@ import type {
   ShadowPart,
   SpriteHost,
 } from './sprites.js';
+import { PIXMAP_SIDE, drawImageSized } from './draw-image.js';
 import { SpriteStore, SurfaceCache, newSurface } from './surfaces.js';
 import { FilterStore } from './filters.js';
 import type { SurfaceLike } from './surfaces.js';
@@ -17726,6 +17727,8 @@ export class HtmlViewNode extends Node {
    *  backend until it is found to have none. */
   private _surface(width: number, height: number): SurfaceLike | null {
     if (this._noSurface) return null;
+    // one the backend cannot make, which says nothing of the next
+    if (width > PIXMAP_SIDE || height > PIXMAP_SIDE) return null;
     const surface = newSurface(this.app, width, height);
     if (!surface) this._noSurface = true;
     return surface;
@@ -19079,7 +19082,14 @@ function drawCaptured(
   if (Math.abs(sx - 1) < 1e-6 && Math.abs(sy - 1) < 1e-6) {
     ctx.drawImage(surface, Math.round(dx), Math.round(dy));
   } else {
-    ctx.drawImage(surface, dx, dy, image.inkWidth * sx, image.inkHeight * sy);
+    drawImageSized(
+      ctx,
+      surface,
+      dx,
+      dy,
+      image.inkWidth * sx,
+      image.inkHeight * sy,
+    );
   }
   if (lighter) ctx.restore();
 }
