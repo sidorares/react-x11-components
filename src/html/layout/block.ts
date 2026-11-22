@@ -12621,7 +12621,7 @@ function ownStartSide(style: ComputedStyle, down: boolean): 'low' | 'high' {
 /** Whether `self-start` or `self-end` in an alignment's text is the other
  *  end of the room from the container's start: where the item's own start
  *  is on the other side of the page from the container's. */
-function selfFlips(
+export function selfFlips(
   text: string | undefined,
   own: ComputedStyle,
   container: ComputedStyle,
