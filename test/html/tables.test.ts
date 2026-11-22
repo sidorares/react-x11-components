@@ -36,12 +36,19 @@ metric(
     // draws them
     const { node, result } = await render(
       '<style>body{margin:0;background:#ffffff}table{border-spacing:10px}' +
-        'td{padding:0;width:40px;height:40px;background:#0000ff}</style>' +
+        'td{padding:0;width:40px;height:40px;background:#0000ff}' +
+        '.n{background:none}</style>' +
         '<table><tr><td></td><td></td></tr>' +
         '<tr style="box-shadow:0 0 0 6px #ff0000"><td></td><td></td></tr>' +
         '</table>' +
         '<table><tbody style="box-shadow:6px 6px #ff0000"><tr><td></td></tr>' +
-        '<tr><td></td></tr></tbody></table>',
+        '<tr><td></td></tr></tbody></table>' +
+        '<table style="border-spacing:4px"><tr style="background:#ffff00">' +
+        '<td></td></tr><tr style="background:#ffff00;box-shadow:0 0 0 8px ' +
+        '#ff0000"><td class="n"></td><td class="n"></td></tr>' +
+        '<tr style="background:#ffff00"><td class="n"></td></tr></table>' +
+        '<table><tr style="opacity:.5;box-shadow:6px 6px #ff0000"><td></td>' +
+        '</tr></table>',
     );
     const { abs } = view(node) as unknown as { abs: { x: number; y: number } };
     const at = (x: number, y: number, colour: string, message: string) =>
@@ -53,6 +60,12 @@ metric(
     await at(30, 80, '#0000ff', 'under its cells');
     await at(53, 150, '#ff0000', "a row group's");
     await at(30, 213, '#ff0000', 'below its last row');
+    // the third table starts at 220
+    await at(20, 262, '#ff0000', 'over the cells of the row before');
+    await at(46, 290, '#ffffff', 'in the spacing of a row with a background');
+    await at(20, 309, '#ff0000', 'below it');
+    await at(20, 314, '#ffff00', "under the next row's background");
+    await at(53, 400, '#ff8080', 'and as faint as its row');
   },
 );
 
