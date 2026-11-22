@@ -1039,6 +1039,18 @@ test('a later cascade layer wins over an earlier one, and no layer over any', as
     blue,
     'a layer with no name is one of its own',
   );
+  // over the named layer between the two sheets
+  assert.strictEqual(
+    await colorOf(
+      '',
+      '<style>@layer { .x { color: #ff0000 } }</style>' +
+        '<style>@layer a { .x { color: #ff0000 } }</style>' +
+        '<style>@layer { .x { color: #0000ff } }</style>' +
+        '<p id="p" class="x">x</p>',
+    ),
+    blue,
+    "a later sheet's is none of an earlier's",
+  );
 });
 
 test('a nested rule is relative to its parent, and a nested @media holds for it', () => {
@@ -1911,6 +1923,121 @@ test('a @supports test of the mask is answered, and every other is entered', () 
   );
 });
 
+test('a @supports condition that is none holds nowhere, and neither does a test nothing knows', () => {
+  // CSS Conditional 3, 6: the block was entered wherever the condition was
+  // not one it could answer, so `and` beside `or`, a bare declaration and
+  // an unknown function applied what they guard. Each is Chrome's answer.
+  const entered = (condition: string) =>
+    parseStylesheet(
+      `@supports ${condition} {#t{z-index:7}}\n#u{z-index:3}`,
+    ).rules.some((rule) => rule.selector === '#t');
+  for (const condition of [
+    '(margin:0)',
+    '((margin:0))',
+    '( (margin: 0) )',
+    'not (not (margin:0))',
+    '(margin:0) and (color:red)',
+    '(margin:0)and (color:red)',
+    '(margin:0) AND (color:red)',
+    '(margin:0) and (color:red) and (width:1px)',
+    '((margin:0) and (color:red)) or (width:1px)',
+    '(color:red) and (not (color:nope))',
+    '(--x:)',
+    '(--x: )',
+    '(--x:y)',
+    '(--x: a !important)',
+    '(--x: {a:b})',
+    '(margin:0 !important)',
+    '(margin:0!important)',
+    '(margin:0 ! important)',
+    'not unknown()',
+    '(not unknown(a))',
+    'unknown() or (margin:0)',
+    'not (a)',
+    'not ()',
+    'selector(a)',
+    'selector(a > b)',
+    '(selector(a))',
+    'selector(a) and (margin:0)',
+    'at-rule(@media)',
+    'font-format(woff2)',
+    'font-tech(variations)',
+    '(MARGIN:0)',
+    '(margin/**/:/**/0)',
+    '/**/(margin:0)/**/',
+    '(color:var(--x))',
+    '(color:var(--x) nope)',
+    '(width:calc(1px + 2px))',
+    '(color: rgb(0 0 0 / .5))',
+    '(content: ")")',
+    '(content: "a\\"b)")',
+    '(background: url(a;b))',
+    '(m\\61rgin:0)',
+    '(color: var(--a) <!--)',
+    '(--a: b <!--)',
+    '(--0: a)',
+  ]) {
+    assert.strictEqual(entered(condition), true, condition);
+  }
+  for (const condition of [
+    'not (margin:0)',
+    'not ((margin:0))',
+    'not not (margin:0)',
+    'not(margin:0)',
+    '(not(margin:0))',
+    '(margin:0) and(color:red)',
+    '(margin:0) and (color:red) or (width:1px)',
+    '(margin:0) or (color:red) and (width:1px)',
+    '((margin: 0) and (color:red) or (width:1px))',
+    'not (color:nope) and (color:red)',
+    '(color:red) and not (color:nope)',
+    '(margin:0) (color:red)',
+    '(margin:0) xor (color:red)',
+    '(margin:0) or',
+    'or (margin:0)',
+    'margin:0',
+    'color:red',
+    '(margin:)',
+    '(margin: )',
+    '(--x: a !nope)',
+    '(--x: a;b)',
+    '(margin:0 !important !important)',
+    '(margin:0 !nope)',
+    '(margin:0;)',
+    '(margin:0;color:red)',
+    '(margin:0))',
+    '((margin:0)',
+    '[margin:0]',
+    '((margin:0) and [color:red])',
+    '(margin:0]',
+    'unknown()',
+    'unknown(a b)',
+    '(unknown(a b))',
+    '(a)',
+    '(a b c)',
+    '()',
+    '("a")',
+    '(1px)',
+    '(@page)',
+    'selector(> b)',
+    'selector()',
+    'not selector(a)',
+    'selector(:nope)',
+    'at-rule(media)',
+    'font-format("woff2")',
+    'font-format(woff2, woff)',
+    'font-format(nope)',
+    'font-tech(nope)',
+    '(color:var(x))',
+    '(margin: 0 and color: red)',
+    '(width:calc(1px+2px))',
+    '(--: a)',
+    '(color: <!--)',
+  ]) {
+    assert.strictEqual(entered(condition), false, condition);
+  }
+});
+
 test('a @supports test of subgrid is answered', () => {
   // Primer keeps `grid-template-rows: auto` under `not` for an engine
   // without subgrids; entered, it undid the subgrid of every pricing card
@@ -1927,6 +2054,43 @@ test('a @supports test of subgrid is answered', () => {
   // and one the grammar refuses is not, as in Chrome: `masonry` is grid
   // lanes' old name, which no track list takes
   assert.strictEqual(supportsCondition('(grid-template-rows: masonry)'), false);
+});
+
+test("an :nth-child()'s of needs no space after it", async () => {
+  // WPT nth-child-of-no-space-after-of: a delimiter ends it, and so does a
+  // comment, as in Chrome
+  const { node } = await render(
+    '<style>' +
+      'p:nth-child(2 of/* c */p) { color: #00ff00 }' +
+      '.a:nth-child(2 of.a) { color: #00ff01 }' +
+      '[b]:nth-last-child(1 of[b]) { color: #00ff02 }' +
+      'i:nth-child(2 of:is(i)) { color: #00ff03 }' +
+      'b:nth-child(2 of#b1,#b2) { color: #00ff04 }' +
+      's:nth-child(2 of*) { color: #00ff05 }' +
+      'u:nth-child(2of.u) { color: #ff0000 }' +
+      'ul { & li:nth-child(2 of.l) { color: #00ff06 } }' +
+      'q:nth-child(1 of.q) { color: #00ff07 } .q.q { color: #ff0000 }' +
+      '</style>' +
+      '<div><p></p><p id="p"></p></div>' +
+      '<div><em class="a"></em><em></em><em id="a" class="a"></em></div>' +
+      '<div><em b></em><em id="lb" b></em><em></em></div>' +
+      '<div><i></i><em></em><i id="i"></i></div>' +
+      '<div><b id="b1"></b><em></em><b id="b2"></b></div>' +
+      '<div><s></s><s id="s"></s></div>' +
+      '<div><u class="u"></u><u id="u" class="u"></u></div>' +
+      '<ul><li class="l"></li><li></li><li id="l" class="l"></li></ul>' +
+      '<div><q id="q" class="q"></q></div>',
+  );
+  const el = view(node);
+  const color = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)!.color;
+  assert.deepStrictEqual(
+    ['p', 'a', 'lb', 'i', 'b2', 's', 'l'].map(color),
+    [0, 1, 2, 3, 4, 5, 6].map((n) => `rgb(0, 255, ${n})`),
+  );
+  assert.notStrictEqual(color('u'), 'rgb(255, 0, 0)');
+  // and its specificity is the class's with the pseudo-class's
+  assert.strictEqual(color('q'), 'rgb(0, 255, 7)');
 });
 
 test('a logical property maps by the direction the element comes to, wherever it is declared', async () => {
@@ -2319,4 +2483,376 @@ test("an author's revert rolls a property back to what the user agent's rules gi
   const a = boxOf(el, 'a');
   const cb = boxOf(el, 'cb');
   assert.deepStrictEqual([a.x - cb.x, a.width], [0, 30]);
+});
+
+test("an author's revert-layer rolls a property back to what the layers under its own make of it", async () => {
+  // CSS Cascade 5, 7.3.6. It was no value of any property, so the property
+  // kept what the same layer had declared before it. Each row's answer is
+  // Chrome's `getComputedStyle`: the sheet, the element's `style`, the
+  // property, and the element, a `::before` where it says so.
+  const cases: [string, string, string, string, string][] = [
+    [
+      '@layer{#t{color:green}} @layer{#t{color:red;color:revert-layer}}',
+      '',
+      'color',
+      'div',
+      'rgb(0, 128, 0)',
+    ],
+    [
+      '@layer{#t{color:green}} #t{color:red;color:revert-layer}',
+      '',
+      'color',
+      'div',
+      'rgb(0, 128, 0)',
+    ],
+    [
+      '@layer{#t{color:green}} @layer{#t{color:red;color:revert-layer}} @layer{#t{color:red;color:revert-layer}} @layer{#t{color:red;color:revert-layer}}',
+      '',
+      'color',
+      'div',
+      'rgb(0, 128, 0)',
+    ],
+    [
+      '@layer{#t{color:green}} @layer{#t{color:red;color:red!important;color:revert-layer!important}} @layer{#t{color:red;color:red!important}}',
+      '',
+      'color',
+      'div',
+      'rgb(0, 128, 0)',
+    ],
+    [
+      '@layer{#t{color:green!important}} @layer{#t{color:revert-layer!important}}',
+      '',
+      'color',
+      'div',
+      'rgb(0, 128, 0)',
+    ],
+    [
+      '#t{color:green}',
+      'color:red;color:revert-layer',
+      'color',
+      'div',
+      'rgb(0, 128, 0)',
+    ],
+    [
+      '#t{color:green!important}',
+      'color:red!important;color:revert-layer!important',
+      'color',
+      'div',
+      'rgb(0, 128, 0)',
+    ],
+    [
+      '#t{color:green}',
+      'color:revert-layer!important',
+      'color',
+      'div',
+      'rgb(0, 128, 0)',
+    ],
+    ['#t{display:inline;display:revert-layer}', '', 'display', 'div', 'block'],
+    [
+      '#t{margin-top:40px;margin-top:revert-layer}',
+      '',
+      'margin-top',
+      'p',
+      '16px',
+    ],
+    [
+      '#t{margin:40px;margin-block:revert-layer}',
+      '',
+      'margin-top',
+      'p',
+      '16px',
+    ],
+    [
+      '@layer{#t{padding:7px}} #t{padding-inline:revert-layer 3px}',
+      '',
+      'padding-left',
+      'div',
+      '7px',
+    ],
+    [
+      '@layer{#t{padding:7px}} #t{padding:1px;padding-inline:revert-layer}',
+      '',
+      'padding-left',
+      'div',
+      '7px',
+    ],
+    [
+      '@layer a{#t{width:30px} @layer b{#t{width:20px}}} @layer a{#t{width:9px;width:revert-layer}}',
+      '',
+      'width',
+      'div',
+      '20px',
+    ],
+    [
+      '@layer a{@layer b{#t{width:20px}} #t{width:30px;width:revert-layer}}',
+      '',
+      'width',
+      'div',
+      '20px',
+    ],
+    [
+      '@layer{#t{font-size:30px}} #t{font-size:10px;font-size:revert-layer;width:2em}',
+      '',
+      'width',
+      'div',
+      '60px',
+    ],
+    [
+      '@layer{#t{--x:20px}} #t{--x:30px;--x:revert-layer;width:var(--x)}',
+      '',
+      'width',
+      'div',
+      '20px',
+    ],
+    [
+      '@layer{#t{--x:20px}} @layer{#t{--x:revert-layer}} #t{--x:30px;--x:revert-layer;width:var(--x)}',
+      '',
+      'width',
+      'div',
+      '20px',
+    ],
+    [
+      '#t{--x:30px;--x:revert-layer;width:var(--x,11px)}',
+      '',
+      'width',
+      'div',
+      '11px',
+    ],
+    [
+      'body{--x:12px} #t{--x:30px;--x:revert-layer;width:var(--x,11px)}',
+      '',
+      'width',
+      'div',
+      '12px',
+    ],
+    ['#t{--x:30px;width:var(--x)}', '--x:revert-layer', 'width', 'div', '30px'],
+    [
+      '@property --x{syntax:"<length>";initial-value:5px;inherits:false} body{--x:40px} #t{--x:30px;--x:revert-layer;width:var(--x)}',
+      '',
+      'width',
+      'div',
+      '5px',
+    ],
+    [
+      '@layer{#t{color:green}} #t{color:red;color:var(--none,revert-layer)}',
+      '',
+      'color',
+      'div',
+      'rgb(0, 128, 0)',
+    ],
+    [
+      '@layer{#t{color:green;width:33px}} #t{color:red;width:44px;all:revert-layer}',
+      '',
+      'color',
+      'div',
+      'rgb(0, 128, 0)',
+    ],
+    [
+      '@layer{#t{color:green;width:33px}} #t{color:red;width:44px;all:revert-layer}',
+      '',
+      'width',
+      'div',
+      '33px',
+    ],
+    [
+      '@layer{#t{color:green;width:33px}} #t{color:red;all:revert-layer;width:44px}',
+      '',
+      'width',
+      'div',
+      '44px',
+    ],
+    [
+      '@layer{#t{color:green}} @layer{#t{color:red;color:revert-layer}} #t{color:revert}',
+      '',
+      'color',
+      'div',
+      'rgb(0, 0, 0)',
+    ],
+    [
+      '@layer{#t{color:green;color:revert}} @layer{#t{color:red;color:revert-layer}}',
+      '',
+      'color',
+      'div',
+      'rgb(0, 0, 0)',
+    ],
+    [
+      '@layer{#t{color:inherit}} @layer{#t{color:red;color:revert-layer}} body{color:blue}',
+      '',
+      'color',
+      'div',
+      'rgb(0, 0, 255)',
+    ],
+    [
+      '@layer{#t{background:green}} @layer{#t{background:red;background-color:revert-layer}}',
+      '',
+      'background-color',
+      'div',
+      'rgb(0, 128, 0)',
+    ],
+    [
+      '#t{width:30px;animation:a 2s -1s paused linear} @keyframes a{from{width:50px}to{width:revert-layer}}',
+      '',
+      'width',
+      'div',
+      '40px',
+    ],
+    [
+      '#t{width:30px;animation:a 2s -1s paused linear} @keyframes a{from{width:50px}to{width:revert-layer}}',
+      'width:70px',
+      'width',
+      'div',
+      '60px',
+    ],
+    [
+      '@property --x{syntax:"<length>";initial-value:0px;inherits:false} #t{width:var(--x);--x:150px;animation:a 2s -1s paused linear} @keyframes a{from{--x:50px}to{--x:revert-layer}}',
+      '',
+      'width',
+      'div',
+      '100px',
+    ],
+    [
+      '@layer{#t::before{content:"x";width:13px}} #t::before{display:block;width:40px;width:revert-layer}',
+      '',
+      'width',
+      'div::before',
+      '13px',
+    ],
+    [
+      '@layer{#t{font:italic 20px/3 serif}} #t{font:10px/1 serif;font:revert-layer}',
+      '',
+      'font-style',
+      'div',
+      'italic',
+    ],
+    [
+      '@layer{#t{font:italic 20px/3 serif}} #t{font:10px/1 serif;font:revert-layer}',
+      '',
+      'font-size',
+      'div',
+      '20px',
+    ],
+    [
+      '@layer{#t{border-left:4px solid green}} #t{border:1px solid red;border-left:revert-layer}',
+      '',
+      'border-left-width',
+      'div',
+      '4px',
+    ],
+    [
+      '@layer{#t{direction:rtl;writing-mode:vertical-rl;margin-block-start:9px}} #t{writing-mode:horizontal-tb;margin-block-start:1px;writing-mode:revert-layer;margin-block-start:revert-layer}',
+      '',
+      'margin-right',
+      'div',
+      '9px',
+    ],
+    [
+      '@layer{html{font-size:30px}} html{font-size:10px;margin:1px;font-size:revert-layer;margin:revert-layer} #t{width:2rem}',
+      '',
+      'width',
+      'div',
+      '60px',
+    ],
+    [
+      'html{font-size:10px;margin-top:revert-layer;line-height:revert} #t{width:2rem}',
+      '',
+      'width',
+      'div',
+      '20px',
+    ],
+    [
+      '@layer{#t{width:calc(10px + 2em)}} #t{font-size:20px;width:revert-layer}',
+      '',
+      'width',
+      'div',
+      '50px',
+    ],
+    [
+      '@layer{#t{width:2em}} #t{font-size:20px;width:revert-layer}',
+      '',
+      'width',
+      'div',
+      '40px',
+    ],
+    [
+      '@layer{#t{font-size:30px}} @layer{#t{font-size:20px;font-size:revert-layer}} @layer{#t{width:2em}} #t{font-size:10px;font-size:revert-layer;width:revert-layer}',
+      '',
+      'width',
+      'div',
+      '60px',
+    ],
+    [
+      '#t{font-size:50px;margin-top:3px;margin-top:revert-layer}',
+      '',
+      'margin-top',
+      'h1',
+      '33.5px',
+    ],
+    [
+      '#t{font-size:50px;margin-top:3px;margin-top:revert}',
+      '',
+      'margin-top',
+      'h1',
+      '33.5px',
+    ],
+    [
+      '@layer{#t{color:var(--c)}} #t{--c:green;color:red;color:revert-layer}',
+      '',
+      'color',
+      'div',
+      'rgb(0, 128, 0)',
+    ],
+    [
+      '@layer{#t{--c:red;color:var(--c)}} #t{--c:green;color:red;color:revert-layer}',
+      '',
+      'color',
+      'div',
+      'rgb(0, 128, 0)',
+    ],
+    [
+      '@layer{#t{width:20px}} #t{zoom:2;width:50px;width:revert-layer}',
+      '',
+      'width',
+      'div',
+      '20px',
+    ],
+    [
+      '@layer{#t{width:2lh}} #t{line-height:30px;width:50px;width:revert-layer}',
+      '',
+      'width',
+      'div',
+      '60px',
+    ],
+    [
+      '@layer{#t{width:20px}} @layer{#t{width:30px;width:revert-layer!important}}',
+      '',
+      'width',
+      'div',
+      '20px',
+    ],
+    [
+      '#t{margin-top:3px}',
+      'margin-top:9px;margin-top:revert',
+      'margin-top',
+      'p',
+      '16px',
+    ],
+  ];
+  const got: string[] = [];
+  for (const [css, style, prop, what] of cases) {
+    const [tag, pseudo] = what.split('::');
+    const { node } = await render(
+      `<!doctype html><style>body{font-size:16px;color:#000}${css}</style><${tag} id=t style="${style}">x</${tag}>`,
+    );
+    const el = view(node);
+    const own = el.computedStyle(
+      findById(el.document, 't')!,
+      pseudo === 'before' ? 'before' : undefined,
+    )!;
+    got.push(`${css} ${style} -> ${own[prop]}`);
+    await cleanup();
+  }
+  assert.deepStrictEqual(
+    got,
+    cases.map(([css, style, , , want]) => `${css} ${style} -> ${want}`),
+  );
 });
