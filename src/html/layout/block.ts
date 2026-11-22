@@ -360,6 +360,10 @@ export interface LayoutContext {
    *  ink, where nothing in them moved, the walk after it keeps
    *  (`computePaintBounds`). */
   reused?: Set<Box>;
+  /** The boxes whose offsets this layout has taken off (`unoffsetHeld`): a box
+   *  it kept and then lays out again may keep what it holds, which has none on
+   *  any more. */
+  bare?: Set<Box>;
   /** The boxes no layout keeps, those that hold a box out of the flow, and
    *  those the passes after a flow move something in (`reuseBlockers`). */
   blockers?: Blockers;
@@ -1362,7 +1366,9 @@ export function mayKeepLaid(
 export function keepLaid(box: Box, ctx: LayoutContext): void {
   if (ctx.reused!.has(box)) return;
   const { holders, moved } = ctx.blockers!;
-  if (ctx.offsets !== false && moved.has(box)) unoffsetHeld(box, moved);
+  if (ctx.offsets !== false && moved.has(box)) {
+    unoffsetHeld(box, moved, ctx.bare!);
+  }
   ctx.reused!.add(box);
   if (holders.has(box)) keptPositionedIn(box, holders, ctx.keptPositioned!);
   keptBlocks += 1;
@@ -1620,16 +1626,22 @@ export function noteMoving(tree: BoxTree, boxes: Iterable<Box>): void {
  * keep as they move it. What a box in the top layer or an inline broken
  * around blocks moves is in no kept block (`reuseBlockers`).
  */
-function unoffsetHeld(block: Box, moved: ReadonlySet<Box>): void {
+function unoffsetHeld(
+  block: Box,
+  moved: ReadonlySet<Box>,
+  bare: Set<Box>,
+): void {
   for (const child of block.children) {
-    if (moved.has(child)) unoffset(child, moved);
+    if (moved.has(child)) unoffset(child, moved, bare);
   }
   scrollBack(block, translate);
 }
 
-function unoffset(box: Box, moved: ReadonlySet<Box>): void {
+function unoffset(box: Box, moved: ReadonlySet<Box>, bare: Set<Box>): void {
+  if (bare.has(box)) return;
+  bare.add(box);
   for (const child of box.children) {
-    if (moved.has(child)) unoffset(child, moved);
+    if (moved.has(child)) unoffset(child, moved, bare);
   }
   if (box.kind === 'text' || box.kind === 'break') return;
   const style = box.style;
@@ -1997,6 +2009,7 @@ function layoutDocumentPass(
       ? {
           reusePass: ++reusePasses,
           reused: new Set<Box>(),
+          bare: new Set<Box>(),
           blockers: reuseBlockers(tree),
           keptPositioned: [],
           offsets: tree.relative || scrollsAny(tree),
@@ -6078,7 +6091,7 @@ function stretchReplaced(
  * is no formatting context of its own, counts as none, as the margin would
  * collapse with the parent's.
  */
-function stretchHeight(box: Box): number | null {
+export function stretchHeight(box: Box): number | null {
   const base = box.percentHeightBase;
   if (!Number.isFinite(base)) return null;
   const style = box.style;

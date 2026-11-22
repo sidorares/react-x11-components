@@ -2466,6 +2466,149 @@ test("a flex box is no narrower than its items' widths make it", async () => {
   assert.ok(box('f').width < 98, 'and a replaced box gives way');
 });
 
+test("a flex basis of the content is the content's, whatever sizes an item has of its own, and a replaced item's is its natural size, or what its ratio makes of a height it is given", async () => {
+  // CSS Flexbox 9.2.3, and 4.5 for the least of one; every size is Chromium's
+  const row = 'display:flex;height:90px;width:300px';
+  const column = 'display:flex;flex-direction:column;width:80px;height:90px';
+  const canvas = (id: string, style: string) =>
+    `<canvas id="${id}" width="20" height="30" style="${style}"></canvas>`;
+  const svg = (id: string, style: string) =>
+    `<svg id="${id}" viewBox="0 0 200 200" style="${style}"></svg>`;
+  const cases: [string, string, string, number, number][] = [
+    // along a row, a natural width, or a height through the ratio
+    [
+      'a',
+      row + ';align-items:start',
+      canvas('a', 'flex:0 0 content;width:8px'),
+      20,
+      30,
+    ],
+    ['b', row, canvas('b', 'flex:0 0 content;width:8px;height:15px'), 10, 15],
+    ['c', row, canvas('c', 'flex:0 1 content;width:30px'), 60, 90],
+    ['d', row, canvas('d', 'flex:0 0 10px;min-width:0'), 10, 90],
+    ['e', row, canvas('e', 'flex:0 0 10px'), 60, 90],
+    [
+      'f',
+      row,
+      canvas('f', 'flex:1 0 auto') + '<div style="flex:1 0 20px"></div>',
+      170,
+      90,
+    ],
+    // its limits have no say in a basis, which it is held to after
+    [
+      'g',
+      'display:flex;width:200px;align-items:start',
+      canvas('g', 'flex:1 0 auto;min-width:100px') +
+        '<div style="flex:1 0 20px"></div>',
+      100,
+      150,
+    ],
+    // with a ratio alone, the room
+    [
+      'h',
+      'display:flex;width:150px',
+      svg('h', 'flex:1 0 auto;margin-right:50px'),
+      100,
+      100,
+    ],
+    [
+      'i',
+      'display:flex;flex-direction:column;width:150px;align-items:start',
+      svg('i', 'margin-right:50px'),
+      100,
+      100,
+    ],
+    // down a column, what its width makes through the ratio, its own or
+    // the column's, and else its natural height
+    [
+      'j',
+      column,
+      canvas('j', 'flex:0 0 content;width:30px;height:50px'),
+      30,
+      45,
+    ],
+    ['k', column, canvas('k', 'flex:0 0 content;height:50px'), 80, 120],
+    [
+      'l',
+      column + ';align-items:start',
+      canvas('l', 'flex:0 0 content;height:50px;min-width:0'),
+      20,
+      30,
+    ],
+    ['m', column, canvas('m', 'flex:0 1 20px'), 80, 120],
+    // within what its limits down make of it, and through a natural height
+    // or one that stretches
+    ['r', 'display:flex;width:150px', svg('r', 'max-height:40px'), 40, 40],
+    [
+      's',
+      'display:flex;flex-direction:column;width:150px;align-items:start',
+      svg('s', 'max-height:40px'),
+      40,
+      40,
+    ],
+    [
+      't',
+      'display:flex;width:150px;align-items:start',
+      '<svg id="t" viewBox="0 0 20 10" height="40" style="max-height:30px"></svg>',
+      60,
+      30,
+    ],
+    [
+      'u',
+      row + ';align-items:start',
+      canvas('u', 'height:stretch;min-width:0'),
+      60,
+      90,
+    ],
+    // and a box's is its content's, whatever height its items fill
+    [
+      'n',
+      column,
+      '<div id="n" style="display:flex;flex:0 0 content;height:60px"><i></i></div>',
+      80,
+      12,
+    ],
+    [
+      'o',
+      column,
+      '<div id="o" style="display:grid;flex:0 0 content;height:60px"><i></i></div>',
+      80,
+      12,
+    ],
+    [
+      'p',
+      column,
+      '<div id="p" style="display:table;flex:0 0 content;height:60px"><i></i></div>',
+      80,
+      12,
+    ],
+    // so is the least height it has, which it may not shrink under
+    [
+      'q',
+      column,
+      '<div id="q" style="display:flex;flex:0 1 auto;height:60px"><i></i></div><div style="flex:none;height:80px"></div>',
+      80,
+      12,
+    ],
+  ];
+  const { node } = await render(
+    '<style>body{margin:0}i{display:block;width:22px;height:12px}</style>' +
+      cases
+        .map(([, box, item]) => `<div style="${box}">${item}</div>`)
+        .join(''),
+    400,
+  );
+  const el = view(node);
+  const got = cases.map(([id]) => {
+    const { width, height } = boxOf(el, id);
+    return [id, Math.round(width), Math.round(height)];
+  });
+  assert.deepStrictEqual(
+    got,
+    cases.map(([id, , , width, height]) => [id, width, height]),
+  );
+});
+
 test('what is in a stretched or flexed item takes its percentages of its height', async () => {
   // CSS Flexbox 9.8: an item stretched across its line, or flexed in a
   // column of a height of its own, has a definite height, and `h-full` in
