@@ -223,6 +223,14 @@ function fileFor(url: string, docPath: string): string | null {
   return path === null ? null : inCheckout(resolve(dirname(docPath), path));
 }
 
+/** The file a test's `<link rel=match>` names, as it wrote it, where it is
+ *  one of the checkout's. */
+function referenceFile(href: string, path: string): string | null {
+  return inCheckout(
+    href.startsWith('/') ? join(ROOT, href) : resolve(dirname(path), href),
+  );
+}
+
 function dataUrl(url: string): Uint8Array | string | null {
   const m = /^data:([^,]*?)(;base64)?,(.*)$/is.exec(url);
   if (!m) return null;
@@ -775,16 +783,17 @@ async function against(
   { kind, href }: { kind: 'match' | 'mismatch'; href: string },
   shotOf: () => Promise<Uint8ClampedArray>,
 ): Promise<Outcome> {
-  const refPath =
-    href === BLANK
-      ? BLANK
-      : href.startsWith('/')
-        ? join(ROOT, href)
-        : resolve(dirname(path), href);
-  const ref = refPath === BLANK ? BLANK : refPath.slice(ROOT.length + 1);
-  if (refPath !== BLANK && !existsSync(refPath)) {
-    return { test, ref, kind, result: 'error', error: 'reference missing' };
+  const refPath = href === BLANK ? BLANK : referenceFile(href, path);
+  if (refPath === null) {
+    return {
+      test,
+      ref: href,
+      kind,
+      result: 'error',
+      error: 'reference missing',
+    };
   }
+  const ref = refPath === BLANK ? BLANK : refPath.slice(ROOT.length + 1);
   const refSource = pageOf(refPath).text;
   if (scripted(source) || scripted(refSource)) {
     return { test, ref, kind, result: 'script' };
