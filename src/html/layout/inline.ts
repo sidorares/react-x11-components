@@ -7022,8 +7022,9 @@ function setTabs(
 
 /** What a run of text set at no size is laid out at: CoreText takes a size
  *  of 0 as its default, and the line as tall as that. So little is nothing
- *  beside any other length there is, and is what is added to it. */
-const NO_SIZE = 1e-300;
+ *  beside any other length there is, and no more than a float holds, which
+ *  is what a size is handed to an engine as. */
+const NO_SIZE = 1e-30;
 
 /**
  * The run a tab is laid out in: its text's, but where that is set at no
