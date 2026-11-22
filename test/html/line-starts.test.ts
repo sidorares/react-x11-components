@@ -240,7 +240,7 @@ function generated(seed: number): string {
   }
   // text smaller than its block's, or of letters of no width: more of it on a
   // line than a start is guessed to need, so that the cut is near the line
-  const size = pick([0, 0, 5, 7, 9]);
+  const size = pick([0, 0, 0, 2, 3, 5, 7]);
   if (size) body = `<span style="font-size:${size}px">${body}</span>`;
   const float =
     random() < 0.3
