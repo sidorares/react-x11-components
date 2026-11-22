@@ -86,10 +86,10 @@ export function columnsOf(box: Box, available: number): Columns | null {
   let count: number;
   if (style.columnWidth === null) count = style.columnCount ?? 1;
   else {
-    const fit = Math.max(
-      1,
-      Math.floor((available + gap) / (style.columnWidth + gap)),
-    );
+    // a column is at least a pixel wide, as Blink has it: one of a
+    // thousandth, with no gap, is no million columns a page
+    const each = Math.max(1, style.columnWidth);
+    const fit = Math.max(1, Math.floor((available + gap) / (each + gap)));
     count = style.columnCount === null ? fit : Math.min(style.columnCount, fit);
   }
   return {
@@ -1583,7 +1583,7 @@ export function layoutColumns(
         height: heights ? Math.min(rowHeight(j), heights(first)) : rowHeight(j),
         lefts: Array.from({ length: holding }, (_, k) => left(first + k)),
         width: columns.width,
-        every: Array.from({ length: count }, (_, k) => left(first + k)),
+        every: { count, left: origin, step: rtl ? -step : step },
         wrap,
       });
     }
@@ -1593,9 +1593,11 @@ export function layoutColumns(
       height,
       lefts: Array.from({ length: used }, (_, c) => left(c)),
       width: columns.width,
-      every: Array.from({ length: Math.max(used, columns.count) }, (_, c) =>
-        left(c),
-      ),
+      every: {
+        count: Math.max(used, count),
+        left: origin,
+        step: rtl ? -step : step,
+      },
       // balanced columns are only as many as hold something, as Blink makes
       // a column box for content alone, where filled ones are all there are
       // (WPT's multicol-gap-decorations-026, -visibility-all-empty-columns)
@@ -1604,7 +1606,7 @@ export function layoutColumns(
       exists:
         (box.style.columnFill === 'auto' && !beforeSpanner) ||
         box.style.columnCount !== null
-          ? Math.max(used, columns.count)
+          ? Math.max(used, count)
           : used,
     });
   }

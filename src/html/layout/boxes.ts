@@ -902,13 +902,15 @@ export interface ColumnRow {
   height: number;
   lefts: number[];
   width: number;
-  /** The left of every column of the row, those that hold nothing as
-   *  well, which `rule-visibility-items: all` draws rules between. */
-  every?: number[];
+  /** Every column of the row, those that hold nothing as well, which
+   *  `rule-visibility-items: all` draws rules between: how many, the left
+   *  of the first, and how far each is from the one before. Not a list of
+   *  them: a page asks for any number of columns. */
+  every: { count: number; left: number; step: number };
   /** The rows of columns `column-wrap` made together share this, which
    *  the row gaps between them are of, and a row rule is drawn in. */
   wrap?: object;
-  /** How many of `every` there are, from the start of the line: balanced
+  /** How many of those there are, from the start of the line: balanced
    *  columns are as many as hold something, which `every` may count past,
    *  and a container whose columns are filled has all it asks for. */
   exists?: number;

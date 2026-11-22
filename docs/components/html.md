@@ -6117,7 +6117,9 @@ A multicol container (CSS Multi-column 1) sets its content in columns:
 whose `normal` is an em there, and the `-webkit-` names Chrome still reads
 for them. There are as many columns as `column-count` says or as
 `column-width` fits, the fewer of the two, each as wide as leaves the gaps
-between them, and the container is a formatting context of its own. Its
+between them, and the container is a formatting context of its own. A count
+computes to 65535 at most, and a column is used at a pixel wide at least, as
+in Blink. Its
 content is laid out once, a column wide, and broken where CSS Fragmentation
 3 has it break: between the lines of a block and between boxes, never
 inside a line, an image, an inline table, a box that clips or
