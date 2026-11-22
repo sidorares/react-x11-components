@@ -5771,37 +5771,6 @@ class Builder {
     owner: Element | null,
   ): void {
     const ws = style.whiteSpace;
-    // text set at no size draws nothing and takes no room, so its letters
-    // need no box. What of it moves what follows is kept whatever its size:
-    // a forced break, and a tab, whose stops are the block's (CSS Text 3,
-    // 4.1.2) — a `<pre>` at `font-size: 0` with its text in spans set at a
-    // size of their own is one line a span, which dropped, ran on as one.
-    // And there is a line where there is text, with a baseline: each run of
-    // it is a zero-width non-joiner, which breaks a line as a letter does,
-    // where a word joiner lets none break even after a space. Dropped, two
-    // inline-blocks, one with a word and one with a line feed, stood on a
-    // bottom edge and a baseline.
-    if (!(style.fontSize > 0)) {
-      const kept =
-        ws === 'pre' || ws === 'pre-wrap'
-          ? data.replace(/[^\n\t]+/g, '\u200c')
-          : ws === 'pre-line'
-            ? data.replace(/[^\n]+/g, (line) =>
-                /\S/.test(line) ? '\u200c' : '',
-              )
-            : /[^ \t\n\r\f]/.test(data)
-              ? '\u200c'
-              : '';
-      if (!kept) return;
-      this._ws = kept.endsWith('\n') ? 'start' : 'content';
-      const at = this._textBox(kept, into, style, owner).textStart;
-      // the non-joiners are no text of the document's to copy
-      if (style.userSelect !== 'none') {
-        for (let i = 0; i < kept.length; i++)
-          if (kept[i] === '\u200c') this._unselectable.push(at + i, at + i + 1);
-      }
-      return;
-    }
     // a word does not run on over the start of a line
     if (this._ws === 'start') this._lettered = false;
     let text: string;
@@ -5826,6 +5795,25 @@ class Builder {
       if (!text) return;
       const last = text.charCodeAt(text.length - 1);
       this._ws = last === 32 ? 'space' : last === 10 ? 'start' : 'content';
+    }
+    // Text set at no size draws nothing and takes no room, and what of it
+    // moves what is around it does whatever its size: its white space, which
+    // collapses with what it is beside, a forced break, a tab, whose stops
+    // are the block's (CSS Text 3, 4.1), and that there is a line it is on,
+    // with a baseline. Its letters are a zero-width non-joiner a word, which
+    // a line breaks beside as beside a letter; a word joiner lets none break
+    // even after a space.
+    if (!(style.fontSize > 0)) {
+      text = text.replace(/[^ \n\t]+/g, '\u200c');
+      const at = this._textBox(text, into, style, owner).textStart;
+      // no text of the document's to copy
+      if (style.userSelect !== 'none') {
+        for (let i = text.indexOf('\u200c'); i >= 0;) {
+          this._unselectable.push(at + i, at + i + 1);
+          i = text.indexOf('\u200c', i + 1);
+        }
+      }
+      return;
     }
     // after the white space collapses and before the case changes, so an
     // expanded separator neither collapses nor is left out of `full-width`
