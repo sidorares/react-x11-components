@@ -8258,7 +8258,9 @@ background image a page keeps under `not` for an engine without masks is
 not drawn under the mask, and so does a test of `subgrid` for
 `grid-template-rows` or `grid-template-columns`, so the `auto` rows a page
 keeps under `not` for an engine without subgrids do not undo its subgrid;
-every other `@supports` block is entered, as it always was.
+a test of any other declaration is entered, as it always was. What is no
+condition — `and` beside `or`, a declaration in no brackets — holds nowhere,
+and so does one that asks by a function nothing knows, as in a browser.
 
 **Outlines:** `outline` and its longhands, and `outline-offset`: a border
 of the outline's width, style and colour round the border box grown by
