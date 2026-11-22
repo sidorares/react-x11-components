@@ -7020,9 +7020,10 @@ function setTabs(
   items.splice(0, items.length, ...next);
 }
 
-/** What a run of text set at no size is laid out at, in pixels: CoreText
- *  takes a size of 0 as its default, and its line was as tall as that. */
-const NO_SIZE = 0.0001;
+/** What a run of text set at no size is laid out at: CoreText takes a size
+ *  of 0 as its default, and the line as tall as that. So little is nothing
+ *  beside any other length there is, and is what is added to it. */
+const NO_SIZE = 1e-300;
 
 /**
  * The run a tab is laid out in: its text's, but where that is set at no
