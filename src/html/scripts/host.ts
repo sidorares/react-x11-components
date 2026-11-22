@@ -2409,8 +2409,8 @@ interface Observer {
  *  everything rather than what they reach. */
 const CHANGES_TOLD = 4000;
 
-/** The pseudo-classes that take one identifier. */
-const TAKES_AN_IDENT = /:(?:state|dir)\(/i;
+/** The pseudo-classes that take an identifier, or a list of them. */
+const TAKES_AN_IDENT = /:(?:state|dir|lang)\(/i;
 
 /** What a page's own selector can ask, beyond css-select: a function, or
  *  a string for one of css-select's aliases to take over

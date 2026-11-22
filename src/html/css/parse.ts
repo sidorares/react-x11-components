@@ -1906,6 +1906,15 @@ function argumentFits(name: string, argument: string): boolean {
     const t = argument.trim();
     return startsIdent(t, 0) && identEnd(t, 0) === t.length;
   }
+  // ranges of languages, each an identifier or a string (Selectors 4, 7.2)
+  if (name === 'lang') {
+    return splitTopLevelCommas(argument).every((range) => {
+      const t = range.trim();
+      return t[0] === '"' || t[0] === "'"
+        ? t.length > 1 && stringEnd(t, 0) === t.length && t.endsWith(t[0])
+        : startsIdent(t, 0) && identEnd(t, 0) === t.length;
+    });
+  }
   if (NEEDS_ARGUMENT.has(name)) {
     return name === 'is' || name === 'where' || /\S/.test(argument);
   }
