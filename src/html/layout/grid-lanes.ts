@@ -202,6 +202,7 @@ export function layoutGridLanes(
     return {
       start,
       span,
+      edge: placed.edge !== undefined,
       minContent: () => (measure(placed), placed.min),
       maxContent: () => (measure(placed), placed.max),
       minimum: () => leastWidth(placed, tracks, gridGap, measure, ctx),

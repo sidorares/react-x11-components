@@ -517,6 +517,7 @@ export function layoutGrid(
     const colItem = (item: Item): TrackItem => ({
       start: item.col,
       span: item.cols,
+      edge: item.edge !== undefined,
       minContent: () => (measure(item), item.min + (item.shimX ?? 0)),
       maxContent: () => (measure(item), item.max + (item.shimX ?? 0)),
       minimum: () =>
@@ -2635,6 +2636,7 @@ export function rowItem(
       minContent: outer,
       maxContent: outer,
       minimum: outer,
+      edge: true,
     };
   }
   const box = item.box;
