@@ -234,12 +234,30 @@ function referenceFile(href: string, path: string): string | null {
   );
 }
 
+/** The bytes of a URL's text, as the URL standard percent-decodes it: a `%`
+ *  with no two hexadecimal digits after it is a `%`, as in an SVG's
+ *  `width='100%'` written straight into a `data:` URL, which every browser
+ *  draws and `decodeURIComponent` throws for. */
+function percentDecoded(text: string): Buffer {
+  const bytes = Buffer.from(text, 'utf8');
+  const out = Buffer.alloc(bytes.length);
+  let n = 0;
+  for (let i = 0; i < bytes.length; i += 1) {
+    const pair =
+      bytes[i] === 0x25 ? bytes.toString('latin1', i + 1, i + 3) : '';
+    if (/^[0-9a-f]{2}$/i.test(pair)) {
+      out[n++] = parseInt(pair, 16);
+      i += 2;
+    } else out[n++] = bytes[i];
+  }
+  return out.subarray(0, n);
+}
+
 function dataUrl(url: string): Uint8Array | string | null {
   const m = /^data:([^,]*?)(;base64)?,(.*)$/is.exec(url);
   if (!m) return null;
-  const bytes = m[2]
-    ? Buffer.from(m[3], 'base64')
-    : Buffer.from(decodeURIComponent(m[3]), 'utf8');
+  const body = percentDecoded(m[3]);
+  const bytes = m[2] ? Buffer.from(body.toString('latin1'), 'base64') : body;
   return /^text\/css/i.test(m[1]) ? bytes.toString('utf8') : bytes;
 }
 
