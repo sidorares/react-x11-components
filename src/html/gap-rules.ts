@@ -589,7 +589,7 @@ function multicolSegments(box: Box): {
   // between every column, under `all`, is drawn in through each row
   let exist = 0;
   for (const row of rows) {
-    exist = Math.max(exist, row.exists ?? (row.every ?? row.lefts).length);
+    exist = Math.max(exist, row.exists ?? row.every.count);
   }
   // the columns of the last row, past a spanner or of the only one, are as
   // tall as what is left of the content box, where the content is shorter
@@ -599,32 +599,35 @@ function multicolSegments(box: Box): {
   const last = all[all.length - 1]?.wrap ? null : all[all.length - 1];
   const foot = box.contentY + box.contentHeight;
   for (const row of rows) {
-    const every = (row.every ?? row.lefts)
-      .slice(0, Math.max(exist, row.lefts.length))
-      .sort((a, b) => a - b);
-    const holds = new Set(row.lefts.map((l) => Math.round(l * 64)));
-    const filled = (l: number) => holds.has(Math.round(l * 64));
-    most = Math.max(most, every.length - 1);
+    // the columns from the start of the line, the first of which are those
+    // that hold something, and so the gaps a rule is drawn in
+    const { left, step } = row.every;
+    const holding = row.lefts.length;
+    const gaps = Math.min(row.every.count, Math.max(exist, holding)) - 1;
+    most = Math.max(most, gaps);
+    const drawn =
+      visibility === 'all'
+        ? gaps
+        : Math.min(gaps, visibility === 'around' ? holding : holding - 1);
     const top = box.contentY + row.top;
-    for (let c = 0; c + 1 < every.length; c += 1) {
-      const a = filled(every[c]);
-      const b = filled(every[c + 1]);
-      const drawn =
-        visibility === 'all' || (visibility === 'around' ? a || b : a && b);
-      if (!drawn) continue;
+    for (let i = 0; i < drawn; i += 1) {
+      // from the left, whichever side the columns are counted from
+      const c = rtl ? drawn - 1 - i : i;
+      const at = left + c * step;
       pieces.push({
-        at: box.contentX + (every[c] + row.width + every[c + 1]) / 2,
+        at: box.contentX + (at + row.width + at + step) / 2,
         from: top,
         to: row === last ? Math.max(top + row.height, foot) : top + row.height,
-        gap: rtl ? every.length - 2 - c : c,
+        gap: c,
       });
     }
   }
   const columns: RuleSegment[] = [];
   for (const piece of pieces) {
-    const last = columns.find(
-      (p) => rule.break === 'none' && Math.abs(p.at - piece.at) < 0.5,
-    );
+    const last =
+      rule.break === 'none' && rows.length > 1
+        ? columns.find((p) => Math.abs(p.at - piece.at) < 0.5)
+        : undefined;
     if (last) {
       last.from = Math.min(last.from, piece.from);
       last.to = Math.max(last.to, piece.to);
@@ -691,9 +694,10 @@ function gridOfRows(
   const width = rows[0].width;
   const from = (l: number): number =>
     mirror === undefined ? l : mirror - l - width;
-  const every = (rows[0].every ?? rows[0].lefts)
-    .map(from)
-    .sort((a, b) => a - b);
+  const { count, left: first, step } = rows[0].every;
+  const every = Array.from({ length: count }, (_, c) =>
+    from(first + c * step),
+  ).sort((a, b) => a - b);
   const lanes = every.map((l): [number, number] => [l, l + width]);
   const tracks = rows.map((r): [number, number] => [r.top, r.top + r.height]);
   const areas: [number, number, number, number][] = [];

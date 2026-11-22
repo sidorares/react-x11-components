@@ -6,7 +6,12 @@ import { act, cleanup, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { parseColor } from '../../src/html/css/values.js';
-import { COLUMN_PIECES, columned } from '../../src/html/layout/boxes.js';
+import {
+  COLUMN_BOXES,
+  COLUMN_PIECES,
+  columned,
+} from '../../src/html/layout/boxes.js';
+import type { Box } from '../../src/html/layout/boxes.js';
 import { REPEATED, stripReach } from '../../src/html/layout/multicol.js';
 import { resolvedInsets } from '../../src/html/layout/block.js';
 import {
@@ -3020,4 +3025,101 @@ test('a fixed box in a relative box in a transformed one in columns is cut where
     ],
     "the transformed box's own offset, after it",
   );
+});
+
+test('a container with a huge column count, or no width to speak of, is laid out by the columns that hold something', async () => {
+  // WPT's css-multicol/file-control-crash asks for a billion columns of
+  // every element: a list of them was more than the heap holds. Every
+  // number is Chrome's, which computes a count of 65535 at most and uses a
+  // `column-width` of a pixel at least.
+  const started = performance.now();
+  const laidOut = async (css: string) => {
+    const { node } = await render(
+      '<style>body{margin:0}#c{width:200px}' +
+        '.u{width:10px;height:20px;overflow:hidden}</style>' +
+        `<div id="c" style="${css}"><div class="u" id="a"></div>` +
+        '<div class="u" id="b"></div><div class="u" id="d"></div></div>',
+    );
+    const el = view(node);
+    const rules = (await fillsOf(el))
+      .filter((f) => f.style === parseColor('red'))
+      .map((f) => [f.x, f.y, f.w, f.h]);
+    const c = boxOf(el, 'c');
+    const lefts = ['a', 'b', 'd'].map((id) => boxOf(el, id).x - c.x);
+    const tops = ['a', 'b', 'd'].map((id) => boxOf(el, id).y - c.y);
+    assert.deepStrictEqual(tops, [0, 0, 0], css);
+    const box = c as unknown as Box;
+    const row = COLUMN_BOXES.get(box)![0];
+    const { count } = row.every;
+    return {
+      columns: box.style.columnCount,
+      count,
+      width: c.width,
+      lefts,
+      rules,
+    };
+  };
+  const fill = 'column-fill:auto;height:20px;';
+  // a column of a fraction of a pixel first: it fails with no crash
+  for (const wide of [200, 5000000]) {
+    const { lefts, count } = await laidOut(
+      `column-width:0.0001px;column-gap:0;${fill}width:${wide}px`,
+    );
+    assert.deepStrictEqual(lefts, [0, 1, 2], `a pixel wide in ${wide}`);
+    assert.strictEqual(count, wide, 'and as many as fit, with no list of them');
+  }
+  assert.deepStrictEqual(
+    (await laidOut('columns:65536 auto;column-gap:10px')).columns,
+    65535,
+    'a count past the most there is',
+  );
+  for (const [count, computed, lefts] of [
+    ['3', 3, [0, 70, 140]],
+    ['1027970145', 65535, [0, 10, 20]],
+    ['9'.repeat(400), 65535, [0, 10, 20]],
+  ] as const) {
+    for (const how of ['', fill]) {
+      const of = `column-count:${count};column-gap:10px;${how}`;
+      const name = `${count.slice(0, 12)} ${how}`;
+      const got = await laidOut(of + 'column-rule:2px solid red');
+      assert.strictEqual(got.columns, computed, name);
+      assert.deepStrictEqual(got.lefts, lefts, name);
+      assert.deepStrictEqual(
+        got.rules,
+        // in the middle of the two gaps between what holds something
+        lefts.slice(1).map((left) => [left - 6, 0, 2, 20]),
+        `${name}: its rules`,
+      );
+    }
+  }
+  const rtl = await laidOut(
+    'column-count:1027970145;column-gap:10px;direction:rtl;' +
+      'column-rule:2px solid red',
+  );
+  assert.deepStrictEqual(rtl.lefts, [190, 180, 170]);
+  assert.deepStrictEqual(rtl.rules.map(([x]) => x).sort(), [184, 194]);
+  const least = await laidOut(
+    'column-count:1027970145;column-gap:1px;float:left;width:min-content',
+  );
+  assert.deepStrictEqual(least.lefts, [0, 11, 22]);
+  assert.strictEqual(least.width, 65535 * 10 + 65534);
+  // the rest of the columns draw nothing and cost nothing: a second here,
+  // held to one a slow machine does not miss
+  const took = performance.now() - started;
+  assert.ok(took < 30_000, `took ${Math.round(took)}ms`);
+});
+
+test("a page of WPT's file-control-crash is laid out in a bounded time", async () => {
+  const started = performance.now();
+  const { node } = await render(
+    '<!DOCTYPE html><style>*{aspect-ratio:1206265768.1737075/' +
+      '726190483.5455273 !important;float:inline-start;' +
+      'padding-block-end:4348105909.35903Q;column-count:1027970145;' +
+      'width:min-content;border-inline-end:groove gainsboro ' +
+      '319302447.513733ch}</style><input id="f" type="file">',
+  );
+  const box = boxOf(view(node), 'f') as unknown as Box;
+  assert.strictEqual(box.style.columnCount, 65535);
+  const took = performance.now() - started;
+  assert.ok(took < 30_000, `took ${Math.round(took)}ms`);
 });
