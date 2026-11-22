@@ -387,6 +387,48 @@ test('a pseudo-class takes an argument where it takes one, and only there', () =
   );
 });
 
+test('a :lang() takes identifiers and strings, and nothing else', () => {
+  // Selectors 4, 7.2; WPT selectors-4/lang-013 and -014: a range that is
+  // neither made no difference, and the rest of the list matched
+  for (const range of [
+    'fr',
+    'de-CH',
+    'de-1996',
+    '\\30',
+    '\\*-Latn',
+    '-x',
+    '"*-Latn"',
+    '\'fr\', "de"',
+    ' fr , nl',
+    '""',
+  ]) {
+    assert.strictEqual(
+      parseStylesheet(`:lang(${range}) { color: red }`).rules.length,
+      1,
+      range,
+    );
+  }
+  for (const range of [
+    '0',
+    'de, nl, 0, fr',
+    '*-Latn',
+    '*',
+    'fr,',
+    ', fr',
+    'fr nl',
+    '"fr" "nl"',
+    '-1',
+    'a|b',
+    '.a',
+  ]) {
+    assert.strictEqual(
+      parseStylesheet(`:lang(${range}) { color: red }`).rules.length,
+      0,
+      range,
+    );
+  }
+});
+
 test('@import counts only first, and never inside @media', () => {
   const first = parseStylesheet('@charset "utf-8"; @import "a.css"; p {}');
   assert.deepStrictEqual(first.imports, ['a.css']);

@@ -2530,3 +2530,26 @@ metric(
     assert.strictEqual(bottomOf('p'), bottomOf('r2'), "the last row's item");
   },
 );
+
+test('a size container in a grid is no subgrid of it', async () => {
+  // an independent formatting context (CSS Conditional 5, 5.1): its template
+  // of `subgrid` is none, and its row is a row of its own. Every place and
+  // size is Chromium's.
+  const sub = (id: string, style: string) =>
+    '<div class="g"><div style="display:grid;grid:subgrid/auto;' +
+    `grid-row:1/3;height:100px;${style}"><i id="${id}" style="grid-row:1">` +
+    '</i></div></div>';
+  const { node } = await render(
+    '<style>body{margin:0}.g{display:grid;grid:30px 70px/100px}</style>' +
+      sub('a', '') +
+      sub('b', 'container-type:size') +
+      sub('c', 'container-type:inline-size') +
+      sub('d', 'container-type:scroll-state'),
+    400,
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').height, 30);
+  assert.strictEqual(boxOf(el, 'b').height, 100);
+  assert.strictEqual(boxOf(el, 'c').height, 100);
+  assert.strictEqual(boxOf(el, 'd').height, 30);
+});

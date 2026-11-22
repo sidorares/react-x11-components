@@ -6983,10 +6983,11 @@ for whether a box is painted through a matrix at all, never the fields**:
 `null`, which three tests of just those took for a box that only moves.
 Layout still takes its translation across and down
 (`translation4`), and what is left is seen in the `perspective` of the
-nearest box with one up the containing blocks (`perspectiveFor` — through a
-positioned box, as Blink hangs a transform under the nearest perspective,
-and not past a box with a transform of its own, which flattens what it
-holds). What the box's plane comes to is a 3×3 `Projection`, or the matrix
+element the box is a child of (`perspectiveFor`): a grandchild's, wherever it
+is positioned, is none of it, which is CSS Transforms 2's and every browser's
+by now. Blink hung a transform under the nearest perspective through any box
+that was not transformed, and WPT's `perspective-children-only-*` is what
+changed it. What the box's plane comes to is a 3×3 `Projection`, or the matrix
 of the plane it is where all of the box is as far from the viewer as any of
 it, so `placedMatrix` answers a `Placed` and **anything that reads geometry
 through it asks `invert`, `mapPoint` and `mapRect`, which take either**, and

@@ -5498,25 +5498,29 @@ class Builder {
     };
     const resets = (st: ComputedStyle): boolean =>
       st.counterReset?.some((change) => change.name === name) ?? false;
+    // what comes after a reset of any other name counts on that one, beside
+    // it as in it (`CounterScopes.reachesSiblings`)
+    const taken = name !== 'list-item';
+    /** Notes a pseudo-element, and says whether it resets the counter. */
     const pseudo = (
       el: Element,
       which: 'before' | 'after',
       st: ComputedStyle,
-    ): void => {
+    ): boolean => {
       const own = cascade.pseudoStyleFor(el, which, st);
       // one of `display: contents` has no box to count with (`contentsStyle`)
-      if (
-        own &&
-        own.display !== 'none' &&
-        own.display !== 'contents' &&
-        !resets(own)
-      ) {
-        note(own);
+      if (!own || own.display === 'none' || own.display === 'contents') {
+        return false;
       }
+      if (resets(own)) return true;
+      note(own);
+      return false;
     };
     /** The elements from `from` on of a parent, and what is in them: a
-     *  reset of the counter in one is a counter of its own, and a later
-     *  sibling's reset at the scope's own level ends it (`stopAtReset`). */
+     *  reset of the counter in one is a counter of its own, which the rest
+     *  of them count on where it is `taken`, and a later sibling's reset at
+     *  the scope's own level ends it (`stopAtReset`). Whether the rest of
+     *  the parent's counts on another. */
     const walk = (
       children: readonly ChildNode[],
       from: number,
@@ -5524,7 +5528,7 @@ class Builder {
       parentKey: number,
       inFlex: boolean,
       stopAtReset: boolean,
-    ): void => {
+    ): boolean => {
       for (let i = from; i < children.length; i += 1) {
         const child = children[i];
         if (!isElement(child)) continue;
@@ -5544,16 +5548,17 @@ class Builder {
           continue;
         }
         if (resets(st)) {
-          if (stopAtReset) return;
+          if (stopAtReset || taken) return true;
           continue;
         }
         note(st);
         inside(child, st, shared.key);
       }
+      return false;
     };
     const inside = (el: Element, st: ComputedStyle, key: number): void => {
-      pseudo(el, 'before', st);
-      walk(
+      if (pseudo(el, 'before', st) && taken) return;
+      const over = walk(
         flatChildrenOf(el),
         0,
         st,
@@ -5561,7 +5566,7 @@ class Builder {
         st.display === 'flex' || st.display === 'inline-flex',
         false,
       );
-      pseudo(el, 'after', st);
+      if (!over) pseudo(el, 'after', st);
     };
 
     // the element that resets it counts in it too, after the reset
@@ -5994,17 +5999,18 @@ class Builder {
 
 /**
  * The CSS counters in scope as the builder walks the document (CSS Lists 3,
- * 4.5). Every element and pseudo-element opens a level, which closes after
- * what it holds. A `counter-reset` makes an instance that reaches the
- * element's descendants and — where its parent has no counter of the name
- * — its later siblings too, so that instance belongs to the level the
- * element is on, its parent's, and goes when that closes; a later sibling's
- * reset takes its place. Where its parent has one, the new instance nests
- * in it and reaches the element's descendants alone, on the element's own
- * level: a list in a list item, a counter reset in a `::before`. `counter()`
- * reads the innermost instance and `counters()` all of them, outermost
- * first. A counter used where none is in scope is reset to 0 there, as
- * though the element had asked.
+ * 4.4.1). Every element and pseudo-element opens a level, which closes after
+ * what it holds. An element inherits its counters from the sibling before
+ * it, and from its parent where there is none, so a `counter-reset` makes an
+ * instance that reaches the element's descendants and its later siblings,
+ * nested in the parent's where that has one: it belongs to the level the
+ * element is on, its parent's, and goes when that closes, and a later
+ * sibling's reset takes its place. A list's own `list-item` is the one
+ * counter taken from the parent first, as every browser takes it: a list in
+ * a list item counts its own items, and the item after it goes on from the
+ * one before. `counter()` reads the innermost instance and `counters()` all
+ * of them, outermost first. A counter used where none is in scope is reset
+ * to 0 there, as though the element had asked.
  */
 class CounterScopes {
   /** Per name, its instances, outermost first: the level each goes with,
@@ -6168,9 +6174,10 @@ class CounterScopes {
   /** Whether a reset of `name` here reaches the element's later siblings,
    *  or its descendants alone. */
   reachesSiblings(name: string): boolean {
+    if (name !== 'list-item') return true;
     // a list with style containment holds its own numbers, whatever is
     // around it
-    if (name === 'list-item' && this._containedHere()) return false;
+    if (this._containedHere()) return false;
     return this._made.length < 2 || !this._parentHas(name);
   }
 
@@ -6203,11 +6210,11 @@ class CounterScopes {
     if (top?.level === level && top.own === own) {
       top.value = value;
       top.reversed = reversed;
-      if (this._detached) this._own(top, own);
+      if (this._detached) this._own(top, name, own);
       return;
     }
     const instance: CounterInstance = { level, own, value, reversed };
-    if (this._detached) this._own(instance, own);
+    if (this._detached) this._own(instance, name, own);
     stack.push(instance);
     (this._made[level] ??= []).push(name);
   }
@@ -6215,12 +6222,12 @@ class CounterScopes {
   /** An instance a reset here makes, or takes over, in a build apart: the
    *  element that made it, and whether a counter outside could have made it
    *  reach this element's descendants alone, where it reaches its later
-   *  siblings here (`CounterInstance.uncertain`). */
-  private _own(instance: CounterInstance, own: boolean): void {
+   *  siblings here (`CounterInstance.uncertain`): a list's own. */
+  private _own(instance: CounterInstance, name: string, own: boolean): void {
     const at = this._made.length - 1;
     instance.ownerLevel = at;
     instance.owner = this._ids[at];
-    instance.uncertain = !own;
+    instance.uncertain = !own && name === 'list-item';
     instance.outer = false;
   }
 
@@ -7483,12 +7490,14 @@ function inputButtonLabel(el: Element): string {
 /** Whether the containments `bits` would apply to a box, were they set
  *  (`contained`): none to an inline box that is no atomic one, and none to
  *  a table's inner parts but a cell — nor size containment to a table or a
- *  cell (CSS Containment 2, 3). */
+ *  cell (CSS Containment 2, 3). A caption is a block container outside the
+ *  table's grid, and takes them all. */
 export function containmentApplies(box: Box, bits: number): boolean {
   switch (box.kind) {
     case 'block':
     case 'flex':
     case 'replaced':
+    case 'table-caption':
       return true;
     case 'table':
     case 'table-cell':
