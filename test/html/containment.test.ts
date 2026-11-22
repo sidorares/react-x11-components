@@ -685,16 +685,16 @@ test('what a style-contained element resets, its subtree does not count on', asy
       )
     ).includes('[3]<1><2>[3]'),
   );
-  // and with one, which it reaches only what it holds for: what a build of
-  // the element apart, which sees no `n`, has to come to as well. What is
-  // beside it reads 10 in Chromium alone, and 3 in Firefox and WebKit
+  // and with one, which its reset nests in: what a build of the element
+  // apart, which sees no `n`, has to come to as well. What is beside it
+  // reads 3 in Firefox and WebKit, and in Chromium from 160
   assert.ok(
     (
       await text(
         '<div style="counter-reset:n 10"><div class="c r"><span class="i">' +
           '</span><span class="i"></span></div><span class="s"></span></div>',
       )
-    ).includes('<1><2>[10]'),
+    ).includes('<1><2>[3]'),
   );
   // a child's reset is in its subtree, as its later siblings are: all three
   assert.ok(
