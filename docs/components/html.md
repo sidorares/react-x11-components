@@ -6150,7 +6150,9 @@ a stretched item as tall as the row and one aligned in it as tall as what
 it holds, and what comes after the row starts under it. A row an item of
 which would leave nothing behind goes to the next column whole. A row with
 a forced break inside an item is broken where its items' content breaks
-together, as before. A forced break before the first child of a box
+together, as before. So is any row under cloned edges, in rows of columns, in
+a multicol container in another's columns, and in a table that repeats its
+header or footer. A forced break before the first child of a box
 with layout containment is none, since it would be the box's own. A forced
 break after a grid or flex item is after its row, and comes before the next
 row; after one in its box's last row it is the box's own, and goes out to
@@ -8453,6 +8455,8 @@ between the box and its line, a height of its own on a block between, or
 a flex box or a table on the way holds a side, and the innermost trim wins;
 a block in a vertical writing mode trims its lines across the page, at its
 block-start and block-end, as its frame trims them;
+an outside marker on a trimmed first line reaches as high as its face and
+not its half-leading, so a nested list trims as a list of one level;
 a `<br>` that clears floats after the last line is passed over for it, and
 the box ends no higher than the floats it cleared; a
 face that says no capital or x height has one of 0.7em or 0.5em; the

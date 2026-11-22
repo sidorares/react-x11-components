@@ -140,6 +140,29 @@ metric(
 );
 
 metric(
+  "a list item's marker reaches no higher than the trimmed line it is on",
+  async () => {
+    // an outside marker on the first line of a nested list pushed that
+    // line down by its half-leading, which no trim took back (WPT's
+    // text-box-trim-list-001)
+    const { node } = await render(
+      '<style>body{margin:0} .c{font:50px/2 monospace} ul{list-style-type:"X"}' +
+        ' ul,li{text-box-trim:trim-both;text-box-edge:text;margin:0;padding:0}</style>' +
+        '<div class="c"><ul id="nested"><li><ul><li>X</li></ul></li></ul>' +
+        '<ul id="single"><li>X</li></ul></div>',
+    );
+    const el = view(node);
+    await act();
+    const height = (id: string) =>
+      el.elementRect(findById(el.document, id)!)!.height;
+    assert.ok(
+      Math.abs(height('nested') - height('single')) < 0.5,
+      `${height('nested')} where ${height('single')}`,
+    );
+  },
+);
+
+metric(
   'a line before a <br> that clears floats is trimmed, down to the floats',
   async () => {
     // the break is a block of its own here, which hid the last line from

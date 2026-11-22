@@ -3308,7 +3308,19 @@ function layoutChildren(
     if (pushed !== null) {
       const line = firstLineIn(child);
       if (line) {
-        const push = pushed - (line.y + line.baseline - child.y);
+        // a line trimmed at its top, or one this item will trim, is the
+        // root inline box's text and no more: the marker on it reaches as
+        // high as its face does, its half-leading trimmed with the line's
+        // (CSS Inline 3, 5.1; WPT's text-box-trim-list-001)
+        const want =
+          box.marker &&
+          ctx.fonts &&
+          (START_TRIMMED.has(line) ||
+            (box.style.textBoxTrim !== 'none' &&
+              box.style.textBoxTrim !== 'trim-end'))
+            ? Math.min(pushed, trimmedMarkerAscent(box, box.marker, ctx.fonts))
+            : pushed;
+        const push = want - (line.y + line.baseline - child.y);
         if (push > 0) {
           translate(child, 0, push);
           floats.moveSince(floatMark, push);
@@ -5572,6 +5584,18 @@ const MARKER_ASCENT = new WeakMap<Box, number>();
 
 function markerAscent(box: Box, marker: Marker, fonts: FontsLike): number {
   const ascent = strutOf(fonts, marker.style ?? box.style).ascent;
+  return marker.image ? Math.max(marker.image.height, ascent) : ascent;
+}
+
+/** How high an outside marker reaches above a trimmed line's baseline: its
+ *  face's ascent, with none of the half-leading its line height gives it,
+ *  or its image's height. */
+function trimmedMarkerAscent(
+  box: Box,
+  marker: Marker,
+  fonts: FontsLike,
+): number {
+  const ascent = faceExtentOf(fonts, marker.style ?? box.style).ascent;
   return marker.image ? Math.max(marker.image.height, ascent) : ascent;
 }
 
