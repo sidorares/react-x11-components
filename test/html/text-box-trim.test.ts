@@ -113,3 +113,32 @@ metric(
     assert.ok(cap < text, `${cap} under ${text}`);
   },
 );
+
+metric(
+  'a line before a <br> that clears floats is trimmed, down to the floats',
+  async () => {
+    // the break is a block of its own here, which hid the last line from
+    // the trim; and the box ends no higher than the floats it clears
+    // (WPT's text-box-trim-float-clear-br-003)
+    const box = (id: string, float: number) =>
+      `<div style="float:left;width:10px;height:${float}px"></div>` +
+      `<div id="${id}" style="text-box-trim:trim-end;text-box-edge:text alphabetic">` +
+      'x<br style="clear:both"></div>';
+    const { node } = await render(
+      '<style>body{margin:0} div{font:50px/2 monospace}</style>' +
+        '<div id="plain">x</div>' +
+        box('low', 1) +
+        box('high', 90),
+    );
+    const el = view(node);
+    await act();
+    const height = (id: string) =>
+      el.elementRect(findById(el.document, id)!)!.height;
+    const line = height('plain');
+    assert.ok(height('low') < line - 20, `trimmed: ${height('low')}`);
+    assert.ok(
+      Math.abs(height('high') - 90) < 0.5,
+      `as low as the float: ${height('high')}`,
+    );
+  },
+);
