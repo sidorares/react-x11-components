@@ -916,6 +916,59 @@ test('a property @property registers has its initial value where nothing sets it
   );
 });
 
+// Tailwind 4's rings are `calc(1px + var(--tw-ring-offset-width))`, of one
+// registered at `0`. Every width is Chrome's.
+test('a 0 of a property registered as a length is 0px', async () => {
+  const registered = {
+    a: '"<length>"; initial-value: 0',
+    b: '"<length-percentage>"; initial-value: 0',
+    n: '"<number>"; initial-value: 0',
+    nl: '"<number> | <length>"; initial-value: 0',
+    ln: '"<length> | <number>"; initial-value: 0',
+    i: '"auto | <length>"; initial-value: auto',
+    l: '"<length>#"; initial-value: 0',
+    u: '"*"; initial-value: 0',
+    s: '"<length>"; initial-value: 5px',
+  };
+  const rows: [id: string, sets: string, of: string, width: number][] = [
+    ['a', '', 'a', 7],
+    ['b', '', 'b', 7],
+    ['n', '', 'n', 200],
+    ['nl', '', 'nl', 200],
+    ['ln', '', 'ln', 7],
+    ['i', '--i: 0', 'i', 7],
+    ['l', '', 'l', 7],
+    ['u', '', 'u', 200],
+    ['s', '--s: 0', 's', 7],
+    ['v', '--z: 0; --s: var(--z)', 's', 7],
+    ['m', '--s: -0.0', 's', 7],
+    ['w', '--z: 0', 'z', 200],
+    ['r', '--a: initial', 'a', 7],
+  ];
+  const { node } = await render(
+    '<style>' +
+      Object.entries(registered)
+        .map(
+          ([name, syntax]) =>
+            `@property --${name} { inherits: false; syntax: ${syntax} }`,
+        )
+        .join('') +
+      '</style><div style="width: 200px">' +
+      rows
+        .map(
+          ([id, sets, of]) =>
+            `<p id="${id}" style="${sets}; width: calc(7px + var(--${of}))"></p>`,
+        )
+        .join('') +
+      '</div>',
+  );
+  const el = view(node);
+  assert.deepStrictEqual(
+    rows.map(([id]) => [id, boxOf(el, id).width]),
+    rows.map(([id, , , width]) => [id, width]),
+  );
+});
+
 test("logical properties are the physical ones of the element's direction", async () => {
   // CSS Logical Properties 1 in the horizontal writing mode: Tailwind 4
   // writes its spacing in them, `px-4` as `padding-inline` and `mx-auto`
