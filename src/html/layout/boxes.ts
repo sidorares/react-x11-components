@@ -6247,7 +6247,10 @@ class CounterScopes {
 
   increment(name: string, by: number): void {
     const instance = this._counted(name);
-    instance.value = clampCounter(instance.value + by);
+    const value = instance.value + by;
+    // one that would take it past 32 bits leaves it where it was, as in
+    // every browser, where CSS Lists 3 (4.2) has it stop at the end of them
+    if (value === (value | 0)) instance.value = value;
   }
 
   set(name: string, value: number): void {
@@ -6337,11 +6340,6 @@ interface CounterInstance {
 
 /** What a build of the whole document reads from outside it. */
 const NOTHING_OUTSIDE: ReadonlySet<string> = new Set();
-
-/** A counter is a 32-bit integer in a browser, and saturates there. */
-function clampCounter(value: number): number {
-  return Math.max(-2147483648, Math.min(2147483647, value));
-}
 
 /** Where the element whose counters change is: what the walk that counts
  *  a reversed counter's scope starts from (`BoxBuilder._countedStart`). */
