@@ -1118,29 +1118,47 @@ function wholePixels(n: number): number {
 }
 
 /** The line width of the state saved under a paint, which no document asks
- *  for (`restoreTo`). */
-const PAINT_MARK = 123456789.5;
+ *  for (`restoreTo`): a number a context that keeps single floats keeps. */
+const PAINT_MARK = 2 ** 20 + 0.5;
 
-/** How many saves a paint that threw can have left open. */
+/** How many saves a paint can have left open. */
 const MAX_OPEN_SAVES = 10000;
 
-/**
- * The context a paint threw on, put back to the state saved with a line width
- * of `mark` and then to the one under it: the paint's saves are still open,
- * and their clips and transforms would stay on a context that outlives the
- * frame. No context says how many are open, so the state is told by its line
- * width, which each keeps with the rest. One that does not is left as it is:
- * a restore too many would take a save of whoever lent it.
- */
-export function restoreTo(ctx: Context2D, mark: number): void {
+/** Whether a context keeps a line width as it is set, and with the state a
+ *  restore brings back. */
+function keepsLineWidth(ctx: Context2D, width: number): boolean {
   const was = ctx.lineWidth;
   ctx.save();
-  ctx.lineWidth = mark + 1;
+  ctx.lineWidth = width;
+  const set = ctx.lineWidth === width;
   ctx.restore();
-  if (ctx.lineWidth !== was) return;
+  const back = ctx.lineWidth === was;
+  if (!back) ctx.lineWidth = was;
+  return set && back;
+}
+
+/**
+ * The context a paint left saves open on, as one that threw does, put back to
+ * the state saved with a line width of `mark` and then to the one under it:
+ * their clips and transforms would stay on a context that outlives the frame.
+ * No context says how many are open, so the state is told by its line width.
+ * One that does not keep it is left as it is: a restore too many would take a
+ * save of whoever lent it.
+ */
+export function restoreTo(ctx: Context2D, mark: number): void {
+  if (!keepsLineWidth(ctx, mark + 1)) return;
   for (let i = 0; i < MAX_OPEN_SAVES && ctx.lineWidth !== mark; i++)
     ctx.restore();
   if (ctx.lineWidth === mark) ctx.restore();
+}
+
+/** The state saved under a paint with a line width of `mark`, and the one
+ *  saved over it, given up once it has painted — with what the paint left
+ *  open, where it left any. */
+export function restoreAfter(ctx: Context2D, mark: number): void {
+  ctx.restore();
+  if (ctx.lineWidth === mark || !keepsLineWidth(ctx, mark + 1)) ctx.restore();
+  else restoreTo(ctx, mark);
 }
 
 /** How deep `@import`s are followed: an import in an import in an import is
@@ -17653,8 +17671,7 @@ export class HtmlViewNode extends Node {
     try {
       this._paint(ctx, tree, range, damage);
       this._paintCaret(ctx);
-      ctx.restore();
-      ctx.restore();
+      restoreAfter(ctx, PAINT_MARK);
     } catch (error) {
       restoreTo(ctx, PAINT_MARK);
       ctx.lineWidth = width;
