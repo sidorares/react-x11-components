@@ -1821,3 +1821,28 @@ metric(
     }
   },
 );
+
+metric(
+  'a line breaks after a zero-width space at the end of a box, or before one',
+  async () => {
+    // where what follows stands on the line as a piece of its own: a space of
+    // no width was taken for no place to break, and the next word ran on
+    const cases = [
+      'one&#8203;<span style="position:relative;top:1px">three</span>',
+      'one&#8203;<span style="vertical-align:2px">three</span>',
+      '<span style="padding:1px">one&#8203;</span>three',
+      'one&#8203;<span style="padding:0 1px">three</span>',
+      'one&#8203;three',
+    ];
+    const { node } = await render(
+      '<style>body{margin:0;font-size:16px}p{margin:0;width:45px}</style>' +
+        cases.map((p, i) => `<p id="p${i}">${p}</p>`).join('') +
+        '<p id="joined">one<span style="vertical-align:2px">three</span></p>',
+    );
+    const el = view(node);
+    for (const [i, p] of cases.entries()) {
+      assert.strictEqual(linesOf(el, `p${i}`).length, 2, p);
+    }
+    assert.strictEqual(linesOf(el, 'joined').length, 1, 'one word');
+  },
+);
