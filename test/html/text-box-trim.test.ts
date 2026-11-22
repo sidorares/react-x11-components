@@ -113,3 +113,80 @@ metric(
     assert.ok(cap < text, `${cap} under ${text}`);
   },
 );
+
+metric(
+  'a vertical block is trimmed at its block-start, across the page',
+  async () => {
+    // its lines are its frame's, which trims them as a horizontal block
+    // does, and the root is as wide as what is left (WPT's
+    // text-box-trim-half-leading-block-box-002)
+    const { node } = await render(
+      '<style>body{margin:0} div{font:20px/3 monospace;writing-mode:vertical-lr}</style>' +
+        '<div id="plain">x</div>' +
+        '<div id="start" style="text-box-trim:trim-start">x</div>' +
+        '<div id="both" style="text-box-trim:trim-both">x</div>',
+    );
+    const el = view(node);
+    await act();
+    const width = (id: string) =>
+      el.elementRect(findById(el.document, id)!)!.width;
+    assert.ok(Math.abs(width('plain') - 60) < 0.5, `${width('plain')}`);
+    assert.ok(width('start') < 55, `trimmed at its start: ${width('start')}`);
+    assert.ok(
+      width('both') < width('start') - 5,
+      `and at its end: ${width('both')} under ${width('start')}`,
+    );
+  },
+);
+
+metric(
+  "a list item's marker reaches no higher than the trimmed line it is on",
+  async () => {
+    // an outside marker on the first line of a nested list pushed that
+    // line down by its half-leading, which no trim took back (WPT's
+    // text-box-trim-list-001)
+    const { node } = await render(
+      '<style>body{margin:0} .c{font:50px/2 monospace} ul{list-style-type:"X"}' +
+        ' ul,li{text-box-trim:trim-both;text-box-edge:text;margin:0;padding:0}</style>' +
+        '<div class="c"><ul id="nested"><li><ul><li>X</li></ul></li></ul>' +
+        '<ul id="single"><li>X</li></ul></div>',
+    );
+    const el = view(node);
+    await act();
+    const height = (id: string) =>
+      el.elementRect(findById(el.document, id)!)!.height;
+    assert.ok(
+      Math.abs(height('nested') - height('single')) < 0.5,
+      `${height('nested')} where ${height('single')}`,
+    );
+  },
+);
+
+metric(
+  'a line before a <br> that clears floats is trimmed, down to the floats',
+  async () => {
+    // the break is a block of its own here, which hid the last line from
+    // the trim; and the box ends no higher than the floats it clears
+    // (WPT's text-box-trim-float-clear-br-003)
+    const box = (id: string, float: number) =>
+      `<div style="float:left;width:10px;height:${float}px"></div>` +
+      `<div id="${id}" style="text-box-trim:trim-end;text-box-edge:text alphabetic">` +
+      'x<br style="clear:both"></div>';
+    const { node } = await render(
+      '<style>body{margin:0} div{font:50px/2 monospace}</style>' +
+        '<div id="plain">x</div>' +
+        box('low', 1) +
+        box('high', 90),
+    );
+    const el = view(node);
+    await act();
+    const height = (id: string) =>
+      el.elementRect(findById(el.document, id)!)!.height;
+    const line = height('plain');
+    assert.ok(height('low') < line - 20, `trimmed: ${height('low')}`);
+    assert.ok(
+      Math.abs(height('high') - 90) < 0.5,
+      `as low as the float: ${height('high')}`,
+    );
+  },
+);

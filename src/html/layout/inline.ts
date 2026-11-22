@@ -2672,6 +2672,12 @@ function linesOf(
                 trailing.length;
           open.x += open.hang;
           placed.trail = open.hang;
+        } else if (
+          segment.runs[segment.runs.length - 1].text.endsWith('\u200b')
+        ) {
+          // a zero-width space is a place to break and takes no room: the
+          // hair is what says the line ends on one
+          open.hang = Number.EPSILON;
         }
       } else if (hung.total) holdHung();
       index = segment.nextIndex;

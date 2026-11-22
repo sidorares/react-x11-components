@@ -7,11 +7,7 @@ import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { parseColor } from '../../src/html/css/values.js';
 import { COLUMN_PIECES, columned } from '../../src/html/layout/boxes.js';
-import {
-  REPEATED,
-  gridRowsBroken,
-  stripReach,
-} from '../../src/html/layout/multicol.js';
+import { REPEATED, stripReach } from '../../src/html/layout/multicol.js';
 import { resolvedInsets } from '../../src/html/layout/block.js';
 import {
   FONTS,
@@ -21,6 +17,7 @@ import {
   h,
   linesOf,
   metric,
+  pixelsIn,
   render,
   renderScrolled,
   rulesIn,
@@ -28,10 +25,10 @@ import {
 } from './harness.js';
 import type { PaintOp } from './harness.js';
 import {
-  GRID_ROWS_DOCUMENT,
-  GRID_ROWS_KNOWN,
-  GRID_ROWS_RECTS,
-} from './grid-rows.js';
+  GRID_ROW_CONTEXTS_DOCUMENT,
+  GRID_ROW_CONTEXTS_KNOWN,
+  GRID_ROW_CONTEXTS_RECTS,
+} from './grid-row-contexts.js';
 
 afterEach(cleanup);
 
@@ -2651,19 +2648,18 @@ test('an inline box that starts with a box out of the flow after a forced break 
   assert.ok(a.y >= 32, `on the second line, at ${a.y}`);
 });
 
-test('a grid row the columns end inside is broken an item at a time, where Chromium breaks it', async () => {
-  // every rectangle Chromium's, from `scripts/conformance/grid-rows.ts`:
-  // each item goes on at the head of the next column from its own break,
-  // the row as tall there as its longest item, a stretched item as tall as
-  // the row and an aligned one as what it holds, and the rows after it
-  // under that
-  const { node } = await render(GRID_ROWS_DOCUMENT, 800);
+test('a grid in columns goes where Chromium has it: under cloned edges, in rows of columns, in nested columns, in a table that repeats its header, and with an item that goes whole', async () => {
+  // every rectangle Chromium's, from
+  // `scripts/conformance/grid-row-contexts.ts`; the cases it knows differ
+  // left out by name
+  const { node } = await render(GRID_ROW_CONTEXTS_DOCUMENT, 800);
   const el = view(node);
   const wrong: string[] = [];
-  for (const [id, want] of Object.entries(GRID_ROWS_RECTS)) {
-    // the cases the script knows differ, an item aligned in its row
+  let held = 0;
+  for (const [id, want] of Object.entries(GRID_ROW_CONTEXTS_RECTS)) {
     const at = id.replace(/[gi]\d*$/, '');
-    if (GRID_ROWS_KNOWN.includes(at)) continue;
+    if (GRID_ROW_CONTEXTS_KNOWN.includes(at)) continue;
+    held += 1;
     const box = boxOf(el, id);
     const root = boxOf(el, at);
     const pieces = COLUMN_PIECES.get(box as never) ?? [box];
@@ -2679,33 +2675,150 @@ test('a grid row the columns end inside is broken an item at a time, where Chrom
       );
     }
   }
+  assert.ok(held > 500, `rectangles held: ${held}`);
   assert.deepStrictEqual(wrong, []);
 });
 
-test('a grid row that fits whole in its column is broken no item at a time', async () => {
-  // what a row its column holds whole does is what it did: no item of it
-  // is a flow of its own (`gridRowsBroken` counts the rows that are)
-  const grid = (h: number) =>
-    '<div style="display:grid;grid-template-columns:20px 20px;line-height:0">' +
-    `<div><i style="display:inline-block;width:20px;height:${h}px"></i></div>` +
-    '<div><i style="display:inline-block;width:20px;height:30px"></i>' +
-    '<i style="display:inline-block;width:20px;height:30px"></i></div></div>';
-  const before = gridRowsBroken();
-  await render(
-    '<style>body{margin:0}</style>' +
-      '<div style="columns:2;column-gap:0;column-fill:auto;width:100px;' +
-      `height:100px">${grid(40)}<div style="height:40px"></div>${grid(20)}</div>`,
-    300,
-  );
-  assert.strictEqual(gridRowsBroken(), before, 'none, where each row fits');
-  await render(
-    '<style>body{margin:0}</style>' +
-      '<div style="columns:2;column-gap:0;column-fill:auto;width:100px;' +
-      `height:100px"><div style="height:50px"></div>${grid(40)}</div>`,
-    300,
-  );
-  assert.ok(gridRowsBroken() > before, 'one, where the column ends inside');
+test('a grid in columns with an item of any kind in a row a column ends inside is laid out, and the document after it', async () => {
+  // an item that goes whole was placed across its row's columns, its lines
+  // looked up where none were gathered: that threw, and left the document
+  // blank
+  const i = (h: number) =>
+    `<i style="display:inline-block;width:20px;height:${h}px"></i>`;
+  const lines = `<div>${i(20)}</div><div>${i(20)}</div>`;
+  const kinds: Record<string, string> = {
+    'contain: size, text': '<div style="contain:size;height:150px">x</div>',
+    'contain: size, blocks': `<div style="contain:size;height:150px">${lines}</div>`,
+    'contain: strict': `<div style="contain:strict;height:150px">${i(20)}</div>`,
+    'overflow: auto, text': '<div style="overflow:auto;height:150px">x</div>',
+    'overflow: auto, blocks': `<div style="overflow:auto;height:150px">${lines}</div>`,
+    'overflow: hidden card': `<div style="overflow:hidden;border-radius:8px;padding:4px"><img style="display:block;width:20px;height:120px"><p>x</p></div>`,
+    'overflow: hidden, text':
+      '<div style="overflow:hidden;height:150px">x</div>',
+    'overflow: scroll': '<div style="overflow:scroll;height:150px">x</div>',
+    'overflow: clip': '<div style="overflow:clip;height:150px">x</div>',
+    'a clamp':
+      '<div style="display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:1;overflow:hidden;height:150px">x</div>',
+    'an image': '<img style="width:20px;height:150px">',
+    'an image in it': '<div><img style="width:20px;height:150px"></div>',
+    'a block image in it':
+      '<div><img style="display:block;width:20px;height:150px">x</div>',
+    'a canvas': '<canvas style="width:20px;height:150px"></canvas>',
+    'an iframe': '<iframe style="width:20px;height:150px"></iframe>',
+    'a text area': '<textarea style="width:20px;height:150px">x</textarea>',
+    'a button': '<button style="height:150px">x</button>',
+    'a button in it': '<div><button style="height:150px">x</button></div>',
+    'a block button in it':
+      '<div><button style="display:block;height:150px">x</button></div>',
+    'a fieldset': `<fieldset style="margin:0"><legend>x</legend>${lines}${lines}</fieldset>`,
+    'aligned content': `<div style="align-content:center">${lines}${lines}</div>`,
+    'layout containment': `<div style="contain:layout">${lines}${lines}</div>`,
+    'a ruby in it': `<div><ruby>x<rt>y</ruby> ${i(150)}</div>`,
+    'a table': '<div style="display:table;height:150px">x</div>',
+    'a table in it':
+      '<div><div style="display:table;height:150px">x</div></div>',
+    'a multicol': '<div style="columns:2;height:150px">x x</div>',
+    'a multicol in it':
+      '<div><div style="columns:2;height:150px">x x</div></div>',
+    'a scroller in it':
+      '<div><div style="overflow:auto;height:150px">x</div></div>',
+    'contain: size in it':
+      '<div><div style="contain:size;height:150px">x</div></div>',
+    'a flex box': `<div style="display:flex">${i(150)}</div>`,
+    'a flex box in it': `<div><div style="display:flex">${i(150)}</div></div>`,
+    'a grid in it': `<div><div style="display:grid">${i(150)}</div></div>`,
+    'an inline flex box in it': `<div><span style="display:inline-flex;height:150px">${i(20)}</span></div>`,
+    'an inline block that scrolls in it':
+      '<div><span style="display:inline-block;overflow:auto;height:150px">x</span></div>',
+    'a float in it': `<div><div style="float:left;height:150px">x</div>x</div>`,
+    'an absolute box in it':
+      '<div><div style="position:absolute;height:150px">x</div>x<br>x</div>',
+    'a relative item': `<div style="position:relative">${lines}${lines}</div>`,
+    'a transformed item': `<div style="transform:rotate(5deg)">${lines}${lines}</div>`,
+    'a vertical item':
+      '<div style="writing-mode:vertical-rl;height:150px">x x</div>',
+    'a list item in it': `<ul style="margin:0"><li>x<li>x<li>x</ul>`,
+    'break-inside: avoid': `<div style="break-inside:avoid">${lines}${lines}</div>`,
+  };
+  const page = (item: string) =>
+    '<style>body{margin:0;font:16px/20px monospace}</style>' +
+    '<div style="columns:3;column-gap:0;column-fill:auto;width:300px;height:100px">' +
+    '<div style="height:40px"></div>' +
+    `<div style="display:grid;grid-template-columns:30px 30px">${item}` +
+    `<div>${i(50)}<br>${i(80)}</div></div><div id="z" style="height:10px"></div></div>` +
+    '<div id="after" style="height:30px"></div>';
+  for (const [kind, item] of Object.entries(kinds)) {
+    for (const body of [
+      page(item),
+      page(`<div>${i(50)}<br>${i(80)}</div>${item}`),
+    ]) {
+      const { node } = await render(body, 400);
+      const el = view(node);
+      const after = boxOf(el, 'after');
+      assert.ok(after, `${kind}: the document is laid out`);
+      assert.deepStrictEqual(
+        [after.x, after.y, after.height],
+        [0, 100, 30],
+        `${kind}: the document after it`,
+      );
+      const z = boxOf(el, 'z');
+      const pieces = COLUMN_PIECES.get(z as never) ?? [z];
+      assert.strictEqual(
+        pieces.reduce((sum, p) => sum + p.height, 0),
+        10,
+        `${kind}: what follows the grid`,
+      );
+    }
+  }
 });
+
+metric(
+  "a paragraph in a grid row a column ends inside is drawn in each column's own lines, as many as its orphans and widows leave",
+  async () => {
+    // Chrome breaks it two lines and two. The lines of an item in a row were
+    // once drawn whole in the first column, the last of them past its foot,
+    // with nothing in the second, and broken three and one
+    const { result, node } = await render(
+      '<style>body{margin:0;font:16px/20px monospace}</style>' +
+        '<div style="columns:2;column-gap:20px;column-fill:auto;width:220px;height:100px">' +
+        '<div style="height:40px"></div>' +
+        '<div style="display:grid;grid-template-columns:50px 50px">' +
+        '<div id="a">aa bb cc dd ee ff gg</div><div>hh ii jj kk</div></div></div>',
+      300,
+    );
+    const { lines } = boxOf(view(node), 'a') as unknown as {
+      lines: { x: number; y: number }[];
+    };
+    assert.deepStrictEqual(
+      lines.map((l) => [l.x, l.y]),
+      [
+        [0, 40],
+        [0, 60],
+        [120, 0],
+        [120, 20],
+      ],
+    );
+    const d = await pixelsIn(result.ctx, {
+      x: 0,
+      y: 0,
+      width: 240,
+      height: 160,
+    });
+    const inked = (x: number): boolean[] =>
+      Array.from({ length: 8 }, (_, row) => {
+        for (let y = row * 20; y < row * 20 + 20; y += 1) {
+          for (let at = x; at < x + 50; at += 1) {
+            if (d[(y * 240 + at) * 4] < 128) return true;
+          }
+        }
+        return false;
+      });
+    const rows = (...on: number[]) =>
+      Array.from({ length: 8 }, (_, row) => on.includes(row));
+    assert.deepStrictEqual(inked(0), rows(2, 3), 'the first column');
+    assert.deepStrictEqual(inked(120), rows(0, 1), 'the second');
+  },
+);
 
 metric(
   'a multicol container of continue: discard keeps what fits in its columns',

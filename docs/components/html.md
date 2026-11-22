@@ -6143,14 +6143,7 @@ column ends and goes on at the head of the next. A block that is a
 formatting context of its own, a `flow-root` say, breaks as any block does;
 only one that scrolls or clips, a multicol container, a clamp and an
 orthogonal flow go to a column whole, as does a box whose only content is a
-float that cannot be cut. A grid's row the columns end inside is broken
-an item at a time, as Blink breaks it: each item goes on at the head of the
-next column from where it broke, the row as tall there as its longest item,
-a stretched item as tall as the row and one aligned in it as tall as what
-it holds, and what comes after the row starts under it. A row an item of
-which would leave nothing behind goes to the next column whole. A row with
-a forced break inside an item is broken where its items' content breaks
-together, as before. A forced break before the first child of a box
+float that cannot be cut. A forced break before the first child of a box
 with layout containment is none, since it would be the box's own. A forced
 break after a grid or flex item is after its row, and comes before the next
 row; after one in its box's last row it is the box's own, and goes out to
@@ -8450,7 +8443,13 @@ bottom, to its root inline box's `text`, `cap` or `ex` over edge and its
 `text` or `alphabetic` under edge, the content moving up and the box and
 the blocks between it and the line coming out shorter; border or padding
 between the box and its line, a height of its own on a block between, or
-a flex box or a table on the way holds a side, and the innermost trim wins; a
+a flex box or a table on the way holds a side, and the innermost trim wins;
+a block in a vertical writing mode trims its lines across the page, at its
+block-start and block-end, as its frame trims them;
+an outside marker on a trimmed first line reaches as high as its face and
+not its half-leading, so a nested list trims as a list of one level;
+a `<br>` that clears floats after the last line is passed over for it, and
+the box ends no higher than the floats it cleared; a
 face that says no capital or x height has one of 0.7em or 0.5em; the
 ideographic edges are an em box centred on the text, as no face here says
 where its ideographic baselines are; trimming an inline box's content

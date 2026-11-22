@@ -15,7 +15,9 @@ import {
   waitFor,
 } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
+import type { Context2D } from 'react-x11/node';
 import { Html } from '../../src/index.js';
+import { HtmlViewNode, restoreAfter, restoreTo } from '../../src/html/node.js';
 import { parseColor } from '../../src/html/css/values.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { SpriteStore } from '../../src/html/surfaces.js';
@@ -1576,3 +1578,188 @@ test('a mask longhand with a var() in it resets its own list, not the others', a
   assert.deepStrictEqual(mask('i').sizes, ['auto']);
   assert.deepStrictEqual(mask('i').repeats, [['no-repeat', 'no-repeat']]);
 });
+
+metric('a paint that throws leaves the context as it was lent', async (t) => {
+  // The window's context outlives the frame, and a paint that threw left
+  // its saves open on it: a document whose font the engine could not draw
+  // left its clip there, and the page shown after it was drawn inside that.
+  const proto = Object.getPrototypeOf(
+    (await renderX11(h('box'), { width: 200, height: 100, fonts: FONTS! })).ctx,
+  ) as { drawGlyphs(...args: unknown[]): void };
+  await cleanup();
+  const page = (source: string, key: string) =>
+    h(
+      'box',
+      { style: { width: 200, height: 100, backgroundColor: '#ffffff' } },
+      h(Html, {
+        key,
+        source,
+        selectable: false,
+        'data-testname': 'doc',
+        style: { flexGrow: 1 },
+      } as never),
+    );
+  let threw = 0;
+  t.mock.method(console, 'error', () => {});
+  const thrower = t.mock.method(proto, 'drawGlyphs', () => {
+    threw += 1;
+    throw new Error('no such glyph');
+  });
+  const result = await renderX11(
+    page(
+      '<div style="overflow:hidden;width:20px;height:20px;border-radius:4px;' +
+        'transform:translate(3px,0)"><p style="opacity:.5">text</p></div>',
+      'a',
+    ),
+    { width: 200, height: 100, fonts: FONTS! },
+  );
+  await act();
+  assert.ok(threw > 0, 'the paint did not throw');
+  thrower.mock.restore();
+  // the same document painted again, in the same window: blank, and the
+  // window's ground all over it
+  view(screen.getByTestName('doc') as DrawnNode).invalidate();
+  await act();
+  await expectPixel(result.ctx, 150, 80, '#ffffff');
+  const blue =
+    '<body style="margin:0"><div style="height:100px;background:#00f">';
+  // the element again, with something else to draw
+  await result.rerender(page(blue, 'a'));
+  await act();
+  await expectPixel(result.ctx, 150, 80, '#0000ff');
+  await expectPixel(result.ctx, 5, 5, '#0000ff');
+  // and the next one in the same window
+  await result.rerender(page(blue.replace('#00f', '#0f0'), 'b'));
+  await act();
+  await expectPixel(result.ctx, 150, 80, '#00ff00');
+  await expectPixel(result.ctx, 5, 5, '#00ff00');
+});
+
+/** A context of nothing but saved line widths, kept as `kept` makes of them,
+ *  and how many saves are open on it. */
+function widthsOnly(kept: (width: number) => number, saved = true) {
+  const stack: number[] = [];
+  let width = 1;
+  return {
+    get open() {
+      return stack.length;
+    },
+    get lineWidth() {
+      return width;
+    },
+    set lineWidth(to: number) {
+      width = kept(to);
+    },
+    save() {
+      stack.push(width);
+    },
+    restore() {
+      const to = stack.pop();
+      if (to !== undefined && saved) width = to;
+    },
+  };
+}
+
+/** The saves of whoever lent the context, the two under a paint, and those
+ *  it left open. */
+function painted(ctx: ReturnType<typeof widthsOnly>, left: number): void {
+  for (let i = 0; i < 5; i++) ctx.save();
+  ctx.save();
+  ctx.lineWidth = MARK;
+  ctx.save();
+  ctx.lineWidth = 1;
+  for (let i = 0; i < left; i++) ctx.save();
+  if (left) ctx.lineWidth = 3;
+}
+const MARK = 2 ** 20 + 0.5;
+
+test('a context is restored to what it was lent as, and no further', () => {
+  // A restore too many takes a save of whoever lent it, and its clip with it.
+  for (const [name, kept, left, after] of [
+    ['as set', (w: number) => w, 4, 5],
+    ['in single floats', Math.fround, 4, 5],
+    // these cannot say which state is which, so nothing is restored
+    ['cut at a thousand', (w: number) => Math.min(w, 1000), 4, 11],
+    ['never set', () => 1, 4, 11],
+  ] as const) {
+    const ctx = widthsOnly(kept);
+    painted(ctx, left);
+    restoreTo(ctx as never, MARK);
+    assert.strictEqual(ctx.open, after, `${name}, after a throw`);
+  }
+  const apart = widthsOnly((w) => w, false);
+  painted(apart, 4);
+  restoreTo(apart as never, MARK);
+  assert.strictEqual(apart.open, 11, 'kept apart from its state');
+});
+
+test('a paint that left a save open, or none, leaves the context as it was lent', () => {
+  for (const kept of [
+    (w: number) => w,
+    Math.fround,
+    (w: number) => Math.min(w, 1000),
+    () => 1,
+  ]) {
+    const ctx = widthsOnly(kept);
+    painted(ctx, 0);
+    restoreAfter(ctx as never, MARK);
+    assert.strictEqual(ctx.open, 5, 'balanced');
+    assert.strictEqual(ctx.lineWidth, 1);
+  }
+  const apart = widthsOnly((w) => w, false);
+  painted(apart, 0);
+  restoreAfter(apart as never, MARK);
+  assert.strictEqual(apart.open, 5, 'balanced, its width kept apart');
+  assert.strictEqual(apart.lineWidth, 1);
+  for (const kept of [(w: number) => w, Math.fround]) {
+    const ctx = widthsOnly(kept);
+    painted(ctx, 3);
+    restoreAfter(ctx as never, MARK);
+    assert.strictEqual(ctx.open, 5, 'three left open');
+    assert.strictEqual(ctx.lineWidth, 1);
+  }
+});
+
+metric(
+  'a paint that leaves saves open has the next document drawn whole',
+  async (t) => {
+    const page = (color: string, key: string) =>
+      h(
+        'box',
+        { style: { width: 200, height: 100, backgroundColor: '#ffffff' } },
+        h(Html, {
+          key,
+          source: `<body style="margin:0"><div style="height:100px;background:${color}">`,
+          selectable: false,
+          'data-testname': 'doc',
+          style: { flexGrow: 1 },
+        } as never),
+      );
+    const proto = HtmlViewNode.prototype as unknown as {
+      _paint(ctx: Context2D, ...more: unknown[]): void;
+    };
+    const inner = proto._paint;
+    const open = t.mock.method(proto, '_paint', function (this: unknown, ...a) {
+      const [ctx] = a;
+      inner.apply(this, a as never);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, 20, 20);
+      ctx.clip();
+      ctx.save();
+      ctx.save();
+      ctx.lineWidth = 7;
+    } as typeof inner);
+    const result = await renderX11(page('#00f', 'a'), {
+      width: 200,
+      height: 100,
+      fonts: FONTS!,
+    });
+    await act();
+    open.mock.restore();
+    await result.rerender(page('#0f0', 'b'));
+    await act();
+    await expectPixel(result.ctx, 150, 80, '#00ff00');
+    await expectPixel(result.ctx, 5, 5, '#00ff00');
+  },
+);

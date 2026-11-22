@@ -3308,7 +3308,19 @@ function layoutChildren(
     if (pushed !== null) {
       const line = firstLineIn(child);
       if (line) {
-        const push = pushed - (line.y + line.baseline - child.y);
+        // a line trimmed at its top, or one this item will trim, is the
+        // root inline box's text and no more: the marker on it reaches as
+        // high as its face does, its half-leading trimmed with the line's
+        // (CSS Inline 3, 5.1; WPT's text-box-trim-list-001)
+        const want =
+          box.marker &&
+          ctx.fonts &&
+          (START_TRIMMED.has(line) ||
+            (box.style.textBoxTrim !== 'none' &&
+              box.style.textBoxTrim !== 'trim-end'))
+            ? Math.min(pushed, trimmedMarkerAscent(box, box.marker, ctx.fonts))
+            : pushed;
+        const push = want - (line.y + line.baseline - child.y);
         if (push > 0) {
           translate(child, 0, push);
           floats.moveSince(floatMark, push);
@@ -3346,6 +3358,9 @@ function layoutChildren(
     const moved = childY !== at;
     if (moved) CLEARED_FROM.set(child, at);
     else CLEARED_FROM.delete(child);
+    if (clearance > -Infinity && clearingBreak(child)) {
+      CLEAR_FLOOR.set(child, clearance);
+    } else CLEAR_FLOOR.delete(child);
     if (!moved && collapsesThrough(child)) {
       // nothing in it parts its margins: they and the ones either side of
       // it are one (CSS 2.1 8.3.1), still hanging for what comes next —
@@ -5572,6 +5587,18 @@ function markerAscent(box: Box, marker: Marker, fonts: FontsLike): number {
   return marker.image ? Math.max(marker.image.height, ascent) : ascent;
 }
 
+/** How high an outside marker reaches above a trimmed line's baseline: its
+ *  face's ascent, with none of the half-leading its line height gives it,
+ *  or its image's height. */
+function trimmedMarkerAscent(
+  box: Box,
+  marker: Marker,
+  fonts: FontsLike,
+): number {
+  const ascent = faceExtentOf(fonts, marker.style ?? box.style).ascent;
+  return marker.image ? Math.max(marker.image.height, ascent) : ascent;
+}
+
 /** The first line box anywhere under a box, in layout order. */
 /** The lines a box trimmed at their start or end (`trimTextBox`): a box
  *  trims a line no box in it trimmed already, since the innermost trim
@@ -5620,10 +5647,37 @@ function trimTextBox(box: Box, height: number, fonts: FontsLike): number {
       if (by) {
         for (const between of path) between.height -= by;
         height -= by;
+        // a `<br>` that clears the floats after the line still clears
+        // them: the box ends no higher than the floats it cleared, where
+        // that is less than the trim took (WPT's
+        // text-box-trim-float-clear-br-003)
+        for (const after of found.breaks) {
+          const floor = CLEAR_FLOOR.get(after);
+          if (floor === undefined) continue;
+          after.y = Math.max(after.y - by, floor);
+          height = Math.max(height, after.y + after.height - box.contentY);
+        }
       }
     }
   }
   return height;
+}
+
+/** The floats' foot that a `<br>` clearing them was put below
+ *  (`clearingBreak`), where it was: what a trim of the line before it
+ *  leaves the box no higher than. */
+const CLEAR_FLOOR = new WeakMap<Box, number>();
+
+/** A `<br>` that clears the floats, which is an empty block of its own
+ *  (`clear` in the box builder) and no line: passed over for the last
+ *  line before it. */
+function clearingBreak(box: Box): boolean {
+  return (
+    box.kind === 'block' &&
+    !box.children.length &&
+    !!box.el &&
+    tagOf(box.el) === 'br'
+  );
 }
 
 /**
@@ -5640,18 +5694,24 @@ function trimTextBox(box: Box, height: number, fonts: FontsLike): number {
 function edgeLine(
   box: Box,
   end: boolean,
-): { line: LineBox; holder: Box; path: Box[] } | null {
+): { line: LineBox; holder: Box; path: Box[]; breaks: Box[] } | null {
   const path: Box[] = [];
+  /** The clearing breaks after the last line, in the box itself. */
+  const breaks: Box[] = [];
   for (let at = box; ;) {
     if (at.lines?.length) {
       const line = end ? at.lines[at.lines.length - 1] : at.lines[0];
-      return { line, holder: at, path };
+      return { line, holder: at, path, breaks };
     }
     let next: Box | null = null;
     const children = at.children;
     for (let i = 0; i < children.length; i += 1) {
       const child = children[end ? children.length - 1 - i : i];
       if (child.outOfFlow || child.isFloat || whiteSpaceAlone(child)) continue;
+      if (end && at === box && clearingBreak(child)) {
+        breaks.push(child);
+        continue;
+      }
       next = child;
       break;
     }
