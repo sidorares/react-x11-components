@@ -1,33 +1,39 @@
-// Writes `test/html/grid-row-contexts.ts`: grids in columns that are not
-// plain ones, and where Chromium puts each piece of each item and of each
-// grid. A grid's row is broken an item at a time in plain columns alone
-// (`layoutColumns`); in these it goes as it did before that was written, and
-// `scripts/conformance/grid-rows.ts`, whose cases are all in plain columns,
-// says nothing of them. Four classes, by the class on the case:
+// Writes `test/html/grid-row-contexts.ts`: grids in columns, and where
+// Chromium puts each piece of each item and of each grid. By the class on the
+// case:
 //
 // - `clone`: `box-decoration-break: clone` on the grid, or on a box around it;
 // - `wrap`: rows of columns, of a `column-height` under `column-wrap`;
 // - `nested`: a multicol container in another's columns;
-// - `repeat`: in a table that repeats its header at each break.
+// - `repeat`: in a table that repeats its header at each break;
+// - `whole`: in plain columns, an item, or what an item holds, that is a
+//   scroll container, has size containment, is replaced, a table or a multicol
+//   container, or is an inline-block, under, at or over the column's height.
+//
+// Breaking a grid's row an item at a time was tried (#1828) and taken out: it
+// moved cases of every class but `repeat`, and left the document blank on some
+// of `whole` (`docs/prd-html-grid-rows.md`). What is tried next is held to
+// these.
 //
 // The cases are kept and measured again; any added here go after them, as
-// many of each class:
+// many of each class, or of the one `--class` names:
 //
 //   CHROME=<chromium> node --import tsx \
-//     scripts/conformance/grid-row-contexts.ts [--add <count>] [--seed <seed>]
+//     scripts/conformance/grid-row-contexts.ts [--add <count>] \
+//     [--class <class>] [--seed <seed>]
 //
-// Those in `KNOWN` differ from Chromium, and did before a row was broken an
-// item at a time (41e331b39), each of them: the test leaves them out by name.
-// Take one out of the list when it comes to match, and add none that matched
-// there. Nothing in a case is text, as in `grid-rows.ts`. Never edit the
-// fixture by hand: regenerate it.
+// Those in `KNOWN` differ from Chromium: the test leaves them out by name.
+// Take one out of the list when it comes to match, and add none. Nothing in a
+// case is text, which a platform's fonts would set at another height, so what
+// text does in a row is not held here. Never edit the fixture by hand:
+// regenerate it.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Chrome } from '../zengarden/chrome.js';
 
-/** The cases that differed from Chromium at 41e331b39, by id. */
+/** The cases that differ from Chromium, by id. */
 const KNOWN: string[] = [
   'c2',
   'c3',
@@ -75,6 +81,107 @@ const KNOWN: string[] = [
   'c133',
   'c137',
   'c150',
+  'c160',
+  'c162',
+  'c163',
+  'c164',
+  'c165',
+  'c169',
+  'c171',
+  'c174',
+  'c175',
+  'c176',
+  'c177',
+  'c180',
+  'c182',
+  'c184',
+  'c185',
+  'c187',
+  'c189',
+  'c190',
+  'c191',
+  'c194',
+  'c195',
+  'c198',
+  'c200',
+  'c203',
+  'c204',
+  'c205',
+  'c206',
+  'c207',
+  'c208',
+  'c210',
+  'c211',
+  'c212',
+  'c213',
+  'c214',
+  'c215',
+  'c216',
+  'c217',
+  'c219',
+  'c221',
+  'c224',
+  'c226',
+  'c230',
+  'c233',
+  'c234',
+  'c237',
+  'c240',
+  'c241',
+  'c242',
+  'c244',
+  'c245',
+  'c246',
+  'c247',
+  'c249',
+  'c254',
+  'c255',
+  'c256',
+  'c257',
+  'c258',
+  'c259',
+  'c262',
+  'c263',
+  'c264',
+  'c265',
+  'c266',
+  'c269',
+  'c270',
+  'c271',
+  'c273',
+  'c274',
+  'c277',
+  'c278',
+  'c279',
+  'c282',
+  'c283',
+  'c284',
+  'c285',
+  'c286',
+  'c287',
+  'c291',
+  'c292',
+  'c293',
+  'c294',
+  'c295',
+  'c296',
+  'c297',
+  'c298',
+  'c299',
+  'c300',
+  'c301',
+  'c302',
+  'c303',
+  'c304',
+  'c305',
+  'c306',
+  'c307',
+  'c308',
+  'c309',
+  'c312',
+  'c315',
+  'c317',
+  'c318',
 ];
 const FIXTURE = new URL(
   '../../test/html/grid-row-contexts.ts',
@@ -99,6 +206,10 @@ const next = (): number => {
 const pick = <T>(xs: readonly T[]): T => xs[Math.floor(next() * xs.length)];
 const int = (from: number, to: number): number =>
   from + Math.floor(next() * (to - from + 1));
+
+/** The one class to add to, where `--class` names it. */
+const only =
+  args.indexOf('--class') < 0 ? '' : args[args.indexOf('--class') + 1];
 
 const STYLE =
   '<style>body{margin:0}.case{position:relative;margin-bottom:200px}' +
@@ -172,6 +283,56 @@ const MAKERS: Record<string, (n: number) => string> = {
       `${grid(n, '')}</div></div>`
     );
   },
+  whole: (n) => {
+    const height = pick([60, 80, 100]);
+    const tall = pick([30, height, 110, 150]);
+    const i = (h: number) => `<i style="height:${h}px"></i>`;
+    const line = (h: number) => `<div>${i(h)}</div>`;
+    const css = 'line-height:0';
+    const make = pick([
+      (id: string) =>
+        `<div id="${id}" style="${css};contain:size;height:${tall}px">${i(20)}</div>`,
+      (id: string) =>
+        `<div id="${id}" style="${css};contain:size;height:${tall}px">${line(20)}${line(20)}</div>`,
+      (id: string) =>
+        `<div id="${id}" style="${css};overflow:auto;height:${tall}px">${i(20)}</div>`,
+      (id: string) =>
+        `<div id="${id}" style="${css};overflow:hidden">${i(tall)}</div>`,
+      (id: string) =>
+        `<div id="${id}" style="${css};overflow:hidden">${line(tall)}${line(20)}</div>`,
+      (id: string) =>
+        `<div id="${id}" style="${css};overflow:scroll;scrollbar-width:none;height:${tall}px">${i(20)}</div>`,
+      (id: string) =>
+        `<canvas id="${id}" style="width:20px;height:${tall}px"></canvas>`,
+      (id: string) =>
+        `<div id="${id}" style="${css}"><canvas style="width:20px;height:${tall}px;vertical-align:top"></canvas></div>`,
+      (id: string) =>
+        `<div id="${id}" style="${css}"><canvas style="display:block;width:20px;height:${tall}px"></canvas>${line(20)}</div>`,
+      (id: string) =>
+        `<div id="${id}" style="${css};display:table">${line(tall)}${line(20)}</div>`,
+      (id: string) =>
+        `<div id="${id}" style="${css};columns:2;column-gap:0;height:${tall}px">${i(20)}</div>`,
+      (id: string) =>
+        `<div id="${id}" style="${css}"><div style="contain:size;height:${tall}px"></div>${line(20)}</div>`,
+      (id: string) => `<div id="${id}" style="${css}">${i(tall)}</div>`,
+      (id: string) =>
+        `<div id="${id}" style="${css}">${line(20)}${line(tall)}</div>`,
+    ]);
+    const items = [0, 1, 2].slice(0, int(2, 3)).map((k) => {
+      const id = `c${n}i${k}`;
+      return k === 0 || next() < 0.3
+        ? make(id)
+        : `<div id="${id}" style="${css}">${line(pick([20, 40, 60]))}${line(pick([20, 40]))}</div>`;
+    });
+    const before = pick([0, 0, 10, 30, 50]);
+    return (
+      `<div class="case whole" id="c${n}" style="columns:4;column-gap:0;` +
+      `column-fill:${pick(['auto', 'balance'])};width:400px;height:${height}px">` +
+      `${room(before)}<div id="c${n}g" style="display:grid;grid-template-` +
+      `columns:repeat(${items.length},30px)">${items.join('')}</div>` +
+      `<div id="c${n}i9" style="height:10px"></div></div>`
+    );
+  },
   repeat: (n) => {
     const before = pick([0, 10, 30]);
     const height = pick([80, 100, 120]);
@@ -196,7 +357,8 @@ try {
   // a first run, with no fixture yet
 }
 const cases = kept.slice();
-for (const make of Object.values(MAKERS)) {
+for (const [name, make] of Object.entries(MAKERS)) {
+  if (only ? name !== only : name === 'whole') continue;
   for (let i = 0; i < count; i += 1) cases.push(make(cases.length));
 }
 
@@ -251,10 +413,10 @@ try {
   const entries = Object.entries(rects)
     .map(([id, list]) => `  ${id}: ${JSON.stringify(list)},`)
     .join('\n');
-  const text = `// Where each piece of each grid item, and of each grid, is in columns that
-// are not plain ones, as Chromium ${version} has it, from the top left of its
-// multicol container: \`scripts/conformance/grid-row-contexts.ts\` writes this
-// file, and nothing in it is written by hand.
+  const text = `// Where each piece of each grid item, and of each grid, is in columns, as
+// Chromium ${version} has it, from the top left of its multicol container:
+// \`scripts/conformance/grid-row-contexts.ts\` writes this file, and nothing
+// in it is written by hand.
 
 export const GRID_ROW_CONTEXTS_DOCUMENT = \`${STYLE}${cases.join('\n')}
 \`;
@@ -263,8 +425,7 @@ export const GRID_ROW_CONTEXTS_RECTS: Record<string, number[][]> = {
 ${entries}
 };
 
-/** The cases that differed from Chromium before a grid's row was broken an
- *  item at a time (\`KNOWN\` in the script). */
+/** The cases that differ from Chromium (\`KNOWN\` in the script). */
 export const GRID_ROW_CONTEXTS_KNOWN: string[] = ${JSON.stringify(KNOWN)};
 `;
   // as prettier writes it, which the repository holds every file to

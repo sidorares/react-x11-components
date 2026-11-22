@@ -46,6 +46,8 @@ import type {
   ResourceRequest,
   ResourceResult,
 } from '../../src/html/index.js';
+import { HtmlViewNode } from '../../src/html/node.js';
+import { checkVersions } from './versions.js';
 
 const h = React.createElement;
 
@@ -60,6 +62,7 @@ if (!wptRoot || !listFile || !outFile) {
   console.error('usage: wpt.tsx <wpt root> <list> <out.jsonl>');
   process.exit(2);
 }
+checkVersions();
 const ROOT = resolve(wptRoot);
 
 // Where each file is served from, as WPT's server serves the checkout: the
@@ -529,6 +532,25 @@ let frames = 0;
   };
 }
 
+/** What `<Html>` could not lay out or paint of the page being shot: it
+ *  leaves the document blank and says so once, on the console. */
+let failure: string | null = null;
+{
+  const proto = HtmlViewNode.prototype as unknown as {
+    _fail(error: unknown, ...more: unknown[]): void;
+  };
+  const inner = proto._fail;
+  proto._fail = function (error, ...more) {
+    failure ??= String((error as Error)?.stack ?? error);
+    return inner.call(this, error, ...more);
+  };
+}
+
+/** The shots `<Html>` failed in, with what it threw. A page left blank, or
+ *  half drawn, is no rendering of it, whatever the other side drew: a test
+ *  and a reference that both threw were alike, and a pass. */
+const FAILURES = new WeakMap<Uint8ClampedArray, string>();
+
 interface Mounted {
   ctx: {
     getImageData(
@@ -636,6 +658,13 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
  *  once two reads agree — an image decode or a stylesheet settles a frame
  *  or two after the first paint. */
 async function shoot(path: string): Promise<Uint8ClampedArray> {
+  failure = null;
+  const shot = await drawn(path);
+  if (failure) FAILURES.set(shot, failure);
+  return shot;
+}
+
+async function drawn(path: string): Promise<Uint8ClampedArray> {
   const before = frames;
   if (mounted?.fontsAdded()) {
     await mounted.dispose();
@@ -816,6 +845,20 @@ async function against(
     (maxDiff <= allowed.maxDifference && diff <= allowed.totalPixels);
   const passed = kind === 'match' ? same : !same;
   const bothBlank = blank(refShot) && blank(shot);
+  const threw = FAILURES.get(shot) ?? FAILURES.get(refShot);
+  if (threw) {
+    const on = FAILURES.has(shot) ? 'the test' : 'the reference';
+    return {
+      test,
+      ref,
+      kind,
+      result: 'error',
+      error: `<Html> failed on ${on}: ${threw}`.slice(0, 400),
+      diff,
+      maxDiff,
+      ms: Math.round(performance.now() - started),
+    };
+  }
   return {
     test,
     ref,
