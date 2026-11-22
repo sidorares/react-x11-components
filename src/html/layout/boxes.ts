@@ -7482,12 +7482,14 @@ function inputButtonLabel(el: Element): string {
 /** Whether the containments `bits` would apply to a box, were they set
  *  (`contained`): none to an inline box that is no atomic one, and none to
  *  a table's inner parts but a cell — nor size containment to a table or a
- *  cell (CSS Containment 2, 3). */
+ *  cell (CSS Containment 2, 3). A caption is a block container outside the
+ *  table's grid, and takes them all. */
 export function containmentApplies(box: Box, bits: number): boolean {
   switch (box.kind) {
     case 'block':
     case 'flex':
     case 'replaced':
+    case 'table-caption':
       return true;
     case 'table':
     case 'table-cell':
