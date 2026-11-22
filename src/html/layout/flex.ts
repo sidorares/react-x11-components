@@ -56,6 +56,7 @@ import {
   ownIntrinsic,
   percentBaseInside,
   percentHeightsIn,
+  takesPercentHeights,
   percentPadding,
   positionOutOfFlow,
   replacedRatio,
@@ -1191,7 +1192,7 @@ function layoutItemAt(
     const inner = Math.max(0, given - box.verticalExtra);
     if (Object.is(inner, percentBaseInside(box))) {
       // the height it has of its own
-    } else if (shares || (definite !== null && percentHeightsIn(box))) {
+    } else if (shares || (definite !== null && takesPercentHeights(box))) {
       tall = inner;
     }
   }

@@ -53,7 +53,7 @@ import {
   itemsTakeHeight,
   moveTo,
   percentBaseInside,
-  percentHeightsIn,
+  takesPercentHeights,
   percentOwn,
   positionOutOfFlow,
   resolveEdges,
@@ -987,7 +987,7 @@ function stretchDown(
   const height = clampHeight(child, Math.max(stretched, child.verticalExtra));
   if (
     child.kind !== 'replaced' &&
-    (percentHeightsIn(child) ||
+    (takesPercentHeights(child) ||
       itemsTakeHeight(child, height, ctx) ||
       (child.kind === 'flex' && height !== child.height))
   ) {
@@ -1032,7 +1032,7 @@ function stretchAlong(
   const height = clampHeight(child, child.height + hole);
   if (height === child.height) return true;
   if (
-    percentHeightsIn(child) ||
+    takesPercentHeights(child) ||
     itemsTakeHeight(child, height, ctx) ||
     child.kind === 'flex' ||
     child.kind === 'table'
