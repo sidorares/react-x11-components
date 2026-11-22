@@ -5997,6 +5997,33 @@ export function percentHeightsIn(box: Box): boolean {
 
 const PERCENT_HEIGHTS = new WeakMap<Box, boolean>();
 
+/** Whether a box is moved by a percentage of its containing block's height:
+ *  a relative or a sticky one's `top` or `bottom`. */
+export function percentInset(box: Box): boolean {
+  const { position, top, bottom } = box.style;
+  return (
+    (position === 'relative' || position === 'sticky') &&
+    (isPct(top) || isPct(bottom))
+  );
+}
+
+/** Whether anything in a box takes a percentage of a height or is moved by
+ *  one: what is laid out again in a height that is made definite. */
+export function takesPercentHeights(box: Box): boolean {
+  return percentHeightsIn(box) || percentInsetsIn(box);
+}
+
+function percentInsetsIn(box: Box): boolean {
+  let found = PERCENT_INSETS.get(box);
+  if (found === undefined) {
+    found = box.children.some((at) => percentInset(at) || percentInsetsIn(at));
+    PERCENT_INSETS.set(box, found);
+  }
+  return found;
+}
+
+const PERCENT_INSETS = new WeakMap<Box, boolean>();
+
 /**
  * A box's own height, where it has one, as `box-sizing` measures it: a
  * length, a percentage of a height that resolves, or `stretch`'s, and else
@@ -7397,6 +7424,7 @@ function forgetOne(at: Box): void {
   at.intrinsicMaxContent = -1;
   PREFERRED.delete(at);
   PERCENT_HEIGHTS.delete(at);
+  PERCENT_INSETS.delete(at);
   TAKES_HEIGHT.delete(at);
   AT_HEIGHT.delete(at);
   FLOW_PLACE.delete(at);
