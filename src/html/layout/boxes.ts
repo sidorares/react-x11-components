@@ -5553,7 +5553,7 @@ class Builder {
         }
         note(st);
         // what is in one with style containment counts for itself
-        if (!(st.contain & CONTAIN_STYLE) || st.display === 'contents') {
+        if (!(st.contain & CONTAIN_STYLE)) {
           inside(child, st, shared.key);
         }
       }
