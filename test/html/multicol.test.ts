@@ -13,6 +13,7 @@ import {
 } from '../../src/html/layout/boxes.js';
 import type { Box } from '../../src/html/layout/boxes.js';
 import { REPEATED, stripReach } from '../../src/html/layout/multicol.js';
+import { gapSegments } from '../../src/html/gap-rules.js';
 import { resolvedInsets } from '../../src/html/layout/block.js';
 import {
   FONTS,
@@ -3103,10 +3104,26 @@ test('a container with a huge column count, or no width to speak of, is laid out
   );
   assert.deepStrictEqual(least.lefts, [0, 11, 22]);
   assert.strictEqual(least.width, 65535 * 10 + 65534);
+  // one shown in every gap, all the way down past a spanner, is looked for
+  // in no list of the gaps before it, which took 16 s here
+  const { node } = await render(
+    '<style>body{margin:0}</style><div id="c" style="column-count:65535;' +
+      'column-gap:10px;width:200px;column-rule:2px solid red;' +
+      'column-rule-break:none;rule-visibility-items:all">' +
+      '<div style="height:20px;overflow:hidden"></div>' +
+      '<div style="column-span:all;height:10px"></div>' +
+      '<div style="height:20px;overflow:hidden"></div></div>',
+  );
+  const { columns } = gapSegments(boxOf(view(node), 'c') as unknown as Box)!;
+  assert.strictEqual(columns.length, 65534);
+  for (const c of [0, 1, 65533]) {
+    const { at, from, to, gap } = columns[c];
+    assert.deepStrictEqual([at, from, to, gap], [5 + 10 * c, 0, 50, c]);
+  }
   // the rest of the columns draw nothing and cost nothing: a second here,
-  // held to one a slow machine does not miss
+  // held to what a slow machine does not miss
   const took = performance.now() - started;
-  assert.ok(took < 30_000, `took ${Math.round(took)}ms`);
+  assert.ok(took < 10_000, `took ${Math.round(took)}ms`);
 });
 
 test("a page of WPT's file-control-crash is laid out in a bounded time", async () => {

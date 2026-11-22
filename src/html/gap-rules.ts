@@ -623,17 +623,17 @@ function multicolSegments(box: Box): {
     }
   }
   const columns: RuleSegment[] = [];
+  // under `none`, a gap's rule so far: the rows' columns are the same ones,
+  // so a gap is in one place in all of them
+  const runsOf = new Map<number, RuleSegment>();
   for (const piece of pieces) {
-    const last =
-      rule.break === 'none' && rows.length > 1
-        ? columns.find((p) => Math.abs(p.at - piece.at) < 0.5)
-        : undefined;
+    const last = rule.break === 'none' ? runsOf.get(piece.gap) : undefined;
     if (last) {
       last.from = Math.min(last.from, piece.from);
       last.to = Math.max(last.to, piece.to);
       continue;
     }
-    columns.push({
+    const run: RuleSegment = {
       at: piece.at,
       from: piece.from,
       to: piece.to,
@@ -641,7 +641,9 @@ function multicolSegments(box: Box): {
       end: CAP,
       gap: piece.gap,
       of: most,
-    });
+    };
+    if (rule.break === 'none') runsOf.set(piece.gap, run);
+    columns.push(run);
   }
   if (rule.break !== 'none' || !wrapped.length) {
     return downward(box, { columns: [...columns, ...wrapped], rows: across });
@@ -694,6 +696,8 @@ function gridOfRows(
   const width = rows[0].width;
   const from = (l: number): number =>
     mirror === undefined ? l : mirror - l - width;
+  // a list of every column, which only rows of columns have: content is set
+  // in no more columns than `MOST_COLUMNS`, so two rows have fewer each
   const { count, left: first, step } = rows[0].every;
   const every = Array.from({ length: count }, (_, c) =>
     from(first + c * step),
