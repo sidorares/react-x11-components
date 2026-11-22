@@ -535,6 +535,9 @@ let frames = 0;
 /** What `<Html>` could not lay out or paint of the page being shot: it
  *  leaves the document blank and says so once, on the console. */
 let failure: string | null = null;
+
+/** Whether the page shot before this one failed. */
+let failedLast = false;
 {
   const proto = HtmlViewNode.prototype as unknown as {
     _fail(error: unknown, ...more: unknown[]): void;
@@ -564,39 +567,22 @@ interface Mounted {
   /** Device pixels per logical one: what the viewport is read at. */
   scale: number;
   render(element: React.ReactElement): Promise<void>;
-  /** Whether a page has registered a face the mount began without, which
-   *  every page after it would have in its fallbacks. */
-  fontsAdded(): boolean;
   dispose(): Promise<void>;
 }
 
 let mounted: Mounted | null = null;
 
-/** What the font manager has registered: a document's `@font-face` adds to
- *  it, and nothing takes from it (`src/html/fonts.ts`). The harness's own
- *  fonts are its font source's, so a mount starts with none. Read off ntk's
- *  `FontManager`, which says nothing of it in its declarations. */
-const registeredOf = (app: unknown): unknown[] =>
-  (app as { fonts: { _registered: unknown[] } }).fonts._registered;
-
 /** The X11 harness: node-x11's in-process server, the fonts as files. */
 async function mountX11(first: React.ReactElement): Promise<Mounted> {
-  // mounted with nothing in it, so what the first page registers is seen
   const result: RenderX11Result = await renderX11(h('box'), {
     width: WIDTH,
     height: HEIGHT,
     fonts: FONTS,
   });
-  // A face a page registers stays in the font manager for good, and the
-  // fallback for a character no family a later page names walks every face
-  // registered before the font source's: a later page drew a glyph an
-  // earlier page's font had, and a result turned on what ran before it in
-  // its shard. So a mount a page registered a face in is made again before
-  // the next page, test or reference. That is every page that links
-  // `/fonts/ahem.css` too: a registered Ahem comes ahead of the source's
-  // faces in that walk.
-  const registered = registeredOf(result.app);
-  const at = registered.length;
+  // One mount serves every page of a shard. A face a page registers stays
+  // in the font manager, under a name of the page's own (`src/html/fonts.ts`),
+  // and since ntk 8.29.2 a fallback takes a registered face only where the
+  // family list names it, so no later page draws a glyph from it.
   await result.rerender(first);
   return {
     // taken once: the harness's `ctx` getter makes a new context on every
@@ -604,7 +590,6 @@ async function mountX11(first: React.ReactElement): Promise<Mounted> {
     ctx: result.ctx as Mounted['ctx'],
     scale: 1,
     render: (element) => result.rerender(element),
-    fontsAdded: () => registered.length > at,
     dispose: () => cleanup(),
   };
 }
@@ -636,9 +621,6 @@ async function mountCocoa(first: React.ReactElement): Promise<Mounted> {
     ctx: windowNode!.window.getContext('2d') as Mounted['ctx'],
     scale: windowNode!.scale ?? 1,
     render,
-    // CoreText's fonts are the system's, and a window is slow to make: the
-    // faces a page registers stay, as they did
-    fontsAdded: () => false,
     dispose: async () => root.unmount(),
   };
 }
@@ -658,6 +640,7 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
  *  once two reads agree — an image decode or a stylesheet settles a frame
  *  or two after the first paint. */
 async function shoot(path: string): Promise<Uint8ClampedArray> {
+  failedLast = failure !== null;
   failure = null;
   const shot = await drawn(path);
   if (failure) FAILURES.set(shot, failure);
@@ -666,7 +649,10 @@ async function shoot(path: string): Promise<Uint8ClampedArray> {
 
 async function drawn(path: string): Promise<Uint8ClampedArray> {
   const before = frames;
-  if (mounted?.fontsAdded()) {
+  // A page `<Html>` failed on may have left its clip on the window's picture
+  // (ntk's glyph draw takes it off again only where it did not throw), and
+  // every later page of the shard would be drawn inside it.
+  if (mounted && failedLast) {
     await mounted.dispose();
     mounted = null;
   }
