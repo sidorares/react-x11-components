@@ -3040,7 +3040,20 @@ export function applyDeclaration(
       return;
     }
   }
-  if (lower === 'initial' || lower === 'unset' || lower === 'revert') {
+  // and its `revert-layer` as the layers under its own have it
+  if (lower === 'revert-layer' && ctx.revertedLayer) {
+    const back = ctx.revertedLayer();
+    if (back) {
+      inheritOne(style, back, name);
+      return;
+    }
+  }
+  if (
+    lower === 'initial' ||
+    lower === 'unset' ||
+    lower === 'revert' ||
+    lower === 'revert-layer'
+  ) {
     // `unset` is `inherit` for an inherited property and `initial` otherwise.
     // `initial` is the value the property starts at, which an inherited one
     // does not keep: left as it was, `line-height: initial` in a box inside
@@ -3052,7 +3065,7 @@ export function applyDeclaration(
     // which is `unset`.
     const unset =
       lower === 'unset' ||
-      (lower === 'revert' && ctx.uaSets !== undefined && !ctx.uaSets(name));
+      (lower !== 'initial' && ctx.uaSets !== undefined && !ctx.uaSets(name));
     if (unset && isInherited(name)) inheritOne(style, parent, name);
     else if ((lower === 'initial' || unset) && ctx.initial) {
       inheritOne(style, ctx.initial, name);
@@ -10656,7 +10669,13 @@ function applyLogical(
   }
 }
 
-const CSS_WIDE = new Set(['inherit', 'initial', 'unset', 'revert']);
+const CSS_WIDE = new Set([
+  'inherit',
+  'initial',
+  'unset',
+  'revert',
+  'revert-layer',
+]);
 
 function camel(name: string): string {
   return name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
@@ -10856,8 +10875,7 @@ export function isInherited(name: string): boolean {
  * value it takes, and the custom properties untouched. So it is a field at
  * a time rather than a property at a time — `unset` is the style a child
  * starts from (`inherit`), `initial` the initial style — less the fields
- * `NOT_ALL` names. `revert` leaves the style as the cascade has it, as it
- * does for any one property. A page's `button { all: unset }`, the usual
+ * `NOT_ALL` names. A page's `button { all: unset }`, the usual
  * first line of a reset, was no declaration at all: the UA sheet's
  * background stayed, and asteriskmag.com's menu button, three 2px lines in
  * a button 24px tall, was a box filled with the palette's surface around
@@ -10877,6 +10895,10 @@ function applyAll(
   } else if (keyword === 'revert' && ctx.reverted) {
     // an author's, every property as the user agent's rules give it
     const back = ctx.reverted();
+    if (!back) return;
+    from = back;
+  } else if (keyword === 'revert-layer' && ctx.revertedLayer) {
+    const back = ctx.revertedLayer();
     if (!back) return;
     from = back;
   } else return;

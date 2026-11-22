@@ -7670,7 +7670,7 @@ comes to `display: none` there. What else an `@starting-style` holds — an
 A child inherits for both its starting style and the end of its own
 transitions from its parent's style after the change, not the parent's
 value as drawn while its transition runs, so the two run as one. A
-`revert-layer` in a starting style, as anywhere, is not read. A `<legend>` outside a `<fieldset>` is
+`<legend>` outside a `<fieldset>` is
 not blockified, so its starting style's `display: inline` starts a
 transition of its `display` where Edge starts none. A transition is
 an animation, so what it runs makes the stacking context an animation of
@@ -9047,6 +9047,15 @@ element, worked out the first time a declaration reverts (CSS Cascade 5,
 7.3.3), and so does one in a `@position-try` rule: `p { margin: 0 } p {
 margin-top: revert }` is the UA sheet's `1em`, and `all: revert` takes
 every property `all` sets back so. `revert` in the UA sheet is `unset`.
+`revert-layer` takes it back to what the cascade layers under its own make
+of it (7.3.6), worked out the same way: an earlier `@layer`'s declaration,
+or the UA sheet's where none under it sets the property. The `style`
+attribute and an animation's frames are layers of their own over the
+author's, and an `!important` one drops what is between its layer's normal
+and `!important` declarations with them. What either goes back to is
+computed as the element's: its font for an `em`, its custom properties for
+a `var()`. Neither is worked out for an SVG shape's properties, nor for
+`zoom`.
 
 **Colours:** the named colours, hex with three, four, six or eight digits,
 the system colours, and CSS Color 4's functions: `rgb()` and `hsl()` in
