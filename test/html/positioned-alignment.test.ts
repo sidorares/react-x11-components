@@ -195,7 +195,10 @@ metric(
         '<i id="d" style="place-self:safe center"></i></div>' +
         // and one at its static position in a grid's area
         '<div class="c" style="display:grid"><i id="e" style="inset:auto;' +
-        'width:80px;place-self:safe end"></i></div>',
+        'width:80px;place-self:safe end"></i></div>' +
+        // and one that fits is where its position says
+        '<div class="c"><i id="f" style="width:20px;height:10px;' +
+        'place-self:safe end"></i></div>',
       400,
     );
     const el = view(node);
@@ -205,5 +208,6 @@ metric(
     assert.deepStrictEqual(at('c'), [4, 168]);
     assert.deepStrictEqual(at('d'), [4, 304]);
     assert.deepStrictEqual(at('e'), [0, 400]);
+    assert.deepStrictEqual(at('f'), [34, 528]);
   },
 );
