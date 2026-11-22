@@ -8617,7 +8617,8 @@ arrives and of none before.
 Lists 3 scopes them, `reversed()` included, so numbered headings and nested
 outline numbers come out as they do in a browser: a counter reaches its
 element's descendants and later siblings, nested in one of its name around
-it, but for a list's own, which reaches what the list holds. The generated text is
+it, but for a list's own, which reaches what the list holds. An element of `display:
+contents` changes no counter, as it has no box. The generated text is
 drawn and laid out as the document's, and is no part of a selection, as
 in every browser: see "A selection starts in what the press is on".
 

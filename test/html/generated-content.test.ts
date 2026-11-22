@@ -1867,6 +1867,61 @@ test("a ::before of display: contents draws its element's decorations and none o
   assert.strictEqual(style('f').underline, null);
 });
 
+// CSS Lists 3, 4.5. The numbers are Chrome's.
+test('an element of display: contents changes no counter, and one made in it is beside it', async () => {
+  const of = (body: string) =>
+    documentText(
+      '<style>.c { display: contents } .i { counter-increment: n }' +
+        ' .s { counter-set: n 50 } .r { counter-reset: n 10 }' +
+        ' section { counter-reset: n }' +
+        ' .u::before { content: counter(n) " " }' +
+        ' .us::before { content: counters(n, ".") " " }' +
+        ' li::before { content: counters(list-item, ".") " " }</style>' +
+        body,
+    );
+  for (const [body, says] of [
+    // it counts, sets and resets nothing
+    [
+      '<section><b class="c i u"></b><b class="c s u"></b>' +
+        '<b class="c r us"></b><b class="us"></b></section>',
+      '0 0 0 0',
+    ],
+    ['<section><b class="c r"><b class="i us"></b></b></section>', '1'],
+    // a counter nothing made is made outside it
+    [
+      '<div><b class="c"><b class="i u"></b></b><b class="c"><b class="i u">' +
+        '</b></b><b class="i u"></b></div>',
+      '1 2 3',
+    ],
+    [
+      '<div><b class="c"><b class="c"><b class="i u"></b></b>' +
+        '<b class="i u"></b></b><b class="i u"></b></div>',
+      '1 2 3',
+    ],
+    // one a box in it made is that box's, as anywhere
+    ['<div><b class="c"><b class="r"></b></b><b class="u"></b></div>', '0'],
+    // a list of no box numbers with the one around it, and an item of none
+    // has no number
+    [
+      '<ol><li>a<ol class="c" start="9"><li>x<li>y</ol><li>b</ol>',
+      '1 a2 x3 y4 b',
+    ],
+    ['<ol><li class="c">a<li>b</ol>', '0 a1 b'],
+    ['<ol><li value="7" class="c">a<li>b</ol>', '0 a1 b'],
+    // and neither counts where a reversed list starts
+    ['<ol reversed><li>a<li class="c">z<li>b</ol>', '2 a2 z1 b'],
+    [
+      '<ol reversed><li>a<li>q<ol class="c"><li>m</ol><li>b</ol>',
+      '4 a3 q2 m1 b',
+    ],
+  ])
+    assert.strictEqual(
+      (await of(body)).trim().replace(/\s+/g, ' '),
+      says,
+      body,
+    );
+});
+
 test('a ::before of display: contents reads counters and changes none', async () => {
   // no box, no count (CSS Lists 3, 4.5): Chrome and WebKit have each of these
   // 1, and a counter they do not touch is 1 past them

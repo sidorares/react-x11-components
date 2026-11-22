@@ -2455,7 +2455,7 @@ const COUNTED: Counted[] = [
     apart: true,
   },
   {
-    what: 'what no box says, a `display: contents` element that counts',
+    what: 'a `display: contents` element a rule has count, which counts nothing',
     sheet:
       'body { counter-reset: n } .tick { counter-increment: n }' +
       ' .x { display: contents } .read::before { content: counter(n) " " }',
@@ -2464,7 +2464,7 @@ const COUNTED: Counted[] = [
       '<p class="read">two</p>',
     change: (el) => classed(el('b'), 'x tick'),
     tries: 1,
-    apart: false,
+    apart: true,
   },
   {
     what: 'the same changes nested otherwise',
@@ -2635,7 +2635,7 @@ const COUNTED: Counted[] = [
     apart: false,
   },
   {
-    what: 'a `display: contents` element that counts no more',
+    what: 'a `display: contents` element no rule has count any more',
     sheet:
       'body { counter-reset: n } .tick { counter-increment: n }' +
       ' .x { display: contents } .read::before { content: counter(n) " " }',
@@ -2644,7 +2644,7 @@ const COUNTED: Counted[] = [
       '<p class="read">two</p>',
     change: (el) => classed(el('b'), 'x'),
     tries: 1,
-    apart: false,
+    apart: true,
   },
   {
     what: 'style containment taken off what holds a number',
