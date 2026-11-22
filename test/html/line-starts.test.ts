@@ -34,8 +34,12 @@ async function laid(
   return { tree, fonts: (result.app as unknown as { fonts: FontsLike }).fonts };
 }
 
-/** Text of words with a larger one among them, so that its lines' baselines
- *  move by different amounts and it is made a line at a time. */
+/** What has a paragraph made a line at a time in any face: lines but the
+ *  first are indented. */
+const LINED = 'text-indent:2px hanging';
+
+/** Text of words with a larger one among them, whose lines' baselines move by
+ *  different amounts in some faces, which has it made so in those. */
 function words(from: readonly string[], count: number): string {
   let out = '';
   for (let i = 0; i < count; i += 1) {
@@ -79,26 +83,26 @@ function workOf(tree: BoxTree, fonts: FontsLike) {
 for (const [what, source] of [
   [
     'a right-to-left paragraph',
-    (n: number) => `<p dir="rtl">${words(HEBREW, n)}</p>`,
+    (n: number) => `<p dir="rtl" style="${LINED}">${words(HEBREW, n)}</p>`,
   ],
   [
     'Arabic in a left-to-right one',
-    (n: number) => `<p>${words(ARABIC, n)}</p>`,
+    (n: number) => `<p style="${LINED}">${words(ARABIC, n)}</p>`,
   ],
   [
     'left-to-right text with words of it',
     (n: number) =>
-      `<p>${words([...LATIN, ...LATIN, ...LATIN, HEBREW[0]], n)}</p>`,
+      `<p style="${LINED}">${words([...LATIN, ...LATIN, ...LATIN, HEBREW[0]], n)}</p>`,
   ],
   [
     'an isolate all of it is in',
     (n: number) =>
-      `<p>x <span dir="rtl">${words([...LATIN, ...HEBREW], n)}</span></p>`,
+      `<p style="${LINED}">x <span dir="rtl">${words([...LATIN, ...HEBREW], n)}</span></p>`,
   ],
   [
     'brackets and what is in them',
     (n: number) =>
-      `<p dir="rtl">${words([...HEBREW, ':(', '(a', '1)', '[b]'], n)}</p>`,
+      `<p dir="rtl" style="${LINED}">${words([...HEBREW, ':(', '(a', '1)', '[b]'], n)}</p>`,
   ],
   [
     'text past a float, ordered otherwise than alone',
@@ -113,6 +117,7 @@ for (const [what, source] of [
     cleanup();
     const long = await laid(source(4000));
     const b = workOf(long.tree, long.fonts);
+    assert.ok((b.asked.get(1) ?? 0) > 100, 'it is made a line at a time');
     // eight times the text is eight times the work, or a little more, where
     // it was nearer sixty-four
     assert.ok(b.handed < a.handed * 14, `the engine: ${a.handed}, ${b.handed}`);
@@ -125,7 +130,9 @@ for (const [what, source] of [
 
 metric('a paragraph of some lines is asked for its lines alone', async () => {
   for (const n of [10, 25, 80]) {
-    const { tree, fonts } = await laid(`<p dir="rtl">${words(HEBREW, n)}</p>`);
+    const { tree, fonts } = await laid(
+      `<p dir="rtl" style="${LINED}">${words(HEBREW, n)}</p>`,
+    );
     const { asked } = workOf(tree, fonts);
     assert.strictEqual(asked.get(4), undefined, `${n} words`);
     cleanup();
@@ -133,7 +140,9 @@ metric('a paragraph of some lines is asked for its lines alone', async () => {
 });
 
 metric('and text nothing can reverse is, however long', async () => {
-  const { tree, fonts } = await laid(`<p>${words(LATIN, 2000)}</p>`);
+  const { tree, fonts } = await laid(
+    `<p style="${LINED}">${words(LATIN, 2000)}</p>`,
+  );
   const { asked } = workOf(tree, fonts);
   assert.ok((asked.get(1) ?? 0) > 100, 'it is made a line at a time');
   assert.strictEqual(asked.get(4), undefined);
@@ -240,6 +249,7 @@ function generated(seed: number): string {
   }
   // text smaller than its block's, or of letters of no width: more of it on a
   // line than a start is guessed to need, so that the cut is near the line
+  const lined = pick(['', `${LINED};`]);
   const size = pick([0, 0, 0, 2, 3, 5, 7]);
   if (size) body = `<span style="font-size:${size}px">${body}</span>`;
   const float =
@@ -247,7 +257,7 @@ function generated(seed: number): string {
       ? '<div style="float:left;width:60px;height:300px"></div>'
       : '';
   const style =
-    `direction:${pick(['rtl', 'ltr'])};width:${pick([90, 180, 380])}px;` +
+    `direction:${pick(['rtl', 'ltr'])};width:${pick([90, 180, 380])}px;${lined}` +
     pick(SETTINGS);
   return `${float}<p style="margin:0;${style}">${body}</p>`;
 }
