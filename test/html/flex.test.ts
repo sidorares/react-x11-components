@@ -4415,6 +4415,40 @@ test('an item of a width of its content has an automatic minimum', async () => {
   assert.strictEqual(boxOf(el, 'b').width, 26);
 });
 
+test('a column that wraps at its max-height is as tall as its tallest line', async () => {
+  // broken into lines by the maximum, and no taller than what is on them
+  // (CSS Flexbox 9.3 and 9.2, step 4), where it was the maximum as soon as a
+  // line was broken; every size is Chromium's
+  const { node } = await render(
+    '<style>body{margin:0}.c{display:flex;flex-flow:column wrap;width:200px;' +
+      'max-height:100px;margin-bottom:10px}.c>*{width:50px}</style>' +
+      '<div class="c" id="a"><i style="height:40px"></i>' +
+      '<i id="a2" style="height:80px"></i></div>' +
+      '<div class="c" id="b" style="flex-flow:column-reverse wrap">' +
+      '<i id="b1" style="height:40px"></i><i style="height:80px"></i></div>' +
+      // the items of a shorter line flex to the taller one
+      '<div class="c" id="c"><i id="c1" style="height:30px;flex-grow:1"></i>' +
+      '<i style="height:75px"></i></div>' +
+      '<div class="c" id="d" style="min-height:90px">' +
+      '<i style="height:40px"></i><i style="height:80px"></i></div>' +
+      // and one line, or one past the maximum, as before
+      '<div class="c" id="e"><i style="height:40px"></i></div>' +
+      '<div class="c" id="f"><i style="height:40px"></i>' +
+      '<i style="height:140px"></i></div>',
+    400,
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').height, 80);
+  assert.strictEqual(boxOf(el, 'a2').x, 100);
+  assert.strictEqual(boxOf(el, 'b').height, 80);
+  assert.strictEqual(boxOf(el, 'b1').y - boxOf(el, 'b').y, 40);
+  assert.strictEqual(boxOf(el, 'c').height, 75);
+  assert.strictEqual(boxOf(el, 'c1').height, 75);
+  assert.strictEqual(boxOf(el, 'd').height, 90);
+  assert.strictEqual(boxOf(el, 'e').height, 40);
+  assert.strictEqual(boxOf(el, 'f').height, 100);
+});
+
 test("a line of a row that wraps is justified though another line's item has an auto margin", async () => {
   // Yoga 3.2.1 justifies no line of a box where any item has an `auto`
   // margin along it; CSS Flexbox 9.5 justifies each line that has none
