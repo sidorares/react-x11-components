@@ -486,6 +486,10 @@ export function layoutFlex(
   if (sizing) for (const { laid } of items) laid.sizing = true;
   ctx.flexDepth = depth + 1;
   try {
+    if (!row && !hold.frozen && height === null && ceiling < Infinity) {
+      const tall = tallestLine(box.style, items, rowGap, layout);
+      if (tall < ceiling - NEAR) root.setHeight(Math.max(floor, tall));
+    }
     calculate();
     // an item Yoga shrank under what its content comes to is kept to it,
     // and the row is laid out again (`autoMinimums`) — which may shrink
@@ -4454,6 +4458,40 @@ function stretches(
     : style.width === AUTO &&
         style.marginLeft !== AUTO &&
         style.marginRight !== AUTO;
+}
+
+/**
+ * How tall a column that wraps at its `max-height` is, where it has no
+ * height: its tallest line, each item as tall as it is before it flexes (CSS
+ * Flexbox 9.2, step 4). Its lines are broken by the maximum and the box is no
+ * taller than what is on them, where Yoga made it the maximum as soon as a
+ * line was broken. Broken at that height instead the lines are the same: each
+ * fits it, and what came after did not fit the maximum.
+ */
+function tallestLine(
+  style: ComputedStyle,
+  items: readonly { box: Box; node: FlexNode }[],
+  gap: number,
+  layout: () => void,
+): number {
+  for (const { box, node } of items)
+    if (box.style.flexGrow) node.setFlexGrow(0);
+  layout();
+  for (const { box, node } of items) {
+    if (box.style.flexGrow) node.setFlexGrow(box.style.flexGrow);
+  }
+  let tallest = 0;
+  for (const line of itemLines(style, items, false)) {
+    let tall = gap * (line.length - 1);
+    for (const { node } of line) {
+      tall +=
+        node.getComputedHeight() +
+        node.getComputedMargin(Y.EDGE_TOP) +
+        node.getComputedMargin(Y.EDGE_BOTTOM);
+    }
+    tallest = Math.max(tallest, tall);
+  }
+  return tallest;
 }
 
 /** Whether a flex box laid out at a width is a column that wraps, whose
