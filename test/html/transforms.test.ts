@@ -1203,7 +1203,7 @@ metric(
 );
 
 metric(
-  "a box's perspective is the nearest up its containing blocks, through a positioned box and not through one with a transform, from its perspective-origin; and transform-origin's depth is the turn's",
+  "a box's perspective is the one of the element it is a child of, and not one further out, from its perspective-origin; and transform-origin's depth is the turn's",
   async () => {
     const { node } = await render(
       PAGE +
@@ -1237,10 +1237,10 @@ metric(
         }),
       );
     closeRect(rect('a'), turned(0, 300), 'in its parent’s perspective');
-    closeRect(rect('b'), turned(150, 300), 'through a positioned box');
-    // flattened into the plane of the box with a transform: as wide as it
-    // turns to, and as tall as it is
-    closeRect(rect('c'), turned(300, null), 'not through a transform');
+    // flattened into the plane of the box between: as wide as it turns to,
+    // and as tall as it is
+    closeRect(rect('b'), turned(150, null), 'not through a positioned box');
+    closeRect(rect('c'), turned(300, null), 'nor through a transform');
     assert.ok(Math.abs(rect('c')!.height - 100) < 1e-9);
     closeRect(rect('d'), turned(450, 300, 300), 'seen from the right');
     // a perspective of its own, from its origin, which is the middle of the
