@@ -37,6 +37,7 @@ import { scrolls } from '../css/style.js';
 import type { ComputedStyle, ContentSize, SizeOf } from '../css/style.js';
 import { Box, inOrder, isBlank } from './boxes.js';
 import {
+  stretchHeight,
   FLEXED_HEIGHT,
   FLEX_ROOM,
   MIN_CONTENT_PROBE,
@@ -870,7 +871,12 @@ function contentHeight(box: Box, stretched: boolean): number | null {
     const edges = box.style.boxSizing === 'border-box' ? box.verticalExtra : 0;
     return Math.max(0, own - edges);
   }
-  const outer = stretched ? stretchedHeight(box) : null;
+  const outer =
+    box.style.heightKeyword === 'stretch'
+      ? stretchHeight(box)
+      : stretched
+        ? stretchedHeight(box)
+        : null;
   return outer === null ? null : outer - box.verticalExtra;
 }
 
@@ -878,7 +884,11 @@ function contentHeight(box: Box, stretched: boolean): number | null {
  *  what its ratio makes of a content height that is definite, or its natural
  *  width, within what its ratio makes of its least and greatest heights,
  *  whatever its own width says. Null where it has neither. */
-function replacedContent(box: Box, height: number | null): number | null {
+function replacedContent(
+  box: Box,
+  height: number | null,
+  room: number | null = null,
+): number | null {
   const style = box.style;
   const own = ownIntrinsic(box);
   const ratio = replacedRatio(box);
@@ -889,8 +899,14 @@ function replacedContent(box: Box, height: number | null): number | null {
       ? height * ratio
       : own && !(own.missing & 1)
         ? own.width
-        : null;
-  if (content === null) return null;
+        : own && !(own.missing & 2) && ratio > 0
+          ? own.height * ratio
+          : null;
+  if (content === null) {
+    // with a ratio alone, the room it is asked in
+    if (room === null || !(ratio > 0)) return null;
+    content = room;
+  }
   // and through its ratio, within its least and greatest heights
   if (ratio > 0) {
     const least =
@@ -917,19 +933,17 @@ function replacedHeight(box: Box, width: number): number | null {
 /** A replaced row item's content size, its border box, or with a ratio alone
  *  the room it is in. Null where it has neither. */
 function replacedBasis(box: Box, containingWidth: number): number | null {
-  const own = replacedContent(box, contentHeight(box, true));
-  if (own !== null) return own;
-  if (
-    !(replacedRatio(box) > 0) ||
-    !Number.isFinite(containingWidth) ||
-    containingWidth === MIN_CONTENT_PROBE
-  ) {
-    return null;
-  }
-  return Math.max(
-    box.horizontalExtra,
-    containingWidth - box.marginLeft - box.marginRight,
-  );
+  const room =
+    Number.isFinite(containingWidth) && containingWidth !== MIN_CONTENT_PROBE
+      ? Math.max(
+          0,
+          containingWidth -
+            box.marginLeft -
+            box.marginRight -
+            box.horizontalExtra,
+        )
+      : null;
+  return replacedContent(box, contentHeight(box, true), room);
 }
 
 /** A column item's flex base size where it is replaced and no width of its

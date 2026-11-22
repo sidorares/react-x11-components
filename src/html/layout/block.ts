@@ -6055,7 +6055,7 @@ function stretchReplaced(
  * is no formatting context of its own, counts as none, as the margin would
  * collapse with the parent's.
  */
-function stretchHeight(box: Box): number | null {
+export function stretchHeight(box: Box): number | null {
   const base = box.percentHeightBase;
   if (!Number.isFinite(base)) return null;
   const style = box.style;
