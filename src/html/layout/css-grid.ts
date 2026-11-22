@@ -1617,7 +1617,8 @@ function sizedBy(items: Item[], axis: 'cols' | 'rows'): Item[] {
  * at that edge, and half what its gap is more than its parent's for one
  * that is not — an item of a subgrid in it as its items are, the margins
  * adding up. The margin at an edge is the track's there whatever is in it,
- * as an empty item's (`Item.edge`), which takes no part of a gap. The other axis is the subgrid's, and none of the parent's.
+ * as an empty item's (`Item.edge`), which takes no part of a gap. The other
+ * axis is the subgrid's, and none of the parent's.
  */
 function throughSubgrid(item: Item, axis: 'cols' | 'rows'): Item[] {
   const box = item.box;
