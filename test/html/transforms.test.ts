@@ -986,6 +986,47 @@ const closeRect = (
   );
 
 metric(
+  "a `perspective` is a child's, wherever it is positioned, and no grandchild's",
+  async () => {
+    // half the size at twice the distance; every answer is Chromium's
+    const box = (id: string, style = '') =>
+      `<div class="i" id="${id}" style="${style}"></div>`;
+    const { node } = await render(
+      PAGE +
+        '<style>.o{perspective:100px;width:100px;height:100px}' +
+        '.i{width:100px;height:100px;transform:translateZ(-100px)}' +
+        '.o::before{content:"";display:block;width:0;height:0}</style>' +
+        `<div class="o">${box('child')}</div>` +
+        `<div class="o">${box('absolute', 'position:absolute')}</div>` +
+        `<div class="o">${box('fixed', 'position:fixed')}</div>` +
+        // through an anonymous block, and what is no box
+        `<div class="o">text${box('anonymous')}</div>` +
+        `<div class="o"><div style="display:contents">${box('contents')}</div></div>` +
+        `<div class="o"><div style="transform-style:preserve-3d">${box('kept')}</div></div>` +
+        `<div class="o"><div>${box('grandchild')}</div></div>` +
+        `<div class="o"><div style="position:relative">${box('relative')}</div></div>` +
+        `<div class="o"><div>${box('absoluteIn', 'position:absolute')}</div></div>` +
+        `<div class="o"><div>${box('fixedIn', 'position:fixed')}</div></div>` +
+        // a block an inline box was broken around is that box's child
+        `<div class="o"><span>${box('broken')}</span></div>`,
+    );
+    const el = view(node);
+    const wide = (id: string) =>
+      Math.round(el.elementRect(findById(el.document, id)!)!.width);
+    for (const id of 'child absolute fixed anonymous contents kept'.split(
+      ' ',
+    )) {
+      assert.strictEqual(wide(id), 50, id);
+    }
+    for (const id of 'grandchild relative absoluteIn fixedIn broken'.split(
+      ' ',
+    )) {
+      assert.strictEqual(wide(id), 100, id);
+    }
+  },
+);
+
+metric(
   'a box turned out of the plane in the perspective of the box it is laid out in is drawn smaller where it turns away, and is under the pointer there',
   async () => {
     // the Zen Garden's 219 at a third of the size: a panel turned about its
