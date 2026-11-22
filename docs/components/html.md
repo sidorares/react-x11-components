@@ -7859,7 +7859,8 @@ containment, a cell all but size containment, and the rest of a table's
 inner parts none. Layout and paint
 containment make the box a formatting context, a stacking context and the
 containing block of every absolute and fixed box in it, and layout
-containment keeps its baseline in; paint containment clips what the box
+containment keeps its baseline in, and what overflows it out of every
+scrollable overflow around it; paint containment clips what the box
 holds to its padding box, as `overflow: clip` does. Style containment keeps
 what the box's subtree does to counters and quotes in it: a counter made
 outside it is not counted on inside, and the quotes are as deep after it as

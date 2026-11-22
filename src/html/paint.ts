@@ -1141,9 +1141,13 @@ function boundsOf(
   // whether the box clips only matters where its content reaches past it,
   // and its style is one more object a walk of every box would read. The
   // same answer as the clip it is painted under (`clipsOverflow`), so paint
-  // containment, which clips as `overflow: clip` does, ends the reach too
+  // containment, which clips as `overflow: clip` does, ends the reach too —
+  // and layout containment, past which all is ink (CSS Containment 2, 3.3)
   const end = empty ? -Infinity : box.y + box.height;
-  const reach = bottom > end && !clipsOverflow(box) ? bottom : end;
+  const reach =
+    bottom > end && !clipsOverflow(box) && !contained(box, CONTAIN_LAYOUT)
+      ? bottom
+      : end;
   // the scrollable overflow of a transformed box is where its transform
   // puts it (CSS Overflow 3, 2.2)
   if (!matrix || reach === -Infinity) return reach;
@@ -8184,6 +8188,17 @@ export function containingBlockOf(box: Box): Box | null {
     containing = containingParent(containing);
   }
   return containing;
+}
+
+/** Whether a box is in one of layout containment, by the boxes it is placed
+ *  in: what it reaches past that one is ink, and no one's to scroll (CSS
+ *  Containment 2, 3.3). */
+export function inkOnly(box: Box): boolean {
+  let at: Box | null = box;
+  while ((at = at.outOfFlow ? containingBlockOf(at) : at.parent)) {
+    if (contained(at, CONTAIN_LAYOUT)) return true;
+  }
+  return false;
 }
 
 /** Whether anything in a box is positioned out of the flow, which may be

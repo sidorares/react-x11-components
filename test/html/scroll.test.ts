@@ -1618,6 +1618,46 @@ test('a script focusing what is fixed to the viewport scrolls the pane for none 
   }
 });
 
+test("what overflows a box of layout containment is no one's to scroll", async () => {
+  // it is ink (CSS Containment 2, 3.3); every size is Chromium's
+  const box = (id: string, style: string, inner = '<i></i>') =>
+    `<div id="${id}" class="s"><div class="k" style="${style}">${inner}</div></div>`;
+  const { el: node } = await renderScrolled(
+    '<style>body{margin:0}.s{overflow:auto;width:100px;height:100px}' +
+      'i{display:block;width:200px;height:150px}.k{width:50px;height:50px}' +
+      '</style>' +
+      box('a', '') +
+      box('b', 'contain:layout') +
+      box('c', 'contain:layout;width:150px;height:120px') +
+      box('d', 'contain:size') +
+      box('e', 'contain:layout', '<i style="float:left"></i>') +
+      box(
+        'f',
+        'contain:layout;position:relative',
+        '<i style="position:absolute"></i>',
+      ) +
+      // and the document's own
+      '<div class="k" style="contain:layout;position:relative">' +
+      '<i style="height:900px"></i><i style="position:absolute;top:900px">' +
+      '</i></div>',
+    300,
+  );
+  const size = (id: string) => {
+    const state = node.scrollStateOf(el(node, id))!;
+    return [state.width, state.height];
+  };
+  assert.deepEqual(size('a'), [200, 150]);
+  assert.deepEqual(size('b'), [100, 100]);
+  assert.deepEqual(size('c'), [150, 120]);
+  assert.deepEqual(size('d'), [200, 150]);
+  assert.deepEqual(size('e'), [100, 100]);
+  assert.deepEqual(size('f'), [100, 100]);
+  assert.equal(
+    (node as unknown as { abs: { height: number } }).abs.height,
+    650,
+  );
+});
+
 test('a fixed box in a fixed box anchored across a scroll follows its own anchor, and is not moved with the box it is in as well', async () => {
   // WPT css-anchor-position/anchor-scroll-fixedpos-nested-001 and -002: a
   // fixed box is the viewport's, so the scroll that moves the box it is in
