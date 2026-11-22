@@ -23,6 +23,38 @@ import type { PaintOp, ReplacedBox } from './harness.js';
 
 afterEach(cleanup);
 
+test('a table caption takes every containment', async () => {
+  // a block container, whatever is said of a table's inner parts (CSS
+  // Containment 2, 3), and dropped here as if it were one of them; every
+  // size and place is Chromium's
+  const { node } = await render(
+    '<style>body{margin:0}table{border-spacing:0}td{padding:0;width:60px;' +
+      'height:20px}i{display:block;width:40px;height:30px}</style>' +
+      '<table><caption id="a" style="contain:size"><i></i></caption>' +
+      '<tr><td id="b"></td></tr></table>' +
+      '<table><caption id="c" style="contain:size;' +
+      'contain-intrinsic-size:80px 15px"><i></i></caption>' +
+      '<tr><td id="d"></td></tr></table>' +
+      '<table><caption id="e" style="contain:inline-size"><i></i></caption>' +
+      '<tr><td></td></tr></table>' +
+      '<table><caption style="contain:layout">' +
+      '<i id="f" style="position:absolute;right:0;top:0"></i>' +
+      '<i></i></caption><tr><td></td></tr></table>',
+    400,
+  );
+  const el = view(node);
+  const of = (id: string) => {
+    const { x, y, width, height } = boxOf(el, id);
+    return [x, y, width, height];
+  };
+  assert.deepStrictEqual(of('a'), [0, 0, 60, 0]);
+  assert.deepStrictEqual(of('b'), [0, 0, 60, 20]);
+  assert.deepStrictEqual(of('c'), [0, 20, 80, 15]);
+  assert.deepStrictEqual(of('d'), [0, 35, 80, 20]);
+  assert.deepStrictEqual(of('e'), [0, 55, 60, 30]);
+  assert.deepStrictEqual(of('f'), [20, 105, 40, 30]);
+});
+
 metric(
   'a positioned box a clipping box holds makes the document no taller',
   async () => {
@@ -796,35 +828,3 @@ metric(
     assert.deepStrictEqual(await at(115, 115), [255, 255, 255], 'past it');
   },
 );
-
-test('a table caption takes every containment', async () => {
-  // a block container, whatever is said of a table's inner parts (CSS
-  // Containment 2, 3), and dropped here as if it were one of them; every
-  // size and place is Chromium's
-  const { node } = await render(
-    '<style>body{margin:0}table{border-spacing:0}td{padding:0;width:60px;' +
-      'height:20px}i{display:block;width:40px;height:30px}</style>' +
-      '<table><caption id="a" style="contain:size"><i></i></caption>' +
-      '<tr><td id="b"></td></tr></table>' +
-      '<table><caption id="c" style="contain:size;' +
-      'contain-intrinsic-size:80px 15px"><i></i></caption>' +
-      '<tr><td id="d"></td></tr></table>' +
-      '<table><caption id="e" style="contain:inline-size"><i></i></caption>' +
-      '<tr><td></td></tr></table>' +
-      '<table><caption style="contain:layout">' +
-      '<i id="f" style="position:absolute;right:0;top:0"></i>' +
-      '<i></i></caption><tr><td></td></tr></table>',
-    400,
-  );
-  const el = view(node);
-  const of = (id: string) => {
-    const { x, y, width, height } = boxOf(el, id);
-    return [x, y, width, height];
-  };
-  assert.deepStrictEqual(of('a'), [0, 0, 60, 0]);
-  assert.deepStrictEqual(of('b'), [0, 0, 60, 20]);
-  assert.deepStrictEqual(of('c'), [0, 20, 80, 15]);
-  assert.deepStrictEqual(of('d'), [0, 35, 80, 20]);
-  assert.deepStrictEqual(of('e'), [0, 55, 60, 30]);
-  assert.deepStrictEqual(of('f'), [20, 105, 40, 30]);
-});
