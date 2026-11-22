@@ -1729,7 +1729,11 @@ export const stripReach = {
   hints: new WeakMap<Box, number[]>(),
   /** The rows of columns this layout balanced, in order: the container,
    *  which of its rows, where the row's strip starts and how far its flow
-   *  reached down it; and how far what is positioned in each reached. */
+   *  reached down it; and how far what is positioned in each reached. The
+   *  start is kept from the container's content box, which is moved to its
+   *  place after it is laid out: kept as it stood then, what is positioned
+   *  in it reached as much further as the container was moved (WPT's
+   *  css-anchor-position/anchor-position-multicol-colspan-003). */
   decided: [] as {
     box: Box;
     index: number;
@@ -1746,7 +1750,13 @@ export const stripReach = {
   note(box: Box, from: number, flow: number, balanced: boolean): number {
     let index = 0;
     for (const d of this.decided) if (d.box === box) index += 1;
-    this.decided.push({ box, index, from, flow, balanced });
+    this.decided.push({
+      box,
+      index,
+      from: from - box.contentY,
+      flow,
+      balanced,
+    });
     return index;
   },
   /** A positioned box laid out in a container's strip, against a box in
@@ -1762,7 +1772,7 @@ export const stripReach = {
     let entry: (typeof this.decided)[number] | null = null;
     for (const d of this.decided) {
       if (d.box !== container) continue;
-      if (!entry || d.from <= box.y + EPS) entry = d;
+      if (!entry || container.contentY + d.from <= box.y + EPS) entry = d;
     }
     if (!entry) return;
     // only where what it is positioned against is in the container's
@@ -1784,7 +1794,10 @@ export const stripReach = {
     // a box no break may fall inside goes to a column whole, and is not
     // shared out (WPT's css-contain/contain-size-monolithic-002)
     if (whole(box)) return;
-    const need = Math.max(0, flowReach(box) - entry.from);
+    const need = Math.max(
+      0,
+      flowReach(box) - (container.contentY + entry.from),
+    );
     this.reached.set(entry, Math.max(this.reached.get(entry) ?? 0, need));
   },
   /** Take what this layout found as the hints, and the containers whose
