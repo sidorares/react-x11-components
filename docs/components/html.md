@@ -9726,7 +9726,8 @@ measured, but for what is fixed to the viewport. The element stays its
 window's width, which the initial containing block is; it mounts a box of
 no size where the overflow ends, which is what the pane scrolls to, and
 draws the document past its own box (core's `paintOverhang`). The root's
-`scrollWidth` reads it. A page that scrolls across as it loads, before that
+`scrollWidth` reads it. A grid that scrolls reaches as far as its tracks do,
+whatever is in them, and its end padding past that. A page that scrolls across as it loads, before that
 box is mounted, is moved there once it is, a frame later, where a browser
 has it there at once: `scrollX` reads 0 until then.
 
