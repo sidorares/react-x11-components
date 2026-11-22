@@ -1107,8 +1107,8 @@ function fill(
   jumpFrom?: (column: number, need: number, soft?: boolean) => number,
 ): Filled {
   if (heightOf) height = heightOf(0);
-  // a grid row is broken an item at a time in plain columns, and in rows
-  // of them and under cloned edges goes as it did
+  // a grid row is broken an item at a time in plain columns alone: in rows
+  // of them and under cloned edges no group is a row (`layoutColumns`)
   const rowsByItem = !heightOf && !jumpFrom && !clones;
   const starts = [0];
   const tops = [top];
@@ -1579,6 +1579,47 @@ export function layoutColumns(
       gathered = gatherAll(tall);
     }
   }
+  // rows of columns (CSS Multi-column 2, 3.7): where each column's row
+  // is and how tall the column is, and how far down the rows this sets
+  // reach; a column's slot in its row is its index past the rows before
+  const grid = row ? row.grid : rowGridOf(box, limit);
+  // not wrapping, the columns are as tall as `column-height` says
+  // whatever the container's height (WPT's column-height-005)
+  if (!grid && box.style.columnHeight !== null) {
+    limit = box.style.columnHeight;
+  }
+  // a multicol container in another's columns of a known height has its
+  // rows cut where those columns end, and starts a row at each one's top
+  // (CSS Multi-column 1, 8.1; WPT's multicol-nested-013 and
+  // column-height-027): only one with no height of its own to fill, or
+  // whose columns wrap, and outside rows a spanner makes
+  const outer = columnsAround.current;
+  const nested =
+    outer !== null &&
+    !row &&
+    // a block in the flow: a float, an item and what is out of the flow
+    // are placed some other way, which moves none of what it holds
+    box.parent?.kind === 'block' &&
+    !box.isFloat &&
+    !box.outOfFlow &&
+    !wholeBetween(box, outer.box) &&
+    (grid ? Number.isFinite(grid.height) : !Number.isFinite(limit));
+  // a row is broken an item at a time in plain columns alone (`fill`): in
+  // rows of columns, in another's columns, under cloned edges and in a
+  // table that repeats a group its items' units are grouped by where they
+  // stand, as anything's are. Grouped as the row there, which nothing then
+  // broke, it went whole, and hung out of its column (the cases of
+  // `scripts/conformance/grid-row-contexts.ts`; WPT's
+  // css-break/box-decoration-break-clone-022, once a flex line is a row)
+  if (
+    nested ||
+    (grid && Number.isFinite(grid.height)) ||
+    gathered.cloned.length ||
+    gathered.repeats?.size
+  ) {
+    for (const unit of gathered.units) unit.row = undefined;
+    gathered.rowBoxes = undefined;
+  }
   const groups = groupsOf(gathered.units);
   for (const [unit, room] of gathered.rooms ?? []) {
     const group = unit.group;
@@ -1603,37 +1644,12 @@ export function layoutColumns(
   // a container with less than a column of content is no shorter than
   let columnHeight = 0;
   const count = columns.count;
-  // rows of columns (CSS Multi-column 2, 3.7): where each column's row
-  // is and how tall the column is, and how far down the rows this sets
-  // reach; a column's slot in its row is its index past the rows before
-  const grid = row ? row.grid : rowGridOf(box, limit);
-  // not wrapping, the columns are as tall as `column-height` says
-  // whatever the container's height (WPT's column-height-005)
-  if (!grid && box.style.columnHeight !== null) {
-    limit = box.style.columnHeight;
-  }
   let rowOf: ((c: number) => number) | null = null;
   let rowTop: (j: number) => number = () => top;
   let rowHeight: (j: number) => number = () => 0;
   let heights: ((c: number) => number) | undefined;
   let jump: ((c: number, need: number, soft?: boolean) => number) | undefined;
   let reach = 0;
-  // a multicol container in another's columns of a known height has its
-  // rows cut where those columns end, and starts a row at each one's top
-  // (CSS Multi-column 1, 8.1; WPT's multicol-nested-013 and
-  // column-height-027): only one with no height of its own to fill, or
-  // whose columns wrap, and outside rows a spanner makes
-  const outer = columnsAround.current;
-  const nested =
-    outer !== null &&
-    !row &&
-    // a block in the flow: a float, an item and what is out of the flow
-    // are placed some other way, which moves none of what it holds
-    box.parent?.kind === 'block' &&
-    !box.isFloat &&
-    !box.outOfFlow &&
-    !wholeBetween(box, outer.box) &&
-    (grid ? Number.isFinite(grid.height) : !Number.isFinite(limit));
   let ownRows = true;
   if (nested || (grid && Number.isFinite(grid.height))) {
     const H = grid ? grid.height : Infinity;
