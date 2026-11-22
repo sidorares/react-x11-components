@@ -792,6 +792,17 @@ test('a style-contained list numbers its items from its start, wherever it is', 
   );
   assert.ok((await text(list(' reversed'))).includes('2. a1. b'));
   assert.ok((await text(list(' reversed start="9"'))).includes('9. a8. b'));
+  // and a box with style containment in one counts for itself, up from 1,
+  // and is no part of what the list counts down from
+  const inside = (attrs: string) =>
+    `<ol${attrs}><li>a</li><li>b</li><div class="c"><li>x</li><li>y</li>` +
+    '</div><li>c</li></ol>';
+  assert.ok((await text(inside(' reversed'))).includes('3. a2. b1. x2. y1. c'));
+  assert.ok(
+    (await text(inside(' reversed start="9"'))).includes(
+      '9. a8. b1. x2. y7. c',
+    ),
+  );
   // and it leaves a list around it as it found it
   assert.ok(
     (
