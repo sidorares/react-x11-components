@@ -1501,7 +1501,7 @@ function linesOf(
       );
   const base = {
     family: style.fontFamily,
-    size: style.fontSize || NO_SIZE,
+    size: style.fontSize,
     weight: style.fontWeight,
     style: style.fontStyle,
     ...slantField(style),
@@ -5913,7 +5913,7 @@ function collect(
           run: {
             text: '\n',
             family: child.style.fontFamily,
-            size: child.style.fontSize || NO_SIZE,
+            size: child.style.fontSize,
           },
           box: child,
           length: 1,
@@ -6709,7 +6709,7 @@ function firstLineSetting(
   const lineHeight = lineHeightMultiplier(fonts, style);
   const base = {
     family: style.fontFamily,
-    size: style.fontSize || NO_SIZE,
+    size: style.fontSize,
     weight: style.fontWeight,
     style: style.fontStyle,
     ...slantField(style),
@@ -7020,12 +7020,6 @@ function setTabs(
   items.splice(0, items.length, ...next);
 }
 
-/** What a run of text set at no size is laid out at: CoreText takes a size
- *  of 0 as its default, and the line as tall as that. So little is nothing
- *  beside any other length there is, and no more than a float holds, which
- *  is what a size is handed to an engine as. */
-const NO_SIZE = 1e-30;
-
 /**
  * The run a tab is laid out in: its text's, but where that is set at no
  * size, a pixel. An engine spaces out only a glyph with an advance
@@ -7034,7 +7028,7 @@ const NO_SIZE = 1e-30;
  * its text in spans of their own sizes has its tabs between them.
  */
 function tabRunOf(run: TextRun): TextRun {
-  return (run.size ?? 1) > NO_SIZE ? run : { ...run, size: 1 };
+  return (run.size ?? 1) > 0 ? run : { ...run, size: 1 };
 }
 
 /** The space a tab in a box is laid out as: a `pre`'s spaces are held
@@ -7053,7 +7047,7 @@ type Face = Pick<
 export function fontOf(style: ComputedStyle): Face {
   return {
     family: style.fontFamily,
-    size: style.fontSize || NO_SIZE,
+    size: style.fontSize,
     weight: style.fontWeight,
     style: style.fontStyle === 'normal' ? 'normal' : 'italic',
     stretch: style.fontStretch,
@@ -7561,7 +7555,7 @@ export function runFor(
   const run: DocumentRun = {
     text,
     family: style.fontFamily,
-    size: style.fontSize || NO_SIZE,
+    size: style.fontSize,
     weight: style.fontWeight,
     style: style.fontStyle === 'normal' ? 'normal' : 'italic',
     // in every run, so that the runs have one shape (`shapeApart`)
