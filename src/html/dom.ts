@@ -27,7 +27,7 @@
 import { Parser } from 'htmlparser2';
 import { DomHandler, Document as DomDocument, Element, Text } from 'domhandler';
 import type { AnyNode, ChildNode, Document, ParentNode } from 'domhandler';
-import { sheetConditions } from './css/parse.js';
+import { asciiLower, sheetConditions } from './css/parse.js';
 import type { MediaCondition } from './css/parse.js';
 import { isXmlType, readProlog } from './xml-prolog.js';
 import { corsKeyed } from './url.js';
@@ -3536,7 +3536,8 @@ function createParser(
   handler.declarative = declarative;
   const parser = new DocumentParser(handler, {
     lowerCaseTags: true,
-    lowerCaseAttributeNames: true,
+    // in ASCII's case alone (HTML 13.2.5.33), which `onattribname` folds
+    lowerCaseAttributeNames: false,
     // HTML closes an element written `<x/>` only where it is void, and so
     // closed anyway, or in SVG or MathML (HTML 13.2.6.5, "acknowledge the
     // self-closing flag"). A `<div/>` or an `<a href="" /*target="_blank"*/>`
@@ -4347,6 +4348,13 @@ class DocumentParser extends Parser {
 
   /** Whether the tag being read has named an attribute twice. */
   private _duplicated = false;
+
+  override onattribname(start: number, endIndex: number): void {
+    super.onattribname(start, endIndex);
+    const self = this as unknown as { attribname: string };
+    const name = self.attribname;
+    if (/[A-Z]/.test(name)) self.attribname = asciiLower(name);
+  }
 
   override onattribend(quote: number, endIndex: number): void {
     const self = this as unknown as ParserInternals & { attribname: string };

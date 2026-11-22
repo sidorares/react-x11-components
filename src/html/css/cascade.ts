@@ -12073,7 +12073,13 @@ function attributeIn(
 ): string | undefined {
   const attribs = el?.attribs;
   if (!attribs) return undefined;
-  if (!namespace) return attribs[name] ?? attribs[name.toLowerCase()];
+  // HTML's names are kept in ASCII's lower case, and XML's as written
+  // (CSS Values 5, 7.7)
+  if (!namespace) {
+    return inXmlDocument(el!)
+      ? attribs[name]
+      : (attribs[name] ?? attribs[asciiLower(name)]);
+  }
   const local = name.toLowerCase();
   for (const key in attribs) {
     const colon = key.indexOf(':');
