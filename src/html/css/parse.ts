@@ -2994,10 +2994,11 @@ export function importLayerOf(afterUrl: string): {
 }
 
 /**
- * An `@import`'s media query list, the rest of its prelude after the URL
- * and any `layer(…)`: null where it has none, and false where no query in
+ * An `@import`'s media query list, the rest of its prelude after the URL,
+ * any `layer(…)` and any `supports(…)`: null where it has none, and false where no query in
  * it can ever hold here — a list that only names other media, `print` or
- * `braille` — which leaves the sheet out, unasked for (CSS 2.1 6.3). Any
+ * `braille` — or its `supports()` does not, which leaves the sheet out,
+ * unasked for (CSS 2.1 6.3). Any
  * other list is the condition the sheet it imports is under (CSS Cascade
  * 4, 2): the sheet is fetched once, and its rules hold at the widths the
  * list does. Taken to hold at every width, as it was, a design that
@@ -3010,7 +3011,22 @@ function importConditions(prelude: string): MediaCondition[] | null | false {
     /^\s*(?:url\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)|"[^"]*"|'[^']*')(.*)$/s.exec(
       prelude,
     );
-  return sheetConditions(importLayerOf(m?.[1] ?? '').rest);
+  let { rest } = importLayerOf(m?.[1] ?? '');
+  // `supports()` is a condition, or a declaration with no brackets of its
+  // own (CSS Cascade 5, 2.1), ahead of the media
+  const supports = /^\s*supports\(/i.exec(rest);
+  if (supports) {
+    const open = supports[0].length - 1;
+    const end = blockEnd(rest, open);
+    if (rest[end - 1] !== ')') return false;
+    const inner = rest.slice(open + 1, end - 1).trim();
+    const declared = /^-{0,2}[a-z_][\w-]*\s*:/i.test(inner);
+    if (supportsCondition(declared ? `(${inner})` : inner) === false) {
+      return false;
+    }
+    rest = rest.slice(end);
+  }
+  return sheetConditions(rest);
 }
 
 /**

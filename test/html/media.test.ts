@@ -254,6 +254,41 @@ test('a sheet imported under a width is applied at that width, and dropped past 
   );
 });
 
+test('an @import is left out where its supports() does not hold, and read past where it does', () => {
+  // CSS Cascade 5, 2.1; WPT import-conditional-002: the condition was read
+  // as a media query nobody knows, and no such sheet was asked for
+  const imports = (after: string) =>
+    parseStylesheet(`@import "a.css" ${after};`).imports.length === 1;
+  for (const after of [
+    'supports(display: block)',
+    'supports((display: block))',
+    'supports(not (grid-template-rows: masonry))',
+    'supports((display: block) and (color: red))',
+    'SUPPORTS(display: block) screen',
+    'layer(x) supports(color: red) screen and (min-width: 1px)',
+    'layer supports(selector(a > b))',
+    'supports(content: ")")',
+  ]) {
+    assert.ok(imports(after), after);
+  }
+  for (const after of [
+    'supports(grid-template-rows: masonry)',
+    'supports(not (grid-template-rows: subgrid))',
+    'supports((display: block) and (grid-template-rows: masonry))',
+    'layer(x) supports(grid-template-rows: masonry)',
+    'supports(display: block) print',
+  ]) {
+    assert.ok(!imports(after), after);
+  }
+  // its media hold it as any other's
+  assert.deepStrictEqual(
+    parseStylesheet(
+      '@import "a.css" supports(display: block) (min-width: 40px);',
+    ).importConditions,
+    [[{ min: 40 }]],
+  );
+});
+
 test('a sheet under its media attribute applies where it holds, and a resize across one restyles', async () => {
   const sheets: Record<string, string> = {
     'phone.css':
