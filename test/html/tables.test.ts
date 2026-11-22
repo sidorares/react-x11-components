@@ -29,6 +29,33 @@ test('an image told to be a column is drawn, as one told to be a cell is', async
   assert.ok(img.width === 20 && img.height === 10, 'laid out at its size');
 });
 
+metric(
+  'a row and a row group cast their shadows, over the rows before and under their own cells',
+  async () => {
+    // from the first cell to the last, as their backgrounds are; as Chrome
+    // draws them
+    const { node, result } = await render(
+      '<style>body{margin:0;background:#ffffff}table{border-spacing:10px}' +
+        'td{padding:0;width:40px;height:40px;background:#0000ff}</style>' +
+        '<table><tr><td></td><td></td></tr>' +
+        '<tr style="box-shadow:0 0 0 6px #ff0000"><td></td><td></td></tr>' +
+        '</table>' +
+        '<table><tbody style="box-shadow:6px 6px #ff0000"><tr><td></td></tr>' +
+        '<tr><td></td></tr></tbody></table>',
+    );
+    const { abs } = view(node) as unknown as { abs: { x: number; y: number } };
+    const at = (x: number, y: number, colour: string, message: string) =>
+      expectPixel(result.ctx, abs.x + x, abs.y + y, colour, { message });
+    await at(30, 57, '#ff0000', 'above its row, in the spacing');
+    await at(55, 80, '#ffffff', 'nor between its cells, in its own box');
+    await at(8, 80, '#ff0000', 'beside its first cell');
+    await at(104, 80, '#ff0000', 'and its last');
+    await at(30, 80, '#0000ff', 'under its cells');
+    await at(53, 150, '#ff0000', "a row group's");
+    await at(30, 213, '#ff0000', 'below its last row');
+  },
+);
+
 metric('a table sizes its columns from every cell in them', async () => {
   const { node } = await render(
     '<table><tr><td>a</td><td>a much wider cell than the other one</td></tr>' +

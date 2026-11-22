@@ -12287,10 +12287,22 @@ function paintPartBackgrounds(
   const areas = new Map<Box, Rect>();
   let across: Rect | null = null;
   for (const [layer, indexOf] of layers) {
-    if (!layer.some(paintsPart)) continue;
     const columns = indexOf === columnOf;
+    const shadowed = columns ? NO_SHADOWS : shadowedParts(layer, cells);
+    if (!layer.some(paintsPart) && !shadowed.size) continue;
+    let last: Box | null = null;
+    const enter = (part: Box | null): void => {
+      if (part === last) return;
+      // a row's shadow over the rows before it, and under its own cells
+      const before = last && shadowed.get(last);
+      if (before) paintShadows(ctx, before, options, true);
+      last = part;
+      const now = part && shadowed.get(part);
+      if (now) paintShadows(ctx, now, options, false);
+    };
     for (const cell of cells) {
       const part = layer[indexOf(cell)];
+      if (shadowed.size) enter(part);
       if (!part || !paintsPart(part) || hidden(cell.box)) continue;
       const box = cell.box;
       const frame: Frame = {
@@ -12332,7 +12344,46 @@ function paintPartBackgrounds(
         }
       });
     }
+    if (shadowed.size) enter(null);
   }
+}
+
+const NO_SHADOWS: ReadonlyMap<Box, Frame> = new Map();
+
+/** The row groups or the rows of a table that cast shadows, each as the frame
+ *  it casts them from: its own height, and from its first cell to its last,
+ *  as its background is. One of a table whose borders collapse casts none by
+ *  CSS Backgrounds 3, 7.1, and casts them in Chrome and here. */
+function shadowedParts(
+  parts: readonly (Box | null)[],
+  cells: readonly Cell[],
+): ReadonlyMap<Box, Frame> {
+  let out: Map<Box, Frame> | null = null;
+  for (const part of parts) {
+    if (!part?.style.boxShadow || part.style.visibility !== 'visible') continue;
+    if (out?.has(part)) continue;
+    let left = Infinity;
+    let right = -Infinity;
+    for (const { box } of cells) {
+      left = Math.min(left, box.x);
+      right = Math.max(right, box.x + box.width);
+    }
+    if (!(right > left)) continue;
+    (out ??= new Map()).set(part, {
+      x: left,
+      y: part.y,
+      width: right - left,
+      height: part.height,
+      captionTop: 0,
+      captionBottom: 0,
+      borderTop: 0,
+      borderRight: 0,
+      borderBottom: 0,
+      borderLeft: 0,
+      style: part.style,
+    });
+  }
+  return out ?? NO_SHADOWS;
 }
 
 const columnOf = (cell: Cell): number => cell.column;
