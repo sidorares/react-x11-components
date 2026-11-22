@@ -12306,6 +12306,8 @@ export function settleClamp(
     keepFlexRead(style);
     style.flexGrow = Math.max(0, style.webkitBoxFlex);
     style.flexShrink = style.flexGrow;
+    // and aligned by `-webkit-box-align`, whatever it says for itself
+    style.alignSelf = AUTO;
   }
   style.lineClamp =
     collapses && CLAMPS.has(style.display) && !style.columns

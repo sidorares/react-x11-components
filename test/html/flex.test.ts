@@ -4419,7 +4419,9 @@ test('what is aligned `safe` starts where its room does when it runs past it', a
       '<div class="c" style="flex-direction:column;align-items:center"><i id="f" class="w" style="align-self:safe center"></i><i id="g" class="w"></i></div>' +
       // the lines across the box
       '<div class="c" style="flex-wrap:wrap-reverse;align-content:safe flex-start"><i id="h" class="t"></i></div>' +
-      '<div class="c" style="flex-flow:column wrap;align-content:safe center"><i id="i" class="w"></i></div>',
+      '<div class="c" style="flex-flow:column wrap;align-content:safe center"><i id="i" class="w"></i></div>' +
+      // and what an item of a `-webkit-box` says for itself says nothing
+      '<div class="c" style="display:-webkit-box;-webkit-box-align:end"><div id="j" class="t" style="align-self:safe center"></div></div>',
     400,
   );
   const el = view(node);
@@ -4433,4 +4435,5 @@ test('what is aligned `safe` starts where its room does when it runs past it', a
   assert.deepStrictEqual(at('g'), [-10, 420]);
   assert.deepStrictEqual(at('h'), [0, 500]);
   assert.deepStrictEqual(at('i'), [0, 600]);
+  assert.deepStrictEqual(at('j'), [0, 670]);
 });

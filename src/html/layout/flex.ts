@@ -1154,11 +1154,13 @@ interface Placement {
   height: number;
 }
 
-/** Whether anything in a flex box is aligned `safe`. */
+/** Whether anything in a flex box is aligned `safe`: nothing in a
+ *  `-webkit-box`, which its own properties pack and align. */
 function alignsSafely(
   style: ComputedStyle,
   items: readonly { box: Box }[],
 ): boolean {
+  if (style.webkitBox !== null) return false;
   return (
     style.justifyContentText.startsWith('safe ') ||
     style.alignItemsText.startsWith('safe ') ||

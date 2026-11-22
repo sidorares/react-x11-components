@@ -322,6 +322,13 @@ function selfAgainst(
   return startsHigh(item, x) !== startsHigh(grid, x);
 }
 
+/** Whether a position that runs an item past its area's start keeps it at
+ *  the start instead: a `safe` one, and a last baseline's fallback, `safe
+ *  end` (CSS Box Alignment 3, 4.2 and 4.4). */
+export function keptIn(text: string): boolean {
+  return text.startsWith('safe ') || text === 'last baseline';
+}
+
 /** An alignment's start for its end and its end for its start. */
 function otherEnd<T extends string>(keyword: T): T {
   return (
@@ -847,7 +854,7 @@ export function layoutGrid(
     } else if (item.shimX !== undefined) dx = item.shimX;
     else if (justify === 'center' || justify === 'flex-end') {
       dx = (area - outerWidth) / (justify === 'center' ? 2 : 1);
-      safeX = justifyText.startsWith('safe ');
+      safeX = keptIn(justifyText);
     }
     let dy = 0;
     let safeY = true;
@@ -872,16 +879,12 @@ export function layoutGrid(
       dy = (tall - outerHeight) * (top && bottom ? 0.5 : top ? 1 : 0);
     } else if (align === 'center') {
       dy = (tall - outerHeight) / 2;
-      safeY = alignText.startsWith('safe ');
+      safeY = keptIn(alignText);
     } else if (align === 'flex-end') {
       // at the end, or for one aligned by its last baseline as far above
       // it as meets its row's
       dy = tall - outerHeight - (item.shimEnd ?? 0);
-      // which falls back to `safe end`
-      safeY =
-        item.shimEnd !== undefined ||
-        alignText.startsWith('safe ') ||
-        alignText === 'last baseline';
+      safeY = item.shimEnd !== undefined || keptIn(alignText);
     }
     // one aligned by its baseline meets its row's, and is not stretched
     else if (item.shim !== undefined) dy = item.shim;

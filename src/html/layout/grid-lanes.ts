@@ -64,6 +64,7 @@ import type { LayoutContext } from './block.js';
 import {
   alignColumnBaselines,
   autoMargins,
+  keptIn,
   extent,
   fromParent,
   indexOfKept,
@@ -787,17 +788,18 @@ export function layoutGridLanes(
     } else if (crossStart || crossEnd) {
       // `auto` margins take the free space in the area first (CSS Grid 1,
       // 10.2)
-      across = crossStart ? (area - crossOuter) * (crossEnd ? 0.5 : 1) : 0;
+      across = crossStart
+        ? Math.max(0, area - crossOuter) * (crossEnd ? 0.5 : 1)
+        : 0;
     } else if (!rows && item.shimX !== undefined) {
-      across = item.shimX;
+      across = Math.max(0, item.shimX);
     } else {
       const flow = flowAlign(textAcross, trackReverse);
       const kind = flow ?? selfAcross;
       if (kind === 'center') across = (area - crossOuter) / 2;
       else if (kind === 'flex-end') across = area - crossOuter;
-      // past its lanes, at their start where it is `safe` (CSS Box Alignment
-      // 3, 4.4)
-      if (across < 0 && textAcross.startsWith('safe ')) across = 0;
+      // past its lanes, at their start where it is `safe`
+      if (across < 0 && keptIn(textAcross)) across = 0;
       if (
         rows &&
         !subgridded[index] &&
@@ -862,7 +864,7 @@ export function layoutGridLanes(
     const at = shift + stack;
     let x = rows
       ? box.contentX + at
-      : box.contentX + lefts[from] + crossLead + Math.max(0, across);
+      : box.contentX + lefts[from] + crossLead + across;
     if (rtl) {
       // its margin box mirrored in the container's width
       const outer = child.width + child.marginLeft + child.marginRight;
@@ -870,7 +872,7 @@ export function layoutGridLanes(
       x += child.marginLeft;
     }
     const y = rows
-      ? box.contentY + lefts[from] + crossLead + Math.max(0, across)
+      ? box.contentY + lefts[from] + crossLead + across
       : box.contentY + at;
     moveTo(child, x, y);
   });
