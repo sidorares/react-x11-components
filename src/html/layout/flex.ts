@@ -914,6 +914,41 @@ function replacedHeight(box: Box, width: number): number | null {
   return own && !(own.missing & 2) ? own.height : null;
 }
 
+/** A replaced row item's content size, its border box, or with a ratio alone
+ *  the room it is in. Null where it has neither. */
+function replacedBasis(box: Box, containingWidth: number): number | null {
+  const own = replacedContent(box, contentHeight(box, true));
+  if (own !== null) return own;
+  if (
+    !(replacedRatio(box) > 0) ||
+    !Number.isFinite(containingWidth) ||
+    containingWidth === MIN_CONTENT_PROBE
+  ) {
+    return null;
+  }
+  return Math.max(
+    box.horizontalExtra,
+    containingWidth - box.marginLeft - box.marginRight,
+  );
+}
+
+/** A column item's flex base size where it is replaced and no width of its
+ *  is definite: what its ratio makes of its natural width, within its limits
+ *  across, its content box's. */
+function replacedTall(
+  box: Box,
+  width: number,
+  containingWidth: number,
+): number | null {
+  const own = ownIntrinsic(box);
+  const extra = box.horizontalExtra;
+  const natural =
+    own && !(own.missing & 1)
+      ? clampWidth(box, own.width + extra, containingWidth) - extra
+      : width;
+  return replacedHeight(box, natural);
+}
+
 /** A row item's `flex-basis: content`, its border box: its max-content
  *  width, or a replaced element's content's. */
 function contentBasis(
@@ -922,15 +957,8 @@ function contentBasis(
   containingWidth: number,
 ): number {
   if (box.kind === 'replaced') {
-    const own = replacedContent(box, contentHeight(box, true));
+    const own = replacedBasis(box, containingWidth);
     if (own !== null) return own;
-    // with a ratio alone, as wide as the room
-    if (replacedRatio(box) > 0 && Number.isFinite(containingWidth)) {
-      return Math.max(
-        box.horizontalExtra,
-        containingWidth - box.marginLeft - box.marginRight,
-      );
-    }
   }
   // a ratio's is a definite height through it, whatever the width says
   const fromRatio = ratioBasis(box);
@@ -1434,6 +1462,7 @@ function applyItem(
   // Flexbox 9.2.3, B) — where Yoga measured it, and its block layout held
   // it to its content (CSS Sizing 4, 5.2), which only its automatic
   // minimum does here (`autoMinimums`)
+  let replacedOwn: number | null = null;
   const columnBasis =
     !row &&
     (style.flexBasis === 'content' ||
@@ -1488,12 +1517,13 @@ function applyItem(
     style.flexBasis === AUTO &&
     style.width === AUTO &&
     !style.widthKeyword &&
-    replacedRatio(box) > 0 &&
-    stretchedHeight(box) !== null
+    !sizedAuto &&
+    (replacedOwn = replacedBasis(box, containingWidth)) !== null
   ) {
-    // a replaced element the one line of a row of a definite height
-    // stretches is as wide as its ratio makes of that (CSS Flexbox 9.2, 9.8)
-    laid.basis = contentBasis(box, ctx, containingWidth);
+    // a replaced element's content size, which its limits have no say in:
+    // its natural width, or what its ratio makes of a height, its own or the
+    // one a row of a definite height stretches it to (CSS Flexbox 9.2, 9.8)
+    laid.basis = replacedOwn;
     node.setFlexBasis(laid.basis);
   } else if (style.flexBasis === 'content' || style.flexBasis === AUTO) {
     // Yoga's own
@@ -1557,10 +1587,18 @@ function applyItem(
       if (contentColumn && style.height !== AUTO) {
         const own = replacedContent(box, null);
         if (own !== null) return own - box.horizontalExtra;
-        if (ratio > 0 && Number.isFinite(containingWidth)) {
-          const edges = box.marginLeft + box.marginRight + box.horizontalExtra;
-          return Math.max(0, containingWidth - edges);
-        }
+      }
+      if (
+        !alongRow &&
+        (contentColumn || style.height === AUTO) &&
+        ratio > 0 &&
+        Number.isFinite(containingWidth) &&
+        containingWidth !== MIN_CONTENT_PROBE &&
+        replacedContent(box, null) === null
+      ) {
+        // with a ratio alone, as wide as the column
+        const edges = box.marginLeft + box.marginRight + box.horizontalExtra;
+        return Math.max(0, containingWidth - edges);
       }
       ctx.layoutSubtree(box, Infinity);
       return Math.max(0, box.width - box.horizontalExtra);
@@ -1712,11 +1750,14 @@ function applyItem(
     let answer: { width: number; height: number } | undefined;
     if (
       box.kind === 'replaced' &&
-      contentColumn &&
+      !alongRow &&
       !given &&
-      style.height !== AUTO
+      (exact ? contentColumn && style.height !== AUTO : ratio > 0) &&
+      (contentColumn || style.height === AUTO)
     ) {
-      const down = replacedHeight(box, inner);
+      const down = exact
+        ? replacedHeight(box, inner)
+        : replacedTall(box, inner, containingWidth);
       if (down !== null) answer = { width: inner, height: down };
     }
     if (answer !== undefined) {
