@@ -1961,6 +1961,9 @@ test('a @supports condition that is none holds nowhere, and neither does a test 
     '(content: "a\\"b)")',
     '(background: url(a;b))',
     '(m\\61rgin:0)',
+    '(color: var(--a) <!--)',
+    '(--a: b <!--)',
+    '(--0: a)',
   ]) {
     assert.strictEqual(entered(condition), true, condition);
   }
@@ -2016,6 +2019,8 @@ test('a @supports condition that is none holds nowhere, and neither does a test 
     '(color:var(x))',
     '(margin: 0 and color: red)',
     '(width:calc(1px+2px))',
+    '(--: a)',
+    '(color: <!--)',
   ]) {
     assert.strictEqual(entered(condition), false, condition);
   }

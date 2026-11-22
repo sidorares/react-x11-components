@@ -4227,6 +4227,8 @@ function supportsDeclaration(
   if (!colon) return false;
   const written = inner.slice(named.end + colon[0].length).trim();
   const value = written.replace(/\s*!\s*important$/i, '');
+  // `--` alone is CSS's own, and names nothing (CSS Variables 1, 2)
+  if (named.value === '--') return false;
   // a value is something, and neither a second declaration nor a `!` that is
   // not the one at its end
   if ((!value && !custom) || strayIn(value)) return false;
@@ -4257,7 +4259,9 @@ function supportsDeclaration(
 function strayIn(value: string): boolean {
   for (let i = 0; i < value.length; i += 1) {
     const c = value[i];
-    if (c === ';' || c === '!') return true;
+    // `<!--` is one token, and no `!`
+    if (c === '<' && value.startsWith('<!--', i)) i += 3;
+    else if (c === ';' || c === '!') return true;
     if (c === '\\') i += 1;
     else if (c === '(' || c === '[' || c === '{' || c === '"' || c === "'") {
       i = componentEnd(value, i) - 1;
