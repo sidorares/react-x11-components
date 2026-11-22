@@ -2752,6 +2752,42 @@ test("a replaced box's keyword limits are its content's size, through its ratio 
   );
 });
 
+test('a percentage of a size compresses a control along its line, and a canvas no keyword limit', async () => {
+  // its narrowest is nothing (CSS Sizing 3, 5.2.2), and a range has no least
+  // size across its line; every width and height is Chromium's
+  const cases: [string, number, number][] = [
+    ['<input type="range" style="width:50%;min-width:min-content">', 30, 16],
+    ['<input type="range" style="width:50%;min-width:fit-content">', 60, 16],
+    ['<input type="range" style="width:50%;min-width:max-content">', 129, 16],
+    ['<input type="range" style="width:5px;min-width:min-content">', 129, 16],
+    ['<input type="range" style="height:5px;min-height:min-content">', 129, 5],
+    [
+      '<canvas width="100" height="50" style="width:50%;min-width:min-content"></canvas>',
+      100,
+      50,
+    ],
+  ];
+  const { node } = await render(
+    '<style>body{margin:0}input{margin:0;display:block}canvas{display:block}' +
+      'div{width:60px}</style>' +
+      cases
+        .map(
+          ([html], i) =>
+            `<div>${html.replace(' style', ` id="r${i}" style`)}</div>`,
+        )
+        .join(''),
+    400,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(
+    cases.map(([html], i) => {
+      const { width, height } = boxOf(el, `r${i}`);
+      return [html, width, height];
+    }),
+    cases,
+  );
+});
+
 metric(
   'a shape a <use> draws is styled where its copy is, from a sprite outside the drawing too',
   async () => {

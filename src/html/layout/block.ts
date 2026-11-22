@@ -8827,18 +8827,47 @@ function sizeReplaced(
     if (iw === null && ih === null && ratio > 0) return heightOf(room());
     return ih ?? (iw !== null && ratio > 0 ? heightOf(iw) : own.height);
   };
+  // A control is compressed along its line by a percentage of a size, so it
+  // has no narrowest and what fits its room is no more than that (CSS Sizing
+  // 3, 5.2.2); and a range has no least size across it, as in Chrome
+  const least = (
+    keyword: ComputedStyle['minWidthKeyword'],
+    size: Len,
+    inline: boolean,
+    content: number,
+    fits: () => number,
+  ): number => {
+    if (!COMPRESSED.has(box.replaced)) return content;
+    if (!inline) return box.replaced === 'range' ? 0 : content;
+    if (!isPct(size)) return content;
+    if (keyword === 'min-content') return 0;
+    return keyword === 'fit-content' ? Math.min(content, fits()) : content;
+  };
+  const lineAcross = style.writingMode === 'horizontal-tb';
   const minW =
     (style.minWidthKeyword === 'stretch'
       ? stretchedWidth
       : style.minWidthKeyword
-        ? contentWidth(0)
+        ? least(
+            style.minWidthKeyword,
+            style.width,
+            lineAcross,
+            contentWidth(0),
+            room,
+          )
         : null) ??
     across(style.minWidth) ??
     0;
   const minH = style.minHeightKeyword
     ? style.minHeightKeyword === 'stretch'
       ? 0
-      : contentHeight()
+      : least(
+          style.minHeightKeyword,
+          style.height,
+          !lineAcross,
+          contentHeight(),
+          () => (Number.isFinite(base) ? base : 0),
+        )
     : (down(style.minHeight) ?? 0);
   // a maximum below the minimum is the minimum (10.4)
   const maxW = Math.max(
@@ -8895,6 +8924,17 @@ function sizeReplaced(
   box.width = w + box.horizontalExtra;
   box.height = h + box.verticalExtra;
 }
+
+/** The controls a percentage of a size compresses (`sizeReplaced`). */
+const COMPRESSED: ReadonlySet<string> = new Set([
+  'input',
+  'textarea',
+  'select',
+  'button',
+  'file',
+  'range',
+  'color',
+]);
 
 /** What a replaced box with nothing to say about its size has: `hr`. */
 const NO_INTRINSIC: Intrinsic = { width: 0, height: 0, missing: 0, ratio: 0 };
