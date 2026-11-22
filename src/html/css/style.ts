@@ -8383,6 +8383,8 @@ function isSizePart(word: string, ctx: UnitContext): boolean {
   if (word === 'auto') return true;
   const len = positionLength(word, ctx);
   if (len === null || len === AUTO) return false;
+  // a calculation is held to the range, where a length out of it is none
+  if (isMathFunction(word)) return true;
   return typeof len === 'number' ? len >= 0 : len.pct >= 0;
 }
 
@@ -8504,7 +8506,9 @@ function backgroundSizeOf(
   const axis = (w: string | undefined): Len | 'auto' => {
     if (w === undefined || w === 'auto') return 'auto';
     const len = positionLength(w, ctx);
-    return len === null || len === AUTO ? 'auto' : len;
+    if (len === null || len === AUTO) return 'auto';
+    if (typeof len === 'number') return Math.max(0, len);
+    return len.pct < 0 && !len.px && !len.of ? { pct: 0 } : len;
   };
   const width = axis(words[0]);
   const height = axis(words[1]);

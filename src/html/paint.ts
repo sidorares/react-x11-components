@@ -12784,8 +12784,9 @@ function sizedTile(
       : [area.height * ratio, area.height];
   }
   const [sw, sh] = size;
-  const w = sw === 'auto' ? null : resolve(sw, area.width);
-  const h = sh === 'auto' ? null : resolve(sh, area.height);
+  // a calculation is held to the range (CSS Values 4, 10.12)
+  const w = sw === 'auto' ? null : Math.max(0, resolve(sw, area.width));
+  const h = sh === 'auto' ? null : Math.max(0, resolve(sh, area.height));
   if (w !== null && h !== null) return [w, h];
   if (w !== null) {
     if (ratio > 0) return [w, w / ratio];
