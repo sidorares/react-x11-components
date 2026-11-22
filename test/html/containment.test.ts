@@ -796,3 +796,39 @@ metric(
     assert.deepStrictEqual(await at(115, 115), [255, 255, 255], 'past it');
   },
 );
+
+metric(
+  'a box that clips cuts the descendants it paints under its flow',
+  async () => {
+    // a `z-index` under 0 in a stacking context that clips: painted over its
+    // background and under what it holds (CSS 2.1 Appendix E), and cut as
+    // the rest is, where it was painted before the clip was pushed
+    const { node, result } = await render(
+      '<style>body{margin:0;background:#ffffff}div{position:relative;' +
+        'z-index:0;overflow:hidden;width:50px;height:50px;margin:0 50px 50px}' +
+        'i{display:block;position:absolute;z-index:-1;left:-20px;top:0;' +
+        'width:60px;height:80px;background:#ff0000}</style>' +
+        '<div><i></i></div><div style="border-radius:1px"><i></i></div>' +
+        '<div><i style="position:relative"></i></div>' +
+        // one placed by something outside the clip is not cut by it
+        '<div style="position:static;opacity:0.99"><i style="left:30px;' +
+        'top:300px"></i></div>',
+    );
+    const { abs } = view(node) as unknown as { abs: { x: number; y: number } };
+    const drawn = async (x: number, y: number) =>
+      (
+        await pixelsIn(result.ctx, {
+          x: abs.x + x,
+          y: abs.y + y,
+          width: 1,
+          height: 1,
+        })
+      )[1] < 10;
+    for (const top of [0, 100, 200]) {
+      assert.ok(await drawn(60, top + 25), `inside, at ${top}`);
+      assert.ok(!(await drawn(40, top + 25)), `past the side, at ${top}`);
+      assert.ok(!(await drawn(60, top + 65)), `past the foot, at ${top}`);
+    }
+    assert.ok(await drawn(40, 375), 'placed by what is around the clip');
+  },
+);
