@@ -1501,7 +1501,7 @@ function linesOf(
       );
   const base = {
     family: style.fontFamily,
-    size: style.fontSize,
+    size: style.fontSize || NO_SIZE,
     weight: style.fontWeight,
     style: style.fontStyle,
     ...slantField(style),
@@ -2665,11 +2665,13 @@ function linesOf(
           // goes on, which a layout that fits as a browser does rounds with
           // the text they end, once (`advance`): the text rounded up to a
           // 64th and the spaces added after it came to more
+          // And some width however little, which is what says they are there:
+          // a line breaks after a space set at no size as after any.
           open.hang =
-            first.advance !== undefined
+            (first.advance !== undefined
               ? first.advance - first.width
               : spaceAdvance(fonts, segment.runs[segment.runs.length - 1]) *
-                trailing.length;
+                trailing.length) || Number.EPSILON;
           open.x += open.hang;
           placed.trail = open.hang;
         }
@@ -5907,7 +5909,7 @@ function collect(
           run: {
             text: '\n',
             family: child.style.fontFamily,
-            size: child.style.fontSize,
+            size: child.style.fontSize || NO_SIZE,
           },
           box: child,
           length: 1,
@@ -6703,7 +6705,7 @@ function firstLineSetting(
   const lineHeight = lineHeightMultiplier(fonts, style);
   const base = {
     family: style.fontFamily,
-    size: style.fontSize,
+    size: style.fontSize || NO_SIZE,
     weight: style.fontWeight,
     style: style.fontStyle,
     ...slantField(style),
@@ -7014,6 +7016,11 @@ function setTabs(
   items.splice(0, items.length, ...next);
 }
 
+/** What a run of text set at no size is laid out at, in pixels: CoreText
+ *  takes a size of 0 as its default, and a space at it was as wide as a
+ *  space at that, and its line as tall. */
+const NO_SIZE = 0.0001;
+
 /**
  * The run a tab is laid out in: its text's, but where that is set at no
  * size, a pixel. An engine spaces out only a glyph with an advance
@@ -7022,7 +7029,7 @@ function setTabs(
  * its text in spans of their own sizes has its tabs between them.
  */
 function tabRunOf(run: TextRun): TextRun {
-  return (run.size ?? 1) > 0 ? run : { ...run, size: 1 };
+  return (run.size ?? 1) > NO_SIZE ? run : { ...run, size: 1 };
 }
 
 /** The space a tab in a box is laid out as: a `pre`'s spaces are held
@@ -7041,7 +7048,7 @@ type Face = Pick<
 export function fontOf(style: ComputedStyle): Face {
   return {
     family: style.fontFamily,
-    size: style.fontSize,
+    size: style.fontSize || NO_SIZE,
     weight: style.fontWeight,
     style: style.fontStyle === 'normal' ? 'normal' : 'italic',
     stretch: style.fontStretch,
@@ -7549,7 +7556,7 @@ export function runFor(
   const run: DocumentRun = {
     text,
     family: style.fontFamily,
-    size: style.fontSize,
+    size: style.fontSize || NO_SIZE,
     weight: style.fontWeight,
     style: style.fontStyle === 'normal' ? 'normal' : 'italic',
     // in every run, so that the runs have one shape (`shapeApart`)

@@ -1088,15 +1088,47 @@ metric('text set at no size makes a line, and is no text to copy', async () => {
   );
   const el = view(node);
   assert.strictEqual(boxOf(el, 'a').y, boxOf(el, 'b').y);
-  assert.strictEqual(
-    boxOf(el, 'c').y,
-    boxOf(el, 'a').y - 50,
-    'white space that collapses away is on no line',
-  );
+  // white space that collapses away is on no line
+  assert.ok(Math.abs(boxOf(el, 'c').y - (boxOf(el, 'a').y - 50)) < 0.01);
   const text = el.textContent();
   assert.ok(text.includes('onethree'), text);
   assert.ok(!text.includes('\u200c'));
 });
+
+metric(
+  'white space in text set at no size collapses with what is beside it',
+  async () => {
+    // where each stands, as Chromium has it
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/20px sans-serif}p{margin:0;' +
+        'white-space:normal}b{font-size:0;font-weight:normal}</style>' +
+        ['two', ' two', 'two ', ' two ', '\n  two\n  ']
+          .map(
+            (z, i) =>
+              `<p>one<b>${z}</b> <i id="a${i}">x</i></p>` +
+              `<p>one <b>${z}</b> <i id="b${i}">x</i></p>` +
+              `<p><b>${z}</b> <i id="c${i}">x</i></p>`,
+          )
+          .join('') +
+        '<p>one<i id="o">x</i></p><p>one <i id="p">x</i></p>' +
+        '<p>one &nbsp;<i id="q">x</i></p><p>&nbsp;<i id="r">x</i></p>',
+    );
+    const el = view(node);
+    const at = (id: string) =>
+      Math.round((el.elementRect(findById(el.document, id)!)!.x - 0) * 4) / 4;
+    const [none, one, two, only] = ['o', 'p', 'q', 'r'].map(at);
+    for (let i = 0; i < 5; i++) {
+      const trails = i > 1;
+      assert.strictEqual(at(`a${i}`), trails ? none : one, `one, ${i}`);
+      assert.strictEqual(
+        at(`b${i}`),
+        trails ? one : two,
+        `one and a space, ${i}`,
+      );
+      assert.strictEqual(at(`c${i}`), trails ? 0 : only, `at the start, ${i}`);
+    }
+  },
+);
 
 metric('text set at no size breaks a line as a word does', async () => {
   const { node } = await render(
@@ -1116,6 +1148,14 @@ metric('text set at no size breaks a line as a word does', async () => {
   assert.ok(ends('b').length > 2);
   assert.deepStrictEqual(ends('a'), ends('b'));
   assert.strictEqual(linesOf(el, 'c').length, 1);
+  // and after a space of it
+  const { node: after } = await render(
+    '<style>body{margin:0;font-size:16px}p{margin:0;width:45px}</style>' +
+      '<p id="d">one <b style="font-size:0">two </b>three</p>' +
+      '<p id="e">one<b style="font-size:0"> </b>three</p>',
+  );
+  assert.strictEqual(linesOf(view(after), 'd').length, 2);
+  assert.strictEqual(linesOf(view(after), 'e').length, 2);
 });
 
 metric('a tab is set from where the room before it ends', async () => {
