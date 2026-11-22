@@ -4994,6 +4994,9 @@ export class Cascade {
    *  (`_cascadeStyle`), so that a logical property among them maps by the
    *  element's own, wherever it is declared (CSS Writing Modes 4, 6.4). */
   private _writing = false;
+  /** Whether any declares a `direction`, which is read ahead the same way
+   *  for the elements it is declared of. */
+  private _direction = false;
   /** The pseudo-classes css-select is handed: `:root` this cascade's, and
    *  the focus's three answered from `_focus`. */
   private _pseudos!: typeof PSEUDOS;
@@ -5281,6 +5284,7 @@ export class Cascade {
     this.initialTargets = before.initialTargets;
     this._zoom = before._zoom;
     this._writing = before._writing;
+    this._direction = before._direction;
     this._adapter = before._adapter;
     this._copyAdapter = before._copyAdapter;
     this._pseudos = before._pseudos;
@@ -5359,6 +5363,9 @@ export class Cascade {
       if (!this._zoom && usesZoom(rule.declarations)) this._zoom = true;
       if (!this._writing && usesWritingMode(rule.declarations)) {
         this._writing = true;
+      }
+      if (!this._direction) {
+        this._direction = usesDirection(rule.declarations);
       }
       const scope = rule.order < 0 ? UA_SCOPE : rules.id;
       // a starting style's rule, which only a starting style asks — and
@@ -9858,11 +9865,16 @@ export class Cascade {
     // sets it wherever that comes later in cascade order — `margin-block:
     // 8px` in a rule ahead of the one that makes the element `vertical-rl`
     // was its top and bottom margins. Applied again in their places below,
-    // which comes to what this does. And where the element has a `dir`:
+    // which comes to what this does, but the direction. And where the element has a `dir`:
     // its direction is a presentational hint, after the user agent's rules,
     // and the user agent's margins and paddings are logical (HTML 15.3.7),
     // so a `<ul dir="rtl">` was indented on the left.
-    if (this._writing || el.attribs.dir !== undefined) {
+    const mapped =
+      this._writing ||
+      el.attribs.dir !== undefined ||
+      (this._direction &&
+        candidates.some((c) => declaresDirection(c.declarations)));
+    if (mapped) {
       for (const c of candidates) {
         for (const d of pick(c)) {
           if (MAPPING_PROPS.has(d.prop)) {
@@ -9989,6 +10001,8 @@ export class Cascade {
       authored = !fromUserAgent(c.origin);
       for (const d of pick(c)) {
         if (d.prop === 'font-size' || d.custom) continue;
+        // the one that wins is in force already
+        if (mapped && d.prop === 'direction') continue;
         this._apply(
           style,
           parentStyle,
@@ -11135,6 +11149,9 @@ export class Cascade {
       if (!this._writing && usesWritingMode(declarations)) {
         this._writing = true;
       }
+      if (!this._direction) {
+        this._direction = usesDirection(declarations);
+      }
       pushInline(out, declarations, tree.depth, tree.root);
     }
 
@@ -11955,6 +11972,23 @@ const MAPPING_PROPS = new Set([...WRITING_PROPS, 'direction']);
 function usesWritingMode(declarations: readonly Declaration[]): boolean {
   for (const d of declarations) if (WRITING_PROPS.has(d.prop)) return true;
   return false;
+}
+
+function usesDirection(declarations: readonly Declaration[]): boolean {
+  for (const d of declarations) if (d.prop === 'direction') return true;
+  return false;
+}
+
+/** Whether a rule's declarations set a direction, by the array. */
+const DIRECTION_IN = new WeakMap<Declaration[], boolean>();
+
+function declaresDirection(declarations: Declaration[]): boolean {
+  let has = DIRECTION_IN.get(declarations);
+  if (has === undefined) {
+    has = usesDirection(declarations);
+    DIRECTION_IN.set(declarations, has);
+  }
+  return has;
 }
 
 /** Whether a candidate declares `content`. */
