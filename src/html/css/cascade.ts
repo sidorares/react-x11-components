@@ -2379,8 +2379,9 @@ function nthOf(arg: string): [number, number] | null {
 
 const NTH_CHECKS = new Map<string, [number, number] | null>();
 
-/** Whether an element matches an `An+B` counted from `from`. One every
- *  position matches, `n`, is css-select's "has an element for a parent". */
+/** Whether an element matches an `An+B` counted from `from`. Every element
+ *  has a place, the root and a shadow tree's tops among them (Selectors 4,
+ *  13.3), so `n` is every one. */
 function nthHolds(
   arg: string | null,
   el: Element,
@@ -2393,10 +2394,7 @@ function nthHolds(
   }
   if (!ab) return false;
   const [a, b] = ab;
-  if (a === 1 && b <= 0) {
-    const parent = el.parent;
-    return !!parent && isTag(parent as Element);
-  }
+  if (a === 1 && b <= 0) return true;
   const i = placeOf(el)[from] + 1;
   if (a === 0) return i === b;
   const n = (i - b) / a;

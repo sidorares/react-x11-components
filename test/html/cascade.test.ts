@@ -12,7 +12,11 @@ import {
 } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
-import { HtmlViewNode, removeNode } from '../../src/html/index.js';
+import {
+  HtmlViewNode,
+  removeNode,
+  shadowRootOf,
+} from '../../src/html/index.js';
 import type { Element } from '../../src/html/index.js';
 import {
   parseStylesheet,
@@ -2144,6 +2148,37 @@ test("an :nth-child()'s of needs no space after it", async () => {
   assert.notStrictEqual(color('u'), 'rgb(255, 0, 0)');
   // and its specificity is the class's with the pseudo-class's
   assert.strictEqual(color('q'), 'rgb(0, 255, 7)');
+});
+
+test('an element with no element for a parent has a place among its siblings', async () => {
+  // Selectors 4, 13.3; WPT child-indexed-no-parent: `n` asked for one, and
+  // `1` did not
+  const tests = ['child', 'last-child', 'of-type', 'last-of-type'].flatMap(
+    (kind) =>
+      ['n', '1', 'n-2', 'odd', '1n+0'].map((arg) => `nth-${kind}(${arg})`),
+  );
+  const { node } = await render(
+    '<!doctype html><html><head><style>' +
+      tests
+        .map((t, i) => `:root:${t} { --r${i}: yes } b:${t} { --b${i}: yes }`)
+        .join('') +
+      ':root:nth-child(2) { --r0: no }' +
+      '</style></head><body><div><template shadowrootmode="open">' +
+      `<style>${tests.map((t, i) => `b:${t} { --s${i}: yes }`).join('')}</style>` +
+      '<b id="s"></b></template></div></body></html>',
+  );
+  const el = view(node);
+  const root = el.document.children.find((c) => c.type === 'tag') as Element;
+  const body = root.children.at(-1) as Element;
+  const host = body.children[0] as Element;
+  const top = shadowRootOf(host)!.children.at(-1) as Element;
+  tests.forEach((t, i) => {
+    assert.strictEqual(el.customProperty(root, `--r${i}`), 'yes', `:root:${t}`);
+    // after its tree's <style>
+    if (/\(1?n/.test(t)) {
+      assert.strictEqual(el.customProperty(top, `--s${i}`), 'yes', `b:${t}`);
+    }
+  });
 });
 
 test('the names that would style an element are the ones some rule would match it with', async () => {
