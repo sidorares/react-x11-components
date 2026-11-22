@@ -2491,6 +2491,30 @@ test("a flex basis of the content is the content's, whatever sizes an item has o
       30,
     ],
     ['m', column, canvas('m', 'flex:0 1 20px'), 80, 120],
+    // within what its limits down make of it, and through a natural height
+    // or one that stretches
+    ['r', 'display:flex;width:150px', svg('r', 'max-height:40px'), 40, 40],
+    [
+      's',
+      'display:flex;flex-direction:column;width:150px;align-items:start',
+      svg('s', 'max-height:40px'),
+      40,
+      40,
+    ],
+    [
+      't',
+      'display:flex;width:150px;align-items:start',
+      '<svg id="t" viewBox="0 0 20 10" height="40" style="max-height:30px"></svg>',
+      60,
+      30,
+    ],
+    [
+      'u',
+      row + ';align-items:start',
+      canvas('u', 'height:stretch;min-width:0'),
+      60,
+      90,
+    ],
     // and a box's is its content's, whatever height its items fill
     [
       'n',
