@@ -7409,7 +7409,8 @@ and `elementRect` answers what `getBoundingClientRect` does in Chrome. A
 box moved toward the viewer — `translate: 0 0 100px` as much as
 `translateZ(100px)` — is drawn larger about the perspective origin; with
 no perspective a turn out of the plane squashes it; and what is behind the
-viewer is not drawn. No context draws through a perspective — a 2d
+viewer is not drawn, nor what a transform with no inverse flattens, in depth
+alone as much as across. No context draws through a perspective — a 2d
 context's matrix is one of the plane — so such a box is painted on a
 surface as it was laid out, and the surface drawn a tile of the window's
 pixels at a time, each through the matrix nearest the perspective over it:

@@ -126,6 +126,7 @@ import type { ScrollOffset, Viewport } from './scroll.js';
 import type { Matrix, Placed } from '../css/transform.js';
 import {
   affineOf,
+  determinant4,
   facesAway,
   lift,
   multiply4,
@@ -13341,11 +13342,14 @@ const NOWHERE: Placed = [0, 0, 0, 0, 0, 0];
  * smaller where it is not. A box wholly behind the viewer is nowhere, and
  * so is one turned to face away from it under `backface-visibility:
  * hidden` — by its own transform and the perspective, since what a box
- * holds is flattened into its plane (`transform-style: flat`).
+ * holds is flattened into its plane (`transform-style: flat`) — and one whose
+ * transform has no inverse, flat in depth though its plane is whole
+ * (`scale3d(2, 2, 0)`; CSS Transforms 1, 2).
  */
 function projectedMatrix(box: Box, ox: number, oy: number): Placed | null {
   const style = box.style;
   const m = matrix4Of(style, box.width, box.height)!;
+  if (Math.abs(determinant4(m)) < 1e-20) return NOWHERE;
   const [tx, ty] = translation4(m);
   const oz = style.transformOriginZ;
   let placed = multiply4(
