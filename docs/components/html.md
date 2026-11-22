@@ -6939,11 +6939,12 @@ after it that a negative margin draws up under it, and over a relative
 box before it. An inline-block or an image is one as much as a block is,
 and so is one that is positioned: painted with the positioned boxes, over
 the text after it on its line and on the lines after that. So is an inline
-box an inset moves, `position: relative` or `sticky`, with all it holds: its
+box an inset moves or a `z-index` places, `position: relative` or `sticky`,
+with all it holds: its
 text, its background and borders and what is on its lines are drawn and hit
 in its turn among the positioned boxes, so the text after it goes under it,
 and it goes over an absolute box before it, as all three engines have it. One
-with every inset `auto` is in its paragraph's one layout and stays on its
+with every inset and its `z-index` `auto` is in its paragraph's one layout and stays on its
 line, so an absolute box before it, or a line a negative margin draws up over
 it, goes over it where a browser draws that under it. So does what is over
 one inside an inline box `opacity` fades, whose text has the fade in its

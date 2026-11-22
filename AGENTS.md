@@ -8069,8 +8069,9 @@ its text (`inlineFade`), and a group would fade it twice. That is also why a
 box in a faded inline box is no layer. And **`LINES_APART` is made as the
 layers are gathered**, so anything new that turns a box into a layer or out of
 one in place goes through `stackLayers`, as an opacity's `diff.order` does.
-What the gate leaves out is deliberate: a box with every inset `auto` is in
-its paragraph's one layout, and joshwcomeau.com has hundreds of them, each
+A `z-index` gates it as an inset does: at -1 a span was drawn over the
+background it belongs under. What the gate leaves out is deliberate: a box with
+every inset and its `z-index` `auto` is in its paragraph's one layout, and joshwcomeau.com has hundreds of them, each
 holding an absolute box. Lifting those out takes laying them apart, a line at
 a time, for a box that moves nowhere, so one still goes under an absolute box
 before it, where all three engines draw it over.
