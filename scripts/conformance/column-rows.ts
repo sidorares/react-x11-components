@@ -9,6 +9,11 @@
 //   node --import tsx scripts/conformance/column-rows.ts judge \
 //     <chrome.jsonl> <before.jsonl> <after.jsonl>
 //
+// `lay` takes a range of a couple of thousand at a time, as the harness keeps
+// what it rendered: all 10,000 in one process ran out of memory at 8,602. The
+// parts are put together with `cat`, and `judge` refuses a file that has not
+// every case Chromium's has.
+//
 // A case is made from its seed, 0 to 9,999 unless it is said otherwise: two to
 // six items of forty kinds — blocks, replaced elements, overflow of every
 // kind, containment, tables, flex boxes and grids, floats, writing modes,
@@ -26,6 +31,10 @@
 //    nothing is painted: a paragraph's lines, its `orphans` and `widows`, and
 //    where its ink lands are a test of pixels', and a change that passes here
 //    has not passed that (`docs/prd-html-grid-rows.md`).
+//
+// Chromium's own answer is not the same every time for seeds 800 and 2000,
+// each of which has an item of `content-visibility: auto`; they match at none
+// of the commits below, and another such case may do the same.
 //
 // Measured on seeds 0 to 9,999 against Chromium 157, as the count of cases
 // that match and of cases that throw:
@@ -447,6 +456,17 @@ function judge(chrome: string, before: string, after: string): void {
   const want = read(chrome);
   const a = read(before);
   const b = read(after);
+  for (const [file, laid] of [
+    [before, a],
+    [after, b],
+  ] as const) {
+    const missing = [...want.keys()].filter((s) => !laid.has(s));
+    if (missing.length) {
+      throw new Error(
+        `${file} has not ${missing.length} of ${want.size} cases, ${missing[0]} the first`,
+      );
+    }
+  }
   const threw = [...b.values()].filter((c) => c.threw);
   const slow = [...b.values()].filter((c) => c.slow && !a.get(c.s)?.slow);
   const plain = ({ slow: _, ...c }: Laid): string => JSON.stringify(c);
