@@ -8604,7 +8604,9 @@ an inline image in the pseudo-element's line, of its own size once it
 arrives and of none before.
 `counter-reset`, `counter-increment` and `counter-set` are scoped as CSS
 Lists 3 scopes them, `reversed()` included, so numbered headings and nested
-outline numbers come out as they do in a browser. The generated text is
+outline numbers come out as they do in a browser: a counter reaches its
+element's descendants and later siblings, nested in one of its name around
+it, but for a list's own, which reaches what the list holds. The generated text is
 drawn and laid out as the document's, and is no part of a selection, as
 in every browser: see "A selection starts in what the press is on".
 

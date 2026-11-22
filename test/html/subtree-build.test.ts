@@ -2551,14 +2551,14 @@ const COUNTED: Counted[] = [
     apart: false,
   },
   {
-    what: 'what read a reset beside it moved to beside the reset',
+    what: 'what reads a counter moved to beside its reset, whose reach is certain',
     sheet: REACH,
     body:
       '<section><span id="w"><span class="r">a</span></span>' +
       '<span id="x"><span id="b" class="tick read">c</span></span></section>',
     change: (el) => moved(el('b'), el('w')),
     tries: 1,
-    apart: false,
+    apart: true,
   },
   {
     what: 'an item put in for another in a list, the items after it its tail',

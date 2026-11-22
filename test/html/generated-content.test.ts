@@ -387,9 +387,11 @@ test('a marker is its type written out, a string, or its ::marker content', asyn
   );
 });
 
-test('a reset in an element whose parent has the counter reaches its own', async () => {
-  // and not its later siblings: the parent's counter goes on after it (CSS
-  // Lists 3, 4.5), where CSS 2.1 had the nested reset reach them too
+test('a reset in an element whose parent has the counter reaches its later siblings too', async () => {
+  // an element inherits its counters from the sibling before it, and from
+  // its parent where there is none (CSS Lists 3, 4.4.1, as
+  // w3c/csswg-drafts#5477 has it; WPT css-lists/counters-scope-00*,
+  // 2026-11-19): the parent's counter is the one outside
   assert.strictEqual(
     await documentText(
       '<style>.reset{counter-reset:c} .use{counter-increment:c}' +
@@ -400,7 +402,57 @@ test('a reset in an element whose parent has the counter reaches its own', async
         '<span class=rb><span class=use></span><span class=reset></span>' +
         '<span class=use></span></span></div>',
     ),
-    '1 1 R 2 3',
+    '1 1 R 1.1 1.1',
+  );
+  const scope = (body: string) =>
+    documentText(
+      '<style>.s{counter-reset:c 1}.s::before,.s::after{content:counter(c)}' +
+        '.c::before{content:counter(c)}.one::before{counter-reset:c 2}' +
+        '.two{counter-reset:c 3}</style>' +
+        body,
+    );
+  // a pseudo-element's reaches what comes after it in its element, and no
+  // further; an element's reaches its siblings and their descendants, the
+  // parent's ::after among them, and not what is beside the parent
+  assert.strictEqual(
+    (
+      await scope(
+        '<div><span class=s><span class="one c"><span class=c></span></span>' +
+          '<span class=c></span></span><span class=c></span></div>',
+      )
+    ).replace(/\s/g, ''),
+    '122111',
+  );
+  assert.strictEqual(
+    (
+      await scope(
+        '<div><span class=s><span class="two c"><span class=c></span></span>' +
+          '<span class=c></span></span><span class=c></span></div>',
+      )
+    ).replace(/\s/g, ''),
+    '133331',
+  );
+  // a later sibling's reset takes its place rather than nesting in it, at
+  // whatever depth it is
+  assert.strictEqual(
+    (
+      await documentText(
+        '<style>.r{counter-reset:c}.i{counter-increment:c}' +
+          '.i::before{content:counters(c,".") " "}</style>' +
+          '<div class=r><b class=i></b><b class=r></b><b class=i></b>' +
+          '<b class=r></b><b class=i></b></div>',
+      )
+    ).trim(),
+    '1 1.1 1.1',
+  );
+  // and a list counts in its item alone, whatever is beside it
+  assert.strictEqual(
+    await documentText(
+      '<style>li{list-style:none}li::before{content:counters(list-item,".")}' +
+        '</style><ol><li><ol><li></li><li></li></ol><p></p></li><li></li>' +
+        '<ol><li></li></ol><li></li></ol>',
+    ),
+    '11.11.222.13',
   );
   // counter-set changes the counter in scope, after the element counts
   assert.strictEqual(
