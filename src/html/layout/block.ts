@@ -22,6 +22,7 @@ import {
 import {
   AUTO,
   gapOf,
+  inkColor,
   isPct,
   isTransparent,
   resolve,
@@ -5864,7 +5865,11 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   const face = {
     family: set.fontFamily,
     size: set.fontSize,
-    color: set.color,
+    // its glyphs' fill, as the runs of a line are filled
+    color:
+      set.textFillColor === null
+        ? set.color
+        : inkColor(set.textFillColor, set.color),
     ...(marker.style
       ? {
           weight: set.fontWeight,

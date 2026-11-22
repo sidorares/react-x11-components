@@ -827,6 +827,49 @@ metric("a list item's marker goes where its item is moved", async () => {
   assert.ok(li.marker!.y >= li.y - 2 && li.marker!.y < li.y + li.height);
 });
 
+metric(
+  "a marker's glyphs are filled with -webkit-text-fill-color, its own or its item's",
+  async () => {
+    // WPT css-lists/marker-webkit-text-fill-color: they were set in `color`
+    const { result } = await render(
+      '<style>body{margin:0;color:#ff0000;-webkit-text-fill-color:#00ff00;' +
+        'font:30px/40px sans-serif} ul{margin:0;padding-left:60px}' +
+        '.own::marker{color:#ff0000;-webkit-text-fill-color:#0000ff}' +
+        '.in{list-style-position:inside}</style>' +
+        '<ul><li>a</li><li style="list-style-type:decimal">b</li>' +
+        '<li class="own">c</li><li class="in">d</li></ul>',
+    );
+    const data = await pixelsIn(result.ctx, {
+      x: 0,
+      y: 0,
+      width: 58,
+      height: 160,
+    });
+    // which of red, green and blue each item's marker has, where it is
+    // nearer the colour than the white around it
+    const seen = [0, 1, 2].map((item) => {
+      const has = [false, false, false];
+      for (let y = item * 40; y < item * 40 + 40; y += 1) {
+        for (let x = 0; x < 58; x += 1) {
+          const i = (y * 58 + x) * 4;
+          const rgb = [data[i], data[i + 1], data[i + 2]];
+          rgb.forEach((v, k) => {
+            if (v > 200 && rgb[(k + 1) % 3] < 100 && rgb[(k + 2) % 3] < 100) {
+              has[k] = true;
+            }
+          });
+        }
+      }
+      return has;
+    });
+    assert.deepStrictEqual(seen, [
+      [false, true, false],
+      [false, true, false],
+      [false, false, true],
+    ]);
+  },
+);
+
 test('a ::marker rule styles the marker, and not its item', async () => {
   // `::marker` rules were read and never applied: Tailwind's `prose` sets
   // its bullets in a grey, and they came out in the text's colour
