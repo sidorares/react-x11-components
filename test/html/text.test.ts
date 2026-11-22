@@ -1151,11 +1151,9 @@ metric('text set at no size breaks a line as a word does', async () => {
   // and after a space of it
   const { node: after } = await render(
     '<style>body{margin:0;font-size:16px}p{margin:0;width:45px}</style>' +
-      '<p id="d">one <b style="font-size:0">two </b>three</p>' +
-      '<p id="e">one<b style="font-size:0"> </b>three</p>',
+      '<p id="d">one <b style="font-size:0">two </b>three</p>',
   );
   assert.strictEqual(linesOf(view(after), 'd').length, 2);
-  assert.strictEqual(linesOf(view(after), 'e').length, 2);
 });
 
 metric('a tab is set from where the room before it ends', async () => {

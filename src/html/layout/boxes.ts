@@ -5807,13 +5807,13 @@ class Builder {
     // fills its line was one to a line. White space alone needs no box, and
     // is the row's every gap.
     if (!(style.fontSize > 0)) {
-      if (text === ' ') return;
+      if (text === ' ' && ws !== 'pre' && ws !== 'pre-wrap') return;
       text = text.replace(/[^ \n\t]+/g, '\u200c').replace(/ /g, '\u200b');
       const at = this._textBox(text, into, style, owner).textStart;
       // no text of the document's to copy
       if (style.userSelect !== 'none') {
         for (let i = 0; i < text.length; i++) {
-          if (text[i] !== '\u200c') continue;
+          if (text[i] === '\n' || text[i] === '\t') continue;
           this._unselectable.push(at + i, at + i + 1);
         }
       }
