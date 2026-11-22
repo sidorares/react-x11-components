@@ -2687,7 +2687,7 @@ test('a grid row the columns end inside is broken an item at a time, where Chrom
   assert.deepStrictEqual(wrong, []);
 });
 
-test('a grid row goes where Chromium has it under cloned edges, in rows of columns, in nested columns and in a table that repeats its header', async () => {
+test('a grid row goes where Chromium has it under cloned edges, in rows of columns, in nested columns, in a table that repeats its header and with an item that goes whole', async () => {
   // where a row is broken no item at a time, every rectangle Chromium's,
   // from `scripts/conformance/grid-row-contexts.ts`: grouped as a row that
   // nothing broke, it went to a column whole and hung out of it. The cases
@@ -2717,6 +2717,105 @@ test('a grid row goes where Chromium has it under cloned edges, in rows of colum
   }
   assert.ok(held > 300, `rectangles held: ${held}`);
   assert.deepStrictEqual(wrong, []);
+});
+
+test('a grid row with an item no column end cuts, or that holds one, is laid out, with what follows it, and broken no item at a time', async () => {
+  // placed across its row's columns, an item that goes whole had its lines
+  // looked up where none were gathered: that threw, and left the document
+  // blank. Every such row goes as it did before rows were broken an item at
+  // a time (`gridRowsBroken` counts those that are)
+  const i = (h: number) =>
+    `<i style="display:inline-block;width:20px;height:${h}px"></i>`;
+  const lines = `<div>${i(20)}</div><div>${i(20)}</div>`;
+  const kinds: Record<string, string> = {
+    'contain: size, text': '<div style="contain:size;height:150px">x</div>',
+    'contain: size, blocks': `<div style="contain:size;height:150px">${lines}</div>`,
+    'contain: strict': `<div style="contain:strict;height:150px">${i(20)}</div>`,
+    'overflow: auto, text': '<div style="overflow:auto;height:150px">x</div>',
+    'overflow: auto, blocks': `<div style="overflow:auto;height:150px">${lines}</div>`,
+    'overflow: hidden card': `<div style="overflow:hidden;border-radius:8px;padding:4px"><img style="display:block;width:20px;height:120px"><p>x</p></div>`,
+    'overflow: hidden, text':
+      '<div style="overflow:hidden;height:150px">x</div>',
+    'overflow: scroll': '<div style="overflow:scroll;height:150px">x</div>',
+    'overflow: clip': '<div style="overflow:clip;height:150px">x</div>',
+    'a clamp':
+      '<div style="display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:1;overflow:hidden;height:150px">x</div>',
+    'an image': '<img style="width:20px;height:150px">',
+    'an image in it': '<div><img style="width:20px;height:150px"></div>',
+    'a block image in it':
+      '<div><img style="display:block;width:20px;height:150px">x</div>',
+    'a canvas': '<canvas style="width:20px;height:150px"></canvas>',
+    'an iframe': '<iframe style="width:20px;height:150px"></iframe>',
+    'a text area': '<textarea style="width:20px;height:150px">x</textarea>',
+    'a button': '<button style="height:150px">x</button>',
+    'a button in it': '<div><button style="height:150px">x</button></div>',
+    'a block button in it':
+      '<div><button style="display:block;height:150px">x</button></div>',
+    'a fieldset': `<fieldset style="margin:0"><legend>x</legend>${lines}${lines}</fieldset>`,
+    'aligned content': `<div style="align-content:center">${lines}${lines}</div>`,
+    'layout containment': `<div style="contain:layout">${lines}${lines}</div>`,
+    'a ruby in it': `<div><ruby>x<rt>y</ruby> ${i(150)}</div>`,
+    'a table': '<div style="display:table;height:150px">x</div>',
+    'a table in it':
+      '<div><div style="display:table;height:150px">x</div></div>',
+    'a multicol': '<div style="columns:2;height:150px">x x</div>',
+    'a multicol in it':
+      '<div><div style="columns:2;height:150px">x x</div></div>',
+    'a scroller in it':
+      '<div><div style="overflow:auto;height:150px">x</div></div>',
+    'contain: size in it':
+      '<div><div style="contain:size;height:150px">x</div></div>',
+    'a flex box': `<div style="display:flex">${i(150)}</div>`,
+    'a flex box in it': `<div><div style="display:flex">${i(150)}</div></div>`,
+    'a grid in it': `<div><div style="display:grid">${i(150)}</div></div>`,
+    'an inline flex box in it': `<div><span style="display:inline-flex;height:150px">${i(20)}</span></div>`,
+    'an inline block that scrolls in it':
+      '<div><span style="display:inline-block;overflow:auto;height:150px">x</span></div>',
+    'a float in it': `<div><div style="float:left;height:150px">x</div>x</div>`,
+    'an absolute box in it':
+      '<div><div style="position:absolute;height:150px">x</div>x<br>x</div>',
+    'a relative item': `<div style="position:relative">${lines}${lines}</div>`,
+    'a transformed item': `<div style="transform:rotate(5deg)">${lines}${lines}</div>`,
+    'a vertical item':
+      '<div style="writing-mode:vertical-rl;height:150px">x x</div>',
+    'a list item in it': `<ul style="margin:0"><li>x<li>x<li>x</ul>`,
+    'break-inside: avoid': `<div style="break-inside:avoid">${lines}${lines}</div>`,
+  };
+  const page = (item: string) =>
+    '<style>body{margin:0;font:16px/20px monospace}</style>' +
+    '<div style="columns:3;column-gap:0;column-fill:auto;width:300px;height:100px">' +
+    '<div style="height:40px"></div>' +
+    `<div style="display:grid;grid-template-columns:30px 30px">${item}` +
+    `<div>${i(50)}<br>${i(80)}</div></div><div id="z" style="height:10px"></div></div>` +
+    '<div id="after" style="height:30px"></div>';
+  for (const [kind, item] of Object.entries(kinds)) {
+    for (const body of [
+      page(item),
+      page(`<div>${i(50)}<br>${i(80)}</div>${item}`),
+    ]) {
+      const before = gridRowsBroken();
+      const { node } = await render(body, 400);
+      const el = view(node);
+      assert.strictEqual(gridRowsBroken(), before, `${kind}: as it was`);
+      const z = boxOf(el, 'z');
+      const pieces = COLUMN_PIECES.get(z as never) ?? [z];
+      assert.strictEqual(
+        pieces.reduce((sum, p) => sum + p.height, 0),
+        10,
+        `${kind}: what follows`,
+      );
+      const after = boxOf(el, 'after');
+      assert.deepStrictEqual(
+        [after.x, after.y, after.height],
+        [0, 100, 30],
+        `${kind}: the document after it`,
+      );
+    }
+  }
+  // and the same page with plain items is
+  const before = gridRowsBroken();
+  await render(page(`<div>${i(60)}<br>${i(60)}</div>`), 400);
+  assert.ok(gridRowsBroken() > before, 'a row of plain items');
 });
 
 test('a grid row that fits whole in its column is broken no item at a time', async () => {

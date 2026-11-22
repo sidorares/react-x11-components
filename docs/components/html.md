@@ -6152,7 +6152,10 @@ which would leave nothing behind goes to the next column whole. A row with
 a forced break inside an item is broken where its items' content breaks
 together, as before. So is any row under cloned edges, in rows of columns, in
 a multicol container in another's columns, and in a table that repeats its
-header or footer. A forced break before the first child of a box
+header or footer. And so is a row any item of which is not plain flow all
+through: blocks, and lines of text and plain inline blocks, with nothing
+positioned, floated, transformed or replaced, and nothing that goes to a
+column whole. A forced break before the first child of a box
 with layout containment is none, since it would be the box's own. A forced
 break after a grid or flex item is after its row, and comes before the next
 row; after one in its box's last row it is the box's own, and goes out to

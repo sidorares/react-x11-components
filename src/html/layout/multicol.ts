@@ -42,7 +42,14 @@
  */
 import { CONTAIN_LAYOUT, CONTAIN_SIZE, scrolls } from '../css/style.js';
 import { AUTO, gapOf } from '../css/values.js';
-import { contained, establishesBFC, forgetOwnLayout, moveTo } from './block.js';
+import { tagOf } from '../dom.js';
+import {
+  contained,
+  contentAlignment,
+  establishesBFC,
+  forgetOwnLayout,
+  moveTo,
+} from './block.js';
 import {
   CLEARED_FROM,
   COLUMN_BOXES,
@@ -51,6 +58,7 @@ import {
   COLUMN_ROWS,
   BROKEN_BY,
   GRID_TRACKS,
+  RUBY_COLUMNS,
   columned,
 } from './boxes.js';
 import type { Box, ColumnPiece, LineBox, LineText } from './boxes.js';
@@ -796,6 +804,13 @@ function gridRows(box: Box, starts: [Box, number][], into: Gathered): void {
   for (const [, row] of rows) {
     if (row.items.length < 2) continue;
     if (row.items.some((it) => it.units.length === 0)) continue;
+    // only a row every item of which is plain flow, through and through: any
+    // other goes as it did before a row was broken an item at a time. An
+    // item that goes whole — a scroll container, one with size containment —
+    // is one unit and nothing in it was gathered, so placing it across the
+    // row's columns looked its lines up in no unit, which threw, and left
+    // the document blank
+    if (!row.items.every((it) => plainFlow(it.item))) continue;
     // the grid's first row under a top edge of its own — its border, its
     // padding — has its first unit carry that edge (`gather`, from where
     // the grid starts), which is the grid's to break and no item's: such a
@@ -818,6 +833,62 @@ function gridRows(box: Box, starts: [Box, number][], into: Gathered): void {
       for (const unit of it.units) unit.row = row;
     }
   }
+}
+
+/** The elements whose boxes are blocks and are laid out or drawn otherwise
+ *  than what is in them says: a control's, a fieldset's and a summary's. */
+const NO_PLAIN_FLOW = new Set([
+  'button',
+  'input',
+  'select',
+  'option',
+  'optgroup',
+  'textarea',
+  'fieldset',
+  'legend',
+  'details',
+  'summary',
+]);
+
+/** Whether a box is a block in the flow that breaks as any does, and so is
+ *  everything in it: blocks, lines, and on them inline-blocks that are plain
+ *  flow as well. Nothing that floats, is positioned or transformed, is
+ *  replaced, is written another way, or goes to a column whole. */
+function plainFlow(box: Box): boolean {
+  const style = box.style;
+  switch (box.kind) {
+    case 'text':
+    case 'break':
+      return true;
+    case 'inline':
+      break;
+    case 'block':
+      // an inline-block goes whole on its line, which is the unit it is in
+      if (box.marker || style.columns) return false;
+      if (style.display !== 'inline-block' && whole(box)) return false;
+      if (contained(box, CONTAIN_SIZE) || contained(box, CONTAIN_LAYOUT)) {
+        return false;
+      }
+      if (contentAlignment(box) || RUBY_COLUMNS.has(box)) return false;
+      if (box.el && NO_PLAIN_FLOW.has(tagOf(box.el))) return false;
+      break;
+    default:
+      return false;
+  }
+  return (
+    !box.isFloat &&
+    !box.outOfFlow &&
+    style.position === 'static' &&
+    !style.transform &&
+    !style.translate &&
+    !style.rotate &&
+    !style.scale &&
+    style.overflowX === 'visible' &&
+    style.overflowY === 'visible' &&
+    style.writingMode ===
+      (box.parent?.style.writingMode ?? style.writingMode) &&
+    box.children.every(plainFlow)
+  );
 }
 
 /** How much taller a box's content box is than what it holds needs, its
