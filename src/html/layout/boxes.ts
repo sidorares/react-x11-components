@@ -5771,22 +5771,34 @@ class Builder {
     owner: Element | null,
   ): void {
     const ws = style.whiteSpace;
-    // text set at no size draws nothing and takes no room, so it needs no
-    // box — and it is no part of the white space around it either — but
-    // for what it keeps that moves what follows it whatever its size: a
-    // forced break, and a tab, whose stops are the block's (CSS Text 3,
-    // 4.1.2). A `<pre>` at `font-size: 0` with its text in spans set at a
+    // text set at no size draws nothing and takes no room, so its letters
+    // need no box. What of it moves what follows is kept whatever its size:
+    // a forced break, and a tab, whose stops are the block's (CSS Text 3,
+    // 4.1.2) — a `<pre>` at `font-size: 0` with its text in spans set at a
     // size of their own is one line a span, which dropped, ran on as one.
+    // And there is a line where there is text, with a baseline and the line
+    // height it has: each run of it is a word joiner, which breaks no line,
+    // and draws and takes as little. Dropped, two inline-blocks, one with a
+    // word and one with a line feed, stood on a bottom edge and a baseline.
     if (!(style.fontSize > 0)) {
       const kept =
         ws === 'pre' || ws === 'pre-wrap'
-          ? data.replace(/[^\n\t]+/g, '')
+          ? data.replace(/[^\n\t]+/g, '\u2060')
           : ws === 'pre-line'
-            ? data.replace(/[^\n]+/g, '')
-            : '';
+            ? data.replace(/[^\n]+/g, (line) =>
+                /\S/.test(line) ? '\u2060' : '',
+              )
+            : /[^ \t\n\r\f]/.test(data)
+              ? '\u2060'
+              : '';
       if (!kept) return;
       this._ws = kept.endsWith('\n') ? 'start' : 'content';
-      this._textBox(kept, into, style, owner);
+      const at = this._textBox(kept, into, style, owner).textStart;
+      // the joiners are no text of the document's to copy
+      if (style.userSelect !== 'none') {
+        for (let i = 0; i < kept.length; i++)
+          if (kept[i] === '\u2060') this._unselectable.push(at + i, at + i + 1);
+      }
       return;
     }
     // a word does not run on over the start of a line

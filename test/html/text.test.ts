@@ -1073,6 +1073,31 @@ metric('text set at no size keeps its forced breaks and its tabs', async () => {
   assert.ok(Math.abs(bar - 100) < 0.5, `bar at ${bar}, not 100`);
 });
 
+metric('text set at no size makes a line, and is no text to copy', async () => {
+  // it draws nothing and takes no room, and there is a line it is on, with a
+  // baseline: dropped, an inline-block with a word in it stood on its bottom
+  // edge beside one with a line feed on its baseline, as WPT's
+  // inline-block-baseline-016 has them
+  const { node } = await render(
+    '<style>body{margin:0}#w{font-size:0;line-height:0}' +
+      '#w div{display:inline-block;width:40px;height:50px}</style>' +
+      '<div id="w"><div id="a">text</div>\n<div id="b" style="white-space:pre">' +
+      '\n</div><div id="c"> \n </div></div>' +
+      '<p style="margin:0;white-space:nowrap">one<b style="font-size:0">' +
+      'two</b>three</p>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').y, boxOf(el, 'b').y);
+  assert.strictEqual(
+    boxOf(el, 'c').y,
+    boxOf(el, 'a').y - 50,
+    'white space that collapses away is on no line',
+  );
+  const text = el.textContent();
+  assert.ok(text.includes('onethree'), text);
+  assert.ok(!text.includes('\u2060'));
+});
+
 metric('a tab is set from where the room before it ends', async () => {
   // the edges of an inline box and the spacing of a word before a tab
   // move it: its stop is counted from where it is drawn, with them

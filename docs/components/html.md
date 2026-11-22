@@ -8529,7 +8529,9 @@ the line's baseline. White space collapses across element boundaries as CSS
 words whatever elements they are in — and text at `font-size: 0` takes no
 room, which is how a row of inline-blocks is set without gaps, but for the
 forced breaks and the tabs a `white-space` keeps in it, which still break
-the line and go to the next stop. The space
+the line and go to the next stop. Its letters are on a line all the same,
+with a baseline, so an inline-block with such text in it stands on that
+and not on its bottom edge; they are no text to select or copy. The space
 that is left is the first of them, in the element it was written in: a
 link whose text ends in a space, before more on its line, is that space
 wider (`elementRect`, a selection's band) and is underlined under it, and
