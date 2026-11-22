@@ -263,6 +263,28 @@ const RULED_GRID = (rules: string, items = '') =>
     '<div></div><div></div><div></div><div></div><div></div><div></div>') +
   '</div>';
 
+test('an auto repetition counts a greatest size under its least one as the least', async () => {
+  // CSS Grid 1, 7.2.3.2; every place is Chromium's
+  const grid = (id: string, track: string) =>
+    `<div class="g" style="grid-template-columns:repeat(auto-fill,${track})">` +
+    [0, 1, 2, 3, 4].map((i) => `<i id="${id}${i}"></i>`).join('') +
+    '</div>';
+  const { node } = await render(
+    '<style>body{margin:0}.g{display:grid;width:200px}.g>*{height:10px}</style>' +
+      grid('a', 'minmax(50px,25px)') +
+      grid('b', 'minmax(60px,10%)') +
+      grid('c', 'minmax(30px,10px) 20px'),
+    400,
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  assert.deepStrictEqual(at('a3'), [150, 0]);
+  assert.deepStrictEqual(at('a4'), [0, 10]);
+  assert.deepStrictEqual(at('b2'), [120, 20]);
+  assert.deepStrictEqual(at('b3'), [0, 30]);
+  assert.deepStrictEqual(at('c4'), [100, 40]);
+});
+
 test("a grid's gaps carry its rules, down its column gaps and across its row gaps", async () => {
   // the column gaps are at 100 to 120 and 220 to 240, the row gap at 50
   // to 70; each rule on its gap's middle, the grid's length, through the
