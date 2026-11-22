@@ -4253,6 +4253,9 @@ function supportsDeclaration(
   if (shorthand) return shorthand(value.toLowerCase());
   // a name the caller knows, with a value this cannot read, is taken
   if (ANSWERED.has(property) || declare || custom) return true;
+  // what is read under Firefox's or Edge's own name is no property of
+  // Chrome's: a page that asks keeps what it found wrong in that engine
+  if (/^-(?:moz|ms)-/.test(property)) return false;
   if (!drawnProperties().has(property)) {
     // one no browser has is none, and one only a browser has is left open:
     // what the block holds besides may be drawn, and so may what a page

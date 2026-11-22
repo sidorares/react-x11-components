@@ -1874,6 +1874,9 @@ test('a @supports test is answered by what is drawn, and what only a browser dra
     ['(-webkit-touch-callout:none)', false],
     ['(-webkit-overflow-scrolling:touch)', false],
     ['(-moz-orient: inline)', false],
+    ['(-moz-appearance: none)', false],
+    ['(-webkit-appearance: none) and (not (-moz-appearance: none))', true],
+    ['(-ms-ime-align:auto)', false],
     ['(unknown: green)', false],
     ['not (unknown: green)', true],
     // a property a browser has and nothing here draws is left open, under
