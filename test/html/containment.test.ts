@@ -3,6 +3,7 @@ import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { act, cleanup, expectPixel, pixelAt, waitFor } from 'react-x11/test';
 import { parseColor } from '../../src/html/css/values.js';
+import type { Box } from '../../src/html/layout/boxes.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import {
   RED_PNG,
@@ -462,7 +463,7 @@ test("layout containment keeps a box's baselines in, for a flex box, a grid, a t
   );
   // the bottom edge stands on the others' baseline
   const baseline = (id: string) => {
-    const line = boxOf(el, id).lines![0];
+    const line = (boxOf(el, id) as unknown as Box).lines![0];
     return line.y + line.baseline;
   };
   assert.strictEqual(at('g') + 20, baseline('h'));
