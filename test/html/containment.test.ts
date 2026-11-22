@@ -864,3 +864,29 @@ metric(
     assert.deepStrictEqual(await at(115, 115), [255, 255, 255], 'past it');
   },
 );
+
+metric(
+  'a size-contained select is as large as one with no options',
+  async () => {
+    const options = '<option>One with a long label to it</option>';
+    const select = (id: string, style: string, held = options) =>
+      `<p><select id="${id}" style="${style}">${held}</select></p>`;
+    const { node } = await render(
+      select('a', '', '') +
+        select('b', 'contain:size') +
+        select('c', 'background:#ffffff;border:1px solid', '') +
+        select('d', 'background:#ffffff;border:1px solid;contain:size') +
+        select('e', '') +
+        select('f', 'contain:size;contain-intrinsic-size:70px 9px;border:0'),
+    );
+    const el = view(node);
+    const size = (id: string) => {
+      const { width, height } = boxOf(el, id);
+      return [width, height];
+    };
+    assert.deepStrictEqual(size('b'), size('a'));
+    assert.deepStrictEqual(size('d'), size('c'));
+    assert.ok(size('e')[0] > size('a')[0]);
+    assert.ok(size('f')[0] >= 70 && size('f')[0] < size('e')[0]);
+  },
+);
