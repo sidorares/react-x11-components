@@ -27,7 +27,7 @@
 
 import { evaluateCondition, styleQuery } from './conditions.js';
 import { environmentValue } from './environment.js';
-import { matchesSyntax, validSyntax } from './syntax.js';
+import { lengthZero, matchesSyntax, validSyntax } from './syntax.js';
 
 /**
  * How many times a tainted value has been read: an attribute an `attr()`
@@ -151,6 +151,11 @@ export function customProperties(
     const reg = registered?.get(name);
     return reg && !reg.inherits ? reg.initial : inherited(name);
   };
+  /** A value set here, as the property's computed value has it. */
+  const computed = (name: string, value: string): string => {
+    const syntax = registered?.get(name)?.syntax;
+    return syntax ? lengthZero(value, syntax) : value;
+  };
   for (const [name, value] of own) {
     const keyword = value.trim().toLowerCase();
     if (keyword === 'initial') {
@@ -166,7 +171,7 @@ export function customProperties(
       // parent's
       out.own.set(name, unset(name));
     } else {
-      out.own.set(name, value);
+      out.own.set(name, computed(name, value));
     }
   }
   const state = new Map<string, boolean>();
@@ -207,7 +212,11 @@ export function customProperties(
       const made = value !== null && !cyclic.has(name);
       out.own.set(
         name,
-        made ? value : registered?.has(name) ? unset(name) : null,
+        made
+          ? computed(name, value)
+          : registered?.has(name)
+            ? unset(name)
+            : null,
       );
       if (made && taints !== before) taint(name);
     }

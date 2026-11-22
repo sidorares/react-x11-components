@@ -8914,7 +8914,8 @@ element that sets it to nothing of its own; and one a `var()` makes invalid
 where it is computed is as though `unset`. A rule with no `syntax` or no
 `inherits`, or with no `initial-value` and a syntax other than `*`,
 registers nothing. The `syntax` is read and not checked: a value is the one
-written, not computed to its type. One registered as a `<number>`, an
+written, not computed to its type, but for the `0` of one registered as a
+length, which is `0px`, as `calc(1px + var(--x))` needs. One registered as a `<number>`, an
 `<integer>`, a `<length>`, a `<percentage>`, a `<length-percentage>`, an
 `<angle>`, a `<time>`, a `<resolution>` or a `<color>`, or a list of one
 of them, is interpolated as that type by an animation and added as it, a

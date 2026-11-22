@@ -107,7 +107,7 @@ import type {
   StyleRule,
   Stylesheet,
 } from './parse.js';
-import { matchesSyntax } from './syntax.js';
+import { lengthZero, matchesSyntax } from './syntax.js';
 import { mixAnchored, readsAnchor } from './anchor.js';
 import type { AnchorInset, AnchorSize, InsetSide } from './anchor.js';
 import { computedText } from '../computed.js';
@@ -5157,7 +5157,7 @@ export class Cascade {
         []) {
         (this._registered ??= new Map()).set(name, {
           inherits,
-          initial,
+          initial: initial && syntax ? lengthZero(initial, syntax) : initial,
           syntax,
         });
       }
