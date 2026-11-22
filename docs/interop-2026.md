@@ -66,7 +66,9 @@ wptrunner reads a browser's (`scripts/conformance/testharness.tsx`):
   server and compared with their reference within the `fuzzy` the test
   allows.
 - **Crashtests** pass when the document loads and the renderer neither
-  throws nor hangs.
+  throws nor hangs. A page that changes in every task and so never comes to
+  rest, in a browser either, is waited for 10 s, times
+  `WPT_TIMEOUT_MULTIPLIER`, and judged as it is then.
 - **`test_driver`** is answered by the host: the vendor script sends each
   command to a path the page's `fetch` reaches the host through, and the
   host injects the input into the X server — clicks, keys, wheel, pointer

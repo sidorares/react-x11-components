@@ -935,8 +935,8 @@ function inTurn<T>(run: () => Promise<T>): Promise<T> {
  *  `selectionchange` handler that edits does, queues an update before each
  *  look: no browser's such page comes to rest, and the `act()` never
  *  returns. As long as a page has to load, so that one that is only slow is
- *  waited for as it was. */
-const ACT_MS = Number(process.env.WPT_ACT_MS || 10000);
+ *  waited for as it was, and longer on a machine told to be slow. */
+const ACT_MS = Number(process.env.WPT_ACT_MS || 10000 * TIMEOUT_MULTIPLIER);
 /** The `act()`s that outlasted that, until the page they wait on goes. */
 let restless: Promise<unknown> | null = null;
 
