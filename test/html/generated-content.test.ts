@@ -79,6 +79,27 @@ test('content values: strings with escapes, attr(), counters and quotes', () => 
   ]);
   assert.strictEqual(parseContent('"a", "b"'), null);
   assert.strictEqual(parseContent('counter()'), null);
+  // no counter is named by a CSS-wide keyword, nor by `default`, in any
+  // case, which Chrome drops as no value
+  for (const name of [
+    'inherit',
+    'initial',
+    'unset',
+    'revert',
+    'revert-layer',
+    'revert-rule',
+    'default',
+    'Inherit',
+  ]) {
+    assert.strictEqual(parseContent(`counter(${name})`), null, name);
+    assert.strictEqual(parseContent(`counters(${name}, ".")`), null, name);
+    assert.strictEqual(parseCounterList(`${name} 3`, 0), null, name);
+    assert.strictEqual(parseCounterList(`x ${name} 3`, 0), null, name);
+  }
+  assert.deepStrictEqual(parseCounterList('x auto 3', 0), [
+    { name: 'x', value: 0 },
+    { name: 'auto', value: 3 },
+  ]);
   assert.deepStrictEqual(parseCounterList('a b 3 c -2', 1), [
     { name: 'a', value: 1 },
     { name: 'b', value: 3 },
