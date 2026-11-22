@@ -1911,6 +1911,121 @@ test('a @supports test of the mask is answered, and every other is entered', () 
   );
 });
 
+test('a @supports condition that is none holds nowhere, and neither does a test nothing knows', () => {
+  // CSS Conditional 3, 6: the block was entered wherever the condition was
+  // not one it could answer, so `and` beside `or`, a bare declaration and
+  // an unknown function applied what they guard. Each is Chrome's answer.
+  const entered = (condition: string) =>
+    parseStylesheet(
+      `@supports ${condition} {#t{z-index:7}}\n#u{z-index:3}`,
+    ).rules.some((rule) => rule.selector === '#t');
+  for (const condition of [
+    '(margin:0)',
+    '((margin:0))',
+    '( (margin: 0) )',
+    'not (not (margin:0))',
+    '(margin:0) and (color:red)',
+    '(margin:0)and (color:red)',
+    '(margin:0) AND (color:red)',
+    '(margin:0) and (color:red) and (width:1px)',
+    '((margin:0) and (color:red)) or (width:1px)',
+    '(color:red) and (not (color:nope))',
+    '(--x:)',
+    '(--x: )',
+    '(--x:y)',
+    '(--x: a !important)',
+    '(--x: {a:b})',
+    '(margin:0 !important)',
+    '(margin:0!important)',
+    '(margin:0 ! important)',
+    'not unknown()',
+    '(not unknown(a))',
+    'unknown() or (margin:0)',
+    'not (a)',
+    'not ()',
+    'selector(a)',
+    'selector(a > b)',
+    '(selector(a))',
+    'selector(a) and (margin:0)',
+    'at-rule(@media)',
+    'font-format(woff2)',
+    'font-tech(variations)',
+    '(MARGIN:0)',
+    '(margin/**/:/**/0)',
+    '/**/(margin:0)/**/',
+    '(color:var(--x))',
+    '(color:var(--x) nope)',
+    '(width:calc(1px + 2px))',
+    '(color: rgb(0 0 0 / .5))',
+    '(content: ")")',
+    '(content: "a\\"b)")',
+    '(background: url(a;b))',
+    '(m\\61rgin:0)',
+    '(color: var(--a) <!--)',
+    '(--a: b <!--)',
+    '(--0: a)',
+  ]) {
+    assert.strictEqual(entered(condition), true, condition);
+  }
+  for (const condition of [
+    'not (margin:0)',
+    'not ((margin:0))',
+    'not not (margin:0)',
+    'not(margin:0)',
+    '(not(margin:0))',
+    '(margin:0) and(color:red)',
+    '(margin:0) and (color:red) or (width:1px)',
+    '(margin:0) or (color:red) and (width:1px)',
+    '((margin: 0) and (color:red) or (width:1px))',
+    'not (color:nope) and (color:red)',
+    '(color:red) and not (color:nope)',
+    '(margin:0) (color:red)',
+    '(margin:0) xor (color:red)',
+    '(margin:0) or',
+    'or (margin:0)',
+    'margin:0',
+    'color:red',
+    '(margin:)',
+    '(margin: )',
+    '(--x: a !nope)',
+    '(--x: a;b)',
+    '(margin:0 !important !important)',
+    '(margin:0 !nope)',
+    '(margin:0;)',
+    '(margin:0;color:red)',
+    '(margin:0))',
+    '((margin:0)',
+    '[margin:0]',
+    '((margin:0) and [color:red])',
+    '(margin:0]',
+    'unknown()',
+    'unknown(a b)',
+    '(unknown(a b))',
+    '(a)',
+    '(a b c)',
+    '()',
+    '("a")',
+    '(1px)',
+    '(@page)',
+    'selector(> b)',
+    'selector()',
+    'not selector(a)',
+    'selector(:nope)',
+    'at-rule(media)',
+    'font-format("woff2")',
+    'font-format(woff2, woff)',
+    'font-format(nope)',
+    'font-tech(nope)',
+    '(color:var(x))',
+    '(margin: 0 and color: red)',
+    '(width:calc(1px+2px))',
+    '(--: a)',
+    '(color: <!--)',
+  ]) {
+    assert.strictEqual(entered(condition), false, condition);
+  }
+});
+
 test('a @supports test of subgrid is answered', () => {
   // Primer keeps `grid-template-rows: auto` under `not` for an engine
   // without subgrids; entered, it undid the subgrid of every pricing card

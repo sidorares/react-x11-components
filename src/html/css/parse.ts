@@ -38,6 +38,8 @@ import {
 } from './vars.js';
 import type { CustomFunction, FunctionItem, FunctionParam } from './vars.js';
 import { matchesSyntax, validSyntax } from './syntax.js';
+import { evaluateCondition } from './conditions.js';
+import type { Kleene } from './conditions.js';
 
 /** One `prop: value` pair, with `!important` already taken off the value. */
 export interface Declaration {
@@ -4132,8 +4134,11 @@ const ANSWERED = new Set(
  * Whether a `@supports` condition holds (CSS Conditional 3, 6): true or
  * false where it turns on declarations of the properties this answers for
  * (`ANSWERED`, and those whose grammar `specifiedValue` reads), combined by
- * `not`, `and` and `or`; null where it turns on anything else, or is none,
- * and the block is entered as every one was.
+ * `not`, `and` and `or`; null where it turns on any other declaration, and
+ * the block is entered as every one was. What is no condition is false, and
+ * so is what only CSS's own error handling has a name for (6.1's
+ * `<general-enclosed>`): brackets with no declaration in them, and a
+ * function nothing knows.
  * Answering more is not safe without a list of what this draws: Tailwind 4
  * keeps its variables' starting values under a test for engines without
  * `@property`, which this is, and false there would drop every shadow and
@@ -4146,93 +4151,123 @@ export function supportsCondition(
    *  has (`supportsDeclaration`). */
   declare?: (property: string, value: string) => boolean | null,
 ): boolean | null {
-  const text = prelude.trim();
-  if (/^not(?=[\s(])/i.test(text)) {
-    const inner = supportsCondition(text.slice(3), declare);
-    return inner === null ? null : !inner;
-  }
-  // the terms at the top level, and the one operator between them
-  const terms: string[] = [];
-  let op = '';
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    const c = text[i];
-    if (c === '(') depth += 1;
-    else if (c === ')') depth -= 1;
-    else if (depth === 0 && /\s/.test(c)) {
-      const word = /^\s+(and|or)\s+/i.exec(text.slice(i));
-      if (!word) continue;
-      const next = word[1].toLowerCase();
-      // `and` and `or` mixed without parentheses is no condition
-      if (op && op !== next) return null;
-      op = next;
-      terms.push(text.slice(start, i));
-      i += word[0].length - 1;
-      start = i + 1;
+  const answer = evaluateCondition(prelude, (name, inner) =>
+    name === ''
+      ? supportsDeclaration(inner, declare)
+      : supportsFunction(name, inner),
+  );
+  // no condition at all, and a test this cannot answer
+  return answer === null ? false : (answer ?? null);
+}
+
+/** A function a `@supports` condition tests: `selector()`, what a font or
+ *  an at-rule is asked by, and any other false. */
+function supportsFunction(name: string, inner: string): Kleene {
+  switch (name) {
+    // whether its argument is a selector, a `&` in it the scope (CSS
+    // Conditional 4, 3.1, CSS Nesting 1, 2); a relative one is none
+    case 'selector': {
+      const written = trimSelector(inner);
+      return !!written && isSelector(replaceNesting(written, ':scope'), true);
     }
-    if (depth < 0) return null;
-  }
-  if (terms.length) {
-    terms.push(text.slice(start));
-    const values = terms.map((term) => supportsCondition(term, declare));
-    if (op === 'and') {
-      if (values.includes(false)) return false;
-      return values.includes(null) ? null : true;
+    // an at-rule this reads (CSS Conditional 5, 2.2)
+    case 'at-rule': {
+      if (inner[0] !== '@' || !startsIdent(inner, 1)) return false;
+      const rule = readIdent(inner, 1);
+      const known = asciiLower(rule.value);
+      return (
+        rule.end === inner.length &&
+        (BLOCK_AT_RULES.has(known) || STATEMENT_AT_RULES.has(known))
+      );
     }
-    if (values.includes(true)) return true;
-    return values.includes(null) ? null : false;
+    // what a font is asked by is one word, whose answer is left open
+    case 'font-format':
+    case 'font-tech':
+      return FONT_WORDS.has(inner.toLowerCase()) ? undefined : false;
+    default:
+      return false;
   }
-  // `selector()`: whether its argument is a selector, a `&` in it the scope
-  // (CSS Conditional 4, 3.1, CSS Nesting 1, 2); a relative one is none
-  const selector = /^selector\(([\s\S]*)\)$/i.exec(text);
-  if (selector) {
-    const written = trimSelector(selector[1]);
-    return !!written && isSelector(replaceNesting(written, ':scope'), true);
-  }
-  // one term: a condition in parentheses, or a declaration in them
-  if (!(text.startsWith('(') && text.endsWith(')'))) {
-    return declare ? strictUnknown(text) : null;
-  }
-  const inner = text.slice(1, -1).trim();
-  if (inner.startsWith('(') || /^(?:not(?=[\s(])|selector\()/i.test(inner)) {
-    return supportsCondition(inner, declare);
-  }
-  const declaration = /^([a-z-]+)\s*:\s*(\S[\s\S]*)$/i.exec(inner);
-  // what is no declaration is none to a caller that asks strictly
-  if (!declaration) return declare ? strictUnknown(inner) : null;
-  const property = declaration[1].toLowerCase();
+}
+
+const STATEMENT_AT_RULES = new Set(['import', 'namespace']);
+
+/** The words `font-format()` and `font-tech()` take (CSS Fonts 4, 11.1). */
+const FONT_WORDS = new Set([
+  'collection',
+  'embedded-opentype',
+  'opentype',
+  'svg',
+  'truetype',
+  'woff',
+  'woff2',
+  'features-opentype',
+  'features-aat',
+  'features-graphite',
+  'color-colrv0',
+  'color-colrv1',
+  'color-svg',
+  'color-sbix',
+  'color-cbdt',
+  'variations',
+  'palettes',
+  'incremental',
+]);
+
+/** A declaration in a `@supports` condition's brackets: false where what is
+ *  in them is none, and undefined where this cannot answer for it. */
+function supportsDeclaration(
+  inner: string,
+  declare?: (property: string, value: string) => boolean | null,
+): Kleene {
+  if (!startsIdent(inner, 0)) return false;
+  const named = readIdent(inner, 0);
+  const custom = named.value.startsWith('--');
+  const property = custom ? named.value : asciiLower(named.value);
+  const colon = /^\s*:/.exec(inner.slice(named.end));
+  if (!colon) return false;
+  const written = inner.slice(named.end + colon[0].length).trim();
+  const value = written.replace(/\s*!\s*important$/i, '');
+  // `--` alone is CSS's own, and names nothing (CSS Variables 1, 2)
+  if (named.value === '--') return false;
+  // a value is something, and neither a second declaration nor a `!` that is
+  // not the one at its end
+  if ((!value && !custom) || strayIn(value)) return false;
   // a name the caller knows to be none, whatever its value
-  if (declare && declare(property, declaration[2].trim()) === false) {
-    return false;
-  }
+  if (declare && declare(property, value) === false) return false;
   // a value read only once it is substituted is not parsed until then,
   // and a declaration whose `var()`s and `env()`s are not well formed is
   // never one (CSS Conditional 3, 6.1)
-  if (hasVar(declaration[2]) && !validVars(declaration[2])) return false;
+  if (hasVar(value) && !validVars(value)) return false;
   // a property whose grammar is read answers by it
-  const specified = specifiedValue(property, declaration[2].trim());
+  const specified = specifiedValue(property, value);
   if (specified !== undefined) return specified !== null;
   const shorthand = SHORTHAND_GRAMMARS[property];
   // a CSS-wide keyword is every property's (CSS Cascade 4, 7.3)
   if (
     Object.hasOwn(SHORTHAND_GRAMMARS, property) &&
-    /^(?:inherit|initial|unset|revert|revert-layer)$/i.test(
-      declaration[2].trim(),
-    )
+    /^(?:inherit|initial|unset|revert|revert-layer)$/i.test(value)
   ) {
     return true;
   }
-  if (shorthand) return shorthand(declaration[2].trim().toLowerCase());
+  if (shorthand) return shorthand(value.toLowerCase());
   // a name the caller knows, with a value this cannot read, is taken
-  return ANSWERED.has(property) || declare ? true : null;
+  return ANSWERED.has(property) || declare ? true : undefined;
 }
 
-/** What a caller that asks strictly makes of a term that is neither a
- *  declaration nor a condition it reads: a function it does not know of is
- *  left unknown, and anything else is false. */
-function strictUnknown(text: string): boolean | null {
-  return /^[a-z-]+\([\s\S]*\)$/i.test(text.trim()) ? null : false;
+/** Whether a value has a `;` or a `!` at its top level, which no value
+ *  has. */
+function strayIn(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const c = value[i];
+    // `<!--` is one token, and no `!`
+    if (c === '<' && value.startsWith('<!--', i)) i += 3;
+    else if (c === ';' || c === '!') return true;
+    if (c === '\\') i += 1;
+    else if (c === '(' || c === '[' || c === '{' || c === '"' || c === "'") {
+      i = componentEnd(value, i) - 1;
+    }
+  }
+  return false;
 }
 
 /** Shorthands of longhands that are kept and read back and lay nothing

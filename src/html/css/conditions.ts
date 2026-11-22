@@ -127,9 +127,9 @@ function closeOf(text: string, open: number): number {
     if (c === '\\') {
       i += 1;
     } else if (c === '"' || c === "'") {
-      const end = text.indexOf(c, i + 1);
-      if (end < 0) return -1;
-      i = end;
+      for (i += 1; i < text.length && text[i] !== c; i += 1) {
+        if (text[i] === '\\') i += 1;
+      }
     } else if (c === '(' || c === '[' || c === '{') {
       depth += 1;
     } else if (c === ')' || c === ']' || c === '}') {
