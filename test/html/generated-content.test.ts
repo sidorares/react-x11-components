@@ -392,6 +392,51 @@ test('a reset in an element whose parent has the counter reaches its own', async
   );
 });
 
+test('a counter is reset, set and incremented by a calculation, rounded to an integer', async () => {
+  // CSS Values 4, 10.9. `counter-reset: a calc(3 + 5)` was no value. Each
+  // is what Chrome computes.
+  const cases: [string, string][] = [
+    ['a calc(3 + 5)', 'a 8'],
+    ['a calc(2.5)', 'a 3'],
+    ['a calc(-2.5)', 'a -2'],
+    ['a calc(2.4) b', 'a 2 b *'],
+    ['a calc(infinity)', 'a 2147483647'],
+    ['a calc(NaN)', 'a 0'],
+    ['a min(3,4) b', 'a 3 b *'],
+    ['a calc(1em/1px)', 'a 16'],
+    ['a sign(2em - 1px)', 'a 1'],
+    ['a calc(1px)', 'none'],
+    ['a calc(1) 2', 'none'],
+    ['a calc(1)calc(2)', 'none'],
+    ['calc(1) a', 'none'],
+    ['a 2.5', 'none'],
+  ];
+  const properties = ['counter-reset', 'counter-set', 'counter-increment'];
+  const { node } = await render(
+    '<body style="font-size:16px">' +
+      cases
+        .map(([value], i) =>
+          properties
+            .map((p, k) => `<p id="c${i}-${k}" style="${p}:${value}"></p>`)
+            .join(''),
+        )
+        .join('') +
+      '<style>#x{counter-reset:n calc(3 + 5)}#x::before{content:counter(n)}' +
+      '</style><p id="x"></p>',
+  );
+  const el = view(node);
+  cases.forEach(([value, want], i) =>
+    properties.forEach((p, k) => {
+      assert.strictEqual(
+        el.computedStyle(findById(el.document, `c${i}-${k}`)!)![p],
+        want.replace('*', k === 2 ? '1' : '0'),
+        `${p}: ${value}`,
+      );
+    }),
+  );
+  assert.match(drawnText(el), /8/);
+});
+
 test('quotes open and close by depth, and none writes nothing', async () => {
   assert.strictEqual(
     await documentText(

@@ -4807,7 +4807,9 @@ export function applyDeclaration(
     case 'counter-set': {
       const reset = name === 'counter-reset';
       const increment = name === 'counter-increment';
-      const parsed = parseCounterList(value, increment ? 1 : 0, reset);
+      const written = counterIntegers(value, ctx);
+      if (written === null) return;
+      const parsed = parseCounterList(written, increment ? 1 : 0, reset);
       if (parsed === null) return;
       const list = parsed === 'none' ? null : parsed;
       if (reset) style.counterReset = list;
@@ -9528,6 +9530,38 @@ function trackForm(part: string): WrittenTrack['form'] {
   if (t.startsWith('minmax(')) return 'minmax';
   if (t.startsWith('fit-content(')) return 'fit';
   return 'size';
+}
+
+/** A counter list with each calculation in it the integer it comes to
+ *  (CSS Lists 3, 4), rounded half up as an `<integer>` is (CSS Values 4,
+ *  10.9) and kept to 32 bits. Null where one is no number. */
+function counterIntegers(value: string, ctx: UnitContext): string | null {
+  if (!value.includes('(')) return value;
+  const words: string[] = [];
+  for (const word of splitValue(value)) {
+    if (!isMathFunction(word)) {
+      words.push(word);
+      continue;
+    }
+    const n = parseMathNumberWith(
+      word,
+      (token) => {
+        const length = parseLength(token, ctx);
+        return typeof length === 'number' ? length : null;
+      },
+      LARGEST_INTEGER,
+    );
+    if (n === null) return null;
+    words.push(
+      String(
+        Math.min(
+          LARGEST_INTEGER,
+          Math.max(-LARGEST_INTEGER - 1, Math.floor(n + 0.5)),
+        ),
+      ),
+    );
+  }
+  return words.join(' ');
 }
 
 /** A `repeat()`'s count: an integer, or a calculation that comes to one,
