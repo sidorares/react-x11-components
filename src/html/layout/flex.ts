@@ -595,6 +595,7 @@ export function layoutFlex(
     own,
     lined,
     contentWidth,
+    height ?? root.getComputedHeight(),
     started,
     across,
   );
@@ -634,6 +635,7 @@ export function layoutFlex(
       own,
       lined,
       contentWidth,
+      height ?? root.getComputedHeight(),
       started,
     );
   }
@@ -662,6 +664,7 @@ export function layoutFlex(
       own,
       lined,
       contentWidth,
+      height ?? root.getComputedHeight(),
       started,
     );
   }
@@ -1051,6 +1054,8 @@ function placeItems(
   lined: boolean,
   /** The flex box's content width: its items' containing block's. */
   contentWidth: number,
+  /** The flex box's content height. */
+  contentHeight: number,
   started?: ReadonlySet<Box>,
   /** Where each item is across a column that wraps (`crossLines`). */
   crossed?: ReadonlyMap<Box, Across>,
@@ -1067,28 +1072,25 @@ function placeItems(
   const justified = row
     ? justifyYogaLines(box.style, items, contentWidth)
     : null;
-  for (const { box: child, node, laid } of items) {
+  const placements = items.map(({ box: child, node, laid }) => {
     const placed = crossed?.get(child);
     const across =
       lined && !placed
         ? lineMarginFix(box.style, child, node, row, own, started?.has(child))
         : 0;
-    const itemHeight = row ? heightOf(node, laid) : laid.main;
-    const left =
-      box.contentX +
-      (placed
-        ? placed.x
-        : !Number.isNaN(edge) && byBaseline(box.style, child.style, false)
-          ? edge
-          : node.getComputedLeft() +
-            (row ? (justified?.get(child) ?? 0) : across));
+    const height = row ? heightOf(node, laid) : laid.main;
+    const x = placed
+      ? placed.x
+      : !Number.isNaN(edge) && byBaseline(box.style, child.style, false)
+        ? edge
+        : node.getComputedLeft() +
+          (row ? (justified?.get(child) ?? 0) : across);
     // which Yoga turns an item round in by the height it laid it out at, and
     // not the one it is (`unspace`)
-    const top =
-      box.contentY +
+    const y =
       node.getComputedTop() +
       (row ? across : 0) +
-      (reverse ? node.getComputedHeight() - itemHeight : 0);
+      (reverse ? node.getComputedHeight() - height : 0);
     const width = placed
       ? placed.width
       : meant(
@@ -1098,6 +1100,16 @@ function placeItems(
           laid.width,
           row ? laid.held : NaN,
         );
+    return { x, y, width, height };
+  });
+  if (alignsSafely(box.style, items)) {
+    keepSafe(box.style, items, placements, row, contentWidth, contentHeight);
+  }
+  for (let i = 0; i < items.length; i += 1) {
+    const { box: child, laid } = items[i];
+    const { width, height: itemHeight } = placements[i];
+    const left = box.contentX + placements[i].x;
+    const top = box.contentY + placements[i].y;
     // The item is laid out again at the width the flex pass settled on: the
     // measure function answered a question, and the answer is not a layout —
     // its line breaks were computed against a width that may have changed
@@ -1136,6 +1148,96 @@ function placeItems(
     bottom = Math.max(bottom, top + child.height + child.marginBottom);
   }
   return bottom;
+}
+
+/** Where an item is, its border box, from its flex box's content box. */
+interface Placement {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Whether anything in a flex box is aligned `safe`: nothing in a
+ *  `-webkit-box`, which its own properties pack and align. */
+function alignsSafely(
+  style: ComputedStyle,
+  items: readonly { box: Box }[],
+): boolean {
+  if (style.webkitBox !== null) return false;
+  return (
+    style.justifyContentText.startsWith('safe ') ||
+    style.alignItemsText.startsWith('safe ') ||
+    style.alignContentText.startsWith('safe ') ||
+    items.some(({ box }) => box.style.alignSelfText.startsWith('safe '))
+  );
+}
+
+/**
+ * Set what is aligned `safe` and runs past what it is aligned in at the
+ * start of that (CSS Box Alignment 3, 4.4): a line's items along it, an item
+ * across it, and the lines across the box. `start` is the box's own, by its
+ * writing mode, and not an end of its axes: a row reversed or wrapped in
+ * reverse starts at its left and its top as any does. Yoga has no such
+ * alignment, so it is told the position and what it came to is moved. An
+ * item can run past its line only where that is the one line of a box that
+ * does not wrap, a line being as tall as what is on it.
+ */
+function keepSafe(
+  style: ComputedStyle,
+  items: readonly { box: Box; node: FlexNode }[],
+  placements: readonly Placement[],
+  row: boolean,
+  width: number,
+  height: number,
+): void {
+  if (!Number.isFinite(width)) return;
+  const rtl = style.direction === 'rtl';
+  const index = new Map(items.map(({ box }, i) => [box, i]));
+  /** How far these are moved along an axis to start where the room does. */
+  const back = (which: readonly number[], x: boolean): number => {
+    let low = Infinity;
+    let high = -Infinity;
+    for (const i of which) {
+      const { box } = items[i];
+      const at = placements[i];
+      const from = x ? at.x - box.marginLeft : at.y - box.marginTop;
+      const to = x
+        ? at.x + at.width + box.marginRight
+        : at.y + at.height + box.marginBottom;
+      low = Math.min(low, from);
+      high = Math.max(high, to);
+    }
+    const room = x ? width : height;
+    if (high - low <= room + NEAR) return 0;
+    return x && rtl ? room - high : -low;
+  };
+  const move = (which: readonly number[], x: boolean): void => {
+    const by = back(which, x);
+    for (const i of which) {
+      if (x) placements[i].x += by;
+      else placements[i].y += by;
+    }
+  };
+  if (style.justifyContentText.startsWith('safe ')) {
+    for (const line of itemLines(style, items, row)) {
+      move(
+        line.map(({ box }) => index.get(box)!),
+        row,
+      );
+    }
+  }
+  if (style.flexWrap !== 'nowrap') {
+    if (style.alignContentText.startsWith('safe ')) {
+      move([...index.values()], !row);
+    }
+    return;
+  }
+  items.forEach(({ box: { style: own } }, i) => {
+    const text =
+      own.alignSelf === AUTO ? style.alignItemsText : own.alignSelfText;
+    if (text.startsWith('safe ')) move([i], !row);
+  });
 }
 
 function layoutItemAt(

@@ -4469,3 +4469,38 @@ test("a line of a row that wraps is justified though another line's item has an 
   assert.strictEqual(boxOf(el, 'e').x, 120);
   assert.strictEqual(boxOf(el, 'f').x, 170);
 });
+
+test('what is aligned `safe` starts where its room does when it runs past it', async () => {
+  // every place is Chromium's; `start` is the box's own, whichever way its
+  // lines run and stack (CSS Box Alignment 3, 4.4)
+  const { node } = await render(
+    '<style>body{margin:0}.c{display:flex;width:60px;height:40px;' +
+      'margin-bottom:60px}.c>*{flex:none}.w{width:80px;height:20px}' +
+      '.t{width:20px;height:70px}</style>' +
+      // a line along its box
+      '<div class="c" style="justify-content:safe center"><i id="a" class="w"></i></div>' +
+      '<div class="c" style="justify-content:safe flex-start;flex-direction:row-reverse"><i id="b" class="w"></i></div>' +
+      '<div class="c" style="justify-content:safe center;direction:rtl"><i id="c" class="w"></i></div>' +
+      // an item across its line, which the one beside it fits in
+      '<div class="c" style="align-items:safe flex-end"><i id="d" class="t"></i><i id="e" class="w" style="width:20px"></i></div>' +
+      '<div class="c" style="flex-direction:column;align-items:center"><i id="f" class="w" style="align-self:safe center"></i><i id="g" class="w"></i></div>' +
+      // the lines across the box
+      '<div class="c" style="flex-wrap:wrap-reverse;align-content:safe flex-start"><i id="h" class="t"></i></div>' +
+      '<div class="c" style="flex-flow:column wrap;align-content:safe center"><i id="i" class="w"></i></div>' +
+      // and what an item of a `-webkit-box` says for itself says nothing
+      '<div class="c" style="display:-webkit-box;-webkit-box-align:end"><div id="j" class="t" style="align-self:safe center"></div></div>',
+    400,
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  assert.deepStrictEqual(at('a'), [0, 0]);
+  assert.deepStrictEqual(at('b'), [0, 100]);
+  assert.deepStrictEqual(at('c'), [-20, 200]);
+  assert.deepStrictEqual(at('d'), [0, 300]);
+  assert.deepStrictEqual(at('e'), [20, 320]);
+  assert.deepStrictEqual(at('f'), [0, 400]);
+  assert.deepStrictEqual(at('g'), [-10, 420]);
+  assert.deepStrictEqual(at('h'), [0, 500]);
+  assert.deepStrictEqual(at('i'), [0, 600]);
+  assert.deepStrictEqual(at('j'), [0, 670]);
+});

@@ -5,7 +5,7 @@
 import { afterEach } from 'node:test';
 import assert from 'node:assert';
 import { cleanup } from 'react-x11/test';
-import { findById, metric, render, view } from './harness.js';
+import { boxOf, findById, metric, render, view } from './harness.js';
 
 afterEach(cleanup);
 
@@ -176,5 +176,38 @@ metric(
     };
     assert.deepStrictEqual(rect('f'), [15, 15, 515, 315]);
     assert.deepStrictEqual(rect('e'), [315, 65, 215, 150]);
+  },
+);
+
+metric(
+  'a `safe` absolute box too big for what it is aligned in is at its start',
+  async () => {
+    // where the default holds it in its containing block (CSS Box Alignment 3,
+    // 4.4); every place is Chromium's
+    const { node } = await render(
+      '<style>body{margin:0}.c{position:relative;width:60px;height:40px;' +
+        'margin-bottom:60px}.c>*{position:absolute;inset:4px 6px 2px 8px;' +
+        'width:50px;height:70px}</style>' +
+        '<div class="c"><i id="a" style="place-self:end"></i></div>' +
+        '<div class="c"><i id="b" style="place-self:safe end"></i></div>' +
+        '<div class="c"><i id="c" style="place-self:unsafe end"></i></div>' +
+        '<div class="c" style="direction:rtl">' +
+        '<i id="d" style="place-self:safe center"></i></div>' +
+        // and one at its static position in a grid's area
+        '<div class="c" style="display:grid"><i id="e" style="inset:auto;' +
+        'width:80px;place-self:safe end"></i></div>' +
+        // and one that fits is where its position says
+        '<div class="c"><i id="f" style="width:20px;height:10px;' +
+        'place-self:safe end"></i></div>',
+      400,
+    );
+    const el = view(node);
+    const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+    assert.deepStrictEqual(at('a'), [4, 0]);
+    assert.deepStrictEqual(at('b'), [8, 104]);
+    assert.deepStrictEqual(at('c'), [4, 168]);
+    assert.deepStrictEqual(at('d'), [4, 304]);
+    assert.deepStrictEqual(at('e'), [0, 400]);
+    assert.deepStrictEqual(at('f'), [34, 528]);
   },
 );

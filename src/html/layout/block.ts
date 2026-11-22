@@ -11413,6 +11413,9 @@ interface SelfAligned {
    *  would hold it in: `normal` against the one inset it has in a
    *  `position-area` (CSS Anchor Positioning 1, 4.1). */
   unsafe: boolean;
+  /** Whether it is at the start of what it is aligned in where it is too
+   *  big for that (CSS Box Alignment 3, 4.4). */
+  safe: boolean;
   /** Whether the axis starts at its high end: the inline axis of a
    *  right-to-left containing block, where a box too big for all it can be
    *  in starts (`alignedStart`). */
@@ -11448,6 +11451,7 @@ function selfAligned(
 ): SelfAligned | null {
   const style = box.style;
   const value = down ? style.alignSelf : style.justifySelf;
+  const text = down ? style.alignSelfText : style.justifySelfText;
   const anchorCentre = anchoring?.centre
     ? down
       ? anchoring.centre.y
@@ -11477,23 +11481,13 @@ function selfAligned(
               : 0;
   // `self-start` and `self-end` are the box's own sides, which its writing
   // mode or its direction may put at the containing block's end (4.3)
-  if (
-    container &&
-    selfFlips(
-      down ? style.alignSelfText : style.justifySelfText,
-      style,
-      container,
-      down,
-    )
-  ) {
+  if (container && selfFlips(text, style, container, down)) {
     along = 1 - along;
   }
   let centre: number | null = null;
   let stretch = false;
   // an overflow position that says so aligns as it says, overflow or not
-  let unsafe = (down ? style.alignSelfText : style.justifySelfText).startsWith(
-    'unsafe',
-  );
+  let unsafe = text.startsWith('unsafe');
   if (
     (down ? style.alignAnchorCenter : style.justifyAnchorCenter) &&
     anchorCentre !== null
@@ -11544,6 +11538,7 @@ function selfAligned(
     centre,
     stretch,
     unsafe,
+    safe: text.startsWith('safe'),
     rtl,
   };
 }
@@ -11571,6 +11566,7 @@ function alignedStart(
   const want =
     a.centre !== null ? a.centre - outer / 2 : a.start + a.along * free;
   if (a.unsafe) return want;
+  if (a.safe && free < 0) return a.rtl ? a.start + free : a.start;
   const within = (v: number, lo: number, hi: number) =>
     Math.min(Math.max(v, lo), hi);
   if (free >= 0) return within(want, a.start, a.start + free);
@@ -12380,6 +12376,16 @@ export function positionOutOfFlow(
   });
 }
 
+/** Where a static position's one item is in its free room (`room` in
+ *  `Box.staticPosition`): each axis a fraction, and where it is set instead
+ *  where it overflows the room, by a `safe` alignment. */
+interface StaticAlignment {
+  across: number;
+  down: number;
+  safeAcross?: number;
+  safeDown?: number;
+}
+
 /** How far along its free room a flex box's or a grid's one item is set:
  *  0 at the start, ½ in the middle, 1 at the end, across (from the inline
  *  start) and down. A flex box's main axis by `justify-content`, and the
@@ -12389,7 +12395,7 @@ function staticAlignment(
   child: Box,
   container: Box,
   flex: boolean,
-): { across: number; down: number; safeAcross?: number; safeDown?: number } {
+): StaticAlignment {
   const own = child.style;
   const style = container.style;
   const factor = (align: string): number =>
@@ -12425,12 +12431,10 @@ function staticAlignment(
     let down = cross;
     // `self-start` and `self-end` are the item's own sides, which its
     // direction or its writing mode may put at the grid's end (4.3)
-    {
-      if (selfFlips(text, child.style, style, false)) across = 1 - across;
-      const downText =
-        own.alignSelf === AUTO ? style.alignItemsText : own.alignSelfText;
-      if (selfFlips(downText, child.style, style, true)) down = 1 - down;
-    }
+    if (selfFlips(text, child.style, style, false)) across = 1 - across;
+    const downText =
+      own.alignSelf === AUTO ? style.alignItemsText : own.alignSelfText;
+    if (selfFlips(downText, child.style, style, true)) down = 1 - down;
     // and grid lanes turn it round with themselves (CSS Grid 3, 8): to the
     // far edge of the stacking axis where they fill from there, and of the
     // grid axis where the lanes are filled from the last
@@ -12448,8 +12452,12 @@ function staticAlignment(
     }
     // and its start down is its far edge where a `vertical-lr` frame put
     // its rows back across (`ROWS_MIRRORED`)
-    if (framed.any && ROWS_MIRRORED.has(container)) down = 1 - down;
-    return { across, down };
+    const mirrored = framed.any && ROWS_MIRRORED.has(container);
+    if (mirrored) down = 1 - down;
+    const out: StaticAlignment = { across, down };
+    if (text.startsWith('safe ')) out.safeAcross = 0;
+    if (downText.startsWith('safe ')) out.safeDown = mirrored ? 1 : 0;
+    return out;
   }
   return flexStaticAlignment(own, style);
 }
@@ -12490,7 +12498,7 @@ function pageAxis(
 function flexStaticAlignment(
   own: ComputedStyle,
   style: ComputedStyle,
-): { across: number; down: number; safeAcross?: number; safeDown?: number } {
+): StaticAlignment {
   const row = style.flexDirection.startsWith('row');
   const main = pageAxis(style, row);
   const cross = pageAxis(style, !row);
@@ -12585,12 +12593,7 @@ function flexStaticAlignment(
   const rtl = style.direction === 'rtl';
   const fromStart = (v: number | undefined) =>
     v === undefined || !rtl ? v : 1 - v;
-  const out: {
-    across: number;
-    down: number;
-    safeAcross?: number;
-    safeDown?: number;
-  } = {
+  const out: StaticAlignment = {
     across: fromStart(main.down ? crossFrom : mainFrom)!,
     down: main.down ? mainFrom : crossFrom,
   };

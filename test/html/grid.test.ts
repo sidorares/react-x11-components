@@ -2522,6 +2522,34 @@ metric(
   },
 );
 
+test('an item past its area runs past its start unless it is aligned `safe`', async () => {
+  // every place is Chromium's (CSS Box Alignment 3, 4.4)
+  const { node } = await render(
+    '<style>body{margin:0}.c{display:grid;grid:40px/60px;width:60px;' +
+      'margin:0 0 60px 40px}.c>*{width:80px;height:70px}</style>' +
+      '<div class="c" style="place-items:center"><i id="a"></i></div>' +
+      '<div class="c" style="place-items:end"><i id="b"></i></div>' +
+      '<div class="c" style="place-items:safe center"><i id="c"></i></div>' +
+      '<div class="c" style="place-items:unsafe end;direction:rtl"><i id="d"></i></div>' +
+      '<div class="c" style="place-items:safe end;direction:rtl"><i id="e"></i></div>' +
+      '<div class="c" style="place-items:end"><i id="f" style="margin:auto"></i></div>' +
+      // and tracks past the grid
+      '<div class="c" style="grid:70px/80px;height:40px;place-content:center"><i id="g"></i></div>' +
+      '<div class="c" style="grid:70px/80px;height:40px;place-content:safe end"><i id="h"></i></div>',
+    400,
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  assert.deepStrictEqual(at('a'), [30, -15]);
+  assert.deepStrictEqual(at('b'), [20, 70]);
+  assert.deepStrictEqual(at('c'), [40, 200]);
+  assert.deepStrictEqual(at('d'), [40, 270]);
+  assert.deepStrictEqual(at('e'), [20, 400]);
+  assert.deepStrictEqual(at('f'), [40, 500]);
+  assert.deepStrictEqual(at('g'), [30, 585]);
+  assert.deepStrictEqual(at('h'), [40, 700]);
+});
+
 metric(
   "grid items aligned by their last baselines line them up at their row's end, and give the grid its last baseline",
   async () => {
