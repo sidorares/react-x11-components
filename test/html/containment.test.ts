@@ -796,3 +796,39 @@ metric(
     assert.deepStrictEqual(await at(115, 115), [255, 255, 255], 'past it');
   },
 );
+
+metric(
+  'paint containment cuts the absolute boxes it holds, as it is what they are placed in',
+  async () => {
+    // a box with layout or paint containment holds the absolute boxes in it
+    // (CSS Containment 2, 3.3 and 3.5), which the layout placed them by and
+    // the paint did not: it drew each past the box, as one placed by
+    // something outside the clip is (WPT's contain-paint-clip-001,
+    // contain-paint-014)
+    const { node, result } = await render(
+      '<style>body{margin:0;background:#ffffff}div{width:50px;height:50px;' +
+        'margin:0 50px 50px}i{position:absolute;left:-20px;top:0;width:60px;' +
+        'height:80px;background:#ff0000}</style>' +
+        '<div style="contain:paint"><i></i></div>' +
+        '<div style="contain:layout;overflow:hidden"><i></i></div>' +
+        // and through a box it positions, a layer of the box's context
+        '<div style="contain:paint"><p style="margin:0"><i style="z-index:1">' +
+        '</i></p></div>',
+    );
+    const { abs } = view(node) as unknown as { abs: { x: number; y: number } };
+    for (const top of [0, 100, 200]) {
+      const drawn = async (x: number, y: number) =>
+        (
+          await pixelsIn(result.ctx, {
+            x: abs.x + x,
+            y: abs.y + top + y,
+            width: 1,
+            height: 1,
+          })
+        )[1] === 0;
+      assert.ok(await drawn(60, 25), `inside, at ${top}`);
+      assert.ok(!(await drawn(40, 25)), `past the side, at ${top}`);
+      assert.ok(!(await drawn(60, 65)), `past the foot, at ${top}`);
+    }
+  },
+);
