@@ -1965,8 +1965,8 @@ metric(
     // over one after it, and below its context's flow with a negative one.
     // Every other way round was what painting it by its lines made of it
     const stage = '<div style="position:relative;width:200px;height:60px">';
-    const span = (more: string) =>
-      `<span id="s" class="s" style="position:relative;top:1px;${more}">` +
+    const span = (more: string, top = 'top:1px;') =>
+      `<span id="s" class="s" style="position:relative;${top}${more}">` +
       'XXXXXXXX</span>';
     const abs = (more: string) =>
       `<div id="abs" style="position:absolute;inset:0;background:#00ff00;${more}"></div>`;
@@ -1981,6 +1981,21 @@ metric(
           '</p>',
         'abs',
         'under the flow, with a negative z-index',
+      ],
+      // and one a `z-index` places where no inset moves it
+      [stage + abs('') + span('z-index:0', ''), 's', 'a z-index alone'],
+      [
+        stage + span('z-index:2', '') + abs('z-index:1'),
+        's',
+        'by its z-index alone',
+      ],
+      [
+        '<div style="position:relative;z-index:0;width:200px;height:60px">' +
+          span('z-index:-1', '') +
+          '<p id="abs" style="margin-top:-20px;background:#00ff00;height:40px">' +
+          '</p>',
+        'abs',
+        'under the flow, with a negative z-index alone',
       ],
     ] as const) {
       const { result, node } = await render(POSITIONED_INLINE + source);
