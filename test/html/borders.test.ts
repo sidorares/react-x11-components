@@ -21,6 +21,7 @@ import {
   boxOf,
   fillsIn,
   fillsOf,
+  findById,
   h,
   metric,
   pathsOf,
@@ -2534,4 +2535,46 @@ test('a border image runs a longhand at a time, and one whose sides are of other
     (interpolateField('borderImage', h, i, -0.3) as BorderImage).slice[0],
     0,
   );
+});
+
+test('a border-radius takes a calculation, divisions and all, held to the range', async () => {
+  // CSS Values 4, 10.12: the `/` in a calculation ended the radii across,
+  // and one out of the range was none. Each is Chrome's, over a `7px`
+  const cases: [string, string, string][] = [
+    ['calc(-10px)', '0px', '0px'],
+    ['calc(-10px) calc(4px)', '0px', '4px'],
+    ['-10px', '7px', '7px'],
+    ['calc(1/2 * 10px)', '5px', '5px'],
+    ['calc(1/2 * 10px) / calc(1/4 * 8px)', '5px 2px', '5px 2px'],
+    [
+      'calc((1/32 * 100%) + 5px) 3px / calc(1/16 * 100%) 2px',
+      'calc(3.125% + 5px) 6.25%',
+      '3px 2px',
+    ],
+    ['min(3px, -2px)', '0px', '0px'],
+    ['10px / calc(-1px)', '10px 0px', '10px 0px'],
+    ['10px / -1px', '7px', '7px'],
+    ['calc(10px) / / 2px', '7px', '7px'],
+    ['calc(1px / 2) / 3px', '0.5px 3px', '0.5px 3px'],
+    ['10px/', '7px', '7px'],
+    ['calc(-10%)', '0%', '0%'],
+    ['-10%', '7px', '7px'],
+  ];
+  const { node } = await render(
+    cases
+      .map(
+        ([value], i) =>
+          `<div id="c${i}" style="border-radius:7px;border-radius:${value}"></div>`,
+      )
+      .join(''),
+  );
+  const el = view(node);
+  cases.forEach(([value, left, right], i) => {
+    const style = el.computedStyle(findById(el.document, `c${i}`)!)!;
+    assert.deepStrictEqual(
+      [style['border-top-left-radius'], style['border-top-right-radius']],
+      [left, right],
+      value,
+    );
+  });
 });

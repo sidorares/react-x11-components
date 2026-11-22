@@ -260,6 +260,11 @@ export function parseContent(
   return items;
 }
 
+/** What no counter is named: the CSS-wide keywords, and `default`, which is
+ *  kept from a `<custom-ident>` beside them (CSS Values 4, 4.2). */
+const CSS_WIDE =
+  /^(?:inherit|initial|unset|revert|revert-layer|revert-rule|default)$/i;
+
 function contentFunction(
   token: Extract<Token, { kind: 'function' }>,
 ): ContentItem | null {
@@ -268,6 +273,11 @@ function contentFunction(
   const ident = (i: number): string | null => {
     const arg = args[i];
     return arg?.length === 1 && arg[0].kind === 'ident' ? arg[0].name : null;
+  };
+  // a counter's name, which is no CSS-wide keyword (CSS Lists 3, 4)
+  const counterName = (): string | null => {
+    const named = ident(0);
+    return named && CSS_WIDE.test(named) ? null : named;
   };
   // a counter style: a name, as `list-style-type` takes one, `symbols()`,
   // or `none`
@@ -290,13 +300,13 @@ function contentFunction(
       : null;
   }
   if (name === 'counter') {
-    const counter = ident(0);
+    const counter = counterName();
     if (!counter || args.length > 2) return null;
     const style = args.length > 1 ? styleOf(1) : 'decimal';
     return style ? { kind: 'counter', name: counter, style } : null;
   }
   if (name === 'counters') {
-    const counter = ident(0);
+    const counter = counterName();
     const separator = args[1];
     if (
       !counter ||
@@ -358,15 +368,7 @@ export function parseCounterList(
       reversed = true;
     } else return null;
     // CSS-wide keywords and `none` cannot name a counter
-    const lower = name.toLowerCase();
-    if (
-      lower === 'none' ||
-      lower === 'inherit' ||
-      lower === 'initial' ||
-      lower === 'unset'
-    ) {
-      return null;
-    }
+    if (CSS_WIDE.test(name) || name.toLowerCase() === 'none') return null;
     const next = tokens[i + 1];
     let change: CounterChange;
     if (next?.kind === 'number') {

@@ -172,6 +172,7 @@ import {
   COLUMN_PIECES,
   CUT_BLOCKS,
   CUT_HEAD,
+  BROKEN_BY,
   CUT_PIECES,
   GRID_TRACKS,
   FIRST_LINE,
@@ -13387,28 +13388,27 @@ export function perspectiveAround(box: Box): Mat4 | null {
 }
 
 /**
- * The box whose `perspective` a box's transform is seen in: the nearest
- * with one up its containing blocks — the box it is positioned in, for one
- * out of the flow, and its parent for one in it (CSS Transforms 2, 6) —
- * through boxes positioned and not transformed, as Blink hangs a box's
- * transform under the perspective of the nearest box above it that has
- * one. Not past a box with a transform of its own: what that holds is
- * flattened into its plane (`transform-style: flat`), which its own
- * transform is all the perspective around it sees of. No inline box's.
- * Null where there is none.
+ * The box whose `perspective` a box's transform is seen in: the one of the
+ * element it is a child of (CSS Transforms 2, 6), in the flat tree, with
+ * what is `display: contents` between them passed over and wherever the box
+ * is positioned — as every browser has it, a grandchild seen flat in the
+ * plane of what is between, but for what is between with a `transform-style`
+ * of `preserve-3d`, which hands on the perspective it is in. Not one with a
+ * transform of its own, which is drawn flat here. No inline box's, which is
+ * not transformable and has no rectangle to be seen from. Null where there
+ * is none.
  */
 function perspectiveFor(box: Box): Box | null {
-  for (let at = holderOf(box); at; at = holderOf(at)) {
-    // an inline box is not transformable, and has no rectangle to be seen
-    // from (CSS Transforms 1, 2)
-    if (at.kind === 'inline') continue;
+  for (let at = parentBox(box); at; at = parentBox(at)) {
     const style = at.style;
+    if (at.kind === 'inline') return null;
     if (style.perspective !== null) return at;
     if (
       style.transform !== null ||
       style.translate !== null ||
       style.rotate !== null ||
-      style.scale !== null
+      style.scale !== null ||
+      style.passive['transform-style'] !== 'preserve-3d'
     ) {
       return null;
     }
@@ -13416,13 +13416,19 @@ function perspectiveFor(box: Box): Box | null {
   return null;
 }
 
-/** The box a box's transform is placed in (`perspectiveFor`): the one it is
- *  positioned in, out of the flow, and its parent in it. */
-function holderOf(box: Box): Box | null {
-  const position = box.style.position;
-  return position === 'absolute' || position === 'fixed'
-    ? containingBlockFor(box)
-    : box.parent;
+/** The box of the element a box is a child of in the flat tree, with what
+ *  is `display: contents` passed over: past the anonymous boxes around it,
+ *  and the inline box around a block it was broken around. Null in the top
+ *  layer, where nothing around a box is its parent, and in the frame of a
+ *  writing mode, whose coordinates its root's are not. */
+function parentBox(box: Box): Box | null {
+  if (box.topLayer) return null;
+  for (let at = box; ;) {
+    const up = BROKEN_BY.get(at) ?? at.parent;
+    if (!up || up.el || up.pseudo) return up;
+    if (up.style.transform !== null) return null;
+    at = up;
+  }
 }
 
 /**

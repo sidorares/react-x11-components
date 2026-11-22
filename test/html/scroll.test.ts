@@ -1661,3 +1661,48 @@ test('a fixed box in a fixed box anchored across a scroll follows its own anchor
     cleanup();
   }
 });
+
+test("a grid's tracks are in what it scrolls, with its end padding past them, whatever is in them", async () => {
+  // CSS Overflow 3, 2.2: the areas its content is aligned in. Every size is
+  // Chromium's, from a grid with nothing in it on
+  const grid = (id: string, style: string, item = '') =>
+    `<div id="${id}" style="${style}">${item}</div>`;
+  const item = '<i></i>';
+  const { el: node } = await renderScrolled(
+    '<style>body{margin:0}div{display:grid;overflow:auto;width:100px;' +
+      'height:100px}i{width:20px;height:20px}</style>' +
+      grid('a', 'grid:150px/150px') +
+      grid('b', 'grid:150px/150px', item) +
+      grid('c', 'grid:150px/150px;direction:rtl') +
+      grid(
+        'd',
+        'grid:100px/100px;box-sizing:border-box;padding:0 50px 50px 0',
+      ) +
+      // past the end alone, where they are centred or ended
+      grid('e', 'grid:150px/150px;place-content:center', item) +
+      grid('f', 'grid:150px/150px;place-content:end', item) +
+      // in a frame of a writing mode, and the tracks put back across
+      grid('g', 'grid:150px/120px;writing-mode:vertical-rl') +
+      grid('h', 'grid:150px/120px;writing-mode:vertical-lr;padding:5px') +
+      // and not what one that does not scroll lets show
+      '<div id="i" style="display:block"><div style="overflow:visible;' +
+      'grid:150px/150px;width:50px;height:50px"></div></div>',
+    600,
+  );
+  const size = (id: string) => {
+    const state = node.scrollStateOf(el(node, id))!;
+    return [state.width, state.height];
+  };
+  assert.deepEqual(size('a'), [150, 150]);
+  assert.deepEqual(size('b'), [150, 150]);
+  assert.deepEqual(size('c'), [150, 150]);
+  assert.deepEqual(size('d'), [150, 150]);
+  assert.deepEqual(size('e'), [125, 125]);
+  assert.deepEqual(size('f'), [100, 100]);
+  assert.deepEqual(size('g'), [150, 120]);
+  assert.deepEqual(size('h'), [160, 130]);
+  assert.deepEqual(size('i'), [100, 100]);
+  // and they are where they were once it has been scrolled
+  node.scrollElementTo(el(node, 'b'), { x: 30, y: 20 });
+  assert.deepEqual(size('b'), [150, 150]);
+});

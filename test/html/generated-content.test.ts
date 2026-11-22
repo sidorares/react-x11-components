@@ -79,6 +79,27 @@ test('content values: strings with escapes, attr(), counters and quotes', () => 
   ]);
   assert.strictEqual(parseContent('"a", "b"'), null);
   assert.strictEqual(parseContent('counter()'), null);
+  // no counter is named by a CSS-wide keyword, nor by `default`, in any
+  // case, which Chrome drops as no value
+  for (const name of [
+    'inherit',
+    'initial',
+    'unset',
+    'revert',
+    'revert-layer',
+    'revert-rule',
+    'default',
+    'Inherit',
+  ]) {
+    assert.strictEqual(parseContent(`counter(${name})`), null, name);
+    assert.strictEqual(parseContent(`counters(${name}, ".")`), null, name);
+    assert.strictEqual(parseCounterList(`${name} 3`, 0), null, name);
+    assert.strictEqual(parseCounterList(`x ${name} 3`, 0), null, name);
+  }
+  assert.deepStrictEqual(parseCounterList('x auto 3', 0), [
+    { name: 'x', value: 0 },
+    { name: 'auto', value: 3 },
+  ]);
   assert.deepStrictEqual(parseCounterList('a b 3 c -2', 1), [
     { name: 'a', value: 1 },
     { name: 'b', value: 3 },
@@ -366,9 +387,11 @@ test('a marker is its type written out, a string, or its ::marker content', asyn
   );
 });
 
-test('a reset in an element whose parent has the counter reaches its own', async () => {
-  // and not its later siblings: the parent's counter goes on after it (CSS
-  // Lists 3, 4.5), where CSS 2.1 had the nested reset reach them too
+test('a reset in an element whose parent has the counter reaches its later siblings too', async () => {
+  // an element inherits its counters from the sibling before it, and from
+  // its parent where there is none (CSS Lists 3, 4.4.1, as
+  // w3c/csswg-drafts#5477 has it; WPT css-lists/counters-scope-00*,
+  // 2026-11-19): the parent's counter is the one outside
   assert.strictEqual(
     await documentText(
       '<style>.reset{counter-reset:c} .use{counter-increment:c}' +
@@ -379,7 +402,57 @@ test('a reset in an element whose parent has the counter reaches its own', async
         '<span class=rb><span class=use></span><span class=reset></span>' +
         '<span class=use></span></span></div>',
     ),
-    '1 1 R 2 3',
+    '1 1 R 1.1 1.1',
+  );
+  const scope = (body: string) =>
+    documentText(
+      '<style>.s{counter-reset:c 1}.s::before,.s::after{content:counter(c)}' +
+        '.c::before{content:counter(c)}.one::before{counter-reset:c 2}' +
+        '.two{counter-reset:c 3}</style>' +
+        body,
+    );
+  // a pseudo-element's reaches what comes after it in its element, and no
+  // further; an element's reaches its siblings and their descendants, the
+  // parent's ::after among them, and not what is beside the parent
+  assert.strictEqual(
+    (
+      await scope(
+        '<div><span class=s><span class="one c"><span class=c></span></span>' +
+          '<span class=c></span></span><span class=c></span></div>',
+      )
+    ).replace(/\s/g, ''),
+    '122111',
+  );
+  assert.strictEqual(
+    (
+      await scope(
+        '<div><span class=s><span class="two c"><span class=c></span></span>' +
+          '<span class=c></span></span><span class=c></span></div>',
+      )
+    ).replace(/\s/g, ''),
+    '133331',
+  );
+  // a later sibling's reset takes its place rather than nesting in it, at
+  // whatever depth it is
+  assert.strictEqual(
+    (
+      await documentText(
+        '<style>.r{counter-reset:c}.i{counter-increment:c}' +
+          '.i::before{content:counters(c,".") " "}</style>' +
+          '<div class=r><b class=i></b><b class=r></b><b class=i></b>' +
+          '<b class=r></b><b class=i></b></div>',
+      )
+    ).trim(),
+    '1 1.1 1.1',
+  );
+  // and a list counts in its item alone, whatever is beside it
+  assert.strictEqual(
+    await documentText(
+      '<style>li{list-style:none}li::before{content:counters(list-item,".")}' +
+        '</style><ol><li><ol><li></li><li></li></ol><p></p></li><li></li>' +
+        '<ol><li></li></ol><li></li></ol>',
+    ),
+    '11.11.222.13',
   );
   // counter-set changes the counter in scope, after the element counts
   assert.strictEqual(
@@ -390,6 +463,51 @@ test('a reset in an element whose parent has the counter reaches its own', async
     ),
     '1 a10 b11 c',
   );
+});
+
+test('a counter is reset, set and incremented by a calculation, rounded to an integer', async () => {
+  // CSS Values 4, 10.9. `counter-reset: a calc(3 + 5)` was no value. Each
+  // is what Chrome computes.
+  const cases: [string, string][] = [
+    ['a calc(3 + 5)', 'a 8'],
+    ['a calc(2.5)', 'a 3'],
+    ['a calc(-2.5)', 'a -2'],
+    ['a calc(2.4) b', 'a 2 b *'],
+    ['a calc(infinity)', 'a 2147483647'],
+    ['a calc(NaN)', 'a 0'],
+    ['a min(3,4) b', 'a 3 b *'],
+    ['a calc(1em/1px)', 'a 16'],
+    ['a sign(2em - 1px)', 'a 1'],
+    ['a calc(1px)', 'none'],
+    ['a calc(1) 2', 'none'],
+    ['a calc(1)calc(2)', 'none'],
+    ['calc(1) a', 'none'],
+    ['a 2.5', 'none'],
+  ];
+  const properties = ['counter-reset', 'counter-set', 'counter-increment'];
+  const { node } = await render(
+    '<body style="font-size:16px">' +
+      cases
+        .map(([value], i) =>
+          properties
+            .map((p, k) => `<p id="c${i}-${k}" style="${p}:${value}"></p>`)
+            .join(''),
+        )
+        .join('') +
+      '<style>#x{counter-reset:n calc(3 + 5)}#x::before{content:counter(n)}' +
+      '</style><p id="x"></p>',
+  );
+  const el = view(node);
+  cases.forEach(([value, want], i) =>
+    properties.forEach((p, k) => {
+      assert.strictEqual(
+        el.computedStyle(findById(el.document, `c${i}-${k}`)!)![p],
+        want.replace('*', k === 2 ? '1' : '0'),
+        `${p}: ${value}`,
+      );
+    }),
+  );
+  assert.match(drawnText(el), /8/);
 });
 
 test('an increment past the range of a counter leaves it where it was', async () => {

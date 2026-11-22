@@ -3040,7 +3040,20 @@ export function applyDeclaration(
       return;
     }
   }
-  if (lower === 'initial' || lower === 'unset' || lower === 'revert') {
+  // and its `revert-layer` as the layers under its own have it
+  if (lower === 'revert-layer' && ctx.revertedLayer) {
+    const back = ctx.revertedLayer();
+    if (back) {
+      inheritOne(style, back, name);
+      return;
+    }
+  }
+  if (
+    lower === 'initial' ||
+    lower === 'unset' ||
+    lower === 'revert' ||
+    lower === 'revert-layer'
+  ) {
     // `unset` is `inherit` for an inherited property and `initial` otherwise.
     // `initial` is the value the property starts at, which an inherited one
     // does not keep: left as it was, `line-height: initial` in a box inside
@@ -3052,7 +3065,7 @@ export function applyDeclaration(
     // which is `unset`.
     const unset =
       lower === 'unset' ||
-      (lower === 'revert' && ctx.uaSets !== undefined && !ctx.uaSets(name));
+      (lower !== 'initial' && ctx.uaSets !== undefined && !ctx.uaSets(name));
     if (unset && isInherited(name)) inheritOne(style, parent, name);
     else if ((lower === 'initial' || unset) && ctx.initial) {
       inheritOne(style, ctx.initial, name);
@@ -4794,7 +4807,9 @@ export function applyDeclaration(
     case 'counter-set': {
       const reset = name === 'counter-reset';
       const increment = name === 'counter-increment';
-      const parsed = parseCounterList(value, increment ? 1 : 0, reset);
+      const written = counterIntegers(value, ctx);
+      if (written === null) return;
+      const parsed = parseCounterList(written, increment ? 1 : 0, reset);
       if (parsed === null) return;
       const list = parsed === 'none' ? null : parsed;
       if (reset) style.counterReset = list;
@@ -8383,6 +8398,8 @@ function isSizePart(word: string, ctx: UnitContext): boolean {
   if (word === 'auto') return true;
   const len = positionLength(word, ctx);
   if (len === null || len === AUTO) return false;
+  // a calculation is held to the range, where a length out of it is none
+  if (isMathFunction(word)) return true;
   return typeof len === 'number' ? len >= 0 : len.pct >= 0;
 }
 
@@ -8504,7 +8521,9 @@ function backgroundSizeOf(
   const axis = (w: string | undefined): Len | 'auto' => {
     if (w === undefined || w === 'auto') return 'auto';
     const len = positionLength(w, ctx);
-    return len === null || len === AUTO ? 'auto' : len;
+    if (len === null || len === AUTO) return 'auto';
+    if (typeof len === 'number') return Math.max(0, len);
+    return len.pct < 0 && !len.px && !len.of ? { pct: 0 } : len;
   };
   const width = axis(words[0]);
   const height = axis(words[1]);
@@ -9517,6 +9536,38 @@ function trackForm(part: string): WrittenTrack['form'] {
   return 'size';
 }
 
+/** A counter list with each calculation in it the integer it comes to
+ *  (CSS Lists 3, 4), rounded half up as an `<integer>` is (CSS Values 4,
+ *  10.9) and kept to 32 bits. Null where one is no number. */
+function counterIntegers(value: string, ctx: UnitContext): string | null {
+  if (!value.includes('(')) return value;
+  const words: string[] = [];
+  for (const word of splitValue(value)) {
+    if (!isMathFunction(word)) {
+      words.push(word);
+      continue;
+    }
+    const n = parseMathNumberWith(
+      word,
+      (token) => {
+        const length = parseLength(token, ctx);
+        return typeof length === 'number' ? length : null;
+      },
+      LARGEST_INTEGER,
+    );
+    if (n === null) return null;
+    words.push(
+      String(
+        Math.min(
+          LARGEST_INTEGER,
+          Math.max(-LARGEST_INTEGER - 1, Math.floor(n + 0.5)),
+        ),
+      ),
+    );
+  }
+  return words.join(' ');
+}
+
 /** A `repeat()`'s count: an integer, or a calculation that comes to one,
  *  rounded as an `<integer>` is (CSS Values 4, 10.9). NaN for anything
  *  else. */
@@ -10081,8 +10132,13 @@ function parseBoxShadow(
 function radiusOf(text: string, ctx: UnitContext): Len | null {
   const len = parseLength(text, ctx);
   if (len === null || len === AUTO) return null;
-  if (typeof len === 'number') return len < 0 ? null : len;
-  return len.pct < 0 && !len.px && !len.of ? null : len;
+  // a calculation is held to the range, where a length out of it is none
+  // (CSS Values 4, 10.12)
+  if (typeof len === 'number') {
+    return len >= 0 ? len : isMathFunction(text) ? 0 : null;
+  }
+  if (len.pct >= 0 || len.px || len.of) return len;
+  return isMathFunction(text) ? { pct: 0 } : null;
 }
 
 /**
@@ -10095,7 +10151,7 @@ function parseRadii(
   value: string,
   ctx: UnitContext,
 ): [[Len, Len, Len, Len], [Len, Len, Len, Len] | null] | null {
-  const halves = value.split('/');
+  const halves = splitTopLevelSlash(value);
   if (halves.length > 2) return null;
   const [horizontal, vertical] = halves.map((half) =>
     splitValue(half).map((p) => radiusOf(p, ctx)),
@@ -10656,7 +10712,13 @@ function applyLogical(
   }
 }
 
-const CSS_WIDE = new Set(['inherit', 'initial', 'unset', 'revert']);
+const CSS_WIDE = new Set([
+  'inherit',
+  'initial',
+  'unset',
+  'revert',
+  'revert-layer',
+]);
 
 function camel(name: string): string {
   return name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
@@ -10856,8 +10918,7 @@ export function isInherited(name: string): boolean {
  * value it takes, and the custom properties untouched. So it is a field at
  * a time rather than a property at a time — `unset` is the style a child
  * starts from (`inherit`), `initial` the initial style — less the fields
- * `NOT_ALL` names. `revert` leaves the style as the cascade has it, as it
- * does for any one property. A page's `button { all: unset }`, the usual
+ * `NOT_ALL` names. A page's `button { all: unset }`, the usual
  * first line of a reset, was no declaration at all: the UA sheet's
  * background stayed, and asteriskmag.com's menu button, three 2px lines in
  * a button 24px tall, was a box filled with the palette's surface around
@@ -10877,6 +10938,10 @@ function applyAll(
   } else if (keyword === 'revert' && ctx.reverted) {
     // an author's, every property as the user agent's rules give it
     const back = ctx.reverted();
+    if (!back) return;
+    from = back;
+  } else if (keyword === 'revert-layer' && ctx.revertedLayer) {
+    const back = ctx.revertedLayer();
     if (!back) return;
     from = back;
   } else return;
