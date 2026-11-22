@@ -7388,10 +7388,11 @@ before the list, `translate`, then `rotate`, then `scale`, as CSS
 Transforms 2 puts them together: `scale: 1 1 2` deepens what a
 `rotateY()` in the list turns out of the plane, and is nothing to the flat
 box that `rotate` turns after it. A box is seen in the `perspective` of the
-nearest box with one up its containing blocks — through positioned boxes,
-and not past a box with a transform of its own, which flattens what it
-holds into its plane — from that box's `perspective-origin`, as Chrome
-sees it. So a panel turned about
+element it is a child of, from that element's `perspective-origin`, wherever
+it is positioned: a grandchild is seen flat in the plane of what is between,
+as Chrome, Firefox and Safari see it, but through what is `display: contents`
+between them and what has no transform of its own and a `transform-style` of
+`preserve-3d`. So a panel turned about
 its upright in a perspective is drawn as a trapezoid, its far side smaller,
 where the pointer finds it and `elementRect` measures it: the Zen Garden's
 219 tilts its sidebar's panel `rotateY(40deg)` in a `perspective: 1000px`,
