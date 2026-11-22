@@ -196,6 +196,78 @@ test("an @import's media queries are the conditions the sheet it imports is unde
   );
 });
 
+test('a ratio, a resolution and an integer in a media feature are read by their grammar, calculations and all', () => {
+  // Media Queries 4 and CSS Values 4: a ratio of 0/0 was no value, and
+  // neither was a `calc()` in any of them, so the query held nowhere. Each
+  // is Chrome's `matchMedia`, 800 by 513 at one device pixel to the pixel.
+  for (const [query, matches] of [
+    ['(max-aspect-ratio: 0/0)', true],
+    ['(min-aspect-ratio: 0/0)', false],
+    ['(aspect-ratio: 0/0)', false],
+    ['(max-aspect-ratio: 1/0)', true],
+    ['(min-aspect-ratio: 1/0)', false],
+    ['(min-aspect-ratio: 0/1)', true],
+    ['(max-aspect-ratio: 0/1)', false],
+    ['(min-aspect-ratio: 0)', true],
+    ['(max-aspect-ratio: 0)', false],
+    ['not (max-aspect-ratio: 0/0)', false],
+    ['not (min-aspect-ratio: 0/0)', true],
+    ['not (max-aspect-ratio: -1/1)', false],
+    ['(max-aspect-ratio: -1/1)', false],
+    ['(min-aspect-ratio: -1/1)', false],
+    ['(min-aspect-ratio: calc(59/79))', true],
+    ['(min-aspect-ratio: calc(79/39))', false],
+    ['(min-aspect-ratio: calc(1)/calc(2))', true],
+    ['(min-aspect-ratio: 1 / calc(2))', true],
+    [
+      '(min-aspect-ratio: calc(sign(17px - 1rem) * 59) / calc(79 * sign(17px - 1rem)))',
+      true,
+    ],
+    ['(min-aspect-ratio: 1/2/3)', false],
+    ['(min-aspect-ratio: 1/)', false],
+    ['(min-aspect-ratio: 1e0/2)', true],
+    ['(min-aspect-ratio: +1/2)', true],
+    ['(min-aspect-ratio: calc(infinity))', false],
+    ['(max-aspect-ratio: calc(infinity))', true],
+    ['(min-aspect-ratio: min(1,2))', true],
+    ['(min-resolution: calc(2x - 96dpi))', true],
+    ['(max-resolution: calc(2x - 96dpi))', true],
+    ['(resolution: calc(2x - 96dpi))', true],
+    ['(min-resolution: calc(96dpi))', true],
+    ['(min-resolution: calc(1px))', false],
+    ['(min-resolution: calc(1))', false],
+    ['(min-resolution: calc(1x * 2))', false],
+    ['(min-resolution: calc(-1x))', true],
+    ['(min-resolution: -1x)', false],
+    ['(max-resolution: calc(-1x))', false],
+    ['(min-resolution: calc(1dppx * sign(17px - 1rem)))', true],
+    ['(max-resolution: calc(infinity * 1x))', true],
+    ['(min-resolution: max(1x, .5x))', true],
+    ['(-webkit-min-device-pixel-ratio: calc(1))', true],
+    ['(-webkit-min-device-pixel-ratio: calc(1x))', false],
+    ['(-webkit-min-device-pixel-ratio: calc(3 - 1))', false],
+    ['(grid: calc(0))', true],
+    ['(grid: calc(2 * sign(16px - 1rem)))', true],
+    ['(grid: calc(2 * sign(17px - 1rem)))', false],
+    ['(grid: calc(1))', false],
+    ['(min-color: calc(4 + 4))', true],
+    ['(min-color: calc(8.4))', true],
+    ['(min-color: calc(8.6))', false],
+    ['(color: calc(8px))', false],
+    ['(min-color: -1)', true],
+    ['(min-color: calc(-1))', true],
+    ['(max-monochrome: calc(0.2))', true],
+    ['(min-monochrome: calc(0.5))', false],
+    ['(min-color-index: calc(1 - 1))', true],
+  ] as const) {
+    assert.strictEqual(
+      mediaMatches([parseMediaQuery(query)], 800, 'light', 513, 1),
+      matches,
+      query,
+    );
+  }
+});
+
 test('a sheet imported under a width is applied at that width, and dropped past it', async () => {
   const sheets: Record<string, string> = {
     'narrow.css': 'p { color: #ff0000 }',

@@ -16,11 +16,13 @@
 // and quickly is not, and that is the part worth importing.
 import type { Element } from 'domhandler';
 
+import { parseMath, parseMathNumberWith } from './calc.js';
 import { specifiedValue } from './specified.js';
 import { resolveUrl } from '../url.js';
 import { parseContainerPrelude } from './containers.js';
 import type { ContainerQuery } from './containers.js';
 import {
+  isMathFunction,
   parseLength,
   parseStretch,
   splitCommas,
@@ -4255,12 +4257,33 @@ const SHORTHAND_GRAMMARS: Readonly<Record<string, (value: string) => boolean>> =
 const ASPECT_FEATURES = /^(?:min-|max-)?(?:device-)?aspect-ratio$/;
 
 /** A ratio, `16/9` or `16 / 9` or `1.5`, as a number; null for anything
- *  else, or a ratio of nothing. */
+ *  else. One over nothing is infinite, `0/0` with the rest, which no
+ *  viewport is past (CSS Values 4, 6.5). */
 function ratioOf(value: string): number | null {
-  const m = /^\s*(\d*\.?\d+)\s*(?:\/\s*(\d*\.?\d+)\s*)?$/.exec(value);
-  if (!m) return null;
-  const ratio = Number(m[1]) / (m[2] === undefined ? 1 : Number(m[2]));
-  return Number.isFinite(ratio) && ratio > 0 ? ratio : null;
+  const parts = splitTopLevel(value, '/');
+  if (parts.length > 2) return null;
+  const numbers = parts.map((part) => mediaNumber(part));
+  const [across, down = 1] = numbers;
+  if (across === null || down === null) return null;
+  return down === 0 ? Infinity : across / down;
+}
+
+const PLAIN_NUMBER = /^\+?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?$/i;
+
+/** A number no less than 0, or a calculation that comes to one, held to
+ *  0. */
+function mediaNumber(value: string): number | null {
+  const v = value.trim();
+  if (PLAIN_NUMBER.test(v)) return Number(v);
+  if (!isMathFunction(v)) return null;
+  const n = parseMathNumberWith(v, mediaPx);
+  return n === null ? null : Math.max(0, n);
+}
+
+/** A length in a calculation in a media query, in CSS pixels. */
+function mediaPx(token: string): number | null {
+  const px = parseLength(token, ZERO_UNITS);
+  return typeof px === 'number' ? px : null;
 }
 
 /** The resolution features, the standard's and WebKit's, which Chrome
@@ -4278,6 +4301,18 @@ const RESOLUTION_FEATURES = new Set([
 /** A resolution in dots per CSS pixel: `2dppx`, `2x`, `192dpi`, `75.6dpcm`,
  *  or WebKit's device pixel ratio, a number. Null for anything else. */
 function resolutionOf(value: string, ratio: boolean): number | null {
+  if (isMathFunction(value)) {
+    if (ratio) return mediaNumber(value);
+    // a calculation is of resolutions, which `sign()` may have lengths in
+    let resolutions = false;
+    const dppx = parseMath(value, (token) => {
+      const n = resolutionOf(token.replace(/^[+-]/, ''), false);
+      if (n === null) return mediaPx(token);
+      resolutions = true;
+      return token[0] === '-' ? -n : n;
+    });
+    return resolutions && typeof dppx === 'number' ? Math.max(0, dppx) : null;
+  }
   const m = /^\s*(\d*\.?\d+(?:e[+-]?\d+)?)\s*(dppx|x|dpi|dpcm)?\s*$/i.exec(
     value,
   );
@@ -4319,9 +4354,13 @@ function desktopFeature(key: string, value: string | null): boolean | null {
     const bare = key.replace(/^(min|max)-/, '');
     if (bare !== feature) return null;
     if (v === null) return key === feature ? has !== 0 : null;
-    // an integer, and nothing else
-    if (!/^[+-]?\d+$/.test(v)) return null;
-    const n = Number(v);
+    // an integer, or a calculation rounded to one
+    let n = Number(v);
+    if (!/^[+-]?\d+$/.test(v)) {
+      const math = isMathFunction(v) ? parseMathNumberWith(v, mediaPx) : null;
+      if (math === null) return null;
+      n = Math.floor(math + 0.5);
+    }
     if (key.startsWith('min-')) return has >= n;
     if (key.startsWith('max-')) return has <= n;
     return has === n;
