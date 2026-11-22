@@ -2892,6 +2892,10 @@ const BORDER_STYLES = new Set<string>([
 /** The largest font size, in CSS pixels (`font-size`). */
 const MAX_FONT_SIZE = 10000;
 
+/** The most columns a `column-count` computes to, as in Blink, which keeps
+ *  it in sixteen bits: a page that asks for a billion has no page for them. */
+const MOST_COLUMN_COUNT = 65535;
+
 const BORDER_WIDTH_KEYWORDS: Record<string, number> = {
   thin: 1,
   medium: 3,
@@ -3239,7 +3243,7 @@ export function applyDeclaration(
         if (v === 'auto') continue;
         if (/^\d+$/.test(v) && Number(v) >= 1) {
           if (count !== null || !(bit & 1)) return;
-          count = Number(v);
+          count = Math.min(Number(v), MOST_COLUMN_COUNT);
           continue;
         }
         const len = parseLength(part, ctx);

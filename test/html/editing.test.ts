@@ -670,3 +670,43 @@ test('a focused host whose selection a page took away keeps none when it is focu
     [0, [], '<br>'],
   );
 });
+
+test('a selectionchange handler that edits is told once a task, however many edits it makes, and the page goes on between two', async () => {
+  // told for as long as it edits, as a browser tells it: after twelve it
+  // edits no more
+  const p = await editor('AAAA <tt></tt><textarea></textarea>');
+  await p.run(`
+    window.told = 0;
+    window.deep = 0;
+    window.order = [];
+    select(e.firstChild, 0);
+    document.onselectionchange = () => {
+      order.push('told');
+      if (deep++) order.push('nested');
+      setTimeout(() => order.push('timer'));
+      told += 1;
+      if (told < 12) {
+        document.execCommand('undo');
+        document.execCommand('subscript');
+        document.execCommand('delete');
+      }
+      deep -= 1;
+    };
+    document.execCommand('selectAll');
+    report()`);
+  const report = 'report(told, order, e.innerHTML.length < 200)';
+  let seen: unknown[] = [];
+  for (let i = 0; i < 100 && seen[0] !== 12; i += 1) {
+    await settle(100);
+    seen = (await p.run(report)) as unknown[];
+  }
+  const [told, order, small] = seen as [number, string[], boolean];
+  assert.equal(told, 12);
+  assert.ok(!order.includes('nested'), order.join(' '));
+  // the first telling's timer runs among the tellings, not after them all
+  assert.ok(
+    order.indexOf('timer') < order.lastIndexOf('told'),
+    order.join(' '),
+  );
+  assert.ok(small, 'what it undoes and makes again does not pile up');
+});

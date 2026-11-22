@@ -103,6 +103,12 @@ const HTTP_PORT = Number(process.env.WPT_HTTP_PORT || 8000);
 const HTTPS_PORT = Number(process.env.WPT_HTTPS_PORT || 8443);
 const H2_PORT = Number(process.env.WPT_H2_PORT || 9000);
 
+/** What the harness's own timeouts are multiplied by, and the time a test is
+ *  given here with them: wptrunner's `--timeout-multiplier`, for a machine
+ *  with more to run than it has cores. 1 is every result's that is compared
+ *  with a browser's. */
+const TIMEOUT_MULTIPLIER = Number(process.env.WPT_TIMEOUT_MULTIPLIER) || 1;
+
 const [listFile, outFile] = process.argv.slice(2);
 let lastWorkers: HtmlServiceWorkers | null = null;
 if (!listFile || !outFile) {
@@ -173,7 +179,13 @@ const REPORTER = `(function () {
   function brief(t) {
     return { name: String(t.name), status: t.status, message: t.message == null ? null : cut(t.message) };
   }
-  setup({ output: false });
+  setup({ output: false${
+    // a frame's harness with no tests in it ends at its own timeout, and
+    // says so to the window around it as a message
+    TIMEOUT_MULTIPLIER === 1
+      ? ''
+      : `, timeout_multiplier: ${TIMEOUT_MULTIPLIER}`
+  } });
   add_result_callback(function (t) { send({ kind: 'result', test: brief(t) }); });
   add_completion_callback(function (tests, status) {
     send({ kind: 'done', status: status.status, message: status.message == null ? null : cut(status.message), tests: tests.map(brief) });
@@ -883,19 +895,23 @@ let serial = 0;
 
 function tree(element: React.ReactElement | null): React.ReactElement {
   return h(
-    ThemeProvider,
-    { value: PALETTE, colorScheme: 'light' } as Record<string, unknown>,
+    'window',
+    { width: WIDTH, height: HEIGHT, title: 'react-x11 test' },
     h(
-      'box',
-      {
-        style: {
-          width: WIDTH,
-          height: HEIGHT,
-          backgroundColor: '#ffffff',
-          flexDirection: 'column',
+      ThemeProvider,
+      { value: PALETTE, colorScheme: 'light' } as Record<string, unknown>,
+      h(
+        'box',
+        {
+          style: {
+            width: WIDTH,
+            height: HEIGHT,
+            backgroundColor: '#ffffff',
+            flexDirection: 'column',
+          },
         },
-      },
-      element,
+        element,
+      ),
     ),
   );
 }
@@ -914,23 +930,56 @@ function inTurn<T>(run: () => Promise<T>): Promise<T> {
   return turn;
 }
 
+/** How long an `act()` is waited for. It flushes React until nothing is
+ *  queued, and a page that changes its document in every task, as a
+ *  `selectionchange` handler that edits does, queues an update before each
+ *  look: no browser's such page comes to rest, and the `act()` never
+ *  returns. As long as a page has to load, so that one that is only slow is
+ *  waited for as it was, and longer on a machine told to be slow. */
+const ACT_MS = Number(process.env.WPT_ACT_MS || 10000 * TIMEOUT_MULTIPLIER);
+/** The `act()`s that outlasted that, until the page they wait on goes. */
+let restless: Promise<unknown> | null = null;
+
 async function show(element: React.ReactElement | null): Promise<void> {
   if (!harness) {
-    harness = await renderX11(tree(element), {
+    // the first page is shown as the ones after it
+    harness = await renderX11(tree(null), {
       width: WIDTH,
       height: HEIGHT,
       fonts: FONTS,
     });
-  } else {
-    const rendered = harness;
-    await inTurn(() => rendered.rerender(tree(element)));
   }
+  const rendered = harness;
+  if (restless) {
+    // the page goes from inside the `act()` that waits on it
+    rendered.root.render(tree(null));
+    await restless;
+  }
+  await rested(inTurn(() => rendered.rerender(tree(element))));
 }
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** An `act()`, waited for as long as a page that comes to rest takes. */
+async function rested(acted: Promise<unknown>): Promise<void> {
+  const tail = acting;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<boolean>((r) => {
+    timer = setTimeout(r, ACT_MS, true);
+  });
+  try {
+    if (!(await Promise.race([acted.then(() => false), late]))) return;
+  } finally {
+    clearTimeout(timer);
+  }
+  const until = tail.then(() => {
+    if (restless === until) restless = null;
+  });
+  restless = until;
+}
+
 async function pump(ms: number): Promise<void> {
-  await inTurn(() => act());
+  if (!restless) await rested(inTurn(() => act()));
   await wait(ms);
 }
 
@@ -1498,7 +1547,7 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
   const long = /<meta\s+name=["']?timeout["']?\s+content=["']?long/i.test(
     source,
   );
-  const budget = (long ? 60000 : 10000) + 6000;
+  const budget = (long ? 60000 : 10000) * TIMEOUT_MULTIPLIER + 6000;
   // what keeps the test's service workers, as a tab's process holds them;
   // the threads of the test before go with it
   lastWorkers?.dispose();

@@ -5780,6 +5780,12 @@ at its type, read from the realm that made it or one of its origin around it as
 the address is set, so a page may revoke the URL straight after. One no realm
 holds is a load that failed, and no network is asked.
 
+A frame sent to a video or a sound shows a media document, as Chromium's: one
+`<video controls autoplay>` with the file for its `<source>`, centred on black,
+which plays where the host answers it with something a player opens. A frame
+sent to an image shows the image, and to anything else that is no document, its
+text.
+
 An `<iframe>` whose document runs no script of its own hears `load` once that
 document is loaded completely, its images and sheets in, as HTML has it, and
 the page's own `load` waits for it. Its images are asked for by the view
@@ -6117,7 +6123,9 @@ A multicol container (CSS Multi-column 1) sets its content in columns:
 whose `normal` is an em there, and the `-webkit-` names Chrome still reads
 for them. There are as many columns as `column-count` says or as
 `column-width` fits, the fewer of the two, each as wide as leaves the gaps
-between them, and the container is a formatting context of its own. Its
+between them, and the container is a formatting context of its own. A count
+computes to 65535 at most, and a column is used at a pixel wide at least, as
+in Blink. Its
 content is laid out once, a column wide, and broken where CSS Fragmentation
 3 has it break: between the lines of a block and between boxes, never
 inside a line, an image, an inline table, a box that clips or
@@ -8523,9 +8531,7 @@ the line's baseline. White space collapses across element boundaries as CSS
 words whatever elements they are in — and text at `font-size: 0` takes no
 room, which is how a row of inline-blocks is set without gaps, but for the
 forced breaks and the tabs a `white-space` keeps in it, which still break
-the line and go to the next stop. Its letters are on a line all the same,
-with a baseline, so an inline-block with such text in it stands on that
-and not on its bottom edge; they are no text to select or copy. The space
+the line and go to the next stop. The space
 that is left is the first of them, in the element it was written in: a
 link whose text ends in a space, before more on its line, is that space
 wider (`elementRect`, a selection's band) and is underlined under it, and

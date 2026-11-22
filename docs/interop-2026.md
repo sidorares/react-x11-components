@@ -57,13 +57,18 @@ wptrunner reads a browser's (`scripts/conformance/testharness.tsx`):
 
 - **testharness.js tests** report through the `testharnessreport.js` the
   host answers in place of the checkout's stub: every subtest's outcome and
-  the harness's status.
+  the harness's status. `WPT_TIMEOUT_MULTIPLIER` multiplies the harness's own
+  timeouts and the time a test is given, as wptrunner's
+  `--timeout-multiplier` does; it is 1 unless set, and a result it was set
+  for is not one to compare with a browser's.
 - **Reftests** are rendered with their scripts on, held until
   `reftest-wait` is gone, read back at 800×600 in react-x11's in-process X
   server and compared with their reference within the `fuzzy` the test
   allows.
 - **Crashtests** pass when the document loads and the renderer neither
-  throws nor hangs.
+  throws nor hangs. A page that changes in every task and so never comes to
+  rest, in a browser either, is waited for 10 s, times
+  `WPT_TIMEOUT_MULTIPLIER`, and judged as it is then.
 - **`test_driver`** is answered by the host: the vendor script sends each
   command to a path the page's `fetch` reaches the host through, and the
   host injects the input into the X server — clicks, keys, wheel, pointer

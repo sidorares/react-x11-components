@@ -902,13 +902,15 @@ export interface ColumnRow {
   height: number;
   lefts: number[];
   width: number;
-  /** The left of every column of the row, those that hold nothing as
-   *  well, which `rule-visibility-items: all` draws rules between. */
-  every?: number[];
+  /** Every column of the row, those that hold nothing as well, which
+   *  `rule-visibility-items: all` draws rules between: how many, the left
+   *  of the first, and how far each is from the one before. Not a list of
+   *  them: a page asks for any number of columns. */
+  every: { count: number; left: number; step: number };
   /** The rows of columns `column-wrap` made together share this, which
    *  the row gaps between them are of, and a row rule is drawn in. */
   wrap?: object;
-  /** How many of `every` there are, from the start of the line: balanced
+  /** How many of those there are, from the start of the line: balanced
    *  columns are as many as hold something, which `every` may count past,
    *  and a container whose columns are filled has all it asks for. */
   exists?: number;
@@ -3781,9 +3783,6 @@ class Builder {
   /** Where the inline content being built stands, for collapsing white
    *  space across element boundaries. */
   private _ws: Collapse = 'start';
-  /** Whether `_ws` is the space of white space set at no size, which has no
-   *  box (`_textNode`). */
-  private _dropped = false;
   /** Whether the word the inline content being built is in has had its
    *  first letter, for `text-transform: capitalize`: a word runs on across
    *  element boundaries, as white space collapses across them. */
@@ -5774,9 +5773,24 @@ class Builder {
     owner: Element | null,
   ): void {
     const ws = style.whiteSpace;
-    const stood = this._ws;
-    const dropped = this._dropped && stood === 'space';
-    this._dropped = false;
+    // text set at no size draws nothing and takes no room, so it needs no
+    // box — and it is no part of the white space around it either — but
+    // for what it keeps that moves what follows it whatever its size: a
+    // forced break, and a tab, whose stops are the block's (CSS Text 3,
+    // 4.1.2). A `<pre>` at `font-size: 0` with its text in spans set at a
+    // size of their own is one line a span, which dropped, ran on as one.
+    if (!(style.fontSize > 0)) {
+      const kept =
+        ws === 'pre' || ws === 'pre-wrap'
+          ? data.replace(/[^\n\t]+/g, '')
+          : ws === 'pre-line'
+            ? data.replace(/[^\n]+/g, '')
+            : '';
+      if (!kept) return;
+      this._ws = kept.endsWith('\n') ? 'start' : 'content';
+      this._textBox(kept, into, style, owner);
+      return;
+    }
     // a word does not run on over the start of a line
     if (this._ws === 'start') this._lettered = false;
     let text: string;
@@ -5798,46 +5812,9 @@ class Builder {
       if (text.charCodeAt(0) === 32 && this._ws !== 'content') {
         text = text.slice(1);
       }
-      if (!text) {
-        this._dropped = dropped;
-        return;
-      }
+      if (!text) return;
       const last = text.charCodeAt(text.length - 1);
       this._ws = last === 32 ? 'space' : last === 10 ? 'start' : 'content';
-    }
-    // Text set at no size draws nothing and takes no room, and what of it
-    // moves what is around it does whatever its size: its white space, which
-    // collapses with what it is beside, a forced break, a tab, whose stops
-    // are the block's (CSS Text 3, 4.1), and that there is a line it is on,
-    // with a baseline. Its words are one zero-width non-joiner, which a line
-    // breaks beside as beside a letter, where a word joiner lets none break
-    // even after a space, and the spaces at their ends a zero-width space: an
-    // engine rounds any advance up to a 64th of a pixel, and a row of
-    // inline-blocks that fills its line was one to a line. White space alone needs no box, and
-    // is the row's every gap.
-    if (!(style.fontSize > 0)) {
-      if (text === ' ' && ws !== 'pre' && ws !== 'pre-wrap') {
-        this._dropped = true;
-        return;
-      }
-      text = text.replace(/[^\n\t]+/g, sizeless);
-      const at = this._textBox(text, into, style, owner).textStart;
-      // no text of the document's to copy
-      if (style.userSelect !== 'none') {
-        for (let i = 0; i < text.length; i++) {
-          if (text[i] === '\n' || text[i] === '\t') continue;
-          this._unselectable.push(at + i, at + i + 1);
-        }
-      }
-      return;
-    }
-    // the white space of no size before it has no box, and is a place to
-    // break: a word it took the space before is not run on from the last
-    if (dropped) {
-      text = '\u200b' + text;
-      if (style.userSelect !== 'none') {
-        this._unselectable.push(this._length, this._length + 1);
-      }
     }
     // after the white space collapses and before the case changes, so an
     // expanded separator neither collapses nor is left out of `full-width`
@@ -6030,17 +6007,6 @@ class Builder {
       }
     }
   }
-}
-
-/** Text set at no size, between the breaks and the tabs it keeps
- *  (`_textNode`). */
-function sizeless(text: string): string {
-  if (!/[^ ]/.test(text)) return '\u200b';
-  return (
-    (text.startsWith(' ') ? '\u200b' : '') +
-    '\u200c' +
-    (text.endsWith(' ') ? '\u200b' : '')
-  );
 }
 
 /**
