@@ -500,7 +500,6 @@ export function parseStylesheet(
     }
     return [ranks, full];
   };
-  let anonymous = 0;
   // how many `@starting-style` blocks the rule being read is under
   let starting = 0;
 
@@ -610,8 +609,10 @@ export function parseStylesheet(
           if (at.block === null) {
             for (const part of names) enter(part, layer, path);
           } else if (names.length <= 1) {
+            // one with no name is named by its rank, which is no other
+            // layer's in any of the document's sheets
             const [ranks, full] = enter(
-              names[0] ?? `\u0000${anonymous++}`,
+              names[0] ?? `\u0000${layers.size}`,
               layer,
               path,
             );
