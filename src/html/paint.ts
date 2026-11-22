@@ -5069,12 +5069,6 @@ function paintContent(
     if (box.style.outlineStyle !== 'none') paintOutline(ctx, box, options);
     return;
   }
-  // a stacking context's descendants with a negative `z-index`, over its
-  // background and under everything else in it (CSS 2.1 Appendix E)
-  const below = options.negative ? NEGATIVE.get(box) : undefined;
-  if (below) {
-    for (const child of below) paintStacked(ctx, child, options);
-  }
   if (visible) {
     if (box.replaced === 'image') paintImage(ctx, box, options);
     else if (box.replaced === 'svg') paintSvg(ctx, box, options);
@@ -5099,6 +5093,13 @@ function paintContent(
   // a table's captions are outside the table box that clips, and painted
   // before it does
   const table = clips && box.kind === 'table';
+  // a stacking context's descendants with a negative `z-index`, over its
+  // background and under everything else in it (CSS 2.1 Appendix E), and
+  // under its clip: but a table's, which may be in a caption
+  const below = options.negative ? NEGATIVE.get(box) : undefined;
+  if (below && table) {
+    for (const child of below) paintStacked(ctx, child, options);
+  }
   if (table) paintFlow(ctx, box, options, CAPTIONS);
   if (clips) {
     const edge = clipEdge(box, options);
@@ -5119,6 +5120,9 @@ function paintContent(
       level = { box, deferred: [] };
       (options.clips ??= []).push(level);
     }
+  }
+  if (below && !table) {
+    for (const child of below) paintStacked(ctx, child, options);
   }
 
   // its marker under its clip with the rest, an outside one among it, as
