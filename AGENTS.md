@@ -7508,6 +7508,18 @@ drag — a hand going back over the widths it came through — was made into a
 raster that nothing copied. Zen Garden 214's photographs were 278 of them
 in a drag of the bench's, and a frame's paint went from 17 ms to 10.
 
+**An image is drawn through `draw-image.ts`, which cuts a draw X cannot
+carry.** A request has sixteen bits for a place and for a size, and ntk
+hands `drawImage` both as they are where no transform is on the context, so
+`background-size: 70000px` threw out of the paint and left the document
+blank. **Anything new that draws an image, or a surface kept of one, at a
+size or a place the page decides calls `drawImageSized`, `drawImageAt` or
+`drawImagePart`**, never `ctx.drawImage`: each hands a draw a request
+carries to the context as it came, and cuts any other to the surface it is
+drawn on, what it reads of the image cut to match. A surface or an upload
+has a longest side too (`PIXMAP_SIDE`), past which none is kept, and an
+image longer than that is uploaded a piece at a time.
+
 **An inline `<svg>` is kept the same way, by what it says and not by the
 drawing** (`paintSvg`, `SvgDrawing.keptAs`). `SvgView` parses every path of
 a drawing at every draw, whatever it was handed, so a webmail page's sixty

@@ -4639,7 +4639,7 @@ function drawThrough(
   if (opacity < 1 && typeof ctx.globalAlpha === 'number') {
     ctx.globalAlpha *= opacity;
   }
-  drawImageAt(ctx, surface, x0, y0);
+  ctx.drawImage!(surface, x0, y0);
   ctx.restore();
 }
 
@@ -5004,7 +5004,7 @@ function paintMasked(
     if (cctx.globalCompositeOperation !== 'destination-in') return false;
     cctx.drawImage!(mask, 0, 0);
     cctx.globalCompositeOperation = 'source-over';
-    drawImageAt(ctx, content, x0, y0);
+    ctx.drawImage(content, x0, y0);
     return true;
   } finally {
     content?.destroy?.();
@@ -11302,8 +11302,7 @@ function gradientBlocks(
       const left = Math.max(x, area.x);
       const far = Math.min(x + bw, right);
       if (far <= left) continue;
-      drawImagePart(
-        ctx,
+      ctx.drawImage(
         block.surface,
         left - x,
         top - y,
@@ -11558,9 +11557,8 @@ function gradientStrip(
     fillGradient(on, paint, strip);
     for (let at = 0; at < long; at += STRIP) {
       const n = Math.min(STRIP, long - at);
-      if (down) {
-        drawImagePart(ctx, surface, 0, 0, n, ph, px + at, py, n, ph);
-      } else drawImagePart(ctx, surface, 0, 0, pw, n, px, py + at, pw, n);
+      if (down) ctx.drawImage(surface, 0, 0, n, ph, px + at, py, n, ph);
+      else ctx.drawImage(surface, 0, 0, pw, n, px, py + at, pw, n);
     }
     return true;
   } finally {
@@ -12664,7 +12662,7 @@ function paintBackgroundImage(
   ) {
     for (let y = fromY; y < toY; y += block.height) {
       for (let x = fromX; x < toX; x += block.width) {
-        drawImageAt(ctx, block.surface, x, y);
+        ctx.drawImage!(block.surface, x, y);
       }
     }
   } else if (tiles <= MAX_TILES) {
@@ -15117,7 +15115,7 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
           set(sctx as PaintContext, 0, 0),
         )
       : null;
-  if (kept) drawImageAt(ctx, kept, x, y);
+  if (kept) ctx.drawImage!(kept, x, y);
   else if (clip && ctx.save && ctx.restore && ctx.beginPath && ctx.rect) {
     ctx.save();
     ctx.beginPath();
@@ -15617,7 +15615,7 @@ function drawRaster(
           w,
           h,
         );
-        drawImageAt(ctx, surface, x, y);
+        ctx.drawImage!(surface, x, y);
       } finally {
         surface.destroy?.();
       }
@@ -15683,7 +15681,7 @@ function drawRasterTiles(
         th,
         (sctx) => drawImageSized(sctx, image, -tx, -ty, w, h),
       );
-      if (kept) drawImageAt(ctx, kept, x + tx, y + ty);
+      if (kept) ctx.drawImage!(kept, x + tx, y + ty);
       else missed.push({ x: x + tx, y: y + ty, w: tw, h: th });
     }
   }
