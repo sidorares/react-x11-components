@@ -6243,7 +6243,9 @@ columns in its frame, along the inline axis down the page and as tall as its
 block size, and what is positioned in them is cut where they are. A box positioned in a block a spanner breaks is laid out
 against all of the block, its rows one after another down the strip, and
 cut into the columns of each row it reaches. Its static position is where
-the row it is in has the block, so one after a spanner starts under it.
+the row it is in has the block, so one after a spanner starts under it. Under
+size containment it is as wide as its `column-width`s and the gaps between
+them.
 
 `column-height` and `column-wrap` (CSS Multi-column 2) set the columns in
 rows, a `row-gap` apart, each row as many columns as there are and as tall
@@ -7852,8 +7854,7 @@ number, and until it is 2 the cards after it are painted over its glow.
 `style`, and `strict` and `content` for them — and `contain-intrinsic-size`
 (CSS Containment 2). A box with size containment is laid out as though it
 held nothing, as large as `contain-intrinsic-size` says or no larger than
-its padding and border — and, for a multicol container, its `column-width`s and
-the gaps between them — and an image as though it had no size or ratio of
+its padding and border, and an image as though it had no size or ratio of
 its own; `inline-size` does that across alone. Layout and paint
 containment make the box a formatting context, a stacking context and the
 containing block of every absolute and fixed box in it, and layout
