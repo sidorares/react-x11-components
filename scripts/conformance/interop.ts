@@ -139,7 +139,8 @@ const extra: string[] = [];
 
 /** How long a child may go without finishing a test: the longest a long
  *  test and a reftest's two documents take, with room. */
-const STALL_MS = 120000;
+const STALL_MS =
+  120000 * Math.max(1, Number(process.env.WPT_TIMEOUT_MULTIPLIER) || 1);
 
 /** Whether a child can be put in a cgroup of its own (`--memory`). */
 const capped =
