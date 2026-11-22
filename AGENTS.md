@@ -3693,8 +3693,7 @@ a run does to a counter**: its nesting, since a reset reaches what its box
 holds or what is beside it, and what it read, since a caption the fix-up moves
 was read in another order than its boxes have, and which of its boxes have style
 containment, which keeps what they hold from counting on what is around them.
-What no box says is `BoxTree.countsUnseen`, a `display: contents` element that
-counts, where no two runs are known to count alike. **Anything new that reads a counter or a
+**Anything new that reads a counter or a
 quote's depth goes through `CounterScopes._answer`, on a path that ends in
 `_noteReads`**: a read a box does not keep is out of step with every read
 after it in its run. And **a read is answered by its kind, and never of a
