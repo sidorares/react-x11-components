@@ -895,19 +895,23 @@ let serial = 0;
 
 function tree(element: React.ReactElement | null): React.ReactElement {
   return h(
-    ThemeProvider,
-    { value: PALETTE, colorScheme: 'light' } as Record<string, unknown>,
+    'window',
+    { width: WIDTH, height: HEIGHT, title: 'react-x11 test' },
     h(
-      'box',
-      {
-        style: {
-          width: WIDTH,
-          height: HEIGHT,
-          backgroundColor: '#ffffff',
-          flexDirection: 'column',
+      ThemeProvider,
+      { value: PALETTE, colorScheme: 'light' } as Record<string, unknown>,
+      h(
+        'box',
+        {
+          style: {
+            width: WIDTH,
+            height: HEIGHT,
+            backgroundColor: '#ffffff',
+            flexDirection: 'column',
+          },
         },
-      },
-      element,
+        element,
+      ),
     ),
   );
 }
@@ -926,23 +930,56 @@ function inTurn<T>(run: () => Promise<T>): Promise<T> {
   return turn;
 }
 
+/** How long an `act()` is waited for. It flushes React until nothing is
+ *  queued, and a page that changes its document in every task, as a
+ *  `selectionchange` handler that edits does, queues an update before each
+ *  look: no browser's such page comes to rest, and the `act()` never
+ *  returns. As long as a page has to load, so that one that is only slow is
+ *  waited for as it was, and longer on a machine told to be slow. */
+const ACT_MS = Number(process.env.WPT_ACT_MS || 10000 * TIMEOUT_MULTIPLIER);
+/** The `act()`s that outlasted that, until the page they wait on goes. */
+let restless: Promise<unknown> | null = null;
+
 async function show(element: React.ReactElement | null): Promise<void> {
   if (!harness) {
-    harness = await renderX11(tree(element), {
+    // the first page is shown as the ones after it
+    harness = await renderX11(tree(null), {
       width: WIDTH,
       height: HEIGHT,
       fonts: FONTS,
     });
-  } else {
-    const rendered = harness;
-    await inTurn(() => rendered.rerender(tree(element)));
   }
+  const rendered = harness;
+  if (restless) {
+    // the page goes from inside the `act()` that waits on it
+    rendered.root.render(tree(null));
+    await restless;
+  }
+  await rested(inTurn(() => rendered.rerender(tree(element))));
 }
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** An `act()`, waited for as long as a page that comes to rest takes. */
+async function rested(acted: Promise<unknown>): Promise<void> {
+  const tail = acting;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<boolean>((r) => {
+    timer = setTimeout(r, ACT_MS, true);
+  });
+  try {
+    if (!(await Promise.race([acted.then(() => false), late]))) return;
+  } finally {
+    clearTimeout(timer);
+  }
+  const until = tail.then(() => {
+    if (restless === until) restless = null;
+  });
+  restless = until;
+}
+
 async function pump(ms: number): Promise<void> {
-  await inTurn(() => act());
+  if (!restless) await rested(inTurn(() => act()));
   await wait(ms);
 }
 
