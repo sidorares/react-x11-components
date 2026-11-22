@@ -127,7 +127,7 @@ import {
   containmentApplies,
   placedMatrix,
   fragmentMatrix,
-  holdsOutOfFlow,
+  containsOutOfFlow,
   viewBoxOf,
 } from './layout/block.js';
 import { containingParent, REPEATED } from './layout/multicol.js';
@@ -5069,12 +5069,6 @@ function paintContent(
     if (box.style.outlineStyle !== 'none') paintOutline(ctx, box, options);
     return;
   }
-  // a stacking context's descendants with a negative `z-index`, over its
-  // background and under everything else in it (CSS 2.1 Appendix E)
-  const below = options.negative ? NEGATIVE.get(box) : undefined;
-  if (below) {
-    for (const child of below) paintStacked(ctx, child, options);
-  }
   if (visible) {
     if (box.replaced === 'image') paintImage(ctx, box, options);
     else if (box.replaced === 'svg') paintSvg(ctx, box, options);
@@ -5099,6 +5093,13 @@ function paintContent(
   // a table's captions are outside the table box that clips, and painted
   // before it does
   const table = clips && box.kind === 'table';
+  // a stacking context's descendants with a negative `z-index`, over its
+  // background and under everything else in it (CSS 2.1 Appendix E), and
+  // under its clip: but a table's, which may be in a caption
+  const below = options.negative ? NEGATIVE.get(box) : undefined;
+  if (below && table) {
+    for (const child of below) paintStacked(ctx, child, options);
+  }
   if (table) paintFlow(ctx, box, options, CAPTIONS);
   if (clips) {
     const edge = clipEdge(box, options);
@@ -5119,6 +5120,9 @@ function paintContent(
       level = { box, deferred: [] };
       (options.clips ??= []).push(level);
     }
+  }
+  if (below && !table) {
+    for (const child of below) paintStacked(ctx, child, options);
   }
 
   // its marker under its clip with the rest, an outside one among it, as
@@ -8146,20 +8150,16 @@ export function drawnAtViewport(box: Box): boolean {
 
 /** Whether a box is the containing block of the fixed boxes in it: a
  *  transformed box, one with layout or paint containment, or one that
- *  names either in `will-change`, or a filter (`holdsOutOfFlow`). */
+ *  names either in `will-change`, or a filter (`containsOutOfFlow`). */
 function holdsFixed(box: Box): boolean {
-  return (
-    transformed(box.style) ||
-    contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT) ||
-    holdsOutOfFlow(box, true)
-  );
+  return containsOutOfFlow(box, true);
 }
 
 /**
  * The box an out-of-flow box is positioned in, whose clips are the ones it
- * is under (`paintPositioned`, and the hit test's `deepestAt`): its nearest
- * positioned or transformed ancestor, or the root. Null for a box fixed to
- * the viewport, which is under none — one in a transformed box is fixed to
+ * is under (`paintPositioned`, and the hit test's `deepestAt`): the nearest
+ * one the layout has for it (`containsOutOfFlow`), or the root. Null for a
+ * box fixed to the viewport, which is under none — one in a transformed box is fixed to
  * that, and under what it is under. A box in the top layer is under
  * nothing around it either: fixed, it is fixed to the viewport, and
  * absolute, positioned in the initial containing block, the root's (CSS
@@ -8180,12 +8180,7 @@ export function containingBlockOf(box: Box): Box | null {
     return null;
   }
   let containing = box.parent;
-  while (
-    containing?.parent &&
-    containing.style.position === 'static' &&
-    !transformed(containing.style) &&
-    !holdsOutOfFlow(containing, false)
-  ) {
+  while (containing?.parent && !containsOutOfFlow(containing, false)) {
     containing = containingParent(containing);
   }
   return containing;
@@ -10597,9 +10592,7 @@ export function clipsFor(box: Box, context: Box): Box[] {
   if (box.outOfFlow) {
     const fixed = box.style.position === 'fixed';
     while (from && from !== context) {
-      const style = from.style;
-      if (transformed(style) || holdsOutOfFlow(from, fixed)) break;
-      if (!fixed && style.position !== 'static') break;
+      if (containsOutOfFlow(from, fixed)) break;
       from = from.parent;
     }
   }
@@ -12784,8 +12777,9 @@ function sizedTile(
       : [area.height * ratio, area.height];
   }
   const [sw, sh] = size;
-  const w = sw === 'auto' ? null : resolve(sw, area.width);
-  const h = sh === 'auto' ? null : resolve(sh, area.height);
+  // a calculation is held to the range (CSS Values 4, 10.12)
+  const w = sw === 'auto' ? null : Math.max(0, resolve(sw, area.width));
+  const h = sh === 'auto' ? null : Math.max(0, resolve(sh, area.height));
   if (w !== null && h !== null) return [w, h];
   if (w !== null) {
     if (ratio > 0) return [w, w / ratio];

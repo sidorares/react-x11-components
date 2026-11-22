@@ -273,6 +273,40 @@ metric(
   },
 );
 
+metric("a cap is the height of the font's capitals", async () => {
+  // CSS Values 4, 6.1.1; WPT cap-unit-001: it was no unit
+  const { node, result } = await render(
+    '<style>body{margin:0} div{font:20px sans-serif}</style>' +
+      '<div id="a" style="width:10cap;height:1cap"></div>' +
+      '<div id="b" style="width:calc(10px + 2cap)"></div>' +
+      '<div style="font:40px monospace"><p id="c" style="font-size:2cap;' +
+      'margin:0;width:1em"></p></div>' +
+      '<div id="d" style="font-family:monospace;width:10cap"></div>',
+  );
+  const el = view(node);
+  const capOf = (family: string, size: number) =>
+    (
+      result.app.fonts as unknown as {
+        match(
+          family: string,
+          o: object,
+        ): { metrics(size: number): { capHeight: number } };
+      }
+    )
+      .match(family, { size, weight: 400, style: 'normal' })
+      .metrics(size).capHeight;
+  const near = (got: number, want: number) =>
+    assert.ok(Math.abs(got - want) <= 1 / 64 + 1e-9, `${got}, ${want}`);
+  const cap = capOf('sans-serif', 20);
+  assert.ok(cap > 10 && cap < 18, 'a face with capitals');
+  near(boxOf(el, 'a').width, 10 * cap);
+  near(boxOf(el, 'a').height, cap);
+  near(boxOf(el, 'b').width, 10 + 2 * cap);
+  // of the font it inherits, in a font size
+  near(boxOf(el, 'c').width, 2 * capOf('monospace', 40));
+  near(boxOf(el, 'd').width, 10 * capOf('monospace', 20));
+});
+
 test('a ch or an ic of a glyph with no advance is nothing, and half an em or an em where there is none', () => {
   // CSS Values 4, 6.1.1; WPT ch-unit-016, ch-unit-018 and ic-unit-013: a
   // font's own zero-wide "0" read as a font with no "0"

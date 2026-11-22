@@ -251,6 +251,38 @@ function fromUserAgent(origin: Origin): boolean {
   return origin === Origin.UserAgent || origin === Origin.UserAgentImportant;
 }
 
+/**
+ * An element's style being worked out from what a `revert` or a
+ * `revert-layer` leaves, for the properties that roll back to it. Only
+ * those roll back: what was declared under them is computed in the style
+ * the element has, its custom properties, its zoom and, once it is settled,
+ * its font. `h1 { font-size: 50px; margin-top: revert }` is `0.67em` of
+ * 50px, and a `color: var(--accent)` a layer up rolled back reads the
+ * `--accent` the element has.
+ */
+interface Rolling {
+  custom: CustomProps | null;
+  zoom: number;
+  face: FaceSource | null;
+  line: LineSource | null;
+  /** What the element has rolled back to already, by the level it rolled
+   *  back from (`levelOf`): a layer rolls back through the ones under it,
+   *  each worked out once. Null for none yet. */
+  styles: Map<string, ComputedStyle> | null;
+}
+
+/** An element's style as it is worked out (`Cascade._cascadeStyle`), for
+ *  what it rolls back to: what it is made from, and the candidate whose
+ *  declaration is being applied, whose layer a `revert-layer` rolls back. */
+interface Rollback extends Rolling {
+  el: Element;
+  parentStyle: ComputedStyle;
+  inFlexContainer: boolean;
+  candidates: Candidate[];
+  own: boolean;
+  at: Candidate | null;
+}
+
 interface Candidate {
   origin: Origin;
   /** How many shadow trees deep the tree the declarations were written for
@@ -4445,7 +4477,8 @@ export interface MetricFace {
   stretch: number;
 }
 
-/** What a face measures, where the fonts can say. */
+/** What a face measures, where the fonts can say: of a text, for a width,
+ *  and `cap` for the height of its capitals where it is asked heights. */
 export type FaceMetric = (face: MetricFace, text?: string) => number | null;
 
 /** What a style's face is read from: a computed style, or the part of one
@@ -4631,8 +4664,14 @@ export class Cascade {
   /** Every width at which some `@media` rule changes its mind, in CSS
    *  pixels — the unit the author wrote them in. */
   readonly breakpoints: number[];
-  /** The counter styles the sheets define, over the predefined ones. */
-  readonly counterStyles: CounterStyles;
+  /** The sheets' `@counter-style` rules, in their order, and the styles
+   *  they come to where the media in force are `key`'s. */
+  private _counterRules: {
+    name: string;
+    rule: CounterStyleRule;
+    media: MediaCondition[][] | null;
+  }[] = [];
+  private _counterStyles: { key: string; styles: CounterStyles } | null = null;
   /** What the sheets' `@font-feature-values` rules give each family's
    *  names, null where they have none (`settleAlternates`). */
   featureValues: FeatureValues | null = null;
@@ -4697,6 +4736,7 @@ export class Cascade {
   /** A face's x-height, for `ex`, where the fonts can say. */
   private _xHeightOf: FaceMetric | null;
   private _xHeights = new Map<string, number>();
+  private _capHeights = new Map<string, number>();
   /** The advance of a face's "0", for `ch`, likewise. */
   private _zeroWidthOf: FaceMetric | null;
   private _zeroWidths = new Map<string, number>();
@@ -4966,6 +5006,10 @@ export class Cascade {
     namespace?: string | null,
   ): string | undefined => attributeIn(this._styling, name, namespace);
   private _lh = false;
+  /** Whether a declaration anywhere may be a `revert` or a `revert-layer`,
+   *  which only then have what they roll back to kept to hand
+   *  (`Rollback`): most documents have none. */
+  private _reverts = false;
   /** The properties the user agent's sheet declares (`UnitContext.uaSets`). */
   private _uaProps = new Set<string>();
   private _uaSets = (name: string): boolean => {
@@ -5086,7 +5130,6 @@ export class Cascade {
     if (takes) this._takeOver(before);
     else this._makeMatchers(documentElement);
     const breakpoints = new Set<number>();
-    const counterStyles = new Map<string, CounterStyleRule>();
     for (const sheet of sheets) {
       // a family's feature values, a name's last over any before it
       for (const { families, values } of sheet.featureValues ?? []) {
@@ -5102,9 +5145,12 @@ export class Cascade {
         }
       }
       // a counter style's rule whole over any before it of its name
-      for (const { prelude, declarations } of sheet.counterStyles ?? []) {
+      for (const { prelude, declarations, media } of sheet.counterStyles ??
+        []) {
         const style = counterStyleRule(prelude, declarations);
-        if (style) counterStyles.set(style.name, style.rule);
+        if (!style) continue;
+        this._counterRules.push({ ...style, media });
+        if (media) this._keyframeMedia.push(media);
       }
       // and a registration, so: the last valid one for a name
       for (const { name, inherits, initial, syntax } of sheet.properties ??
@@ -5156,7 +5202,37 @@ export class Cascade {
     }
     this._scoped = shadows.length > 0;
     this.breakpoints = [...breakpoints].sort((a, b) => a - b);
-    this.counterStyles = new CounterStyles(counterStyles);
+  }
+
+  /** The counter styles the sheets define whose media hold, over the
+   *  predefined ones. */
+  get counterStyles(): CounterStyles {
+    let key = '';
+    for (const { media } of this._counterRules) {
+      if (media) key += this._mediaHold(media) ? '1' : '0';
+    }
+    const kept = this._counterStyles;
+    if (kept?.key === key) return kept.styles;
+    const rules = new Map<string, CounterStyleRule>();
+    for (const { name, rule, media } of this._counterRules) {
+      if (!media || this._mediaHold(media)) rules.set(name, rule);
+    }
+    const styles = new CounterStyles(rules);
+    this._counterStyles = { key, styles };
+    return styles;
+  }
+
+  /** Whether the `@media` blocks around a rule hold at the viewport. */
+  private _mediaHold(media: MediaCondition[][]): boolean {
+    return mediaMatches(
+      media,
+      this.viewportWidth / this.scale,
+      this.look.colorScheme,
+      this.viewportHeight / this.scale,
+      this.scale,
+      this.reducedMotion,
+      this.scripting,
+    );
   }
 
   /** What a matcher is compiled over: made before the sheets, whose rules
@@ -5277,6 +5353,7 @@ export class Cascade {
     this._uaProps = before._uaProps;
     this._vars = before._vars;
     this._lh = before._lh;
+    this._reverts = before._reverts;
     this.snaps = before.snaps;
     this.initialTargets = before.initialTargets;
     this._zoom = before._zoom;
@@ -5319,7 +5396,10 @@ export class Cascade {
         rules.positionTries.set(rule.name, rule);
       }
       this._positionTries = true;
+      if (!this._reverts) this._reverts = usesRevert(rule.declarations);
     }
+    // what a function comes to is its caller's declaration
+    if (sheet.functions?.length) this._reverts = true;
     for (const rule of sheet.keyframes ?? []) {
       let named = rules.keyframes.get(rule.name);
       if (!named) rules.keyframes.set(rule.name, (named = []));
@@ -5352,6 +5432,7 @@ export class Cascade {
       }
       if (!this._vars && usesVars(rule.declarations)) this._vars = true;
       if (!this._lh && usesLh(rule.declarations)) this._lh = true;
+      if (!this._reverts) this._reverts = usesRevert(rule.declarations);
       if (!this.snaps && usesSnap(rule.declarations)) this.snaps = true;
       if (!this.initialTargets && usesInitialTarget(rule.declarations)) {
         this.initialTargets = true;
@@ -5446,6 +5527,7 @@ export class Cascade {
         const declarations = frame.declarations;
         if (!this._vars && usesVars(declarations)) this._vars = true;
         if (!this._lh && usesLh(declarations)) this._lh = true;
+        if (!this._reverts) this._reverts = usesRevert(declarations);
       }
     }
   }
@@ -7792,7 +7874,20 @@ export class Cascade {
       for (const [name, initial] of resets) own.set(name, initial ?? 'initial');
     }
     for (const c of candidates) {
-      for (const d of pick(c)) if (d.custom) own.set(d.prop, d.value);
+      for (const d of pick(c)) {
+        if (!d.custom) continue;
+        if (!REVERT_LAYER.test(d.value)) {
+          own.set(d.prop, d.value);
+          continue;
+        }
+        // what the layers under this one say, and nothing where they say
+        // nothing
+        const value = customUnder(d.prop, candidates, c);
+        if (value !== null) own.set(d.prop, value);
+        else if (resets?.has(d.prop)) {
+          own.set(d.prop, resets.get(d.prop) ?? 'initial');
+        } else own.delete(d.prop);
+      }
     }
     const env = inherits ? this._inheritEnv(parentStyle, '') : this._ifEnv;
     const made = customProperties(
@@ -8990,6 +9085,7 @@ export class Cascade {
    *  (`HtmlViewNode._takeFaces`). */
   facesChanged(): void {
     this._xHeights.clear();
+    this._capHeights.clear();
     this._zeroWidths.clear();
     this._waterWidths.clear();
     this._normalLines.clear();
@@ -9015,6 +9111,7 @@ export class Cascade {
       scale: this.scale * zoom,
       zoom,
       ex: () => this._exOf(style),
+      cap: () => this._capOf(style),
       ch: () => this._chIn(style, style),
       ic: () => this._icIn(style, style),
       lh: () => this._lineHeightOf(style),
@@ -9037,6 +9134,21 @@ export class Cascade {
       this._xHeights.set(key, ex);
     }
     return ex;
+  }
+
+  /** The height of the capitals of a style's font: the font's own, asked
+   *  once per face, its ascent where it states none, or seven tenths of an
+   *  em. */
+  private _capOf(style: FaceSource): number {
+    this._faceRead = true;
+    const key = faceKey(style);
+    let cap = this._capHeights.get(key);
+    if (cap === undefined) {
+      cap = this._xHeightOf?.(faceOf(style), 'cap') ?? NaN;
+      if (!(cap > 0)) cap = style.fontSize * 0.7;
+      this._capHeights.set(key, cap);
+    }
+    return cap;
   }
 
   /** A `ch` for an element: the advance of its "0" along its inline axis
@@ -9323,6 +9435,8 @@ export class Cascade {
     const scripted =
       target === null ? null : (this.scripts?.of(el, target) ?? null);
     if (scripted) {
+      // a frame is the page's to write
+      this._reverts = true;
       const sampling = sampleScripts(scripted, timeline ? timeline.now : null);
       let unchanged = Infinity;
       if (sampling.samples) {
@@ -9774,20 +9888,28 @@ export class Cascade {
     inFlexContainer: boolean,
     candidates: Candidate[],
     own: boolean,
+    /** What is being rolled back, where `candidates` are the ones a
+     *  `revert` or a `revert-layer` leaves. */
+    rolling?: Rolling,
   ): ComputedStyle {
     // whose attributes an `attr()` in any declaration reads
     this._styling = el;
     let style = inherit(parentStyle, this.initial);
     // custom properties first, in cascade order, so every `var()` in the
     // declarations below finds the one that wins
-    if (this._vars) style.custom = this._customFor(parentStyle, candidates);
+    if (rolling) style.custom = rolling.custom;
+    else if (this._vars) {
+      style.custom = this._customFor(parentStyle, candidates);
+    }
     // then the element's own `zoom` (CSS Viewport 1, 5), which every length
     // after it is scaled by: the parent is seen at the element's zoom
     // (`zoomedBy`), so what it inherits, an `inherit` and an `em` in its
     // `font-size` are the parent's lengths zoomed, and the units below
     // resolve at the display scale times the zooms from the root down
+    const unzoomed = parentStyle;
     if (this._zoom) {
-      const own = this._ownZoom(style, parentStyle, candidates);
+      const own =
+        rolling?.zoom ?? this._ownZoom(style, parentStyle, candidates);
       if (own !== 1) {
         const custom = style.custom;
         parentStyle = zoomedBy(parentStyle, own);
@@ -9810,26 +9932,30 @@ export class Cascade {
     // the root's lengths are at its own zoom, and a `rem` here is at this
     // element's
     const rootZoom = zoom / rootStyle.effectiveZoom;
-    // the style the user agent's rules alone make, which an author's
-    // `revert` rolls back to: made the first time one is met
-    let agents: ComputedStyle | null = null;
-    const reverted = (): ComputedStyle | null => {
-      if (!authored) return null;
-      if (!agents) {
-        const ua = candidates.filter((c) => fromUserAgent(c.origin));
-        const styling = this._styling;
-        agents = this._cascadeStyle(el, parentStyle, inFlexContainer, ua, own);
-        this._styling = styling;
-      }
-      return agents;
-    };
+    // what a `revert` and a `revert-layer` roll back
+    const roll: Rollback | null = this._reverts
+      ? {
+          el,
+          parentStyle: unzoomed,
+          inFlexContainer,
+          candidates,
+          own,
+          at: null,
+          custom: style.custom,
+          zoom: style.zoom,
+          face: rolling?.face ?? null,
+          line: rolling?.line ?? null,
+          styles: rolling?.styles ?? null,
+        }
+      : null;
     const ctxParent: UnitContext = {
       em: parentStyle.fontSize,
       rem: rootStyle.fontSize * rootZoom,
       remRead: this._remRead,
       initial: this.initial,
       uaSets: this._uaSets,
-      reverted,
+      reverted: roll ? () => this._reverted(roll) : undefined,
+      revertedLayer: roll ? () => this._revertedLayer(roll) : undefined,
       fallbackFamily: () => (authored ? this.initial.fontFamily : null),
       codeFamily: () => (authored ? null : this._codeFamily),
       vw: this.viewportWidth * zoom,
@@ -9840,6 +9966,7 @@ export class Cascade {
       scale: this.scale * zoom,
       zoom,
       ex: () => this._exOf(parentStyle),
+      cap: () => this._capOf(parentStyle),
       ch: () => this._chIn(parentStyle, parentStyle),
       ic: () => this._icIn(parentStyle, parentStyle),
       families: this._mapFamilies,
@@ -9864,6 +9991,7 @@ export class Cascade {
     // so a `<ul dir="rtl">` was indented on the left.
     if (this._writing || el.attribs.dir !== undefined) {
       for (const c of candidates) {
+        if (roll) roll.at = c;
         for (const d of pick(c)) {
           if (MAPPING_PROPS.has(d.prop)) {
             this._apply(style, parentStyle, d, ctxParent);
@@ -9880,6 +10008,7 @@ export class Cascade {
     // by it. An `all` sets each of them too, in its place among them: a
     // `button { all: unset }` is the parent's size, not the UA sheet's.
     for (const c of candidates) {
+      if (roll) roll.at = c;
       authored = !fromUserAgent(c.origin);
       for (const d of pick(c)) {
         if (
@@ -9929,21 +10058,24 @@ export class Cascade {
     // style passes through the fonts of every rule on the way: read from
     // it, the `10ex` in `div { font-family: foo; width: 10ex }` was `foo`'s
     // under an inline `font-family: Ahem` that came after it.
-    const face: FaceSource = {
+    const face: FaceSource = rolling?.face ?? {
       fontFamily: style.fontFamily,
       fontSize: style.fontSize,
       fontWeight: style.fontWeight,
       fontStyle: style.fontStyle,
       fontStretch: style.fontStretch,
     };
-    let line: LineSource | null = null;
+    const settled = style.fontSize;
+    let line: LineSource | null = rolling?.line ?? null;
+    if (roll) roll.face = face;
     // the root's other declarations measure a `rem` from its own size
     if (root) this._root = style;
     const ctx: UnitContext = {
       ...ctxParent,
-      em: style.fontSize,
-      rem: root ? style.fontSize : ctxParent.rem,
+      em: face.fontSize,
+      rem: root ? face.fontSize : ctxParent.rem,
       ex: () => this._exOf(face),
+      cap: () => this._capOf(face),
       ch: () => this._chIn(style, face),
       ic: () => this._icIn(style, face),
       lh: () => this._lineHeightOf(line ?? style),
@@ -9958,6 +10090,7 @@ export class Cascade {
     // them. A `font` sets the size as well, which the first pass settled.
     if (this._lh) {
       for (const c of candidates) {
+        if (roll) roll.at = c;
         authored = !fromUserAgent(c.origin);
         for (const d of pick(c)) {
           if (
@@ -9974,18 +10107,19 @@ export class Cascade {
           }
         }
       }
-      style.fontSize = face.fontSize;
-      line = {
+      style.fontSize = settled;
+      line ??= {
         ...face,
         lineHeight: style.lineHeight,
         lineHeightIsLength: style.lineHeightIsLength,
       };
+      if (roll) roll.line = line;
     }
-    const settled = style.fontSize;
     // the tree whose rule named the animations, where it is a shadow tree
     let animationTree: ShadowRoot | null = null;
     const scoped = this._scoped;
     for (const c of candidates) {
+      if (roll) roll.at = c;
       authored = !fromUserAgent(c.origin);
       for (const d of pick(c)) {
         if (d.prop === 'font-size' || d.custom) continue;
@@ -10167,6 +10301,56 @@ export class Cascade {
     }
     decorate(style);
     return style;
+  }
+
+  /** The style the user agent's rules alone make, which an author's `revert`
+   *  rolls back to; null in the user agent's. */
+  private _reverted(roll: Rollback): ComputedStyle | null {
+    const { at } = roll;
+    if (!at || fromUserAgent(at.origin)) return null;
+    return this._rolledBack(roll, '', () =>
+      roll.candidates.filter((c) => fromUserAgent(c.origin)),
+    );
+  }
+
+  /** The style the layers under the declaration's make, which an author's
+   *  `revert-layer` rolls back to; null in the user agent's. */
+  private _revertedLayer(roll: Rollback): ComputedStyle | null {
+    const { at } = roll;
+    if (!at || fromUserAgent(at.origin)) return null;
+    return this._rolledBack(roll, levelOf(at), () =>
+      underLayer(roll.candidates, at),
+    );
+  }
+
+  /** The style `left` make of the element, made the first time one is met,
+   *  and again once the element's font is settled, which what was declared
+   *  there is measured in. */
+  private _rolledBack(
+    roll: Rollback,
+    level: string,
+    left: () => Candidate[],
+  ): ComputedStyle {
+    const styles = (roll.styles ??= new Map());
+    const key = roll.face ? `${level}/` : level;
+    let back = styles.get(key);
+    if (!back) {
+      const styling = this._styling;
+      const root = this._root;
+      back = this._cascadeStyle(
+        roll.el,
+        roll.parentStyle,
+        roll.inFlexContainer,
+        left(),
+        roll.own,
+        roll,
+      );
+      this._styling = styling;
+      // it is no root's font for the rest of the document
+      this._root = root;
+      styles.set(key, back);
+    }
+    return back;
   }
 
   /** The element's own `zoom`, its declarations applied to `style` ahead
@@ -11127,6 +11311,7 @@ export class Cascade {
       const declarations = parseDeclarations(inline);
       if (!this._vars && usesVars(declarations)) this._vars = true;
       if (!this._lh && usesLh(declarations)) this._lh = true;
+      if (!this._reverts) this._reverts = usesRevert(declarations);
       if (!this._zoom && usesZoom(declarations)) this._zoom = true;
       if (!this.snaps && usesSnap(declarations)) this.snaps = true;
       if (!this.initialTargets && usesInitialTarget(declarations)) {
@@ -11871,6 +12056,7 @@ function usesVars(declarations: readonly Declaration[]): boolean {
 /** An `attr()` in a value (`IfEnvironment.attribute`). */
 const ATTR_IN = /(?:^|[^\w-])attr\(/i;
 const REVERT = /^\s*revert\s*$/i;
+const REVERT_LAYER = /^\s*revert-layer\s*$/i;
 
 /**
  * An element's attribute of a name, for an `attr()`: HTML's names are its
@@ -11928,6 +12114,11 @@ function usesInitialTarget(declarations: readonly Declaration[]): boolean {
   for (const d of declarations) {
     if (d.prop === 'scroll-initial-target') return true;
   }
+  return false;
+}
+
+function usesRevert(declarations: readonly Declaration[]): boolean {
+  for (const d of declarations) if (/revert/i.test(d.value)) return true;
   return false;
 }
 
@@ -12180,6 +12371,72 @@ function pushInline(
 
 function pick(c: Candidate): Declaration[] {
   return c.only < 0 ? c.declarations : [c.declarations[c.only]];
+}
+
+/** The level of the normal cascade a candidate's declarations are at, its
+ *  `!important` ones with the normal ones of their layer: an origin, a
+ *  tree, the `style` attribute apart, and a layer. */
+function levelOf(c: Candidate): string {
+  return `${normalOrigin(c.origin)}|${c.context}|${c.layer?.join('.') ?? ''}`;
+}
+
+/** The origin an `!important` candidate's normal declarations are at. */
+function normalOrigin(origin: Origin): Origin {
+  switch (origin) {
+    case Origin.AuthorImportant:
+      return Origin.Author;
+    case Origin.InlineImportant:
+      return Origin.Inline;
+    case Origin.UserAgentImportant:
+      return Origin.UserAgent;
+    default:
+      return origin;
+  }
+}
+
+/**
+ * The candidates in the layers under `of`'s, in their order, which its
+ * `revert-layer` rolls back to (CSS Cascade 5, 7.3.6): as though nothing
+ * were declared in its layer, and for an `!important` one nothing between
+ * the layer's normal declarations and its `!important` ones either. So a
+ * layer's `!important` declarations go with its normal ones, and what is
+ * left is every layer whose normal declarations lose to these. The `style`
+ * attribute, a position option and the animations are layers of their own
+ * over the author's.
+ */
+function underLayer(candidates: readonly Candidate[], of: Candidate) {
+  const origin = normalOrigin(of.origin);
+  return candidates.filter((c) => {
+    const other = normalOrigin(c.origin);
+    if (other !== origin) {
+      const by = IMPORTANCE[other] - IMPORTANCE[origin];
+      if (by !== 0) return by < 0;
+    }
+    if (c.context !== of.context) return c.context > of.context;
+    if (other !== origin) return other < origin;
+    return compareLayers(c.layer, of.layer) < 0;
+  });
+}
+
+/** A custom property's value under the layer of `of`, whose `revert-layer`
+ *  it is, or null where nothing under it declares one. */
+function customUnder(
+  prop: string,
+  candidates: readonly Candidate[],
+  of: Candidate,
+): string | null {
+  const under = underLayer(candidates, of);
+  for (let i = under.length - 1; i >= 0; i -= 1) {
+    const declared = pick(under[i]);
+    for (let k = declared.length - 1; k >= 0; k -= 1) {
+      const d = declared[k];
+      if (!d.custom || d.prop !== prop) continue;
+      return REVERT_LAYER.test(d.value)
+        ? customUnder(prop, under, under[i])
+        : d.value;
+    }
+  }
+  return null;
 }
 
 /** Candidates in cascade order with what an element's animations leave
