@@ -1614,6 +1614,27 @@ function release(response: FetchResponse): void {
   void response.chunks?.[Symbol.asyncIterator]().return?.();
 }
 
+/** The types a frame shows a media document for, rather than the text of. */
+const MEDIA_DOCUMENT = /^(?:(?:audio|video)\/.|application\/ogg$)/;
+
+/**
+ * The document a frame shows for a media file (HTML 7.5.6, "read-media"): one
+ * element that plays it, where it is, as Chromium's is. Read as text, a clip
+ * of 97 KB was a paragraph of every character there is, which took a minute
+ * to lay out, with the page's `load` behind it.
+ */
+function mediaDocument(url: string, type: string): string {
+  return (
+    '<!doctype html><html><head><meta name="viewport" ' +
+    'content="width=device-width"></head>' +
+    '<body style="margin: 0px; background: black;">' +
+    '<video controls autoplay name="media" style="position: absolute; ' +
+    'inset: 0px; margin: auto; max-width: 100%; max-height: 100%;">' +
+    `<source src="${escapeAttribute(url)}" type="${escapeAttribute(type)}">` +
+    '</video></body></html>'
+  );
+}
+
 /** The types an HLS playlist is served as (RFC 8216, 4, and the two older
  *  names players still meet). */
 const HLS_TYPE =
@@ -10638,8 +10659,19 @@ export class DomHost {
         }
         let doc: Document;
         let scripts = true;
-        const { text, encoding } = this._frameText(response, type, frame);
-        if (type === 'text/html') {
+        // a media file's bytes are no text of any encoding
+        const media = MEDIA_DOCUMENT.test(type);
+        const { text, encoding } = media
+          ? { text: '', encoding: 'UTF-8' }
+          : this._frameText(response, type, frame);
+        if (media) {
+          release(response);
+          doc = this._documentOf(
+            mediaDocument(response.url || src!, type),
+            true,
+          );
+          scripts = false;
+        } else if (type === 'text/html') {
           doc = this._documentOf(text, true, !!this._seams.drawsFrames);
         } else if (isXmlType(type)) {
           const xml = xmlTree(text);

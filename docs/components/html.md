@@ -5780,6 +5780,12 @@ at its type, read from the realm that made it or one of its origin around it as
 the address is set, so a page may revoke the URL straight after. One no realm
 holds is a load that failed, and no network is asked.
 
+A frame sent to a video or a sound shows a media document, as Chromium's: one
+`<video controls autoplay>` with the file for its `<source>`, centred on black,
+which plays where the host answers it with something a player opens. A frame
+sent to an image shows the image, and to anything else that is no document, its
+text.
+
 An `<iframe>` whose document runs no script of its own hears `load` once that
 document is loaded completely, its images and sheets in, as HTML has it, and
 the page's own `load` waits for it. Its images are asked for by the view
