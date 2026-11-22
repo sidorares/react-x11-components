@@ -5776,28 +5776,29 @@ class Builder {
     // a forced break, and a tab, whose stops are the block's (CSS Text 3,
     // 4.1.2) — a `<pre>` at `font-size: 0` with its text in spans set at a
     // size of their own is one line a span, which dropped, ran on as one.
-    // And there is a line where there is text, with a baseline and the line
-    // height it has: each run of it is a word joiner, which breaks no line,
-    // and draws and takes as little. Dropped, two inline-blocks, one with a
-    // word and one with a line feed, stood on a bottom edge and a baseline.
+    // And there is a line where there is text, with a baseline: each run of
+    // it is a zero-width non-joiner, which breaks a line as a letter does,
+    // where a word joiner lets none break even after a space. Dropped, two
+    // inline-blocks, one with a word and one with a line feed, stood on a
+    // bottom edge and a baseline.
     if (!(style.fontSize > 0)) {
       const kept =
         ws === 'pre' || ws === 'pre-wrap'
-          ? data.replace(/[^\n\t]+/g, '\u2060')
+          ? data.replace(/[^\n\t]+/g, '\u200c')
           : ws === 'pre-line'
             ? data.replace(/[^\n]+/g, (line) =>
-                /\S/.test(line) ? '\u2060' : '',
+                /\S/.test(line) ? '\u200c' : '',
               )
             : /[^ \t\n\r\f]/.test(data)
-              ? '\u2060'
+              ? '\u200c'
               : '';
       if (!kept) return;
       this._ws = kept.endsWith('\n') ? 'start' : 'content';
       const at = this._textBox(kept, into, style, owner).textStart;
-      // the joiners are no text of the document's to copy
+      // the non-joiners are no text of the document's to copy
       if (style.userSelect !== 'none') {
         for (let i = 0; i < kept.length; i++)
-          if (kept[i] === '\u2060') this._unselectable.push(at + i, at + i + 1);
+          if (kept[i] === '\u200c') this._unselectable.push(at + i, at + i + 1);
       }
       return;
     }

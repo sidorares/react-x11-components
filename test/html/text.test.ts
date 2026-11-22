@@ -1095,7 +1095,27 @@ metric('text set at no size makes a line, and is no text to copy', async () => {
   );
   const text = el.textContent();
   assert.ok(text.includes('onethree'), text);
-  assert.ok(!text.includes('\u2060'));
+  assert.ok(!text.includes('\u200c'));
+});
+
+metric('text set at no size breaks a line as a word does', async () => {
+  const { node } = await render(
+    '<style>body{margin:0;font-size:16px}p{margin:0;width:100px}</style>' +
+      '<p id="a">' +
+      '<b style="font-size:0">word</b>foo bar '.repeat(6) +
+      '</p><p id="b">' +
+      'foo bar '.repeat(6) +
+      '</p><p id="c">foo<b style="font-size:0">word</b>bar</p>',
+  );
+  const el = view(node);
+  const ends = (id: string) =>
+    linesOf(el, id).map((line) => {
+      const last = textRunsOf(line).at(-1)!;
+      return Math.round(last[0] + last[1]);
+    });
+  assert.ok(ends('b').length > 2);
+  assert.deepStrictEqual(ends('a'), ends('b'));
+  assert.strictEqual(linesOf(el, 'c').length, 1);
 });
 
 metric('a tab is set from where the room before it ends', async () => {
