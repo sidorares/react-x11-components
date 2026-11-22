@@ -166,6 +166,12 @@ export interface UnitContext {
    *  null where the declaration being applied is the user agent's, whose
    *  `revert` is `unset`. */
   reverted?: () => ComputedStyle | null;
+  /** The element's style from the layers under the one the declaration
+   *  being applied is in, which an author's `revert-layer` rolls a
+   *  property back to (CSS Cascade 5, 7.3.6); null where the declaration is
+   *  the user agent's, whose `revert-layer` is `unset`, as it is in one
+   *  layer. */
+  revertedLayer?: () => ComputedStyle | null;
   /** The palette's focus ring, which `-webkit-focus-ring-color` is. */
   focusRing?: string;
   /** The scheme the palette is, the reader's preference, which a

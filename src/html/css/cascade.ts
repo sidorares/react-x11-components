@@ -251,6 +251,26 @@ function fromUserAgent(origin: Origin): boolean {
   return origin === Origin.UserAgent || origin === Origin.UserAgentImportant;
 }
 
+/**
+ * An element's style being worked out from what a `revert` or a
+ * `revert-layer` leaves, for the properties that roll back to it. Only
+ * those roll back: what was declared under them is computed in the style
+ * the element has, its custom properties, its zoom and, once it is settled,
+ * its font. `h1 { font-size: 50px; margin-top: revert }` is `0.67em` of
+ * 50px, and a `color: var(--accent)` a layer up rolled back reads the
+ * `--accent` the element has.
+ */
+interface Rolling {
+  custom: CustomProps | null;
+  zoom: number;
+  face: FaceSource | null;
+  line: LineSource | null;
+  /** What the element has rolled back to already, by the level it rolled
+   *  back from (`levelOf`): a layer rolls back through the ones under it,
+   *  each worked out once. */
+  styles: Map<string, ComputedStyle>;
+}
+
 interface Candidate {
   origin: Origin;
   /** How many shadow trees deep the tree the declarations were written for
@@ -7792,7 +7812,20 @@ export class Cascade {
       for (const [name, initial] of resets) own.set(name, initial ?? 'initial');
     }
     for (const c of candidates) {
-      for (const d of pick(c)) if (d.custom) own.set(d.prop, d.value);
+      for (const d of pick(c)) {
+        if (!d.custom) continue;
+        if (!REVERT_LAYER.test(d.value)) {
+          own.set(d.prop, d.value);
+          continue;
+        }
+        // what the layers under this one say, and nothing where they say
+        // nothing
+        const value = customUnder(d.prop, candidates, c);
+        if (value !== null) own.set(d.prop, value);
+        else if (resets?.has(d.prop)) {
+          own.set(d.prop, resets.get(d.prop) ?? 'initial');
+        } else own.delete(d.prop);
+      }
     }
     const env = inherits ? this._inheritEnv(parentStyle, '') : this._ifEnv;
     const made = customProperties(
@@ -9774,20 +9807,28 @@ export class Cascade {
     inFlexContainer: boolean,
     candidates: Candidate[],
     own: boolean,
+    /** What is being rolled back, where `candidates` are the ones a
+     *  `revert` or a `revert-layer` leaves. */
+    rolling?: Rolling,
   ): ComputedStyle {
     // whose attributes an `attr()` in any declaration reads
     this._styling = el;
     let style = inherit(parentStyle, this.initial);
     // custom properties first, in cascade order, so every `var()` in the
     // declarations below finds the one that wins
-    if (this._vars) style.custom = this._customFor(parentStyle, candidates);
+    if (rolling) style.custom = rolling.custom;
+    else if (this._vars) {
+      style.custom = this._customFor(parentStyle, candidates);
+    }
     // then the element's own `zoom` (CSS Viewport 1, 5), which every length
     // after it is scaled by: the parent is seen at the element's zoom
     // (`zoomedBy`), so what it inherits, an `inherit` and an `em` in its
     // `font-size` are the parent's lengths zoomed, and the units below
     // resolve at the display scale times the zooms from the root down
+    const unzoomed = parentStyle;
     if (this._zoom) {
-      const own = this._ownZoom(style, parentStyle, candidates);
+      const own =
+        rolling?.zoom ?? this._ownZoom(style, parentStyle, candidates);
       if (own !== 1) {
         const custom = style.custom;
         parentStyle = zoomedBy(parentStyle, own);
@@ -9796,6 +9837,7 @@ export class Cascade {
         style.zoom = own;
       }
     }
+    const ownZoom = style.zoom;
     const zoom = style.effectiveZoom;
 
     // The unit context has to be built twice: once with the parent's font
@@ -9807,22 +9849,49 @@ export class Cascade {
     // whose declaration is being applied: the UA sheet's families are the
     // host's own faces, and its lists end where they end
     let authored = true;
+    // the candidate it is of, whose layer a `revert-layer` rolls back
+    let at: Candidate | null = null;
     // the root's lengths are at its own zoom, and a `rem` here is at this
     // element's
     const rootZoom = zoom / rootStyle.effectiveZoom;
     // the style the user agent's rules alone make, which an author's
-    // `revert` rolls back to: made the first time one is met
-    let agents: ComputedStyle | null = null;
-    const reverted = (): ComputedStyle | null => {
-      if (!authored) return null;
-      if (!agents) {
-        const ua = candidates.filter((c) => fromUserAgent(c.origin));
+    // `revert` rolls back to, and the style the layers under the
+    // declaration's make, which its `revert-layer` does: each made the first
+    // time one is met, and again once the element's font is settled, which
+    // what was declared there is measured in (`Rolling`)
+    let settledFace: FaceSource | null = rolling?.face ?? null;
+    let line: LineSource | null = rolling?.line ?? null;
+    let styles = rolling?.styles;
+    const rolledTo = (level: string, left: Candidate[]): ComputedStyle => {
+      styles ??= new Map();
+      const key = settledFace ? `${level}/` : level;
+      let back = styles.get(key);
+      if (!back) {
         const styling = this._styling;
-        agents = this._cascadeStyle(el, parentStyle, inFlexContainer, ua, own);
+        const rootNow = this._root;
+        back = this._cascadeStyle(el, unzoomed, inFlexContainer, left, own, {
+          custom: style.custom,
+          zoom: ownZoom,
+          face: settledFace,
+          line,
+          styles,
+        });
         this._styling = styling;
+        // it is no root's font for the rest of the document
+        this._root = rootNow;
+        styles.set(key, back);
       }
-      return agents;
+      return back;
     };
+    const reverted = (): ComputedStyle | null =>
+      authored
+        ? rolledTo(
+            '',
+            candidates.filter((c) => fromUserAgent(c.origin)),
+          )
+        : null;
+    const revertedLayer = (): ComputedStyle | null =>
+      authored && at ? rolledTo(levelOf(at), underLayer(candidates, at)) : null;
     const ctxParent: UnitContext = {
       em: parentStyle.fontSize,
       rem: rootStyle.fontSize * rootZoom,
@@ -9830,6 +9899,7 @@ export class Cascade {
       initial: this.initial,
       uaSets: this._uaSets,
       reverted,
+      revertedLayer,
       fallbackFamily: () => (authored ? this.initial.fontFamily : null),
       codeFamily: () => (authored ? null : this._codeFamily),
       vw: this.viewportWidth * zoom,
@@ -9864,6 +9934,7 @@ export class Cascade {
     // so a `<ul dir="rtl">` was indented on the left.
     if (this._writing || el.attribs.dir !== undefined) {
       for (const c of candidates) {
+        at = c;
         for (const d of pick(c)) {
           if (MAPPING_PROPS.has(d.prop)) {
             this._apply(style, parentStyle, d, ctxParent);
@@ -9880,6 +9951,7 @@ export class Cascade {
     // by it. An `all` sets each of them too, in its place among them: a
     // `button { all: unset }` is the parent's size, not the UA sheet's.
     for (const c of candidates) {
+      at = c;
       authored = !fromUserAgent(c.origin);
       for (const d of pick(c)) {
         if (
@@ -9929,20 +10001,21 @@ export class Cascade {
     // style passes through the fonts of every rule on the way: read from
     // it, the `10ex` in `div { font-family: foo; width: 10ex }` was `foo`'s
     // under an inline `font-family: Ahem` that came after it.
-    const face: FaceSource = {
+    const face: FaceSource = settledFace ?? {
       fontFamily: style.fontFamily,
       fontSize: style.fontSize,
       fontWeight: style.fontWeight,
       fontStyle: style.fontStyle,
       fontStretch: style.fontStretch,
     };
-    let line: LineSource | null = null;
+    const settled = style.fontSize;
+    settledFace = face;
     // the root's other declarations measure a `rem` from its own size
     if (root) this._root = style;
     const ctx: UnitContext = {
       ...ctxParent,
-      em: style.fontSize,
-      rem: root ? style.fontSize : ctxParent.rem,
+      em: face.fontSize,
+      rem: root ? face.fontSize : ctxParent.rem,
       ex: () => this._exOf(face),
       ch: () => this._chIn(style, face),
       ic: () => this._icIn(style, face),
@@ -9958,6 +10031,7 @@ export class Cascade {
     // them. A `font` sets the size as well, which the first pass settled.
     if (this._lh) {
       for (const c of candidates) {
+        at = c;
         authored = !fromUserAgent(c.origin);
         for (const d of pick(c)) {
           if (
@@ -9974,18 +10048,18 @@ export class Cascade {
           }
         }
       }
-      style.fontSize = face.fontSize;
-      line = {
+      style.fontSize = settled;
+      line ??= {
         ...face,
         lineHeight: style.lineHeight,
         lineHeightIsLength: style.lineHeightIsLength,
       };
     }
-    const settled = style.fontSize;
     // the tree whose rule named the animations, where it is a shadow tree
     let animationTree: ShadowRoot | null = null;
     const scoped = this._scoped;
     for (const c of candidates) {
+      at = c;
       authored = !fromUserAgent(c.origin);
       for (const d of pick(c)) {
         if (d.prop === 'font-size' || d.custom) continue;
@@ -11871,6 +11945,7 @@ function usesVars(declarations: readonly Declaration[]): boolean {
 /** An `attr()` in a value (`IfEnvironment.attribute`). */
 const ATTR_IN = /(?:^|[^\w-])attr\(/i;
 const REVERT = /^\s*revert\s*$/i;
+const REVERT_LAYER = /^\s*revert-layer\s*$/i;
 
 /**
  * An element's attribute of a name, for an `attr()`: HTML's names are its
@@ -12180,6 +12255,72 @@ function pushInline(
 
 function pick(c: Candidate): Declaration[] {
   return c.only < 0 ? c.declarations : [c.declarations[c.only]];
+}
+
+/** The level of the normal cascade a candidate's declarations are at, its
+ *  `!important` ones with the normal ones of their layer: an origin, a
+ *  tree, the `style` attribute apart, and a layer. */
+function levelOf(c: Candidate): string {
+  return `${normalOrigin(c.origin)}|${c.context}|${c.layer?.join('.') ?? ''}`;
+}
+
+/** The origin an `!important` candidate's normal declarations are at. */
+function normalOrigin(origin: Origin): Origin {
+  switch (origin) {
+    case Origin.AuthorImportant:
+      return Origin.Author;
+    case Origin.InlineImportant:
+      return Origin.Inline;
+    case Origin.UserAgentImportant:
+      return Origin.UserAgent;
+    default:
+      return origin;
+  }
+}
+
+/**
+ * The candidates in the layers under `of`'s, in their order, which its
+ * `revert-layer` rolls back to (CSS Cascade 5, 7.3.6): as though nothing
+ * were declared in its layer, and for an `!important` one nothing between
+ * the layer's normal declarations and its `!important` ones either. So a
+ * layer's `!important` declarations go with its normal ones, and what is
+ * left is every layer whose normal declarations lose to these. The `style`
+ * attribute, a position option and the animations are layers of their own
+ * over the author's.
+ */
+function underLayer(candidates: readonly Candidate[], of: Candidate) {
+  const origin = normalOrigin(of.origin);
+  return candidates.filter((c) => {
+    const other = normalOrigin(c.origin);
+    if (other !== origin) {
+      const by = IMPORTANCE[other] - IMPORTANCE[origin];
+      if (by !== 0) return by < 0;
+    }
+    if (c.context !== of.context) return c.context > of.context;
+    if (other !== origin) return other < origin;
+    return compareLayers(c.layer, of.layer) < 0;
+  });
+}
+
+/** A custom property's value under the layer of `of`, whose `revert-layer`
+ *  it is, or null where nothing under it declares one. */
+function customUnder(
+  prop: string,
+  candidates: readonly Candidate[],
+  of: Candidate,
+): string | null {
+  const under = underLayer(candidates, of);
+  for (let i = under.length - 1; i >= 0; i -= 1) {
+    const declared = pick(under[i]);
+    for (let k = declared.length - 1; k >= 0; k -= 1) {
+      const d = declared[k];
+      if (!d.custom || d.prop !== prop) continue;
+      return REVERT_LAYER.test(d.value)
+        ? customUnder(prop, under, under[i])
+        : d.value;
+    }
+  }
+  return null;
 }
 
 /** Candidates in cascade order with what an element's animations leave
