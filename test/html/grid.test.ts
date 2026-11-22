@@ -2034,6 +2034,51 @@ test('a ratio stretched down a row fills it only where nothing stretches it acro
   assert.deepStrictEqual(size('e'), [80, 40]);
 });
 
+test("a subgrid's edges are its edge tracks' whatever is in them, and no part of its gap", async () => {
+  // CSS Grid 2, 9; every place is Chromium's
+  const { node } = await render(
+    '<style>body{margin:0}.g{display:inline-grid;vertical-align:top;' +
+      'justify-content:start;align-content:start}.s{display:grid;grid-row:span 3;' +
+      'padding:40px 0 5px 7px}b{display:block;width:20px;height:20px}</style>' +
+      // nothing in its first row or its last
+      '<div class="g" id="a" style="grid-template-rows:repeat(3,auto)">' +
+      '<div class="s" style="grid-template-rows:subgrid;row-gap:4px">' +
+      '<b id="a1" style="grid-row:2"></b></div></div>' +
+      // one item across all three
+      '<div class="g" id="b" style="grid-template-rows:repeat(3,auto);row-gap:10px">' +
+      '<div class="s" style="grid-template-rows:subgrid;row-gap:0">' +
+      '<b id="b1" style="grid-row:1/span 3"></b></div></div>' +
+      // nothing at all, and nothing in one of its columns
+      '<div class="g" id="c" style="grid-template:repeat(3,auto)/auto auto">' +
+      '<div class="s" id="c1" style="grid-template:subgrid/subgrid;' +
+      'grid-column:span 2"></div></div>' +
+      '<div class="g" id="d" style="grid-template-columns:auto auto;column-gap:30px">' +
+      '<div style="display:grid;grid-template-columns:subgrid;grid-column:span 2;' +
+      'column-gap:0;padding:0 5px 0 20px"><b id="d1" style="grid-column:2"></b>' +
+      '</div></div>' +
+      // and one in a subgrid
+      '<div class="g" id="e" style="grid-template-rows:repeat(3,auto)">' +
+      '<div class="s" style="grid-template-rows:subgrid;row-gap:6px"><div ' +
+      'style="display:grid;grid-template-rows:subgrid;grid-row:2/span 2;' +
+      'padding:11px 0 3px"><b id="e1" style="grid-row:2"></b></div></div></div>',
+    600,
+  );
+  const el = view(node);
+  const left = (id: string) => boxOf(el, id).x;
+  assert.deepStrictEqual(
+    ['a', 'b', 'c', 'd', 'e'].map((id) => boxOf(el, id).height),
+    [69, 65, 45, 20, 85],
+  );
+  assert.deepStrictEqual(
+    ['a1', 'b1', 'd1', 'e1'].map((id) => boxOf(el, id).y),
+    [42, 40, 0, 57],
+  );
+  assert.deepStrictEqual(
+    [boxOf(el, 'c').width, boxOf(el, 'd').width, left('d1') - left('d')],
+    [7, 60, 35],
+  );
+});
+
 test('what an item gives a column at the least is no less than its edges', async () => {
   // and `fit-content` is no size yet, as `auto` is; every width is Chromium's,
   // of a grid in a room 10 wide

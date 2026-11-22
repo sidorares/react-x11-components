@@ -42,6 +42,9 @@ export interface TrackItem {
   minContent(): number;
   maxContent(): number;
   minimum(): number;
+  /** Whether it is the edge of a subgrid (`Item.edge`), which a track is no
+   *  smaller than and grows no further for. */
+  edge?: boolean;
 }
 
 export interface TrackSpace {
@@ -81,6 +84,7 @@ function most(items: TrackItem[], size: (item: TrackItem) => number): number {
   return out;
 }
 
+const isEdge = (item: TrackItem) => item.edge === true;
 const minContentOf = (item: TrackItem) => item.minContent();
 const maxContentOf = (item: TrackItem) => item.maxContent();
 const minimumOf = (item: TrackItem) => item.minimum();
@@ -159,10 +163,13 @@ export function sizeTracks(
     } else if (min === 'auto')
       base[t] = Math.max(base[t], most(list, minimumOf));
     const fit = fitOf(max);
-    if (max === 'min-content') limit[t] = most(list, minContentOf);
+    const own = list.some(isEdge) ? list.filter((item) => !item.edge) : list;
+    if (!own.length) {
+      // a growth limit is of what is in the track
+    } else if (max === 'min-content') limit[t] = most(own, minContentOf);
     else if (max === 'max-content' || max === 'auto') {
-      limit[t] = most(list, maxContentOf);
-    } else if (fit !== null) limit[t] = Math.min(fit, most(list, maxContentOf));
+      limit[t] = most(own, maxContentOf);
+    } else if (fit !== null) limit[t] = Math.min(fit, most(own, maxContentOf));
     if (limit[t] < base[t]) limit[t] = base[t];
   }
 

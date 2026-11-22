@@ -168,6 +168,10 @@ export function layoutGridLanes(
   const widths = new Map<Box, [number, number]>();
   const measure = (item: Item): void => {
     if (item.max >= 0) return;
+    if (item.edge) {
+      item.min = item.max = item.before + item.after;
+      return;
+    }
     let pair = widths.get(item.box);
     if (!pair) {
       pair = trackContributions(item.box, ctx);
@@ -199,6 +203,7 @@ export function layoutGridLanes(
     return {
       start,
       span,
+      edge: placed.edge !== undefined,
       minContent: () => (measure(placed), placed.min),
       maxContent: () => (measure(placed), placed.max),
       minimum: () => leastWidth(placed, tracks, gridGap, measure, ctx),
