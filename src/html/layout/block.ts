@@ -6202,9 +6202,12 @@ export function ownIntrinsic(box: Box): Intrinsic | null {
       : viewed;
   }
   const style = box.style;
+  // a drop-down's arrow and line are its own and not its content's: what it
+  // measures with no options in it (`measureControl`)
+  const kept = box.replaced === 'select' ? box.intrinsic : null;
   return {
-    width: style.containIntrinsicWidth ?? 0,
-    height: style.containIntrinsicHeight ?? 0,
+    width: style.containIntrinsicWidth ?? kept?.width ?? 0,
+    height: style.containIntrinsicHeight ?? kept?.height ?? 0,
     ratio: 0,
     missing: 0,
   };
