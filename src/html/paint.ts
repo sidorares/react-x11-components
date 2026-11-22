@@ -96,6 +96,7 @@ import {
   urlImageOf,
   urlOf,
   WILL_CONTAIN,
+  WILL_HOLD_FIXED_BOX,
   WILL_STACK,
   WILL_STACK_BOX,
   WILL_STACK_Z,
@@ -2289,6 +2290,29 @@ function frameHeight(box: Frame): number {
  * inline box's fragments — is the box around it's, whose ink holds it.
  */
 let painting: Box | null = null;
+
+/** Whether a background of the box being painted is fixed to the viewport:
+ *  `fixed`, and not in a transformed box, its own among them, where that is
+ *  `scroll` (CSS Transforms 1, 3) — nor where `will-change` says it may be
+ *  one, as in Chrome. The canvas's, which no box paints, always is. */
+function fixedGround(style: ComputedStyle): boolean {
+  if (style.backgroundAttachment !== 'fixed') return false;
+  for (let at = painting; at?.parent; at = at.parent) {
+    // a writing mode's frame turns with no transform of the page's
+    if (at.kind === 'inline' || !(at.el || at.pseudo)) continue;
+    const own = at.style;
+    if (
+      own.transform !== null ||
+      own.translate !== null ||
+      own.rotate !== null ||
+      own.scale !== null ||
+      own.willChange & WILL_HOLD_FIXED_BOX
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const was = painting;
@@ -11062,9 +11086,7 @@ function paintBackground(
     // box, which is where it starts, and repeated under the borders — or
     // the viewport's, where it is fixed; its line runs across the whole of
     // it, not the part this paint reaches
-    const fixed =
-      style.backgroundAttachment === 'fixed' &&
-      (options.viewport ?? options.canvas);
+    const fixed = fixedGround(style) && (options.viewport ?? options.canvas);
     const origin = fixed || originBox(box, options, style);
     const at = snapped(origin.x, origin.y, origin.width, origin.height);
     // level with the page in a frame that turns the box (`levelOf`), cut
@@ -12507,7 +12529,7 @@ function tileBlock(
 
 /**
  * A `background-image` (CSS 2.1 14.2.1): positioned in `at`, the padding
- * box — or the viewport, the element, for `background-attachment: fixed` —
+ * box — or the viewport, the element, where it is fixed (`fixedGround`) —
  * repeated across `area`, the border box within the damage, over the
  * colour and under the borders. Filled with a pattern where the context has
  * one, drawn a tile at a time where it does not.
@@ -12520,7 +12542,7 @@ function paintBackgroundImage(
   options: PaintOptions,
   corners: Corners | null = null,
 ): void {
-  if (style.backgroundAttachment === 'fixed' && options.canvas) {
+  if (fixedGround(style) && options.canvas) {
     at = options.viewport ?? options.canvas;
   }
   const url = urlOf(style.backgroundImage);

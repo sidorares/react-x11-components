@@ -29,6 +29,7 @@ import {
   fillsOf,
   h,
   metric,
+  pixelsIn,
   pathsOf,
   pixelsPng,
   render,
@@ -2953,3 +2954,53 @@ test('a filter() of an image is the image, with the list its pixels are put thro
   const b = image('b');
   assert.ok(typeof b === 'string' && b.endsWith('a.png'), String(b));
 });
+
+metric(
+  'a fixed background in a transformed box scrolls with it, its own among them',
+  async () => {
+    // CSS Transforms 1, 3; each row is Chromium's: red where the gradient
+    // starts at the box, and not where it starts at the viewport
+    const box = (style: string, around = '') =>
+      `<div style="${around}"><div class="b" style="${style}"></div></div>`;
+    const { node, result } = await render(
+      '<style>body{margin:0;background:#ffffff}.b{width:30px;height:20px;' +
+        'background:linear-gradient(#ff0000 0 10px,#00ff00 10px) fixed}' +
+        '</style><div style="height:20px"></div>' +
+        box('') +
+        box('transform:translate(0)') +
+        box('', 'transform:translate(0)') +
+        box('rotate:0deg') +
+        box('will-change:transform') +
+        box('', 'will-change:translate') +
+        box('opacity:.99') +
+        box('perspective:100px') +
+        box('', 'filter:brightness(1)') +
+        box('', 'contain:paint') +
+        box('', 'writing-mode:vertical-rl'),
+    );
+    const { abs } = view(node) as unknown as { abs: { x: number; y: number } };
+    const scrolls: boolean[] = [];
+    for (let i = 0; i < 11; i += 1) {
+      const [red, green] = await pixelsIn(result.ctx, {
+        x: abs.x + 15,
+        y: abs.y + 20 + i * 20 + 4,
+        width: 1,
+        height: 1,
+      });
+      scrolls.push(red > 200 && green < 50);
+    }
+    assert.deepStrictEqual(scrolls, [
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+  },
+);

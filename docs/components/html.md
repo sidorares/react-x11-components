@@ -7429,8 +7429,8 @@ by turning the box its two faces are in shows its front mirrored, and
 `backface-visibility` is asked of a box's own turn alone. `transform-box`
 does nothing. A form control in a turned or scaled box is mounted where the
 box was laid out, as it is: a widget is a node of its own, which no matrix
-of the document's reaches. `background-attachment: fixed` in a transformed
-box is still fixed, where CSS has it scroll.
+of the document's reaches. `background-attachment: fixed` is `scroll`
+in a transformed box, or one whose `will-change` says it may be.
 
 **Scroll-driven timelines** drive an animation that names one in
 `animation-timeline` (Scroll-driven Animations 1): `scroll()` is how far
