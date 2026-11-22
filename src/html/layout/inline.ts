@@ -46,6 +46,8 @@ import { inkColor, isTransparent, parseColor, resolve } from '../css/values.js';
 import { passiveValue } from '../css/passive-properties.js';
 import { slantOf } from '../fonts.js';
 import { bidiJs } from '../direction.js';
+import { settledLevels, settledText } from './settled.js';
+import type { SettledText } from './settled.js';
 import { isInputButton, tagOf } from '../dom.js';
 import type { Element } from '../dom.js';
 import {
@@ -2419,9 +2421,34 @@ function linesOf(
         ? unbreakableAfter(lineItems, segment.nextIndex, style, fonts, lineBase)
         : 0;
     const lineHeight = onFirst ? lineOne.lineHeight : lineHeightMul;
+    // the start of it where that is enough, or all of it
+    const starting =
+      paraBidi && !onFirst
+        ? startOf(
+            paraBidi,
+            segment,
+            paraBidi.starts[index] + offset,
+            segment.nextIndex < items.length
+              ? paraBidi.starts[segment.nextIndex]
+              : paraBidi.text.length,
+            (runs) =>
+              fragmentLayout(
+                fonts,
+                runs,
+                lineBase,
+                style,
+                lineHeight,
+                wrapWords,
+                room - tied,
+                START_LINES,
+              ),
+            wraps(style) ? (room - tied) / style.fontSize : Infinity,
+          )
+        : null;
+    const laidRuns = starting ?? segment.runs;
     let fragment = fragmentLayout(
       fonts,
-      segment.runs,
+      laidRuns,
       lineBase,
       style,
       lineHeight,
@@ -2615,7 +2642,7 @@ function linesOf(
         ? {
             from: {
               para: paraBidi.starts[index] + offset,
-              runs: segment.runs,
+              runs: laidRuns,
               spans: segment.spans,
             },
           }
@@ -2781,6 +2808,7 @@ function fragmentLayout(
   lineHeight: number,
   overflowWrap: 'normal' | 'break-word',
   width: number,
+  maxLines = 1,
 ): TextLayoutLike {
   const laid = fonts.layout(runs, base, {
     maxWidth: wraps(style) ? Math.max(1, width) : undefined,
@@ -2795,7 +2823,7 @@ function fragmentLayout(
     direction: style.direction,
     overflowWrap,
     fit: PARAGRAPH_FIT,
-    maxLines: 1,
+    maxLines,
   });
   LAYOUT_RUNS.set(laid, runs);
   return laid;
@@ -4695,6 +4723,20 @@ function paragraphBidi(
 
 const PARAGRAPH_BIDI = new WeakMap<Box, ParagraphBidi>();
 
+/** What a start of the rest of a paragraph is cut by (`startOf`), by the
+ *  paragraph's levels, which each pass has and no short paragraph asks for
+ *  the rest of. */
+const SETTLED = new WeakMap<Uint8Array, SettledText>();
+
+function settledOf(bidi: ParagraphBidi): SettledText {
+  let text = SETTLED.get(bidi.levels);
+  if (!text) {
+    text = settledText(bidi.text);
+    SETTLED.set(bidi.levels, text);
+  }
+  return text;
+}
+
 /** The explicit embeddings, overrides and isolates. */
 const EXPLICIT = /[\u202a-\u202e\u2066-\u2069]/;
 
@@ -4759,6 +4801,84 @@ function aloneLevels(
   return alone;
 }
 
+/** How many lines a start of the rest fills before the first is taken: the
+ *  first, and three the cut's end may be in or next to. */
+const START_LINES = 4;
+
+/** The fewest letters a start is of, and the fewest times over the rest is
+ *  of it: a paragraph of some lines is laid out as it was. */
+const START_MIN = 256;
+const START_OF = 2;
+
+/** A place a line may break wherever it is (UAX #14, LB4 and LB18): after a
+ *  forced break, and after spaces with a letter either side. */
+const CERTAIN_BREAK = /[\p{L}\p{N}] +\p{L}|\n/u;
+
+/**
+ * The start of a segment, where its first line is the whole segment's: null
+ * where the segment is short, or none is found. An engine prepares all of
+ * what it is handed for the one line asked of it — its levels, its breaks
+ * and its letters — where the text may read right to left, so a paragraph
+ * made a line at a time cost its length again at every line.
+ *
+ * What a cut can change of the text before it is the levels a bracket or a
+ * neutral takes from what follows (`settledLevels`), and within a word or
+ * two of it the break opportunities, the joining and the kerning: so the
+ * start is of four lines or more, the first three of them settled. A word no
+ * line holds is cut by halving all of it (ntk's `_forceBreak`), so one cut
+ * here has to end in the start, or a break to come before it: somewhere in
+ * the start is a place to break (`CERTAIN_BREAK`), which is either on the
+ * line, and it is no such word's, or after it, where the word has ended. What
+ * order its line's pieces are in is the paragraph's levels' to say, as it is
+ * for a line of the whole (`levelPieces`).
+ */
+function startOf(
+  bidi: ParagraphBidi,
+  segment: Segment,
+  para: number,
+  end: number,
+  layout: (runs: TextRun[]) => TextLayoutLike,
+  /** The room for the line, in ems. */
+  ems: number,
+): TextRun[] | null {
+  const rest = end - para;
+  if (rest < START_MIN * START_OF) return null;
+  // a quarter of an em a letter, as ntk guesses one, and four times as many
+  // at each try that falls short
+  let length = Math.max(
+    START_MIN,
+    Number.isFinite(ems) ? Math.ceil(ems * 4 * START_LINES) : 0,
+  );
+  if (length * START_OF > rest) return null;
+  const text = settledOf(bidi);
+  for (; length * START_OF <= rest; length *= 4) {
+    let at = para + length;
+    // a surrogate pair is not cut
+    const code = bidi.text.charCodeAt(at - 1);
+    if (code >= 0xd800 && code < 0xdc00) at += 1;
+    if (!CERTAIN_BREAK.test(bidi.text.slice(para, at))) continue;
+    const settled = settledLevels(text, para, at, end);
+    if (!settled) continue;
+    const runs = runsUpTo(segment.runs, at - para);
+    const { lines } = layout(runs);
+    if (lines.length >= START_LINES && lines[2].end <= settled) return runs;
+  }
+  return null;
+}
+
+/** Some runs up to an offset in their text. */
+function runsUpTo(runs: TextRun[], end: number): TextRun[] {
+  const out: TextRun[] = [];
+  let at = 0;
+  for (const run of runs) {
+    if (at >= end) break;
+    const next = at + run.text.length;
+    out.push(next <= end ? run : { ...run, text: run.text.slice(0, end - at) });
+    at = next;
+  }
+  return out;
+}
+
 /** Whether the text from a segment on, laid out alone, is ordered as the
  *  paragraph orders it: every letter at the level it has there. */
 function orderedAlone(
@@ -4767,13 +4887,26 @@ function orderedAlone(
   para: number,
   rtl: boolean,
 ): boolean {
-  const { text, levels } = aloneLevels(segment.runs, rtl);
-  for (let at = 0; at < levels.length; at += 1) {
-    if (segment.spans.isGap(at)) continue;
-    if (levels[at] === bidi.levels[para + at]) continue;
-    if (!isControl(text.charCodeAt(at))) return false;
+  const ordered = (text: string, levels: Uint8Array, end: number): boolean => {
+    for (let at = 0; at < end; at += 1) {
+      if (segment.spans.isGap(at)) continue;
+      if (levels[at] === bidi.levels[para + at]) continue;
+      if (!isControl(text.charCodeAt(at))) return false;
+    }
+    return true;
+  };
+  // Asked again at every line until it is, and where it is not it is the
+  // letters it starts with that say so: an embedding it starts inside, or a
+  // neutral whose letter is on the line before
+  const end = bidi.text.length;
+  if (end - para > START_MIN * START_OF) {
+    const start = bidi.text.slice(para, para + START_MIN);
+    const settled = settledLevels(settledOf(bidi), para, para + START_MIN, end);
+    const { levels } = bidiJs().getEmbeddingLevels(start, rtl ? 'rtl' : 'ltr');
+    if (!ordered(start, levels, settled)) return false;
   }
-  return true;
+  const { text, levels } = aloneLevels(segment.runs, rtl);
+  return ordered(text, levels, levels.length);
 }
 
 /**
