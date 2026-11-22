@@ -15518,8 +15518,6 @@ function drawNearest(
     data.length !== sw * sh * 4 ||
     dw <= 0 ||
     dh <= 0 ||
-    dw > PIXMAP_SIDE ||
-    dh > PIXMAP_SIDE ||
     dw * dh > NEAREST_PIXELS
   ) {
     return false;
@@ -18700,11 +18698,14 @@ function conicFill(
   if (!ctx.createPattern) return null;
   if (Math.ceil(w) * Math.ceil(h) > CONIC_MOST) return null;
   // one thinner than that and longer than a server makes a picture is made
-  // as long as it makes one, and drawn out to its length
+  // as long as it makes one and drawn out to its length, with a pixel past
+  // each end for the first and the last to be filtered with
   const width = Math.min(PIXMAP_SIDE, Math.max(1, Math.ceil(w)));
   const height = Math.min(PIXMAP_SIDE, Math.max(1, Math.ceil(h)));
-  const kx = w > PIXMAP_SIDE ? w / width : 1;
-  const ky = h > PIXMAP_SIDE ? h / height : 1;
+  const endX = w > PIXMAP_SIDE ? 1 : 0;
+  const endY = h > PIXMAP_SIDE ? 1 : 0;
+  const kx = endX ? w / (width - 2) : 1;
+  const ky = endY ? h / (height - 2) : 1;
   const key = `${width * kx}x${height * ky} ${currentColor} ${JSON.stringify(gradient)}`;
   let image = CONIC_IMAGES.get(key);
   if (image === undefined) {
@@ -18715,7 +18716,9 @@ function conicFill(
       for (let px = 0; px < width; px += 1) {
         const k = Math.min(
           CONIC_STEPS - 1,
-          Math.floor(turn((px + 0.5) * kx, (py + 0.5) * ky) * CONIC_STEPS),
+          Math.floor(
+            turn((px - endX + 0.5) * kx, (py - endY + 0.5) * ky) * CONIC_STEPS,
+          ),
         );
         const o = (py * width + px) * 4;
         // straight RGBA, as a canvas's pixels are
@@ -18731,5 +18734,5 @@ function conicFill(
   }
   const style = ctx.createPattern(image, 'no-repeat');
   if (!style) return null;
-  return { style, matrix: [kx, 0, 0, ky, x, y] };
+  return { style, matrix: [kx, 0, 0, ky, x - endX * kx, y - endY * ky] };
 }

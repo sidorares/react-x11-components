@@ -444,7 +444,7 @@ import type {
   ShadowPart,
   SpriteHost,
 } from './sprites.js';
-import { PIXMAP_SIDE, drawImageAt, drawImageSized } from './draw-image.js';
+import { PIXMAP_SIDE, drawImageSized } from './draw-image.js';
 import { SpriteStore, SurfaceCache, newSurface } from './surfaces.js';
 import { FilterStore } from './filters.js';
 import type { SurfaceLike } from './surfaces.js';
@@ -19028,7 +19028,7 @@ function drawCaptured(
     ctx.globalCompositeOperation = 'lighter';
   }
   if (Math.abs(sx - 1) < 1e-6 && Math.abs(sy - 1) < 1e-6) {
-    drawImageAt(ctx, surface, Math.round(dx), Math.round(dy));
+    ctx.drawImage(surface, Math.round(dx), Math.round(dy));
   } else {
     drawImageSized(
       ctx,

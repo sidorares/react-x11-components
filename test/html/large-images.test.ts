@@ -68,10 +68,15 @@ const IMAGES: Record<string, Uint8Array> = {
   'veil.png': bytes(noise(0, 0, 700, 700, true)),
   'veilcut.png': bytes(noise(599, 499, 4, 4, true)),
   'rows.png': bytes(noise(0, 499, 700, 4)),
+  'strip.png': bytes(noise(0, 0, 700, 1)),
+  'stripcut.png': bytes(noise(599, 0, 4, 1)),
   'ring.png': bytes(noise(0, 0, 30, 30)),
   // longer than a server makes a pixmap, and than a request says one is
   'tall.png': bytes(noise(0, 0, 4, 40000)),
   'tallcut.png': bytes(noise(0, 34990, 4, 80)),
+  'seam.png': bytes(noise(0, 32758, 4, 80)),
+  'wide.png': bytes(noise(0, 0, 70000, 4)),
+  'widerow.png': bytes(noise(68990, 0, 130, 4)),
   'taller.png': bytes(noise(0, 0, 4, 70000)),
   'tallercut.png': bytes(noise(0, 68990, 4, 80)),
   'drawing.svg': svgBytes(
@@ -111,6 +116,15 @@ const img = (src: string, side: number, css = ''): string =>
 const button = (src: string, side: number): string =>
   `<input type=image src=${src} width=${side} height=${side} ` +
   'style="display:block">';
+
+/** An item whose marker, beside it, is 100 pixels down: the strip's 70,000
+ *  across from -60,000, or 400 of it from -100. */
+const marker = (src: string, left: number): string =>
+  box(
+    '',
+    `<div style="display:list-item;margin-left:${left}px;width:10px;` +
+      `height:40px;list-style-image:image-set(url(${src}) 0.01x)"></div>`,
+  );
 
 /** What `run` does, and that no document was left blank by it. */
 async function unbroken<T>(source: string, run: () => Promise<T>): Promise<T> {
@@ -202,6 +216,12 @@ function scrolled(source: string, top: number, scale: number) {
     );
     const el = view(screen.getByTestName('doc') as DrawnNode);
     await imagesIn(el);
+    await act(() => paneOf(el).scrollTo({ y: top - 60 }));
+    // what is kept of its images made, and then a step down, whose strip
+    // reaches past what was kept
+    for (let i = 0; i < 2; i += 1) {
+      await act(() => (el as unknown as { invalidate(): void }).invalidate());
+    }
     await act(() => paneOf(el).scrollTo({ y: top }));
     await act();
     const { abs } = el as unknown as { abs: { y: number } };
@@ -397,6 +417,16 @@ const PAIRS: [name: string, large: string, same: string, apart?: number][] = [
     box('background:#ff0000'),
   ],
   [
+    'one where its pieces meet',
+    box('', '<img src=tall.png style="display:block;margin-top:-32768px">'),
+    box('', '<img src=seam.png style="display:block;margin-top:-10px">'),
+  ],
+  [
+    'an image wider than a request says one is',
+    box('', '<img src=wide.png style="display:block;margin-left:-69000px">'),
+    box('', '<img src=widerow.png style="display:block;margin-left:-10px">'),
+  ],
+  [
     'a border image of one',
     box('box-sizing:border-box;border:10px solid;border-image:url(red.png) 1'),
     box('box-sizing:border-box;border:10px solid #ff0000'),
@@ -416,6 +446,14 @@ const PAIRS: [name: string, large: string, same: string, apart?: number][] = [
       'background:conic-gradient(#ff0000 50%,#00ff00 0) 0 -100px/10px 70000px',
     ),
     box('background:linear-gradient(90deg,#00ff00 50%,#ff0000 0) 0 0/10px'),
+  ],
+  [
+    'one as wide as that',
+    box(
+      'background:conic-gradient(#ff0000 50%,#00ff00 0) 0 0/70000px 10px ' +
+        'repeat-y',
+    ),
+    box('background:#00ff00'),
   ],
   [
     'an image turned about its corner',
@@ -455,15 +493,7 @@ const PAIRS: [name: string, large: string, same: string, apart?: number][] = [
       `display:block}</style>${box('', '<div id=b></div>')}`,
     start,
   ],
-  [
-    'a list marker',
-    box(
-      '',
-      '<div style="display:list-item;list-style:inside ' +
-        'image-set(url(big.png) 0.01x)"></div>',
-    ),
-    start,
-  ],
+  ['a list marker', marker('strip.png', 10000), marker('stripcut.png', 300)],
   [
     'an image button',
     box('', button('big.png', 70000)),
@@ -568,13 +598,13 @@ for (const scale of [1, 2]) {
       const body = '<style>body{margin:0}body>div{overflow:hidden}</style>';
       const a = await scrolled(
         `${body}<div><div style="margin-left:-60000px">${tall}</div></div>`,
-        50000,
+        50120,
         scale,
       );
       const b = await scrolled(
         `${body}<div style="height:70000px;background:url(cut.png) ` +
           '-100px 49900px/400px 400px no-repeat"></div>',
-        50000,
+        50120,
         scale,
       );
       assert.ok(colours(b) > 2, 'the page it is held to shows it');

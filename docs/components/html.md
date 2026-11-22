@@ -194,7 +194,7 @@ An image drawn at another size than its own is smoothed, unless
 is a block of one colour, on an `<img>`, a `<canvas>` and a background
 alike. A context with a smoothing switch (react-x11's native one) is told so,
 and on ntk's the image is scaled to the nearest pixel here, once a size, up to
-four million pixels and 32,767 a side; a larger one is smoothed there. A
+four million pixels; a larger one is smoothed there. A
 PNG whose data ends early is drawn as far as it goes, as a browser draws one
 still arriving: the rows, or for an interlaced image the passes, it reached,
 and the rest transparent. That is a fallback for a PNG core's decoder
