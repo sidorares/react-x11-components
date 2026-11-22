@@ -8793,22 +8793,45 @@ function sizeReplaced(
   const oy = outer ? box.verticalExtra : 0;
   const widthOf = (h: number): number => Math.max(0, (h + oy) * ratio - ox);
   const heightOf = (w: number): number => Math.max(0, (w + ox) / ratio - oy);
+  // the width a block would have here: what a ratio with no size fills, and
+  // an `hr`, whose whole appearance is its border across the line
+  const room = (): number => {
+    const w =
+      containingWidth - box.marginLeft - box.marginRight - box.horizontalExtra;
+    return Number.isFinite(w) ? Math.max(0, w) : 0;
+  };
+
   // a limit that is its content's: what its ratio makes of the size it has the
   // other way, and else its natural one (CSS Sizing 3, 5.1), narrowest and
   // widest alike
-  const contentWidth = (): number => {
-    if (height !== null && ratio > 0) return widthOf(height);
+  const tall =
+    height === null
+      ? null
+      : Math.max(
+          down(style.minHeight) ?? 0,
+          Math.min(
+            height,
+            style.maxHeight === 'none'
+              ? Infinity
+              : (down(style.maxHeight) ?? Infinity),
+          ),
+        );
+  const contentWidth = (none: number): number => {
+    if (tall !== null && ratio > 0) return widthOf(tall);
+    // one of a ratio alone is as wide as its room, which is no limit
+    if (iw === null && ih === null && ratio > 0) return none;
     return iw ?? (ih !== null && ratio > 0 ? widthOf(ih) : own.width);
   };
   const contentHeight = (): number => {
     if (width !== null && ratio > 0) return heightOf(width);
+    if (iw === null && ih === null && ratio > 0) return heightOf(room());
     return ih ?? (iw !== null && ratio > 0 ? heightOf(iw) : own.height);
   };
   const minW =
     (style.minWidthKeyword === 'stretch'
       ? stretchedWidth
       : style.minWidthKeyword
-        ? contentWidth()
+        ? contentWidth(0)
         : null) ??
     across(style.minWidth) ??
     0;
@@ -8823,7 +8846,7 @@ function sizeReplaced(
     style.maxWidthKeyword === 'stretch' && stretchedWidth !== null
       ? stretchedWidth
       : style.maxWidthKeyword && style.maxWidthKeyword !== 'stretch'
-        ? contentWidth()
+        ? contentWidth(Infinity)
         : style.maxWidth === 'none'
           ? Infinity
           : (across(style.maxWidth) ?? Infinity),
@@ -8836,14 +8859,6 @@ function sizeReplaced(
         ? Infinity
         : (down(style.maxHeight) ?? Infinity),
   );
-  // the width a block would have here: what a ratio with no size fills, and
-  // an `hr`, whose whole appearance is its border across the line
-  const room = (): number => {
-    const w =
-      containingWidth - box.marginLeft - box.marginRight - box.horizontalExtra;
-    return Number.isFinite(w) ? Math.max(0, w) : 0;
-  };
-
   let w: number;
   let h: number;
   if (width === null && height === null && ratio > 0) {
