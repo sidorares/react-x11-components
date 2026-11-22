@@ -173,6 +173,16 @@ export function makeFrame(
   // main axis is its writing mode's inline axis for a row, which is the
   // frame's across): the frame is the flex box, and the root a block
   // around it.
+  // A root's `text-box-trim` trims the lines its frame holds, which run in
+  // the frame's axes: the frame trims them, as a horizontal box trims its
+  // own, and the root holds them as laid out (CSS Inline 3, 5.1; WPT's
+  // text-box-trim-half-leading-block-box-002)
+  if (box.style.textBoxTrim !== 'none') {
+    style.textBoxTrim = box.style.textBoxTrim;
+    const root = copyStyle(box.style);
+    root.textBoxTrim = 'none';
+    box.style = root;
+  }
   const grid = box.kind === 'flex';
   if (grid) {
     const own = box.style;
