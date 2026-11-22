@@ -113,6 +113,9 @@ export interface Item {
    *  are sized on (`throughSubgrid`); none for an item of the grid. */
   before: number;
   after: number;
+  /** Whether it is no box but the edge of a subgrid with nothing in its
+   *  track there: `before` and `after` are all it makes of it. */
+  edge?: boolean;
   /** Its border box's height as the subgrid it is in laid it out, which
    *  its parent's rows are sized with; NaN for its box's own. */
   height: number;
@@ -501,6 +504,10 @@ export function layoutGrid(
   const measure = (item: Item): void => {
     if (item.max >= 0) return;
     const extra = item.before + item.after;
+    if (item.edge) {
+      item.min = item.max = extra;
+      return;
+    }
     const [narrowest, widest] = trackContributions(item.box, ctx);
     item.min = narrowest + extra;
     item.max = widest + extra;
@@ -1608,10 +1615,8 @@ function sizedBy(items: Item[], axis: 'cols' | 'rows'): Item[] {
  * margin, border and padding at an edge of it as more margin for an item
  * at that edge, and half what its gap is more than its parent's for one
  * that is not — an item of a subgrid in it as its items are, the margins
- * adding up. Where the track at an edge holds nothing, the items in the
- * track nearest it are counted again as reaching the edge, with the
- * margin there: the subgrid's padding stays in its tracks with nothing in
- * them. The other axis is the subgrid's, and none of the parent's.
+ * adding up. Where the track at an edge holds nothing, the margin there is
+ * that track's all the same, as an empty item's. The other axis is the subgrid's, and none of the parent's.
  */
 function throughSubgrid(item: Item, axis: 'cols' | 'rows'): Item[] {
   const box = item.box;
@@ -1624,7 +1629,6 @@ function throughSubgrid(item: Item, axis: 'cols' | 'rows'): Item[] {
       inner.push(...throughSubgrid(child, axis));
     } else inner.push(child);
   }
-  if (!inner.length) return [];
   const startOf = (it: Item) => (across ? it.col : it.row);
   const spanOfItem = (it: Item) => (across ? it.cols : it.rows);
   const n = across ? item.cols : item.rows;
@@ -1668,19 +1672,16 @@ function throughSubgrid(item: Item, axis: 'cols' | 'rows'): Item[] {
     }
     out.push(moved);
   };
-  let first = Infinity;
+  let first = n;
   let last = 0;
   for (const it of inner) {
     first = Math.min(first, startOf(it));
     last = Math.max(last, startOf(it) + spanOfItem(it));
+    add(it, startOf(it), spanOfItem(it));
   }
-  for (const it of inner) add(it, startOf(it), spanOfItem(it));
-  for (const it of inner) {
-    if (first > 0 && startOf(it) === first) add(it, 0, first + spanOfItem(it));
-    if (last < n && startOf(it) + spanOfItem(it) === last) {
-      add(it, startOf(it), n - startOf(it));
-    }
-  }
+  const edge = { ...item, before: 0, after: 0, shim: 0, edge: true };
+  if (first > 0) add(edge, 0, 1);
+  if (last < n && !(n === 1 && first > 0)) add(edge, n - 1, 1);
   return out;
 }
 
@@ -2549,6 +2550,7 @@ export function leastWidth(
   measure: (item: Item) => void,
   ctx: LayoutContext,
 ): number {
+  if (item.edge) return item.before + item.after;
   const box = item.box;
   const style = box.style;
   const margins = marginsInNoRoom(box) + item.before + item.after;
@@ -2622,6 +2624,16 @@ export function rowItem(
   tracks: SizingTrack[],
   gap: number,
 ): TrackItem {
+  if (item.edge) {
+    const outer = () => item.before + item.after;
+    return {
+      start: item.row,
+      span: item.rows,
+      minContent: outer,
+      maxContent: outer,
+      minimum: outer,
+    };
+  }
   const box = item.box;
   const margins =
     box.marginTop +

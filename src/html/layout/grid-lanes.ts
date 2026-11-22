@@ -167,6 +167,10 @@ export function layoutGridLanes(
   const widths = new Map<Box, [number, number]>();
   const measure = (item: Item): void => {
     if (item.max >= 0) return;
+    if (item.edge) {
+      item.min = item.max = item.before + item.after;
+      return;
+    }
     let pair = widths.get(item.box);
     if (!pair) {
       pair = trackContributions(item.box, ctx);
