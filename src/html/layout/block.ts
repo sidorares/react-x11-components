@@ -8775,24 +8775,6 @@ function sizeReplaced(
     stretchedHeight !== null
       ? Math.max(0, stretchedHeight - box.verticalExtra)
       : down(style.height);
-  const minW =
-    (style.minWidthKeyword === 'stretch' ? stretchedWidth : null) ??
-    across(style.minWidth) ??
-    0;
-  const minH = down(style.minHeight) ?? 0;
-  // a maximum below the minimum is the minimum (10.4)
-  const maxW = Math.max(
-    minW,
-    style.maxWidthKeyword === 'stretch' && stretchedWidth !== null
-      ? stretchedWidth
-      : style.maxWidth === 'none'
-        ? Infinity
-        : (across(style.maxWidth) ?? Infinity),
-  );
-  const maxH = Math.max(
-    minH,
-    style.maxHeight === 'none' ? Infinity : (down(style.maxHeight) ?? Infinity),
-  );
   // under size containment, as though it had no size or ratio of its own
   // but the one `contain-intrinsic-size` gives it (`ownIntrinsic`)
   const own = ownIntrinsic(box) ?? NO_INTRINSIC;
@@ -8811,6 +8793,49 @@ function sizeReplaced(
   const oy = outer ? box.verticalExtra : 0;
   const widthOf = (h: number): number => Math.max(0, (h + oy) * ratio - ox);
   const heightOf = (w: number): number => Math.max(0, (w + ox) / ratio - oy);
+  // a limit that is its content's: what its ratio makes of the size it has the
+  // other way, and else its natural one (CSS Sizing 3, 5.1), narrowest and
+  // widest alike
+  const contentWidth = (): number => {
+    if (height !== null && ratio > 0) return widthOf(height);
+    return iw ?? (ih !== null && ratio > 0 ? widthOf(ih) : own.width);
+  };
+  const contentHeight = (): number => {
+    if (width !== null && ratio > 0) return heightOf(width);
+    return ih ?? (iw !== null && ratio > 0 ? heightOf(iw) : own.height);
+  };
+  const minW =
+    (style.minWidthKeyword === 'stretch'
+      ? stretchedWidth
+      : style.minWidthKeyword
+        ? contentWidth()
+        : null) ??
+    across(style.minWidth) ??
+    0;
+  const minH = style.minHeightKeyword
+    ? style.minHeightKeyword === 'stretch'
+      ? 0
+      : contentHeight()
+    : (down(style.minHeight) ?? 0);
+  // a maximum below the minimum is the minimum (10.4)
+  const maxW = Math.max(
+    minW,
+    style.maxWidthKeyword === 'stretch' && stretchedWidth !== null
+      ? stretchedWidth
+      : style.maxWidthKeyword && style.maxWidthKeyword !== 'stretch'
+        ? contentWidth()
+        : style.maxWidth === 'none'
+          ? Infinity
+          : (across(style.maxWidth) ?? Infinity),
+  );
+  const maxH = Math.max(
+    minH,
+    style.maxHeightKeyword && style.maxHeightKeyword !== 'stretch'
+      ? contentHeight()
+      : style.maxHeight === 'none'
+        ? Infinity
+        : (down(style.maxHeight) ?? Infinity),
+  );
   // the width a block would have here: what a ratio with no size fills, and
   // an `hr`, whose whole appearance is its border across the line
   const room = (): number => {
