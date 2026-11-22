@@ -6143,16 +6143,7 @@ column ends and goes on at the head of the next. A block that is a
 formatting context of its own, a `flow-root` say, breaks as any block does;
 only one that scrolls or clips, a multicol container, a clamp and an
 orthogonal flow go to a column whole, as does a box whose only content is a
-float that cannot be cut. A grid's row the columns end inside is broken
-an item at a time, as Blink breaks it: each item goes on at the head of the
-next column from where it broke, the row as tall there as its longest item,
-a stretched item as tall as the row and one aligned in it as tall as what
-it holds, and what comes after the row starts under it. A row an item of
-which would leave nothing behind goes to the next column whole. A row with
-a forced break inside an item is broken where its items' content breaks
-together, as before. So is any row under cloned edges, in rows of columns, in
-a multicol container in another's columns, and in a table that repeats its
-header or footer. A forced break before the first child of a box
+float that cannot be cut. A forced break before the first child of a box
 with layout containment is none, since it would be the box's own. A forced
 break after a grid or flex item is after its row, and comes before the next
 row; after one in its box's last row it is the box's own, and goes out to
