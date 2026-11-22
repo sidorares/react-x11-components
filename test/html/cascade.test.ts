@@ -1832,7 +1832,7 @@ test('`:focus` matches no element, and a rule that names it stays in the cascade
   assert.strictEqual(boxOf(el, 'p').x, 0, 'nothing is focused');
 });
 
-test('a @supports test of the mask is answered, and every other is entered', () => {
+test('a @supports test is answered by what is drawn, and what only a browser draws is left open', () => {
   // A page keeps a background image under `not` for an engine without
   // masks. Entered as every `@supports` block was, Wikipedia's chevron was
   // that image in black under its mask, over its blue
@@ -1845,16 +1845,45 @@ test('a @supports test of the mask is answered, and every other is entered', () 
     supportsCondition('(mask-image: none) and (-webkit-mask-size: 1px)'),
     true,
   );
-  // what it cannot answer it does not: Tailwind 4 keeps its variables'
-  // starting values under a test for engines without `@property`
-  for (const unknown of [
-    '(display: grid)',
-    'not (display: grid)',
-    '(mask-image: none) and (display: grid)',
-    '((-webkit-hyphens: none) and (not (margin-trim: inline))) or ' +
-      '((-moz-orient: inline) and (not (color:rgb(from red r g b))))',
-  ]) {
-    assert.strictEqual(supportsCondition(unknown), null, unknown);
+  // what the cascade takes it answers for, with the value, and a property
+  // no browser has is none: each of these is Chrome's, and what real pages
+  // ask (Tailwind 4's first, which keeps its variables' starting values
+  // under it for engines without `@property`)
+  for (const [condition, answer] of [
+    [
+      '(((-webkit-hyphens: none)) and (not (margin-trim: inline))) or ' +
+        '((-moz-orient: inline) and (not (color:rgb(from red r g b))))',
+      false,
+    ],
+    ['(display: grid)', true],
+    ['not (display: grid)', false],
+    ['(mask-image: none) and (display: grid)', true],
+    ['(color:color-mix(in lab, red, red))', true],
+    ['(background-image:linear-gradient(in lab, red, red))', true],
+    ['not (color:light-dark(tan,tan))', false],
+    ['not (backdrop-filter:blur(12px))', false],
+    ['not (interpolate-size:allow-keywords)', false],
+    ['not (aspect-ratio:9/16)', false],
+    ['(width:round(1.5px,1px))', true],
+    ['(-webkit-backdrop-filter:var(--tw))', true],
+    ['(animation-timeline:scroll())', true],
+    ['(font:-apple-system-body)', false],
+    ['(display: rainbow)', false],
+    ['not (display: rainbow)', true],
+    ['(width: 12elephants)', false],
+    ['(-webkit-touch-callout:none)', false],
+    ['(-webkit-overflow-scrolling:touch)', false],
+    ['(-moz-orient: inline)', false],
+    ['(unknown: green)', false],
+    ['not (unknown: green)', true],
+    // a property a browser has and nothing here draws is left open, under
+    // `not` as without it
+    ['(stroke-color: red)', null],
+    ['not (stroke-color: red)', null],
+    ['(display: grid) and (stroke-color: red)', null],
+    ['(display: rainbow) and (stroke-color: red)', false],
+  ] as const) {
+    assert.strictEqual(supportsCondition(condition), answer, condition);
   }
   // a selector by whether it is one, `&` the scope and a relative one none
   assert.strictEqual(supportsCondition('selector(:focus-visible)'), true);

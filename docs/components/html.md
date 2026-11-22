@@ -8257,8 +8257,11 @@ backend has no offscreen surface, the element is drawn unmasked. A
 background image a page keeps under `not` for an engine without masks is
 not drawn under the mask, and so does a test of `subgrid` for
 `grid-template-rows` or `grid-template-columns`, so the `auto` rows a page
-keeps under `not` for an engine without subgrids do not undo its subgrid;
-a test of any other declaration is entered, as it always was. What is no
+keeps under `not` for an engine without subgrids do not undo its subgrid.
+Any other declaration holds where `<Html>` takes it, value and all, and one
+of a property no browser has does not; a test of a property a browser has
+and `<Html>` draws nothing of is entered, under `not` as without it, since
+what else the block holds may be drawn. What is no
 condition — `and` beside `or`, a declaration in no brackets — holds nowhere,
 and so does one that asks by a function nothing knows, as in a browser.
 
