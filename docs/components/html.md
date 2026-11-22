@@ -6404,7 +6404,7 @@ and `subgrid` with its groups of names as written. A subgrid's axis reads
 `subgrid` and a group of its own names for each line it spans, an
 `auto-fill` of them repeated into the room the others leave, and a grid
 container's `subgrid` on an axis it subgrids nothing on — no grid around
-it, or layout containment — reads `none`. Across writing modes, where no
+it, layout containment, or a size container — reads `none`. Across writing modes, where no
 subgrid is laid out here, it reads as its groups with a count's
 repetitions said out. A grid with no template, no areas and nothing in it
 reads `none` for its track lists, where its layout made one track. `grid-template-areas` reads as a string a row,
