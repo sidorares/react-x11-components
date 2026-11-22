@@ -9571,13 +9571,14 @@ export function layered(parent: Box, child: Box): boolean {
  * rather than by its lines (CSS 2.1 Appendix E, step 8): one an inset moves,
  * so that what is after it in the flow goes under it, and it over a
  * positioned box before it, or one its `z-index` places, under the flow of
- * its context where that is negative. Its text is what makes it possible: a box with
- * an inset has its text laid out apart from the text around it (`collect`),
- * and a line paints a batch a layout, so what is the box's can be left out
- * of the line (`LinesApart`) and drawn at its turn (`paintApart`). A box
- * with every inset and its `z-index` `auto` is in its paragraph's layout,
- * moves nowhere, and stays on its line: laid out apart, joshwcomeau.com's hundreds of them
- * would each take a paragraph off the one layout it is. One with a
+ * its context where that is negative. Its text is what makes it possible: a
+ * box with an inset has its text laid out apart from the text around it
+ * (`collect`), and a line paints a batch a layout, so what is the box's can
+ * be left out of the line (`LinesApart`) and drawn at its turn
+ * (`paintApart`). A box with every inset and its `z-index` `auto` is in its
+ * paragraph's layout, moves nowhere, and stays on its line: laid out apart,
+ * joshwcomeau.com's hundreds of them would each take a paragraph off the one
+ * layout it is. One with a
  * `view-transition-name` is laid out apart too (`laidApart`): a transition
  * captures it alone, and leaves it out of what it is in. Nor is one in a
  * faded inline box a layer: its fade is in the colours of its text, and
