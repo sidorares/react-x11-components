@@ -33,6 +33,29 @@ Stage 2, flex lines broken the same way, was written and not merged. It had the
 second fault, and was reported as bringing up a test it left blank: a test and
 a reference that both come out blank match.
 
+## What the checks missed
+
+| check                                                                                                                  | what it had none of                        | so it could not see                                                                |
+| ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------- |
+| the 100 cases #1828 came with, `scripts/conformance/grid-rows.ts`                                                      | anything but plain columns, and text       | the first regression and the third, and, as no item in them goes whole, the second |
+| the 160 cases #1848 came with, of cloned edges, rows of columns, nested columns and a repeated header                  | an item that goes whole, and text          | the second and the third                                                           |
+| the 1,712 of css-break, css-multicol and css-position, and the 582 of css-gaps, css-flexbox and css-grid run with them | a result that changed for any of the three | all three, but for a flex test that stage 2 left blank, which read as a pass       |
+
+## What waits
+
+Flex lines broken so (stage 2, `claude/flex-rows-by-item`, unpushed), a table's
+rows, a forced break inside an item (rule 2) and lifting what was gated for it
+all wait for a round that takes the causes one at a time. It claims nothing
+until it has passed the three parts of one check, in order, over generated
+documents and against Chromium:
+
+1. nothing throws, comes out blank or newly takes seconds;
+2. no case that matched ceases to, rectangle by rectangle;
+3. what is drawn, read from pixels, with text in it.
+
+`scripts/conformance/column-rows.ts` is the first two, over 10,000 cases of
+every kind of item, and has no text. The third is to be written.
+
 ## What the next attempt has to hold
 
 - **Text.** Its lines' places against Chromium, and what is drawn: ink by column
@@ -49,8 +72,9 @@ a reference that both come out blank match.
   and a repeated header, as well as plain.
 - **An item aligned in its row**: 18 of 100 cases differ from Chromium, by rules
   not worked out. So do 41 of 49 with a forced break inside an item.
-- **No case that matched before may cease to**, judged by Chromium over
-  generated documents of every kind of item, not only those an attempt is about.
+- **No case that matched before may cease to** (`column-rows.ts`). At 41e331b39
+  2,243 of its 10,000 match, and 2,122 with #1828, with or without #1848: 175
+  came to match, 296 ceased to, and 27 threw.
 - **A test that comes out blank, throws, or newly takes seconds is a failure**,
   whatever its comparison says.
 

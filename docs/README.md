@@ -86,6 +86,10 @@ parts.
   and the two phases that make a change cost what it changed: a changed
   subtree built into the kept tree, then a layout that leaves alone what
   did not move.
+- [Breaking a grid's row an item at a time](prd-html-grid-rows.md) — tried
+  and taken out: what a browser does in columns, the three regressions the
+  attempt brought and what its checks had no case of, and what the next one
+  has to hold.
 - [`<Html>` animations off the JavaScript clock](prd-html-animations.md) —
   investigation: what Core Animation, react-x11's two presenters and the
   X11 and Wayland backends can run of a CSS animation, which animations
