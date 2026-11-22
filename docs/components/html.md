@@ -8456,7 +8456,9 @@ a flex box or a table on the way holds a side, and the innermost trim wins;
 a block in a vertical writing mode trims its lines across the page, at its
 block-start and block-end, as its frame trims them;
 an outside marker on a trimmed first line reaches as high as its face and
-not its half-leading, so a nested list trims as a list of one level; a
+not its half-leading, so a nested list trims as a list of one level;
+a `<br>` that clears floats after the last line is passed over for it, and
+the box ends no higher than the floats it cleared; a
 face that says no capital or x height has one of 0.7em or 0.5em; the
 ideographic edges are an em box centred on the text, as no face here says
 where its ideographic baselines are; trimming an inline box's content

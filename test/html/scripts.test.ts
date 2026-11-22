@@ -7117,11 +7117,21 @@ test('a resize observer is told in the frame, after its animation frame callback
       '  if (seen.length < 6) entries.forEach(function (e) { e.target.style.width = (e.target.offsetWidth + 1) + "px"; });' +
       '});' +
       'requestAnimationFrame(function () { ro.observe(a); ro.observe(b); });' +
-      '(function tick() { rafs++; if (rafs < 30) requestAnimationFrame(tick); })();' +
-      'setTimeout(function () { document.getElementById("out").textContent = seen.join(","); }, 500);' +
+      'var after = 0, from = performance.now();' +
+      '(function tick() {' +
+      '  rafs++;' +
+      '  if (seen.length >= 7) after++;' +
+      '  if (after < 10 && performance.now() - from < 10000) requestAnimationFrame(tick);' +
+      '  else document.getElementById("out").textContent = seen.join(",");' +
+      '})();' +
       '</script>',
   );
-  const text = await settled(doc, 'out', (t) => t !== '');
+  // Ten frames past the last of the seven there are, which is what there is
+  // to wait for, so that one too many is here as well as one too few. Read
+  // after half a second, the last was still to come on a machine with a
+  // frame every hundred milliseconds. Ten seconds with fewer reads what
+  // came by then.
+  const text = await settled(doc, 'out', (t) => t !== '', 30000);
   // the first frame tells both, a pass later only b, deeper than a, then
   // nothing is deeper than b and both are left over: the error, and the
   // next frame tells them
