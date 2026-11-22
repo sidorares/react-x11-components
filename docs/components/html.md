@@ -6404,7 +6404,7 @@ and `subgrid` with its groups of names as written. A subgrid's axis reads
 `subgrid` and a group of its own names for each line it spans, an
 `auto-fill` of them repeated into the room the others leave, and a grid
 container's `subgrid` on an axis it subgrids nothing on — no grid around
-it, or layout containment — reads `none`. Across writing modes, where no
+it, layout containment, or a size container — reads `none`. Across writing modes, where no
 subgrid is laid out here, it reads as its groups with a count's
 repetitions said out. A grid with no template, no areas and nothing in it
 reads `none` for its track lists, where its layout made one track. `grid-template-areas` reads as a string a row,
@@ -7388,10 +7388,11 @@ before the list, `translate`, then `rotate`, then `scale`, as CSS
 Transforms 2 puts them together: `scale: 1 1 2` deepens what a
 `rotateY()` in the list turns out of the plane, and is nothing to the flat
 box that `rotate` turns after it. A box is seen in the `perspective` of the
-nearest box with one up its containing blocks — through positioned boxes,
-and not past a box with a transform of its own, which flattens what it
-holds into its plane — from that box's `perspective-origin`, as Chrome
-sees it. So a panel turned about
+element it is a child of, from that element's `perspective-origin`, wherever
+it is positioned: a grandchild is seen flat in the plane of what is between,
+as Chrome, Firefox and Safari see it, but through what is `display: contents`
+between them and what has no transform of its own and a `transform-style` of
+`preserve-3d`. So a panel turned about
 its upright in a perspective is drawn as a trapezoid, its far side smaller,
 where the pointer finds it and `elementRect` measures it: the Zen Garden's
 219 tilts its sidebar's panel `rotateY(40deg)` in a `perspective: 1000px`,
@@ -7670,7 +7671,7 @@ comes to `display: none` there. What else an `@starting-style` holds — an
 A child inherits for both its starting style and the end of its own
 transitions from its parent's style after the change, not the parent's
 value as drawn while its transition runs, so the two run as one. A
-`revert-layer` in a starting style, as anywhere, is not read. A `<legend>` outside a `<fieldset>` is
+`<legend>` outside a `<fieldset>` is
 not blockified, so its starting style's `display: inline` starts a
 transition of its `display` where Edge starts none. A transition is
 an animation, so what it runs makes the stacking context an animation of
@@ -7853,7 +7854,9 @@ number, and until it is 2 the cards after it are painted over its glow.
 (CSS Containment 2). A box with size containment is laid out as though it
 held nothing, as large as `contain-intrinsic-size` says or no larger than
 its padding and border, and an image as though it had no size or ratio of
-its own; `inline-size` does that across alone. Layout and paint
+its own; `inline-size` does that across alone. A table caption takes every
+containment, a cell all but size containment, and the rest of a table's
+inner parts none. Layout and paint
 containment make the box a formatting context, a stacking context and the
 containing block of every absolute and fixed box in it, and layout
 containment keeps its baseline in; paint containment clips what the box
@@ -8604,7 +8607,9 @@ an inline image in the pseudo-element's line, of its own size once it
 arrives and of none before.
 `counter-reset`, `counter-increment` and `counter-set` are scoped as CSS
 Lists 3 scopes them, `reversed()` included, so numbered headings and nested
-outline numbers come out as they do in a browser. The generated text is
+outline numbers come out as they do in a browser: a counter reaches its
+element's descendants and later siblings, nested in one of its name around
+it, but for a list's own, which reaches what the list holds. The generated text is
 drawn and laid out as the document's, and is no part of a selection, as
 in every browser: see "A selection starts in what the press is on".
 
@@ -8685,7 +8690,7 @@ the selection, in `Mark` under `MarkText` where no rule says otherwise: see
 a text field's hint its colour and its opacity, which its widget draws:
 see [Forms](#forms).
 
-**Lengths:** `px`, `em`, `rem`, `ex`, `ch`, `ic`, `lh`, `rlh`, `vw`, `vh`,
+**Lengths:** `px`, `em`, `rem`, `ex`, `cap`, `ch`, `ic`, `lh`, `rlh`, `vw`, `vh`,
 `vi`, `vb` (the element's own inline and block axes, so the height and
 the width in a vertical writing mode), `vmin`, `vmax` — and the small,
 large and dynamic viewports'
@@ -8693,7 +8698,8 @@ large and dynamic viewports'
 viewport — and the absolute units, and `calc()`, `min()`, `max()` and
 `clamp()` over them (CSS Values 4). An `ex` is the font's x-height and a
 `ch` the advance of its "0", as the text engine reports them, or half an em
-where it cannot say; an `ic` the advance of its "水", or an em, and an em
+where it cannot say; a `cap` the height of its capitals, or its ascent
+where the face states none; an `ic` the advance of its "水", or an em, and an em
 down a vertical line, where an ideograph stands upright; an `lh` is the element's line height, `normal` as its
 font's own — in `line-height` itself its parent's, as an `em` in
 `font-size` is — and an `rlh` the root's. A `rem` is the root element's font
@@ -9052,6 +9058,15 @@ element, worked out the first time a declaration reverts (CSS Cascade 5,
 7.3.3), and so does one in a `@position-try` rule: `p { margin: 0 } p {
 margin-top: revert }` is the UA sheet's `1em`, and `all: revert` takes
 every property `all` sets back so. `revert` in the UA sheet is `unset`.
+`revert-layer` takes it back to what the cascade layers under its own make
+of it (7.3.6), worked out the same way: an earlier `@layer`'s declaration,
+or the UA sheet's where none under it sets the property. The `style`
+attribute and an animation's frames are layers of their own over the
+author's, and an `!important` one drops what is between its layer's normal
+and `!important` declarations with them. What either goes back to is
+computed as the element's: its font for an `em`, its custom properties for
+a `var()`. Neither is worked out for an SVG shape's properties, nor for
+`zoom`.
 
 **Colours:** the named colours, hex with three, four, six or eight digits,
 the system colours, and CSS Color 4's functions: `rgb()` and `hsl()` in
@@ -9731,7 +9746,8 @@ measured, but for what is fixed to the viewport. The element stays its
 window's width, which the initial containing block is; it mounts a box of
 no size where the overflow ends, which is what the pane scrolls to, and
 draws the document past its own box (core's `paintOverhang`). The root's
-`scrollWidth` reads it. A page that scrolls across as it loads, before that
+`scrollWidth` reads it. A grid that scrolls reaches as far as its tracks do,
+whatever is in them, and its end padding past that. A page that scrolls across as it loads, before that
 box is mounted, is moved there once it is, a frame later, where a browser
 has it there at once: `scrollX` reads 0 until then.
 

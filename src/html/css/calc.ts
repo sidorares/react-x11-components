@@ -87,12 +87,13 @@ export function parseMathNumber(
 export function parseMathNumberWith(
   value: string,
   dimension: (token: string) => number | null,
+  largest = LARGEST,
 ): number | null {
   const term = parseTerm(value, dimension);
   if (!term || term.kind !== 'linear' || term.length || term.angle) {
     return null;
   }
-  return censor(term.px);
+  return censor(term.px, largest);
 }
 
 /**

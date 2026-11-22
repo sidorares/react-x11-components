@@ -177,7 +177,11 @@ export interface Stylesheet {
   fontFaces: FontFaceRule[];
   /** `@counter-style` rules, in order: a name and its descriptors, which
    *  the cascade reads into counter styles (CSS Counter Styles 3, 3). */
-  counterStyles?: { prelude: string; declarations: Declaration[] }[];
+  counterStyles?: {
+    prelude: string;
+    declarations: Declaration[];
+    media: MediaCondition[][] | null;
+  }[];
   /** `@font-feature-values` rules, in order (`FeatureValuesRule`). */
   featureValues?: FeatureValuesRule[];
   /** `@keyframes` rules, in order (`KeyframesRule`). */
@@ -651,6 +655,7 @@ export function parseStylesheet(
           (sheet.counterStyles ??= []).push({
             prelude: at.prelude,
             declarations: parseDeclarations(at.block),
+            media,
           });
         } else if (
           (name === 'keyframes' || name === '-webkit-keyframes') &&
@@ -875,13 +880,17 @@ export function parseStylesheet(
   return sheet;
 }
 
+/** The text of an `:nth-child()` as far as its `of`. */
+const NTH_OF_ENDS = /:nth-(?:last-)?child\([^()]*\sof$/i;
+
 /**
  * A style sheet with its comments taken out, strings left alone. CSS drops a
  * comment wherever it stands (CSS 2.1 4.1.9) — between rules, which the
  * scanner already skipped, but also inside a selector: `div /* note *\/ {`
  * kept the note in the selector, the matcher refused it, and the rule was
  * dropped whole. In a selector a comment is replaced by nothing, as the
- * tokenizer does: `.a/**\/.b` is one compound selector. In a declaration
+ * tokenizer does: `.a/**\/.b` is one compound selector, but that it ends an
+ * `:nth-child(3 of/**\/li)`'s `of`. In a declaration
  * it is replaced by a space, since there it still ends the token before it:
  * `1/**\/0px` is two values and no length, and `-/**\/10px` is no
  * negative one. `decls` says the text starts inside a declaration block,
@@ -939,7 +948,13 @@ function withoutComments(text: string, decls = false, cuts?: number[]): string {
       const close = text.indexOf('*/', i + 2);
       const inDecls = blocks.length ? blocks[blocks.length - 1] : decls;
       // `@media/**\/all` is `@media all`
-      out += text.slice(from, i) + (inDecls || atRule ? ' ' : '');
+      out +=
+        text.slice(from, i) +
+        (inDecls ||
+        atRule ||
+        NTH_OF_ENDS.test(text.slice(Math.max(0, i - 64), i))
+          ? ' '
+          : '');
       i = close < 0 ? text.length : close + 1;
       from = i + 1;
       cuts?.push(out.length, from - out.length);
@@ -1202,6 +1217,9 @@ const COMPOUND_ARGUMENTS = new Set([
  * every scan of a rule reads it as an attribute selector, as it is one, and a
  * page's own writing of the name is a prefix it did not declare.
  *
+ * And `:nth-child(3 of.a)` is written with the space a reader of it looks
+ * for after the `of`, which needs none.
+ *
  * Done once, where a rule's text is final: this is what `rule.selector` is, so
  * filing a rule, reading its reach and its hover all see a type and a
  * pseudo-class they know, and none of them learns what a bar means.
@@ -1210,9 +1228,15 @@ export function qualifiedSelector(
   selector: string,
   names: SelectorNamespaces = NO_NAMESPACES,
 ): string | null {
+  if (selector.includes(':nth-')) {
+    selector = selector.replace(NTH_OF_TIGHT, '$1 ');
+  }
   if (names.fallback === null && !selector.includes('|')) return selector;
   return qualifiedList(selector, names, false, false);
 }
+
+/** `:nth-child()`'s `of` with what it is of straight after it. */
+const NTH_OF_TIGHT = /(:nth-(?:last-)?child\([^()]*\sof)(?=[.#[:*|])/gi;
 
 /** `qualifiedSelector` of a list: `resists` where it is the argument of a
  *  function whose subjects no default namespace reaches, and `forgiving`
@@ -2783,6 +2807,89 @@ function widthRange(
   return null;
 }
 
+/** The operator read from the other side of it. */
+const FLIPPED: Record<string, string> = {
+  '<': '>',
+  '<=': '>=',
+  '>': '<',
+  '>=': '<=',
+  '=': '=',
+};
+
+/**
+ * A range in Media Queries 4's syntax of a feature that is no size of the
+ * viewport (`widthRange`): an aspect ratio, a resolution, or one a desktop
+ * screen answers with a number, as the bounds it sets or its answer. Null
+ * where a value is none of the feature's, and undefined for a term that is no
+ * such range. A strict bound is one `RATIO_EDGE` inside the value.
+ */
+function featureRange(
+  term: string,
+): MediaCondition | boolean | null | undefined {
+  const inner = /^\(\s*(.*?)\s*\)$/s.exec(term)?.[1];
+  if (!inner || !/[<>=]/.test(inner)) return undefined;
+  const parts = inner.split(/\s*(<=|>=|<|>|=)\s*/);
+  if (parts.length !== 3 && parts.length !== 5) return undefined;
+  const isFeature = (part: string) =>
+    RANGED_FEATURES.test(part) || RANGED_NUMBERS.has(part.toLowerCase());
+  const at = parts.length === 3 && isFeature(parts[0]) ? 0 : 2;
+  if (!isFeature(parts[at])) return undefined;
+  const name = parts[at].toLowerCase();
+  // each `name op value`, the operator read from the name's side
+  const tests: [string, string][] = [];
+  if (at === 2) tests.push([FLIPPED[parts[1]], parts[0]]);
+  if (at === 0) tests.push([parts[1], parts[2]]);
+  if (parts.length === 5) {
+    // the two the same way round, and neither an `=`
+    if (parts[1][0] !== parts[3][0] || parts[1] === '=') return null;
+    tests.push([parts[3], parts[4]]);
+  }
+  const numeric = RANGED_NUMBERS.get(name);
+  if (numeric !== undefined) {
+    let holds = true;
+    for (const [op, value] of tests) {
+      if (!/^[+-]?\d+$/.test(value)) return null;
+      const n = Number(value);
+      holds &&=
+        op === '='
+          ? numeric === n
+          : op[0] === '<'
+            ? numeric < n || (op === '<=' && numeric === n)
+            : numeric > n || (op === '>=' && numeric === n);
+    }
+    return holds;
+  }
+  const ratio = name.endsWith('aspect-ratio');
+  const [lo, hi]: [Bound, Bound] = ratio
+    ? ['minAspect', 'maxAspect']
+    : ['minResolution', 'maxResolution'];
+  let out: MediaCondition = {};
+  for (const [op, value] of tests) {
+    const n = ratio ? ratioOf(value) : resolutionOf(value, false);
+    if (n === null) return null;
+    const bound: MediaCondition = {};
+    if (op === '=' || op[0] === '>') {
+      bound[lo] = op === '>' ? n + RATIO_EDGE : n;
+    }
+    if (op === '=' || op[0] === '<') {
+      bound[hi] = op === '<' ? n - RATIO_EDGE : n;
+    }
+    const both = meet(out, bound);
+    if (!both) return false;
+    out = both;
+  }
+  return out;
+}
+
+const RANGED_FEATURES = /^(?:(?:device-)?aspect-ratio|resolution)$/i;
+
+/** What a desktop screen answers the numeric features with. */
+const RANGED_NUMBERS = new Map([
+  ['color', 8],
+  ['monochrome', 0],
+  ['color-index', 0],
+]);
+
 /** How deep rules may nest before the ones further in are dropped: far
  *  past anything written by hand or by a framework, and short of what a
  *  generated sheet could make of the stack. */
@@ -4011,6 +4118,8 @@ function featureTest(term: string): MediaCondition | boolean | null {
     if (heights.max !== undefined) out.maxHeight = heights.max;
     return out;
   }
+  const range = featureRange(term);
+  if (range !== undefined) return range;
   const feature = mediaFeature(term);
   if (!feature) {
     // a feature in the boolean context, `(hover)`: true where its value is
