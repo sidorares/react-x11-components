@@ -4631,8 +4631,14 @@ export class Cascade {
   /** Every width at which some `@media` rule changes its mind, in CSS
    *  pixels — the unit the author wrote them in. */
   readonly breakpoints: number[];
-  /** The counter styles the sheets define, over the predefined ones. */
-  readonly counterStyles: CounterStyles;
+  /** The sheets' `@counter-style` rules, in their order, and the styles
+   *  they come to where the media in force are `key`'s. */
+  private _counterRules: {
+    name: string;
+    rule: CounterStyleRule;
+    media: MediaCondition[][] | null;
+  }[] = [];
+  private _counterStyles: { key: string; styles: CounterStyles } | null = null;
   /** What the sheets' `@font-feature-values` rules give each family's
    *  names, null where they have none (`settleAlternates`). */
   featureValues: FeatureValues | null = null;
@@ -5086,7 +5092,6 @@ export class Cascade {
     if (takes) this._takeOver(before);
     else this._makeMatchers(documentElement);
     const breakpoints = new Set<number>();
-    const counterStyles = new Map<string, CounterStyleRule>();
     for (const sheet of sheets) {
       // a family's feature values, a name's last over any before it
       for (const { families, values } of sheet.featureValues ?? []) {
@@ -5102,9 +5107,12 @@ export class Cascade {
         }
       }
       // a counter style's rule whole over any before it of its name
-      for (const { prelude, declarations } of sheet.counterStyles ?? []) {
+      for (const { prelude, declarations, media } of sheet.counterStyles ??
+        []) {
         const style = counterStyleRule(prelude, declarations);
-        if (style) counterStyles.set(style.name, style.rule);
+        if (!style) continue;
+        this._counterRules.push({ ...style, media });
+        if (media) this._keyframeMedia.push(media);
       }
       // and a registration, so: the last valid one for a name
       for (const { name, inherits, initial, syntax } of sheet.properties ??
@@ -5156,7 +5164,37 @@ export class Cascade {
     }
     this._scoped = shadows.length > 0;
     this.breakpoints = [...breakpoints].sort((a, b) => a - b);
-    this.counterStyles = new CounterStyles(counterStyles);
+  }
+
+  /** The counter styles the sheets define whose media hold, over the
+   *  predefined ones. */
+  get counterStyles(): CounterStyles {
+    let key = '';
+    for (const { media } of this._counterRules) {
+      if (media) key += this._mediaHold(media) ? '1' : '0';
+    }
+    const kept = this._counterStyles;
+    if (kept?.key === key) return kept.styles;
+    const rules = new Map<string, CounterStyleRule>();
+    for (const { name, rule, media } of this._counterRules) {
+      if (!media || this._mediaHold(media)) rules.set(name, rule);
+    }
+    const styles = new CounterStyles(rules);
+    this._counterStyles = { key, styles };
+    return styles;
+  }
+
+  /** Whether the `@media` blocks around a rule hold at the viewport. */
+  private _mediaHold(media: MediaCondition[][]): boolean {
+    return mediaMatches(
+      media,
+      this.viewportWidth / this.scale,
+      this.look.colorScheme,
+      this.viewportHeight / this.scale,
+      this.scale,
+      this.reducedMotion,
+      this.scripting,
+    );
   }
 
   /** What a matcher is compiled over: made before the sheets, whose rules

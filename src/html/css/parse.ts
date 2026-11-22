@@ -172,7 +172,11 @@ export interface Stylesheet {
   fontFaces: FontFaceRule[];
   /** `@counter-style` rules, in order: a name and its descriptors, which
    *  the cascade reads into counter styles (CSS Counter Styles 3, 3). */
-  counterStyles?: { prelude: string; declarations: Declaration[] }[];
+  counterStyles?: {
+    prelude: string;
+    declarations: Declaration[];
+    media: MediaCondition[][] | null;
+  }[];
   /** `@font-feature-values` rules, in order (`FeatureValuesRule`). */
   featureValues?: FeatureValuesRule[];
   /** `@keyframes` rules, in order (`KeyframesRule`). */
@@ -646,6 +650,7 @@ export function parseStylesheet(
           (sheet.counterStyles ??= []).push({
             prelude: at.prelude,
             declarations: parseDeclarations(at.block),
+            media,
           });
         } else if (
           (name === 'keyframes' || name === '-webkit-keyframes') &&
