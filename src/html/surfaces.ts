@@ -11,6 +11,7 @@
 // second, for pixels that had not changed.
 
 import { Surface } from 'react-x11/ntk';
+import { PIXMAP_SIDE } from './draw-image.js';
 
 /** ntk's `Surface`, as this uses it. */
 export interface SurfaceLike {
@@ -82,6 +83,8 @@ export class SurfaceCache {
     const pixels = width * height;
     if (this.unavailable || !(width > 0 && height > 0)) return null;
     if (pixels > this.budget / 4) return null;
+    // one no server makes, which says nothing of the next
+    if (width > PIXMAP_SIDE || height > PIXMAP_SIDE) return null;
     let surface: SurfaceLike;
     try {
       surface = new Surface(this.app as never, {
