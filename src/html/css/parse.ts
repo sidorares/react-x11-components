@@ -40,6 +40,8 @@ import {
 } from './vars.js';
 import type { CustomFunction, FunctionItem, FunctionParam } from './vars.js';
 import { matchesSyntax, validSyntax } from './syntax.js';
+import { evaluateCondition } from './conditions.js';
+import type { Kleene } from './conditions.js';
 
 /** One `prop: value` pair, with `!important` already taken off the value. */
 export interface Declaration {
@@ -174,7 +176,11 @@ export interface Stylesheet {
   fontFaces: FontFaceRule[];
   /** `@counter-style` rules, in order: a name and its descriptors, which
    *  the cascade reads into counter styles (CSS Counter Styles 3, 3). */
-  counterStyles?: { prelude: string; declarations: Declaration[] }[];
+  counterStyles?: {
+    prelude: string;
+    declarations: Declaration[];
+    media: MediaCondition[][] | null;
+  }[];
   /** `@font-feature-values` rules, in order (`FeatureValuesRule`). */
   featureValues?: FeatureValuesRule[];
   /** `@keyframes` rules, in order (`KeyframesRule`). */
@@ -648,6 +654,7 @@ export function parseStylesheet(
           (sheet.counterStyles ??= []).push({
             prelude: at.prelude,
             declarations: parseDeclarations(at.block),
+            media,
           });
         } else if (
           (name === 'keyframes' || name === '-webkit-keyframes') &&
@@ -872,13 +879,17 @@ export function parseStylesheet(
   return sheet;
 }
 
+/** The text of an `:nth-child()` as far as its `of`. */
+const NTH_OF_ENDS = /:nth-(?:last-)?child\([^()]*\sof$/i;
+
 /**
  * A style sheet with its comments taken out, strings left alone. CSS drops a
  * comment wherever it stands (CSS 2.1 4.1.9) — between rules, which the
  * scanner already skipped, but also inside a selector: `div /* note *\/ {`
  * kept the note in the selector, the matcher refused it, and the rule was
  * dropped whole. In a selector a comment is replaced by nothing, as the
- * tokenizer does: `.a/**\/.b` is one compound selector. In a declaration
+ * tokenizer does: `.a/**\/.b` is one compound selector, but that it ends an
+ * `:nth-child(3 of/**\/li)`'s `of`. In a declaration
  * it is replaced by a space, since there it still ends the token before it:
  * `1/**\/0px` is two values and no length, and `-/**\/10px` is no
  * negative one. `decls` says the text starts inside a declaration block,
@@ -936,7 +947,13 @@ function withoutComments(text: string, decls = false, cuts?: number[]): string {
       const close = text.indexOf('*/', i + 2);
       const inDecls = blocks.length ? blocks[blocks.length - 1] : decls;
       // `@media/**\/all` is `@media all`
-      out += text.slice(from, i) + (inDecls || atRule ? ' ' : '');
+      out +=
+        text.slice(from, i) +
+        (inDecls ||
+        atRule ||
+        NTH_OF_ENDS.test(text.slice(Math.max(0, i - 64), i))
+          ? ' '
+          : '');
       i = close < 0 ? text.length : close + 1;
       from = i + 1;
       cuts?.push(out.length, from - out.length);
@@ -1199,6 +1216,9 @@ const COMPOUND_ARGUMENTS = new Set([
  * every scan of a rule reads it as an attribute selector, as it is one, and a
  * page's own writing of the name is a prefix it did not declare.
  *
+ * And `:nth-child(3 of.a)` is written with the space a reader of it looks
+ * for after the `of`, which needs none.
+ *
  * Done once, where a rule's text is final: this is what `rule.selector` is, so
  * filing a rule, reading its reach and its hover all see a type and a
  * pseudo-class they know, and none of them learns what a bar means.
@@ -1207,9 +1227,15 @@ export function qualifiedSelector(
   selector: string,
   names: SelectorNamespaces = NO_NAMESPACES,
 ): string | null {
+  if (selector.includes(':nth-')) {
+    selector = selector.replace(NTH_OF_TIGHT, '$1 ');
+  }
   if (names.fallback === null && !selector.includes('|')) return selector;
   return qualifiedList(selector, names, false, false);
 }
+
+/** `:nth-child()`'s `of` with what it is of straight after it. */
+const NTH_OF_TIGHT = /(:nth-(?:last-)?child\([^()]*\sof)(?=[.#[:*|])/gi;
 
 /** `qualifiedSelector` of a list: `resists` where it is the argument of a
  *  function whose subjects no default namespace reaches, and `forgiving`
@@ -2780,6 +2806,89 @@ function widthRange(
   return null;
 }
 
+/** The operator read from the other side of it. */
+const FLIPPED: Record<string, string> = {
+  '<': '>',
+  '<=': '>=',
+  '>': '<',
+  '>=': '<=',
+  '=': '=',
+};
+
+/**
+ * A range in Media Queries 4's syntax of a feature that is no size of the
+ * viewport (`widthRange`): an aspect ratio, a resolution, or one a desktop
+ * screen answers with a number, as the bounds it sets or its answer. Null
+ * where a value is none of the feature's, and undefined for a term that is no
+ * such range. A strict bound is one `RATIO_EDGE` inside the value.
+ */
+function featureRange(
+  term: string,
+): MediaCondition | boolean | null | undefined {
+  const inner = /^\(\s*(.*?)\s*\)$/s.exec(term)?.[1];
+  if (!inner || !/[<>=]/.test(inner)) return undefined;
+  const parts = inner.split(/\s*(<=|>=|<|>|=)\s*/);
+  if (parts.length !== 3 && parts.length !== 5) return undefined;
+  const isFeature = (part: string) =>
+    RANGED_FEATURES.test(part) || RANGED_NUMBERS.has(part.toLowerCase());
+  const at = parts.length === 3 && isFeature(parts[0]) ? 0 : 2;
+  if (!isFeature(parts[at])) return undefined;
+  const name = parts[at].toLowerCase();
+  // each `name op value`, the operator read from the name's side
+  const tests: [string, string][] = [];
+  if (at === 2) tests.push([FLIPPED[parts[1]], parts[0]]);
+  if (at === 0) tests.push([parts[1], parts[2]]);
+  if (parts.length === 5) {
+    // the two the same way round, and neither an `=`
+    if (parts[1][0] !== parts[3][0] || parts[1] === '=') return null;
+    tests.push([parts[3], parts[4]]);
+  }
+  const numeric = RANGED_NUMBERS.get(name);
+  if (numeric !== undefined) {
+    let holds = true;
+    for (const [op, value] of tests) {
+      if (!/^[+-]?\d+$/.test(value)) return null;
+      const n = Number(value);
+      holds &&=
+        op === '='
+          ? numeric === n
+          : op[0] === '<'
+            ? numeric < n || (op === '<=' && numeric === n)
+            : numeric > n || (op === '>=' && numeric === n);
+    }
+    return holds;
+  }
+  const ratio = name.endsWith('aspect-ratio');
+  const [lo, hi]: [Bound, Bound] = ratio
+    ? ['minAspect', 'maxAspect']
+    : ['minResolution', 'maxResolution'];
+  let out: MediaCondition = {};
+  for (const [op, value] of tests) {
+    const n = ratio ? ratioOf(value) : resolutionOf(value, false);
+    if (n === null) return null;
+    const bound: MediaCondition = {};
+    if (op === '=' || op[0] === '>') {
+      bound[lo] = op === '>' ? n + RATIO_EDGE : n;
+    }
+    if (op === '=' || op[0] === '<') {
+      bound[hi] = op === '<' ? n - RATIO_EDGE : n;
+    }
+    const both = meet(out, bound);
+    if (!both) return false;
+    out = both;
+  }
+  return out;
+}
+
+const RANGED_FEATURES = /^(?:(?:device-)?aspect-ratio|resolution)$/i;
+
+/** What a desktop screen answers the numeric features with. */
+const RANGED_NUMBERS = new Map([
+  ['color', 8],
+  ['monochrome', 0],
+  ['color-index', 0],
+]);
+
 /** How deep rules may nest before the ones further in are dropped: far
  *  past anything written by hand or by a framework, and short of what a
  *  generated sheet could make of the stack. */
@@ -4008,6 +4117,8 @@ function featureTest(term: string): MediaCondition | boolean | null {
     if (heights.max !== undefined) out.maxHeight = heights.max;
     return out;
   }
+  const range = featureRange(term);
+  if (range !== undefined) return range;
   const feature = mediaFeature(term);
   if (!feature) {
     // a feature in the boolean context, `(hover)`: true where its value is
@@ -4134,8 +4245,11 @@ const ANSWERED = new Set(
  * Whether a `@supports` condition holds (CSS Conditional 3, 6): true or
  * false where it turns on declarations of the properties this answers for
  * (`ANSWERED`, and those whose grammar `specifiedValue` reads), combined by
- * `not`, `and` and `or`; null where it turns on anything else, or is none,
- * and the block is entered as every one was.
+ * `not`, `and` and `or`; null where it turns on any other declaration, and
+ * the block is entered as every one was. What is no condition is false, and
+ * so is what only CSS's own error handling has a name for (6.1's
+ * `<general-enclosed>`): brackets with no declaration in them, and a
+ * function nothing knows.
  * Answering more is not safe without a list of what this draws: Tailwind 4
  * keeps its variables' starting values under a test for engines without
  * `@property`, which this is, and false there would drop every shadow and
@@ -4148,93 +4262,123 @@ export function supportsCondition(
    *  has (`supportsDeclaration`). */
   declare?: (property: string, value: string) => boolean | null,
 ): boolean | null {
-  const text = prelude.trim();
-  if (/^not(?=[\s(])/i.test(text)) {
-    const inner = supportsCondition(text.slice(3), declare);
-    return inner === null ? null : !inner;
-  }
-  // the terms at the top level, and the one operator between them
-  const terms: string[] = [];
-  let op = '';
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    const c = text[i];
-    if (c === '(') depth += 1;
-    else if (c === ')') depth -= 1;
-    else if (depth === 0 && /\s/.test(c)) {
-      const word = /^\s+(and|or)\s+/i.exec(text.slice(i));
-      if (!word) continue;
-      const next = word[1].toLowerCase();
-      // `and` and `or` mixed without parentheses is no condition
-      if (op && op !== next) return null;
-      op = next;
-      terms.push(text.slice(start, i));
-      i += word[0].length - 1;
-      start = i + 1;
+  const answer = evaluateCondition(prelude, (name, inner) =>
+    name === ''
+      ? supportsDeclaration(inner, declare)
+      : supportsFunction(name, inner),
+  );
+  // no condition at all, and a test this cannot answer
+  return answer === null ? false : (answer ?? null);
+}
+
+/** A function a `@supports` condition tests: `selector()`, what a font or
+ *  an at-rule is asked by, and any other false. */
+function supportsFunction(name: string, inner: string): Kleene {
+  switch (name) {
+    // whether its argument is a selector, a `&` in it the scope (CSS
+    // Conditional 4, 3.1, CSS Nesting 1, 2); a relative one is none
+    case 'selector': {
+      const written = trimSelector(inner);
+      return !!written && isSelector(replaceNesting(written, ':scope'), true);
     }
-    if (depth < 0) return null;
-  }
-  if (terms.length) {
-    terms.push(text.slice(start));
-    const values = terms.map((term) => supportsCondition(term, declare));
-    if (op === 'and') {
-      if (values.includes(false)) return false;
-      return values.includes(null) ? null : true;
+    // an at-rule this reads (CSS Conditional 5, 2.2)
+    case 'at-rule': {
+      if (inner[0] !== '@' || !startsIdent(inner, 1)) return false;
+      const rule = readIdent(inner, 1);
+      const known = asciiLower(rule.value);
+      return (
+        rule.end === inner.length &&
+        (BLOCK_AT_RULES.has(known) || STATEMENT_AT_RULES.has(known))
+      );
     }
-    if (values.includes(true)) return true;
-    return values.includes(null) ? null : false;
+    // what a font is asked by is one word, whose answer is left open
+    case 'font-format':
+    case 'font-tech':
+      return FONT_WORDS.has(inner.toLowerCase()) ? undefined : false;
+    default:
+      return false;
   }
-  // `selector()`: whether its argument is a selector, a `&` in it the scope
-  // (CSS Conditional 4, 3.1, CSS Nesting 1, 2); a relative one is none
-  const selector = /^selector\(([\s\S]*)\)$/i.exec(text);
-  if (selector) {
-    const written = trimSelector(selector[1]);
-    return !!written && isSelector(replaceNesting(written, ':scope'), true);
-  }
-  // one term: a condition in parentheses, or a declaration in them
-  if (!(text.startsWith('(') && text.endsWith(')'))) {
-    return declare ? strictUnknown(text) : null;
-  }
-  const inner = text.slice(1, -1).trim();
-  if (inner.startsWith('(') || /^(?:not(?=[\s(])|selector\()/i.test(inner)) {
-    return supportsCondition(inner, declare);
-  }
-  const declaration = /^([a-z-]+)\s*:\s*(\S[\s\S]*)$/i.exec(inner);
-  // what is no declaration is none to a caller that asks strictly
-  if (!declaration) return declare ? strictUnknown(inner) : null;
-  const property = declaration[1].toLowerCase();
+}
+
+const STATEMENT_AT_RULES = new Set(['import', 'namespace']);
+
+/** The words `font-format()` and `font-tech()` take (CSS Fonts 4, 11.1). */
+const FONT_WORDS = new Set([
+  'collection',
+  'embedded-opentype',
+  'opentype',
+  'svg',
+  'truetype',
+  'woff',
+  'woff2',
+  'features-opentype',
+  'features-aat',
+  'features-graphite',
+  'color-colrv0',
+  'color-colrv1',
+  'color-svg',
+  'color-sbix',
+  'color-cbdt',
+  'variations',
+  'palettes',
+  'incremental',
+]);
+
+/** A declaration in a `@supports` condition's brackets: false where what is
+ *  in them is none, and undefined where this cannot answer for it. */
+function supportsDeclaration(
+  inner: string,
+  declare?: (property: string, value: string) => boolean | null,
+): Kleene {
+  if (!startsIdent(inner, 0)) return false;
+  const named = readIdent(inner, 0);
+  const custom = named.value.startsWith('--');
+  const property = custom ? named.value : asciiLower(named.value);
+  const colon = /^\s*:/.exec(inner.slice(named.end));
+  if (!colon) return false;
+  const written = inner.slice(named.end + colon[0].length).trim();
+  const value = written.replace(/\s*!\s*important$/i, '');
+  // `--` alone is CSS's own, and names nothing (CSS Variables 1, 2)
+  if (named.value === '--') return false;
+  // a value is something, and neither a second declaration nor a `!` that is
+  // not the one at its end
+  if ((!value && !custom) || strayIn(value)) return false;
   // a name the caller knows to be none, whatever its value
-  if (declare && declare(property, declaration[2].trim()) === false) {
-    return false;
-  }
+  if (declare && declare(property, value) === false) return false;
   // a value read only once it is substituted is not parsed until then,
   // and a declaration whose `var()`s and `env()`s are not well formed is
   // never one (CSS Conditional 3, 6.1)
-  if (hasVar(declaration[2]) && !validVars(declaration[2])) return false;
+  if (hasVar(value) && !validVars(value)) return false;
   // a property whose grammar is read answers by it
-  const specified = specifiedValue(property, declaration[2].trim());
+  const specified = specifiedValue(property, value);
   if (specified !== undefined) return specified !== null;
   const shorthand = SHORTHAND_GRAMMARS[property];
   // a CSS-wide keyword is every property's (CSS Cascade 4, 7.3)
   if (
     Object.hasOwn(SHORTHAND_GRAMMARS, property) &&
-    /^(?:inherit|initial|unset|revert|revert-layer)$/i.test(
-      declaration[2].trim(),
-    )
+    /^(?:inherit|initial|unset|revert|revert-layer)$/i.test(value)
   ) {
     return true;
   }
-  if (shorthand) return shorthand(declaration[2].trim().toLowerCase());
+  if (shorthand) return shorthand(value.toLowerCase());
   // a name the caller knows, with a value this cannot read, is taken
-  return ANSWERED.has(property) || declare ? true : null;
+  return ANSWERED.has(property) || declare ? true : undefined;
 }
 
-/** What a caller that asks strictly makes of a term that is neither a
- *  declaration nor a condition it reads: a function it does not know of is
- *  left unknown, and anything else is false. */
-function strictUnknown(text: string): boolean | null {
-  return /^[a-z-]+\([\s\S]*\)$/i.test(text.trim()) ? null : false;
+/** Whether a value has a `;` or a `!` at its top level, which no value
+ *  has. */
+function strayIn(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const c = value[i];
+    // `<!--` is one token, and no `!`
+    if (c === '<' && value.startsWith('<!--', i)) i += 3;
+    else if (c === ';' || c === '!') return true;
+    if (c === '\\') i += 1;
+    else if (c === '(' || c === '[' || c === '{' || c === '"' || c === "'") {
+      i = componentEnd(value, i) - 1;
+    }
+  }
+  return false;
 }
 
 /** Shorthands of longhands that are kept and read back and lay nothing

@@ -27,6 +27,7 @@ import {
   bytesApart,
   fillsIn,
   fillsOf,
+  findById,
   h,
   metric,
   pathsOf,
@@ -149,6 +150,51 @@ metric("the root's background covers the whole canvas", async () => {
   await expectPixel(ctx, 100, 110, '#00ff00', {
     message: 'below the document, where the element has grown',
   });
+});
+
+test('a background-size calculation out of the range is held to it', async () => {
+  // CSS Values 4, 10.12; WPT calc-background-size-1: a negative one was no
+  // value, and the image was its own size. Each is Chrome's, over a `7px`,
+  // which writes the second `auto`
+  const cases: [string, string][] = [
+    ['calc(50px + 50%) calc(10px - 50%)', 'calc(50% + 50px) calc(-50% + 10px)'],
+    ['calc(-10px) 5px', '0px 5px'],
+    ['-10px 5px', '7px'],
+    ['calc(-10%) auto', '0%'],
+    ['-10% auto', '7px'],
+    ['calc(10px - 50%)', 'calc(-50% + 10px) auto'],
+    ['min(1px, -3px)', '0px'],
+  ];
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      cases
+        .map(
+          ([value], i) =>
+            `<div id="c${i}" style="background-size:7px;background-size:${value}"></div>`,
+        )
+        .join('') +
+      '<p style="margin:0;height:40px;background:url(a.png) no-repeat;' +
+      'background-size:20px calc(10px - 50%)"></p>' +
+      '<p style="margin:0;height:40px;background:url(a.png) no-repeat;' +
+      'background-size:20px calc(30px - 50%)"></p>',
+  );
+  const el = view(node);
+  cases.forEach(([value, want], i) => {
+    assert.strictEqual(
+      el.computedStyle(findById(el.document, `c${i}`)!)!['background-size'],
+      want,
+      value,
+    );
+  });
+  // and one that comes to nothing at the box draws nothing
+  const ops: PaintOp[] = [];
+  await fillsOf(el, ops, {
+    backgroundImageFor: () => ({ image: {}, width: 20, height: 10, ratio: 2 }),
+  });
+  assert.deepStrictEqual(
+    ops.flatMap((op) => (op.op === 'image' ? [[op.w, op.h]] : [])),
+    [[20, 10]],
+  );
 });
 
 test('background-size is in CSS pixels at 2x', async () => {

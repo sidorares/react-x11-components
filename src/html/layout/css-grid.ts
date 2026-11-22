@@ -1344,7 +1344,7 @@ export function laneSubgrid(
     // same axis, and never in their stacking axis (CSS Grid 3, 3.2)
     (style.gridLanes && lanesAreRows(style) !== (axis === 'rows')) ||
     !names ||
-    contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
+    laidOutApart(child)
   ) {
     SUBGRIDS.delete(child);
     return false;
@@ -1516,13 +1516,22 @@ export function inherited(axis: SubgridAxis): ReturnType<typeof trackList> {
   };
 }
 
+/** Whether a grid in a grid lays out what it holds apart from it, as an
+ *  independent formatting context, and so subgrids nothing of it. */
+function laidOutApart(child: Box): boolean {
+  return (
+    child.style.containerType !== 'normal' ||
+    contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
+  );
+}
+
 /**
  * Whether an item of a grid is a subgrid, and on which axes: a grid
  * container with `subgrid` for its rows or its columns, which is no
  * subgrid where it lays out what it holds apart from the grid — as layout
- * or paint containment has it do — and its template on that axis `none`
- * (CSS Grid 2, 7.2.4). An item is in flow: an absolutely positioned box
- * is none either.
+ * or paint containment has it do, or being a size container — and its
+ * template on that axis `none` (CSS Grid 2, 7.2.4; CSS Conditional 5, 5.1).
+ * An item is in flow: an absolutely positioned box is none either.
  */
 function subgridOf(
   item: Item,
@@ -1543,11 +1552,7 @@ function subgridOf(
     : null;
   const across = lanes === 'rows' ? undefined : style.gridColumns?.subgrid;
   const down = lanes === 'cols' ? undefined : style.gridRows?.subgrid;
-  if (
-    !style.grid ||
-    (!across && !down) ||
-    contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
-  ) {
+  if (!style.grid || (!across && !down) || laidOutApart(child)) {
     return null;
   }
   const axis = (
