@@ -2530,3 +2530,39 @@ metric(
     assert.strictEqual(bottomOf('p'), bottomOf('r2'), "the last row's item");
   },
 );
+
+test('flexible rows whose factors come to less than one are shared the height their grid comes to', async () => {
+  // a grid of no height of its own is as tall as they make it, which is
+  // definite to share out then (CSS Grid 1, 12.7.1); every size is Chromium's
+  const { node } = await render(
+    '<style>body{margin:0}.g{display:grid;width:100px}b{display:block}</style>' +
+      '<div class="g" id="a" style="grid-template-rows:repeat(2,minmax(0,.4fr))">' +
+      '<b style="height:100px"></b><b id="a2"></b></div>' +
+      '<div class="g" id="b" style="grid-template-rows:minmax(0,.4fr) 20px ' +
+      'minmax(0,.3fr);row-gap:10px"><b style="height:100px"></b>' +
+      '<b id="b2"></b><b id="b3"></b></div>' +
+      '<div class="g" id="c" style="grid-template-rows:minmax(0,.4fr) auto">' +
+      '<b style="height:100px"></b><b id="c2" style="height:30px"></b></div>' +
+      // and as they were where the factors are one
+      '<div class="g" id="d" style="grid-template-rows:minmax(0,1.5fr) ' +
+      'minmax(0,.5fr)"><b style="height:100px"></b><b id="d2"></b></div>',
+    400,
+  );
+  const el = view(node);
+  const of = (id: string) =>
+    [boxOf(el, id).y, boxOf(el, id).height].map(Math.round);
+  assert.deepStrictEqual(
+    ['a', 'a2', 'b', 'b2', 'b3', 'c', 'c2', 'd', 'd2'].map(of),
+    [
+      [0, 80],
+      [32, 32],
+      [80, 110],
+      [118, 20],
+      [148, 21],
+      [190, 70],
+      [206, 30],
+      [260, 133],
+      [360, 33],
+    ],
+  );
+});
