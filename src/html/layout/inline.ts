@@ -51,6 +51,7 @@ import type { SettledText } from './settled.js';
 import { isInputButton, tagOf } from '../dom.js';
 import type { Element } from '../dom.js';
 import {
+  containmentApplies,
   BOX_RAISES,
   CLAMPED,
   COLUMN_ROWS,
@@ -5579,7 +5580,7 @@ export function itemBaselineOf(item: Box, last = false): number {
 function alignmentLast(box: Box): number | null {
   if (box.outOfFlow || box.isFloat || box.kind === 'replaced') return null;
   if (box.kind === 'inline' || box.kind === 'text') return null;
-  if (framed.any && FRAMES.has(box)) return null;
+  if ((framed.any && FRAMES.has(box)) || keptIn(box)) return null;
   if (box.kind === 'flex') return heldIn(box, flexBaseline(box, true));
   if (box.kind === 'table') return heldIn(box, tableBaseline(box, true));
   if (box.lines?.length) {
@@ -5635,7 +5636,7 @@ function tableBaseline(table: Box, last = false): number | null {
 function lastBaselineIn(box: Box): number | null {
   // the root of a flow in another writing mode has none along the line it
   // is on, and sits on its bottom margin edge (CSS Writing Modes 4, 4.3.2)
-  if (framed.any && FRAMES.has(box)) return null;
+  if ((framed.any && FRAMES.has(box)) || keptIn(box)) return null;
   if (box.kind === 'flex') return heldIn(box, flexBaseline(box));
   if (box.lines?.length) {
     const line = box.lines[box.lines.length - 1];
@@ -5648,10 +5649,19 @@ function lastBaselineIn(box: Box): number | null {
   return null;
 }
 
+/** Whether layout containment keeps a box's baselines in, so that what it is
+ *  in is laid out as though it had none (CSS Containment 2, 3.3). */
+function keptIn(box: Box): boolean {
+  return (
+    (box.style.contain & CONTAIN_LAYOUT) !== 0 &&
+    containmentApplies(box, CONTAIN_LAYOUT)
+  );
+}
+
 /** The same, from the first line box or child: a table's baseline is its
  *  first row's, and so is a table cell's. */
 export function firstBaselineIn(box: Box): number | null {
-  if (framed.any && FRAMES.has(box)) return null;
+  if ((framed.any && FRAMES.has(box)) || keptIn(box)) return null;
   if (box.kind === 'flex') return heldIn(box, flexBaseline(box));
   // a table's is its first row's, past any caption above it
   if (box.kind === 'table') return heldIn(box, tableBaseline(box));

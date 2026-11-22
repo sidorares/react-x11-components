@@ -3,6 +3,7 @@ import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { act, cleanup, expectPixel, pixelAt, waitFor } from 'react-x11/test';
 import { parseColor } from '../../src/html/css/values.js';
+import type { Box } from '../../src/html/layout/boxes.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import {
   RED_PNG,
@@ -519,6 +520,45 @@ test('contain: size lays a box out as though it held nothing', async () => {
   assert.strictEqual(boxOf(el, 'd').height, 15);
   assert.strictEqual(boxOf(el, 'e').height, 0);
   assert.deepStrictEqual(size('f'), [80, 40]);
+});
+
+test("layout containment keeps a box's baselines in, for a flex box, a grid, a table and a block around it", async () => {
+  // CSS Containment 2, 3.3: it has none to whatever aligns it, which takes
+  // its bottom edge. Every place is Chromium's, less the fonts
+  const { node } = await render(
+    '<style>body{margin:0;font:16px/20px monospace}.k{contain:layout}' +
+      '.f{display:flex;align-items:baseline}.f>i{width:20px;height:80px}' +
+      'td{padding:0;vertical-align:baseline}table{border-spacing:0}</style>' +
+      '<div class="f"><i></i><div class="k" id="a">x</div>' +
+      '<div id="b"><div class="k">x</div></div>' +
+      '<div id="c" class="k" style="display:flex">x</div>' +
+      '<div id="d" class="k" style="display:grid">x</div></div>' +
+      '<div class="f" style="display:grid;grid-auto-flow:column"><i></i>' +
+      '<div class="k" id="e">x</div></div>' +
+      '<table><tr><td style="padding-top:30px">x</td>' +
+      '<td class="k"><div id="g">x</div></td><td><div id="h">x</div></td></tr></table>' +
+      // and a flex box's first item gives it none
+      '<div class="f"><div id="n" style="padding-top:30px">x</div>' +
+      '<div id="j" style="display:flex"><div class="k">x</div></div></div>' +
+      // an inline block sits on the line before it
+      '<div id="m">x<div style="display:inline-block">y<div class="k">z</div>' +
+      '</div></div>',
+    400,
+  );
+  const el = view(node);
+  const at = (id: string) => boxOf(el, id).y;
+  assert.deepStrictEqual(
+    ['a', 'b', 'c', 'd', 'e'].map(at),
+    [60, 60, 60, 60, 140],
+  );
+  // the bottom edge stands on the others' baseline
+  const baseline = (id: string) => {
+    const line = (boxOf(el, id) as unknown as Box).lines![0];
+    return line.y + line.baseline;
+  };
+  assert.strictEqual(at('g') + 20, baseline('h'));
+  assert.strictEqual(at('j') + 20, baseline('n'));
+  assert.strictEqual(boxOf(el, 'm').height, 40);
 });
 
 metric(
