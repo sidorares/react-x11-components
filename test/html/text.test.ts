@@ -1073,6 +1073,97 @@ metric('text set at no size keeps its forced breaks and its tabs', async () => {
   assert.ok(Math.abs(bar - 100) < 0.5, `bar at ${bar}, not 100`);
 });
 
+metric('text set at no size makes a line, and is no text to copy', async () => {
+  // it draws nothing and takes no room, and there is a line it is on, with a
+  // baseline: dropped, an inline-block with a word in it stood on its bottom
+  // edge beside one with a line feed on its baseline, as WPT's
+  // inline-block-baseline-016 has them
+  const { node } = await render(
+    '<style>body{margin:0}#w{font-size:0;line-height:0}' +
+      '#w div{display:inline-block;width:40px;height:50px}</style>' +
+      '<div id="w"><div id="a">text</div>\n<div id="b" style="white-space:pre">' +
+      '\n</div><div id="c"> \n </div></div>' +
+      '<p style="margin:0;white-space:nowrap">one<b style="font-size:0">' +
+      'two</b>three</p>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').y, boxOf(el, 'b').y);
+  // white space that collapses away is on no line
+  assert.ok(Math.abs(boxOf(el, 'c').y - (boxOf(el, 'a').y - 50)) < 0.01);
+  const text = el.textContent();
+  assert.ok(text.includes('onethree'), text);
+  assert.ok(!text.includes('\u200c'));
+});
+
+metric(
+  'white space in text set at no size collapses with what is beside it',
+  async () => {
+    // where each stands, as Chromium has it
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/20px sans-serif}p{margin:0;' +
+        'white-space:normal}b{font-size:0;font-weight:normal}</style>' +
+        ['two', ' two', 'two ', ' two ', '\n  two\n  ']
+          .map(
+            (z, i) =>
+              `<p>one<b>${z}</b> <i id="a${i}">x</i></p>` +
+              `<p>one <b>${z}</b> <i id="b${i}">x</i></p>` +
+              `<p><b>${z}</b> <i id="c${i}">x</i></p>`,
+          )
+          .join('') +
+        '<p>one<i id="o">x</i></p><p>one <i id="p">x</i></p>' +
+        '<p>one &nbsp;<i id="q">x</i></p><p>&nbsp;<i id="r">x</i></p>',
+    );
+    const el = view(node);
+    const at = (id: string) =>
+      Math.round((el.elementRect(findById(el.document, id)!)!.x - 0) * 4) / 4;
+    const [none, one, two, only] = ['o', 'p', 'q', 'r'].map(at);
+    for (let i = 0; i < 5; i++) {
+      const trails = i > 1;
+      assert.strictEqual(at(`a${i}`), trails ? none : one, `one, ${i}`);
+      assert.strictEqual(
+        at(`b${i}`),
+        trails ? one : two,
+        `one and a space, ${i}`,
+      );
+      assert.strictEqual(at(`c${i}`), trails ? 0 : only, `at the start, ${i}`);
+    }
+  },
+);
+
+metric('text set at no size breaks a line as a word does', async () => {
+  const { node } = await render(
+    '<style>body{margin:0;font-size:16px}p{margin:0;width:100px}</style>' +
+      '<p id="a">' +
+      '<b style="font-size:0">word</b>foo bar '.repeat(6) +
+      '</p><p id="b">' +
+      'foo bar '.repeat(6) +
+      '</p><p id="c">foo<b style="font-size:0">word</b>bar</p>',
+  );
+  const el = view(node);
+  const ends = (id: string) =>
+    linesOf(el, id).map((line) => {
+      const last = textRunsOf(line).at(-1)!;
+      return Math.round(last[0] + last[1]);
+    });
+  assert.ok(ends('b').length > 2);
+  assert.deepStrictEqual(ends('a'), ends('b'));
+  assert.strictEqual(linesOf(el, 'c').length, 1);
+  // and after a space of it
+  const { node: after } = await render(
+    '<style>body{margin:0;font-size:16px}p{margin:0;width:45px}</style>' +
+      '<p id="d">one <b style="font-size:0">two </b>three</p>' +
+      '<p id="e">one<b style="font-size:0"> </b> three</p>' +
+      '<p id="f">one<b style="font-size:0"> </b>three</p>' +
+      '<p id="g">one<b style="font-size:0"> </b><i>  </i>three</p>',
+  );
+  assert.strictEqual(linesOf(view(after), 'd').length, 2);
+  // and after white space of it alone, whatever is on the other side
+  for (const id of ['e', 'f', 'g']) {
+    assert.strictEqual(linesOf(view(after), id).length, 2, id);
+  }
+  assert.ok(!view(after).textContent().includes('\u200b'));
+});
+
 metric('a tab is set from where the room before it ends', async () => {
   // the edges of an inline box and the spacing of a word before a tab
   // move it: its stop is counted from where it is drawn, with them
