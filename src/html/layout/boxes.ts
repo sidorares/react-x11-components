@@ -5800,17 +5800,21 @@ class Builder {
     // moves what is around it does whatever its size: its white space, which
     // collapses with what it is beside, a forced break, a tab, whose stops
     // are the block's (CSS Text 3, 4.1), and that there is a line it is on,
-    // with a baseline. Its letters are a zero-width non-joiner a word, which
-    // a line breaks beside as beside a letter; a word joiner lets none break
-    // even after a space.
+    // with a baseline. Its words are a zero-width non-joiner, which a line
+    // breaks beside as beside a letter, where a word joiner lets none break
+    // even after a space, and its spaces a zero-width space: an engine rounds
+    // any advance up to a 64th of a pixel, and a row of inline-blocks that
+    // fills its line was one to a line. White space alone needs no box, and
+    // is the row's every gap.
     if (!(style.fontSize > 0)) {
-      text = text.replace(/[^ \n\t]+/g, '\u200c');
+      if (text === ' ') return;
+      text = text.replace(/[^ \n\t]+/g, '\u200c').replace(/ /g, '\u200b');
       const at = this._textBox(text, into, style, owner).textStart;
       // no text of the document's to copy
       if (style.userSelect !== 'none') {
-        for (let i = text.indexOf('\u200c'); i >= 0;) {
+        for (let i = 0; i < text.length; i++) {
+          if (text[i] !== '\u200c') continue;
           this._unselectable.push(at + i, at + i + 1);
-          i = text.indexOf('\u200c', i + 1);
         }
       }
       return;

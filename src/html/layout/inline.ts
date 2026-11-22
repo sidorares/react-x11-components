@@ -2665,15 +2665,19 @@ function linesOf(
           // goes on, which a layout that fits as a browser does rounds with
           // the text they end, once (`advance`): the text rounded up to a
           // 64th and the spaces added after it came to more
-          // And some width however little, which is what says they are there:
-          // a line breaks after a space set at no size as after any.
           open.hang =
-            (first.advance !== undefined
+            first.advance !== undefined
               ? first.advance - first.width
               : spaceAdvance(fonts, segment.runs[segment.runs.length - 1]) *
-                trailing.length) || Number.EPSILON;
+                trailing.length;
           open.x += open.hang;
           placed.trail = open.hang;
+        } else if (
+          segment.runs[segment.runs.length - 1].text.endsWith('\u200b')
+        ) {
+          // a zero-width space is a place to break and takes no room: the
+          // hair is what says the line ends on one
+          open.hang = Number.EPSILON;
         }
       } else if (hung.total) holdHung();
       index = segment.nextIndex;
@@ -7017,8 +7021,7 @@ function setTabs(
 }
 
 /** What a run of text set at no size is laid out at, in pixels: CoreText
- *  takes a size of 0 as its default, and a space at it was as wide as a
- *  space at that, and its line as tall. */
+ *  takes a size of 0 as its default, and its line was as tall as that. */
 const NO_SIZE = 0.0001;
 
 /**
