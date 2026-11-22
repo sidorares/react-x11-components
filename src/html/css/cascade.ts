@@ -9188,7 +9188,7 @@ export class Cascade {
     let ic = this._waterWidths.get(key);
     if (ic === undefined) {
       ic = this._zeroWidthOf?.(faceOf(face), '\u6c34') ?? NaN;
-      if (!(ic > 0)) ic = face.fontSize;
+      if (!(ic >= 0)) ic = face.fontSize;
       this._waterWidths.set(key, ic);
     }
     return ic;
@@ -9202,7 +9202,7 @@ export class Cascade {
     let ch = this._zeroWidths.get(key);
     if (ch === undefined) {
       ch = this._zeroWidthOf?.(faceOf(style)) ?? NaN;
-      if (!(ch > 0)) ch = style.fontSize * 0.5;
+      if (!(ch >= 0)) ch = style.fontSize * 0.5;
       this._zeroWidths.set(key, ch);
     }
     return ch;

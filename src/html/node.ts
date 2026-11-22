@@ -23997,7 +23997,16 @@ function zeroWidthOf(
   const style = face.style === 'normal' ? 'normal' : 'italic';
   try {
     const run = { family, size, weight, style, stretch } as const;
-    return fonts.layout([{ text, ...run }], run, {}).width;
+    const { width } = fonts.layout([{ text, ...run }], run, {});
+    // no width is the glyph's own, or that of the box a face with no such
+    // glyph draws for it, which says nothing
+    if (width === 0) {
+      const glyphs = fonts.match(family, { size, weight, style }) as {
+        hasGlyph?(codepoint: number): boolean;
+      };
+      if (glyphs.hasGlyph?.(text.codePointAt(0)!) === false) return null;
+    }
+    return width;
   } catch {
     return null;
   }

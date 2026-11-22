@@ -2,8 +2,17 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { setFlagsFromString } from 'node:v8';
-import { act, cleanup, pixelAt, waitFor } from 'react-x11/test';
-import { removeNode } from '../../src/html/dom.js';
+import {
+  act,
+  cleanup,
+  pixelAt,
+  renderX11,
+  screen,
+  waitFor,
+} from 'react-x11/test';
+import type { DrawnNode } from 'react-x11';
+import { Html } from '../../src/index.js';
+import { createElement, removeNode } from '../../src/html/dom.js';
 import {
   inkColor,
   isTransparent,
@@ -23,6 +32,7 @@ import {
 } from '../../src/html/css/parse.js';
 import { shapeFont, shapeValue } from '../../src/html/css/shapes.js';
 import { fontQuery } from '../../src/html/css/style.js';
+import { Cascade } from '../../src/html/css/cascade.js';
 import { parseShapeFunction } from '../../src/html/css/shape-function.js';
 import { parseAngle } from '../../src/html/css/transform.js';
 import {
@@ -38,7 +48,7 @@ import {
   cssomStyle,
 } from '../../src/html/computed.js';
 import { colorFormText } from '../../src/html/css/color.js';
-import type { ComputedStyle } from '../../src/html/css/style.js';
+import type { ComputedStyle, RootLook } from '../../src/html/css/style.js';
 import { resolveIdentFunctions, substitute } from '../../src/html/css/vars.js';
 import {
   CALC_SIZE_BOXES,
@@ -52,9 +62,11 @@ import {
   COMPUTED_READS_DOCUMENT,
 } from './computed-reads.js';
 import {
+  FONTS,
   boxOf,
   drawnText,
   findById,
+  h,
   metric,
   render,
   render2x,
@@ -293,6 +305,88 @@ metric("a cap is the height of the font's capitals", async () => {
   // of the font it inherits, in a font size
   near(boxOf(el, 'c').width, 2 * capOf('monospace', 40));
   near(boxOf(el, 'd').width, 10 * capOf('monospace', 20));
+});
+
+test('a ch or an ic of a glyph with no advance is nothing, and half an em or an em where there is none', () => {
+  // CSS Values 4, 6.1.1; WPT ch-unit-016, ch-unit-018 and ic-unit-013: a
+  // font's own zero-wide "0" read as a font with no "0"
+  const sheet = parseStylesheet(
+    'p { width: calc(100px + 5ch); height: calc(10px + 2ic) }',
+    0,
+  );
+  const of = (advance: number | null) => {
+    const look = {
+      color: '#000000',
+      fontFamily: 'sans-serif',
+      fontSize: 20,
+      monoFamily: 'monospace',
+      linkColor: '#0000ee',
+      borderColor: '#808080',
+      mutedColor: '#666666',
+      background: '#ffffff',
+      colorScheme: 'light',
+      surface: '#ffffff',
+    } as RootLook;
+    const cascade = new Cascade(
+      [sheet],
+      look,
+      800,
+      600,
+      1,
+      null,
+      () => advance,
+    );
+    const p = createElement('p', {}, []);
+    const { width, height } = cascade.styleFor(p, cascade.initial, false);
+    return [width, height];
+  };
+  assert.deepStrictEqual(of(0), [100, 10]);
+  assert.deepStrictEqual(of(7), [135, 24]);
+  assert.deepStrictEqual(of(null), [150, 50]);
+});
+
+test('a ch of a font with no "0" is half an em, though what the font draws for it has no advance', async () => {
+  // an icon font's: the engine sets a fallback face's "0", or the first
+  // face's box for a glyph nobody has, which may be nothing wide
+  const result = await renderX11(h('box'), {
+    width: 400,
+    height: 60,
+    ...(FONTS ? { fonts: FONTS } : { backend: 'mock' as const }),
+  });
+  const fonts = result.app.fonts as unknown as {
+    layout(runs: { text: string }[], ...rest: unknown[]): { width: number };
+    match(...args: unknown[]): object;
+  };
+  const { layout, match } = fonts;
+  let has = false;
+  fonts.layout = (runs, ...rest) => {
+    const laid = layout.call(fonts, runs, ...rest);
+    return runs.length === 1 && /^[0水]$/.test(runs[0].text)
+      ? Object.create(laid, { width: { value: 0 } })
+      : laid;
+  };
+  fonts.match = (...args) =>
+    Object.create(match.apply(fonts, args), {
+      hasGlyph: { value: () => has },
+    });
+  const widths = async () => {
+    await result.rerender(
+      h(Html, {
+        key: String(has),
+        source:
+          '<style>body{margin:0}div{font:20px sans-serif}</style>' +
+          '<div id="a" style="width:10ch"></div><div id="b" style="width:10ic"></div>',
+        partial: false,
+        'data-testname': 'doc',
+      }),
+    );
+    await act();
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    return [boxOf(el, 'a').width, boxOf(el, 'b').width];
+  };
+  assert.deepStrictEqual(await widths(), [100, 200]);
+  has = true;
+  assert.deepStrictEqual(await widths(), [0, 0]);
 });
 
 test('a negative size is no size, and the declaration goes', async () => {
