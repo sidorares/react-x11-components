@@ -986,32 +986,6 @@ const closeRect = (
   );
 
 metric(
-  'a box whose transform has no inverse draws nothing, though its plane is whole',
-  async () => {
-    // flat in depth alone: each drew its plane as it was (CSS Transforms 2).
-    // Every browser draws none of them
-    const { result, node } = await render(
-      PAGE +
-        '<style>div{width:40px;height:20px;background:#ff0000;' +
-        'transform-origin:0 0}</style>' +
-        '<div></div><div style="transform:scale3d(2,2,0)"></div>' +
-        '<div style="scale:1 1 0"></div>' +
-        '<div style="transform:scaleZ(0)"></div>' +
-        '<div style="scale:1 1 0.001"></div>',
-    );
-    await act();
-    const { abs } = view(node) as unknown as { abs: { x: number; y: number } };
-    const drawn = (y: number, colour: string, message: string) =>
-      expectPixel(result.ctx, abs.x + 10, abs.y + y, colour, { message });
-    await drawn(10, RED, 'the first');
-    await drawn(30, WHITE, 'scale3d(2, 2, 0)');
-    await drawn(50, WHITE, 'scale: 1 1 0');
-    await drawn(70, WHITE, 'scaleZ(0)');
-    await drawn(90, RED, 'not yet flat');
-  },
-);
-
-metric(
   'a box turned out of the plane in the perspective of the box it is laid out in is drawn smaller where it turns away, and is under the pointer there',
   async () => {
     // the Zen Garden's 219 at a third of the size: a panel turned about its
@@ -1508,5 +1482,31 @@ metric(
     );
     const { abs } = el as unknown as DrawnNode;
     await expectPixel(result.ctx, abs.x + 8, abs.y + 8, RED);
+  },
+);
+
+metric(
+  'a box whose transform has no inverse draws nothing, though its plane is whole',
+  async () => {
+    // flat in depth alone: each drew its plane as it was (CSS Transforms 2).
+    // Every browser draws none of them
+    const { result, node } = await render(
+      PAGE +
+        '<style>div{width:40px;height:20px;background:#ff0000;' +
+        'transform-origin:0 0}</style>' +
+        '<div></div><div style="transform:scale3d(2,2,0)"></div>' +
+        '<div style="scale:1 1 0"></div>' +
+        '<div style="transform:scaleZ(0)"></div>' +
+        '<div style="scale:1 1 0.001"></div>',
+    );
+    await act();
+    const { abs } = view(node) as unknown as { abs: { x: number; y: number } };
+    const drawn = (y: number, colour: string, message: string) =>
+      expectPixel(result.ctx, abs.x + 10, abs.y + y, colour, { message });
+    await drawn(10, RED, 'the first');
+    await drawn(30, WHITE, 'scale3d(2, 2, 0)');
+    await drawn(50, WHITE, 'scale: 1 1 0');
+    await drawn(70, WHITE, 'scaleZ(0)');
+    await drawn(90, RED, 'not yet flat');
   },
 );
