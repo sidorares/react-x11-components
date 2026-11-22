@@ -303,6 +303,7 @@ export function parseAnchorMath<R extends AnchorRef | AnchorSizeRef>(
     scale: ctx.scale,
     zoom: ctx.zoom,
     ex: fixed(ctx.ex, 'ex'),
+    cap: fixed(ctx.cap, 'cap'),
     ch: fixed(ctx.ch, 'ch'),
     ic: fixed(ctx.ic, 'ic'),
     lh: fixed(ctx.lh, 'lh'),
