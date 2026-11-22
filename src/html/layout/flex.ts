@@ -1217,12 +1217,17 @@ function layoutItemAt(
   // this width and this height. An item Yoga never measured has none, NaN,
   // and is laid out.
   if (column && definite === null && basisHidesHeight(box)) {
-    // a height of its own is none to what is in it, as its basis is not it
+    // a height of its own is none to what is in it, as its basis is not it —
+    // but the one its own flex layout shares out
     FLEXED_HEIGHT.set(box, NaN);
+    if (box.kind === 'flex') {
+      USED_HEIGHT.set(box, Math.max(0, height - box.verticalExtra));
+    }
     try {
       layoutAt(box, ctx, width, containing, laid);
     } finally {
       FLEXED_HEIGHT.delete(box);
+      USED_HEIGHT.delete(box);
     }
     laid.width = NaN;
   } else if (sameWidth && Object.is(laid.tall, tall)) box.height = laid.height;
