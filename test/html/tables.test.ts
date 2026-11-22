@@ -588,6 +588,35 @@ metric(
   },
 );
 
+metric(
+  'a row or a row group that is a layer is painted among them, where it is moved to and as faint',
+  async () => {
+    // its background as much as its cells, and a row group's rows'; as
+    // Chrome draws them
+    const { node, result } = await render(
+      '<style>body{margin:0;background:#ffffff}table{border-spacing:0}' +
+        'td{padding:0;width:40px;height:40px}i{position:absolute;width:40px;' +
+        'height:40px;background:#ff0000}div{height:80px}</style>' +
+        '<div><i style="left:100px"></i><table><tr style="position:relative;' +
+        'left:100px;background:#00ff00"><td></td></tr></table></div>' +
+        '<div><i style="left:100px"></i><table><tbody style="position:relative;' +
+        'left:100px"><tr style="background:#00ff00"><td></td></tr></tbody>' +
+        '</table></div>' +
+        '<table><tr style="opacity:.5;background:#0000ff"><td></td></tr></table>' +
+        '<table><tr style="position:relative;z-index:-1;background:#0000ff">' +
+        '<td></td></tr></table>',
+    );
+    const { abs } = view(node) as unknown as { abs: { x: number; y: number } };
+    const at = (x: number, y: number, colour: string, message: string) =>
+      expectPixel(result.ctx, abs.x + x, abs.y + y, colour, { message });
+    await at(120, 20, '#00ff00', 'a relative row, over what is before it');
+    await at(20, 20, '#ffffff', 'and not where it was');
+    await at(120, 100, '#00ff00', "a relative row group's row");
+    await at(20, 180, '#8080ff', 'a faded row');
+    await at(20, 220, '#0000ff', 'and one below the flow');
+  },
+);
+
 metric("a column's background is painted under its cells", async () => {
   // CSS 2.1 17.5.1: a column box is laid out nowhere, and its background
   // covers the cells that start in it, over the table's and under theirs

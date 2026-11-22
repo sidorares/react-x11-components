@@ -5340,13 +5340,17 @@ function paintBackgroundOf(
   // A row or a row group paints no background of its own: it is painted in
   // its cells' areas with the table's (`paintPartBackgrounds`), and its
   // borders are the collapsed grid's or none (CSS 2.1 17.6.1). In a table
-  // with a shadow on one of them each is painted at its turn, its shadow over
-  // the cells of the rows before it and under the rows after.
+  // with a shadow on one of them, or one that is a layer, each is painted at
+  // its turn: a shadow is over the cells of the rows before its row and under
+  // the rows after.
   if (box.kind === 'table-row' || box.kind === 'table-row-group') {
     let table = box.parent;
     while (table && table.kind !== 'table') table = table.parent;
-    const casting = table && CASTING.get(table);
-    if (casting) paintPartBackgrounds(ctx, table!, options, box, casting);
+    if (!table) return;
+    // one below the flow is painted before its table is
+    let parts = PARTS_APART.get(table);
+    if (!parts && apart(box)) parts = partsApart(table);
+    if (parts) paintPartBackgrounds(ctx, table, options, box, parts);
     return;
   }
   if (hidden(box)) return;
@@ -12287,10 +12291,10 @@ function paintPartBackgrounds(
   table: Box,
   options: PaintOptions,
   only: Box | null = null,
-  casting: Casting | null = null,
+  parts: PartsApart | null = null,
 ): void {
   const grid = tableGrid(table);
-  const cells = only ? (casting!.cells.get(only) ?? []) : grid.cells;
+  const cells = only ? (parts!.cells.get(only) ?? []) : grid.cells;
   const layers: [(Box | null)[], (cell: Cell) => number][] = only
     ? [[only.kind === 'table-row' ? grid.rows : grid.groups, rowOf]]
     : [
@@ -12298,15 +12302,15 @@ function paintPartBackgrounds(
         [grid.columnBoxes, columnOf],
       ];
   if (!only) {
-    if (grid.groups.some(casts) || grid.rows.some(casts)) {
-      CASTING.set(table, castingOf(grid));
+    if (grid.groups.some(apart) || grid.rows.some(apart)) {
+      PARTS_APART.set(table, partsApart(table));
     } else {
-      CASTING.delete(table);
+      PARTS_APART.delete(table);
       layers.push([grid.groups, rowOf], [grid.rows, rowOf]);
     }
   }
   const shadowed =
-    only?.style.boxShadow && !hidden(only) ? shadowFrame(only, casting!) : null;
+    only?.style.boxShadow && !hidden(only) ? shadowFrame(only, parts!) : null;
   if (shadowed) paintShadows(ctx, shadowed, options, false, true);
   // each part's box, and the cells' extent across the table, found once
   const areas = new Map<Box, Rect>();
@@ -12361,29 +12365,40 @@ function paintPartBackgrounds(
   if (shadowed) paintShadows(ctx, shadowed, options, true);
 }
 
-/** What a table with a shadow on a row or a row group paints them from, each
- *  at its own turn: the cells in each, and where the table's first cell
+/** What a table paints its rows and row groups from where one of them is
+ *  painted apart from it (`apart`), each at its own turn: the cells in each, and where the table's first cell
  *  starts and its last ends. */
-interface Casting {
+interface PartsApart {
   cells: Map<Box, Cell[]>;
   left: number;
   right: number;
 }
 
-/** The tables whose rows or row groups cast shadows, as their last paint found
- *  them, which comes before any of their rows'. One whose borders collapse
- *  casts none by CSS Backgrounds 3, 7.1, and casts it in Chrome and here. */
-const CASTING = new WeakMap<Box, Casting>();
+/** The tables whose rows and row groups are painted so, as their last paint
+ *  found them, which comes before any of their rows'. A row of one whose
+ *  borders collapse casts no shadow by CSS Backgrounds 3, 7.1, and casts it in
+ *  Chrome and here. */
+const PARTS_APART = new WeakMap<Box, PartsApart>();
 
-const casts = (part: Box | null): boolean => !!part?.style.boxShadow;
+/** Whether a row or a row group has anything to paint apart from the table:
+ *  a shadow, or its background among the layers where it is one — of a row
+ *  group, its rows' too. */
+const apart = (part: Box | null): boolean =>
+  part !== null &&
+  (part.style.boxShadow !== null ||
+    ((part.kind === 'table-row-group' || paintsPart(part)) &&
+      part.parent !== null &&
+      layered(part.parent, part)));
 
-function castingOf(grid: ReturnType<typeof tableGrid>): Casting {
+function partsApart(table: Box): PartsApart {
+  const grid = tableGrid(table);
   const cells = new Map<Box, Cell[]>();
   let left = Infinity;
   let right = -Infinity;
   for (const cell of grid.cells) {
-    left = Math.min(left, cell.box.x);
-    right = Math.max(right, cell.box.x + cell.box.width);
+    const x = cell.box.x - (grid.rows[cell.row]?.x ?? 0);
+    left = Math.min(left, x);
+    right = Math.max(right, x + cell.box.width);
     for (const part of [grid.groups[cell.row], grid.rows[cell.row]]) {
       if (!part) continue;
       const own = cells.get(part);
@@ -12396,10 +12411,10 @@ function castingOf(grid: ReturnType<typeof tableGrid>): Casting {
 
 /** What a row or a row group casts its shadows from: its own height, and
  *  from the table's first cell to its last, as its background is. */
-function shadowFrame(part: Box, { left, right }: Casting): Frame | null {
+function shadowFrame(part: Box, { left, right }: PartsApart): Frame | null {
   if (!(right > left)) return null;
   return {
-    x: left,
+    x: part.x + left,
     y: part.y,
     width: right - left,
     height: part.height,
