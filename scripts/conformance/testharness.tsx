@@ -103,6 +103,12 @@ const HTTP_PORT = Number(process.env.WPT_HTTP_PORT || 8000);
 const HTTPS_PORT = Number(process.env.WPT_HTTPS_PORT || 8443);
 const H2_PORT = Number(process.env.WPT_H2_PORT || 9000);
 
+/** What the harness's own timeouts are multiplied by, and the time a test is
+ *  given here with them: wptrunner's `--timeout-multiplier`, for a machine
+ *  with more to run than it has cores. 1 is every result's that is compared
+ *  with a browser's. */
+const TIMEOUT_MULTIPLIER = Number(process.env.WPT_TIMEOUT_MULTIPLIER) || 1;
+
 const [listFile, outFile] = process.argv.slice(2);
 let lastWorkers: HtmlServiceWorkers | null = null;
 if (!listFile || !outFile) {
@@ -173,7 +179,13 @@ const REPORTER = `(function () {
   function brief(t) {
     return { name: String(t.name), status: t.status, message: t.message == null ? null : cut(t.message) };
   }
-  setup({ output: false });
+  setup({ output: false${
+    // a frame's harness with no tests in it ends at its own timeout, and
+    // says so to the window around it as a message
+    TIMEOUT_MULTIPLIER === 1
+      ? ''
+      : `, timeout_multiplier: ${TIMEOUT_MULTIPLIER}`
+  } });
   add_result_callback(function (t) { send({ kind: 'result', test: brief(t) }); });
   add_completion_callback(function (tests, status) {
     send({ kind: 'done', status: status.status, message: status.message == null ? null : cut(status.message), tests: tests.map(brief) });
@@ -1498,7 +1510,7 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
   const long = /<meta\s+name=["']?timeout["']?\s+content=["']?long/i.test(
     source,
   );
-  const budget = (long ? 60000 : 10000) + 6000;
+  const budget = (long ? 60000 : 10000) * TIMEOUT_MULTIPLIER + 6000;
   // what keeps the test's service workers, as a tab's process holds them;
   // the threads of the test before go with it
   lastWorkers?.dispose();
