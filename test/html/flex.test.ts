@@ -4364,6 +4364,39 @@ test("an item's automatic minimum has the percentages in its padding in it", asy
   near('e', 12.71875, 33.90625);
 });
 
+test('what is in a column item takes its percentages of a height its basis makes, and of none its basis is not', async () => {
+  // in a column of no height of its own: a basis that is a length is a
+  // definite main size, whether or not the item flexes, and `content`, or a
+  // percentage of no height, is none, whatever its own height says (CSS
+  // Flexbox 9.8). Every height is Chromium's
+  const item = (id: string, style: string) =>
+    `<div class="f"><div style="${style}"><div class="t"></div>` +
+    `<div class="k" id="${id}"></div></div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}.f{display:flex;flex-direction:column}' +
+      '.f>div{width:100px}.k{height:100%;width:20px}' +
+      '.t{height:30px;width:20px}</style>' +
+      item('a', 'flex:0 0 100px') +
+      item('b', 'flex:0 0 100px;height:0') +
+      item('c', 'flex:1 1 50px;min-height:0') +
+      item('d', 'flex:0 0 50px;min-height:80px') +
+      item('e', 'flex:0 0 100px;padding:5px;box-sizing:border-box') +
+      item('f', 'flex:1 1 auto;height:60px') +
+      item('g', 'flex:1 1 content;height:60px') +
+      item('h', 'flex:1 1 0%;height:60px') +
+      item('i', 'flex:0 0 50%;height:60px') +
+      item('j', 'flex:1 1 0px;height:60px;min-height:0') +
+      // its own items still have the height it came to
+      '<div class="f"><div style="display:flex;flex:1 1 content;height:60px">' +
+      '<div class="t"></div><div id="k" style="width:9px"></div>' +
+      '<div class="k"></div></div></div>',
+    400,
+  );
+  const el = view(node);
+  const heights = [...'abcdefghijk'].map((id) => boxOf(el, id).height);
+  assert.deepStrictEqual(heights, [100, 100, 50, 80, 90, 60, 0, 0, 0, 0, 30]);
+});
+
 test('an item of a width of its content has an automatic minimum', async () => {
   // `width: min-content` is a width its basis has the say over, and it is held
   // at its content as any item is; every size is Chromium's

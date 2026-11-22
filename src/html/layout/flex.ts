@@ -1100,18 +1100,18 @@ function placeItems(
     // when a sibling grew. Unless the last answer was at that width, which
     // is a layout the item still has (Yoga's widths are float32s).
     // Its height is definite where the flex layout made it so (CSS Flexbox
-    // 9.8): stretched across a row's line, or flexed in a column of a
-    // height of its own. What is in it takes its percentages of that —
-    // the `h-full` in a stretched sidebar — where they had nothing to be
-    // of, and the item is laid out again for them; and so is one that is a
-    // flex or grid container itself, whose own items are laid out in that
-    // height (9.4, step 11: "redo layout for its contents, treating this
-    // used size as its definite cross size").
+    // 9.8): stretched across a row's line, or flexed in a column of a height
+    // of its own, or from a basis that is one. What is in it takes its
+    // percentages of that — the `h-full` in a stretched sidebar — where they
+    // had nothing to be of, and the item is laid out again for them; and so is
+    // one that is a flex or grid container itself, whose own items are laid
+    // out in that height (9.4, step 11: "redo layout for its contents,
+    // treating this used size as its definite cross size").
     const definite = row
       ? stretches(child, box.style)
         ? itemHeight
         : null
-      : own
+      : own || typeof child.style.flexBasis === 'number'
         ? itemHeight
         : null;
     layoutItemAt(
@@ -1200,7 +1200,21 @@ function layoutItemAt(
   // one whose result is kept — or no pass, where the last layout was at
   // this width and this height. An item Yoga never measured has none, NaN,
   // and is laid out.
-  if (sameWidth && Object.is(laid.tall, tall)) box.height = laid.height;
+  if (column && definite === null && basisHidesHeight(box)) {
+    // a height of its own is none to what is in it, as its basis is not it —
+    // but the one its own flex layout shares out
+    FLEXED_HEIGHT.set(box, NaN);
+    if (box.kind === 'flex') {
+      USED_HEIGHT.set(box, Math.max(0, height - box.verticalExtra));
+    }
+    try {
+      layoutAt(box, ctx, width, containing, laid);
+    } finally {
+      FLEXED_HEIGHT.delete(box);
+      USED_HEIGHT.delete(box);
+    }
+    laid.width = NaN;
+  } else if (sameWidth && Object.is(laid.tall, tall)) box.height = laid.height;
   else if (Number.isNaN(tall)) {
     layoutNaturally(box, ctx, width, containing, laid);
   } else {
@@ -1232,6 +1246,22 @@ function layoutItemAt(
   // and a button's content is centred in the height it came to
   centreButton(box);
   moveTo(box, x, y);
+}
+
+/** Whether a column item's height is not the flex layout's to make definite,
+ *  in a column of no definite height: one of its own that its flex basis is
+ *  not, being its content, or a percentage of that column's height, which is
+ *  its content (CSS Flexbox 7.2.3). What is in it has no height to take a
+ *  percentage of, whatever its own says (9.8), as in Chrome. */
+function basisHidesHeight(box: Box): boolean {
+  const { height, flexBasis, flexBasisKeyword } = box.style;
+  return (
+    height !== AUTO &&
+    (flexBasis !== AUTO || flexBasisKeyword !== null) &&
+    typeof flexBasis !== 'number' &&
+    box.kind !== 'replaced' &&
+    percentHeightsIn(box)
+  );
 }
 
 // What a new Yoga node already is is not said again. A call into the
