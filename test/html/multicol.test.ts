@@ -32,6 +32,11 @@ import {
   GRID_ROWS_KNOWN,
   GRID_ROWS_RECTS,
 } from './grid-rows.js';
+import {
+  GRID_ROW_CONTEXTS_DOCUMENT,
+  GRID_ROW_CONTEXTS_KNOWN,
+  GRID_ROW_CONTEXTS_RECTS,
+} from './grid-row-contexts.js';
 
 afterEach(cleanup);
 
@@ -2679,6 +2684,38 @@ test('a grid row the columns end inside is broken an item at a time, where Chrom
       );
     }
   }
+  assert.deepStrictEqual(wrong, []);
+});
+
+test('a grid row goes where Chromium has it under cloned edges, in rows of columns, in nested columns and in a table that repeats its header', async () => {
+  // where a row is broken no item at a time, every rectangle Chromium's,
+  // from `scripts/conformance/grid-row-contexts.ts`: grouped as a row that
+  // nothing broke, it went to a column whole and hung out of it. The cases
+  // left out differed before a row was broken an item at a time
+  const { node } = await render(GRID_ROW_CONTEXTS_DOCUMENT, 800);
+  const el = view(node);
+  const wrong: string[] = [];
+  let held = 0;
+  for (const [id, want] of Object.entries(GRID_ROW_CONTEXTS_RECTS)) {
+    const at = id.replace(/[gi]\d*$/, '');
+    if (GRID_ROW_CONTEXTS_KNOWN.includes(at)) continue;
+    held += 1;
+    const box = boxOf(el, id);
+    const root = boxOf(el, at);
+    const pieces = COLUMN_PIECES.get(box as never) ?? [box];
+    const got = pieces
+      .filter((p) => p.width > 0 && p.height > 0)
+      .map((p) => [p.x - root.x, p.y - root.y, p.width, p.height]);
+    const same =
+      got.length === want.length &&
+      got.every((r, k) => r.every((v, j) => Math.abs(v - want[k][j]) < 0.05));
+    if (!same) {
+      wrong.push(
+        `${id}: ${JSON.stringify(got)}, where Chromium has ${JSON.stringify(want)}`,
+      );
+    }
+  }
+  assert.ok(held > 300, `rectangles held: ${held}`);
   assert.deepStrictEqual(wrong, []);
 });
 
