@@ -1827,10 +1827,13 @@ export function trackList(
   const outer = template.tracks;
   const unit = repeat.tracks;
   // what one repetition takes: its tracks' maximums where those are
-  // lengths, and their minimums where not (7.2.3.2)
+  // lengths, no less than a minimum that is one, and their minimums where
+  // they are not (7.2.3.2)
   const base = Number.isFinite(width) ? width : 0;
-  const fixed = (track: GridTrack): number =>
-    lengthOf(track.max, base) ?? lengthOf(track.min, base) ?? 0;
+  const fixed = (track: GridTrack): number => {
+    const least = lengthOf(track.min, base) ?? 0;
+    return Math.max(lengthOf(track.max, base) ?? least, least);
+  };
   const others = outer.reduce((sum, t) => sum + fixed(t), 0);
   const each = unit.reduce((sum, t) => sum + fixed(t), 0);
   let count = repetitions ?? 1;
