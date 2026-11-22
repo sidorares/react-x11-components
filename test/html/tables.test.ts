@@ -29,6 +29,46 @@ test('an image told to be a column is drawn, as one told to be a cell is', async
   assert.ok(img.width === 20 && img.height === 10, 'laid out at its size');
 });
 
+metric(
+  'a row and a row group cast their shadows, over the rows before and under their own cells',
+  async () => {
+    // from the first cell to the last, as their backgrounds are; as Chrome
+    // draws them
+    const { node, result } = await render(
+      '<style>body{margin:0;background:#ffffff}table{border-spacing:10px}' +
+        'td{padding:0;width:40px;height:40px;background:#0000ff}' +
+        '.n{background:none}</style>' +
+        '<table><tr><td></td><td></td></tr>' +
+        '<tr style="box-shadow:0 0 0 6px #ff0000"><td></td><td></td></tr>' +
+        '</table>' +
+        '<table><tbody style="box-shadow:6px 6px #ff0000"><tr><td></td></tr>' +
+        '<tr><td></td></tr></tbody></table>' +
+        '<table style="border-spacing:4px"><tr style="background:#ffff00">' +
+        '<td></td></tr><tr style="background:#ffff00;box-shadow:0 0 0 8px ' +
+        '#ff0000"><td class="n"></td><td class="n"></td></tr>' +
+        '<tr style="background:#ffff00"><td class="n"></td></tr></table>' +
+        '<table><tr style="opacity:.5;box-shadow:6px 6px #ff0000"><td></td>' +
+        '</tr></table>',
+    );
+    const { abs } = view(node) as unknown as { abs: { x: number; y: number } };
+    const at = (x: number, y: number, colour: string, message: string) =>
+      expectPixel(result.ctx, abs.x + x, abs.y + y, colour, { message });
+    await at(30, 57, '#ff0000', 'above its row, in the spacing');
+    await at(55, 80, '#ffffff', 'nor between its cells, in its own box');
+    await at(8, 80, '#ff0000', 'beside its first cell');
+    await at(104, 80, '#ff0000', 'and its last');
+    await at(30, 80, '#0000ff', 'under its cells');
+    await at(53, 150, '#ff0000', "a row group's");
+    await at(30, 213, '#ff0000', 'below its last row');
+    // the third table starts at 220
+    await at(20, 262, '#ff0000', 'over the cells of the row before');
+    await at(46, 290, '#ffffff', 'in the spacing of a row with a background');
+    await at(20, 309, '#ff0000', 'below it');
+    await at(20, 314, '#ffff00', "under the next row's background");
+    await at(53, 400, '#ff8080', 'and as faint as its row');
+  },
+);
+
 metric('a table sizes its columns from every cell in them', async () => {
   const { node } = await render(
     '<table><tr><td>a</td><td>a much wider cell than the other one</td></tr>' +
@@ -545,6 +585,35 @@ metric(
     assert.strictEqual(b.x - (a.x + a.width), 2);
     assert.strictEqual(a.y - t.y, 10, 'the rows 10');
     assert.strictEqual(c.y - (a.y + a.height), 10);
+  },
+);
+
+metric(
+  'a row or a row group that is a layer is painted among them, where it is moved to and as faint',
+  async () => {
+    // its background as much as its cells, and a row group's rows'; as
+    // Chrome draws them
+    const { node, result } = await render(
+      '<style>body{margin:0;background:#ffffff}table{border-spacing:0}' +
+        'td{padding:0;width:40px;height:40px}i{position:absolute;width:40px;' +
+        'height:40px;background:#ff0000}div{height:80px}</style>' +
+        '<div><i style="left:100px"></i><table><tr style="position:relative;' +
+        'left:100px;background:#00ff00"><td></td></tr></table></div>' +
+        '<div><i style="left:100px"></i><table><tbody style="position:relative;' +
+        'left:100px"><tr style="background:#00ff00"><td></td></tr></tbody>' +
+        '</table></div>' +
+        '<table><tr style="opacity:.5;background:#0000ff"><td></td></tr></table>' +
+        '<table><tr style="position:relative;z-index:-1;background:#0000ff">' +
+        '<td></td></tr></table>',
+    );
+    const { abs } = view(node) as unknown as { abs: { x: number; y: number } };
+    const at = (x: number, y: number, colour: string, message: string) =>
+      expectPixel(result.ctx, abs.x + x, abs.y + y, colour, { message });
+    await at(120, 20, '#00ff00', 'a relative row, over what is before it');
+    await at(20, 20, '#ffffff', 'and not where it was');
+    await at(120, 100, '#00ff00', "a relative row group's row");
+    await at(20, 180, '#8080ff', 'a faded row');
+    await at(20, 220, '#0000ff', 'and one below the flow');
   },
 );
 
