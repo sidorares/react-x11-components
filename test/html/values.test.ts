@@ -3,7 +3,7 @@ import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { setFlagsFromString } from 'node:v8';
 import { act, cleanup, pixelAt, waitFor } from 'react-x11/test';
-import { removeNode } from '../../src/html/dom.js';
+import { createElement, removeNode } from '../../src/html/dom.js';
 import {
   inkColor,
   isTransparent,
@@ -23,6 +23,7 @@ import {
 } from '../../src/html/css/parse.js';
 import { shapeFont, shapeValue } from '../../src/html/css/shapes.js';
 import { fontQuery } from '../../src/html/css/style.js';
+import { Cascade } from '../../src/html/css/cascade.js';
 import { parseShapeFunction } from '../../src/html/css/shape-function.js';
 import { parseAngle } from '../../src/html/css/transform.js';
 import {
@@ -38,7 +39,7 @@ import {
   cssomStyle,
 } from '../../src/html/computed.js';
 import { colorFormText } from '../../src/html/css/color.js';
-import type { ComputedStyle } from '../../src/html/css/style.js';
+import type { ComputedStyle, RootLook } from '../../src/html/css/style.js';
 import { resolveIdentFunctions, substitute } from '../../src/html/css/vars.js';
 import {
   CALC_SIZE_BOXES,
@@ -260,6 +261,44 @@ metric(
     assert.strictEqual(boxOf(el, 'c').height, 60, 'an em down the line');
   },
 );
+
+test('a ch or an ic of a glyph with no advance is nothing, and half an em or an em where there is none', () => {
+  // CSS Values 4, 6.1.1; WPT ch-unit-016, ch-unit-018 and ic-unit-013: a
+  // font's own zero-wide "0" read as a font with no "0"
+  const sheet = parseStylesheet(
+    'p { width: calc(100px + 5ch); height: calc(10px + 2ic) }',
+    0,
+  );
+  const of = (advance: number | null) => {
+    const look = {
+      color: '#000000',
+      fontFamily: 'sans-serif',
+      fontSize: 20,
+      monoFamily: 'monospace',
+      linkColor: '#0000ee',
+      borderColor: '#808080',
+      mutedColor: '#666666',
+      background: '#ffffff',
+      colorScheme: 'light',
+      surface: '#ffffff',
+    } as RootLook;
+    const cascade = new Cascade(
+      [sheet],
+      look,
+      800,
+      600,
+      1,
+      null,
+      () => advance,
+    );
+    const p = createElement('p', {}, []);
+    const { width, height } = cascade.styleFor(p, cascade.initial, false);
+    return [width, height];
+  };
+  assert.deepStrictEqual(of(0), [100, 10]);
+  assert.deepStrictEqual(of(7), [135, 24]);
+  assert.deepStrictEqual(of(null), [150, 50]);
+});
 
 test('a negative size is no size, and the declaration goes', async () => {
   // CSS 2.1 10.2, 10.4, 10.5, 10.7: -1px was taken as a maximum height
