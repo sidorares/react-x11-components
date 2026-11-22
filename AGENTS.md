@@ -2349,12 +2349,16 @@ of the rest** (`startOf` in `layout/inline.ts`, `layout/settled.ts`). An
 engine prepares all it is handed, and ntk shortens only text no letter of
 which can be reversed, so such a paragraph made a line at a time cost its
 length at each line: 97 KB of it was a minute. Where the rest is some sixteen
-lines or more, the engine is handed some seven. Three things are
+lines or more, the engine is handed some seven. Four things are
 load-bearing. **A start is taken only where its first three lines' levels are
 settled**, and `settledLevels` says which are, over the paragraph alone:
 `test/html/settled.test.ts` holds it to bidi-js, and
 `test/html/line-starts.test.ts` holds a start's line to the whole's, letter by
-letter (`SETTLED_SEEDS`, `LINE_START_SEEDS`, and a `_FROM` for each). **What a
+letter (`SETTLED_SEEDS`, `LINE_START_SEEDS`, and a `_FROM` for each). **A word no
+line holds is cut by halving all of it**, and Arabic is no wider for every
+letter more, so a start holds a place a line is certain to break
+(`CERTAIN_BREAK`): without one it moved a cut by two letters, in one
+generated document of 4,971. **What a
 line is laid out from is `laidRuns`, and what follows it is `segment`'s**:
 anything new that asks what is past the line reads the segment, or it finds
 the start's end for the paragraph's. And **order is the paragraph's levels'

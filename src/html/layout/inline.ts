@@ -4810,6 +4810,10 @@ const START_LINES = 4;
 const START_MIN = 256;
 const START_OF = 2;
 
+/** A place a line may break wherever it is (UAX #14, LB4 and LB18): after a
+ *  forced break, and after spaces with a letter either side. */
+const CERTAIN_BREAK = /[\p{L}\p{N}] +\p{L}|\n/u;
+
 /**
  * The start of a segment, where its first line is the whole segment's: null
  * where the segment is short, or none is found. An engine prepares all of
@@ -4820,7 +4824,11 @@ const START_OF = 2;
  * What a cut can change of the text before it is the levels a bracket or a
  * neutral takes from what follows (`settledLevels`), and within a word or
  * two of it the break opportunities, the joining and the kerning: so the
- * start is of four lines or more, the first three of them settled. What
+ * start is of four lines or more, the first three of them settled. A word no
+ * line holds is cut by halving all of it (ntk's `_forceBreak`), so one cut
+ * here has to end in the start, or a break to come before it: somewhere in
+ * the start is a place to break (`CERTAIN_BREAK`), which is either on the
+ * line, and it is no such word's, or after it, where the word has ended. What
  * order its line's pieces are in is the paragraph's levels' to say, as it is
  * for a line of the whole (`levelPieces`).
  */
@@ -4848,6 +4856,7 @@ function startOf(
     // a surrogate pair is not cut
     const code = bidi.text.charCodeAt(at - 1);
     if (code >= 0xd800 && code < 0xdc00) at += 1;
+    if (!CERTAIN_BREAK.test(bidi.text.slice(para, at))) continue;
     const settled = settledLevels(text, para, at, end);
     if (!settled) continue;
     const runs = runsUpTo(segment.runs, at - para);

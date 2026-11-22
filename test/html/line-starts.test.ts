@@ -15,11 +15,13 @@ afterEach(cleanup);
 
 const SEEDS = Number(process.env.LINE_START_SEEDS ?? 12);
 const FROM = Number(process.env.LINE_START_FROM ?? 0);
+const WORDS = Number(process.env.LINE_START_WORDS ?? 2);
 
 const HEBREW =
   'ספרו של המחבר יצא לאור בשנה שעברה וזכה לשבחים רבים מצד המבקרים'.split(' ');
 const ARABIC =
   'كان الكتاب الجديد من أهم الكتب التي صدرت في العام الماضي وقد نال'.split(' ');
+const ARABIC_LETTERS = 'بتثجحخسشصضطظعغفقكلمنهيـ';
 const LATIN = 'The quick brown fox jumps over the lazy dog AV To office'.split(
   ' ',
 );
@@ -216,7 +218,7 @@ function generated(seed: number): string {
     () => pick(ARABIC),
     () => pick(LATIN),
     // a word whose letters join across a cut
-    () => some('بتثجحخسشصضطظعغفقكلمنهيـ', 8, random() < 0.1 ? 90 : 24),
+    () => some(ARABIC_LETTERS, 8, random() < 0.1 ? 90 : 24),
     // one a soft hyphen may break, and one nothing may
     () => [pick(ARABIC), pick(HEBREW), pick(LATIN)].join('&shy;'),
     () => some(pick(['abcdefgh', 'אבגדהוזח', 'ab1-/אב']), 30, 150),
@@ -240,12 +242,14 @@ function generated(seed: number): string {
     pick(kinds),
   );
   of.push(kinds[Math.floor(random() * 2)]);
+  // words run together, which the engine cuts where no line holds them
+  const space = random() < 0.2 ? '' : ' ';
   let body = '';
   for (let i = 0; i < 260; i += 1) {
     const word = pick(of)();
     const larger = random() < 0.03 && !word.includes('<');
     body += larger ? `<big>${word}</big>` : word;
-    body += random() < 0.01 ? '\n' : ' ';
+    body += random() < 0.01 && space ? '\n' : space;
   }
   // text smaller than its block's, or of letters of no width: more of it on a
   // line than a start is guessed to need, so that the cut is near the line
@@ -262,35 +266,68 @@ function generated(seed: number): string {
   return `${float}<p style="margin:0;${style}">${body}</p>`;
 }
 
-metric('a line made from a start is the line the whole makes', async () => {
+/** The lines of a document laid out with windows refused, then taken, and
+ *  how many were asked for. */
+async function twice(source: string) {
+  const { tree, fonts } = await laid(source);
   let starts = 0;
-  for (let seed = FROM; seed < FROM + SEEDS; seed += 1) {
-    const { tree, fonts } = await laid(generated(seed));
-    const layout = (whole: boolean): string[] => {
-      layoutDocument(
-        tree,
-        {
-          layout: (runs, style, options) => {
-            const made = fonts.layout(runs, style, options);
-            // a start of too few lines is not taken
-            if (options.maxLines !== 4) return made;
-            if (!whole) starts += 1;
-            return whole ? { ...made, lines: [] } : made;
-          },
-          match: (...args) => fonts.match(...args),
+  const layout = (whole: boolean): string[] => {
+    layoutDocument(
+      tree,
+      {
+        layout: (runs, style, options) => {
+          const made = fonts.layout(runs, style, options);
+          // a start of too few lines is not taken
+          if (options.maxLines !== 4) return made;
+          starts += 1;
+          return whole ? { ...made, lines: [] } : made;
         },
-        400,
-        600,
-      );
-      return linesIn(tree);
-    };
-    const whole = layout(true);
-    const cut = layout(false);
+        match: (...args) => fonts.match(...args),
+      },
+      400,
+      600,
+    );
+    return linesIn(tree);
+  };
+  const whole = layout(true);
+  const cut = layout(false);
+  return { whole, cut, starts };
+}
+
+metric('a line made from a start is the line the whole makes', async () => {
+  let asked = 0;
+  for (let seed = FROM; seed < FROM + SEEDS; seed += 1) {
+    const { whole, cut, starts } = await twice(generated(seed));
+    asked += starts;
     assert.strictEqual(cut.length, whole.length, `seed ${seed}: lines`);
     for (let i = 0; i < whole.length; i += 1) {
       assert.strictEqual(cut[i], whole[i], `seed ${seed}: line ${i}`);
     }
     cleanup();
   }
-  assert.ok(starts > SEEDS * 5, `${starts} starts were tried`);
+  assert.ok(asked > SEEDS * 5, `${asked} starts were tried`);
 });
+
+metric(
+  'a word longer than a line is cut where the whole of it is',
+  async () => {
+    // ntk looks for the place by halving what is left of the word, and Arabic
+    // is no wider for every letter more: a letter changes shape at the cut
+    const random = mulberry32(FROM + 201);
+    for (let k = 0; k < WORDS; k += 1) {
+      let word = '';
+      while (word.length < 1600) {
+        word += ARABIC_LETTERS[Math.floor(random() * ARABIC_LETTERS.length)];
+      }
+      for (const said of [word, `${word} ${word.slice(0, 300)}`]) {
+        const { whole, cut } = await twice(
+          `<p dir="rtl" style="margin:0;width:${Math.round(90 + random() * 300)}px;font-family:serif;` +
+            `overflow-wrap:anywhere;${LINED}">${said}</p>`,
+        );
+        assert.ok(whole.length > 10, `${whole.length} lines`);
+        assert.deepStrictEqual(cut, whole, `word ${k} ${said.length}`);
+        cleanup();
+      }
+    }
+  },
+);
