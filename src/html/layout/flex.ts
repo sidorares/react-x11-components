@@ -2748,7 +2748,14 @@ function autoMinimums(
       // not shrunk under needs no measure of
       const tall =
         box.kind === 'replaced' && style.height === AUTO ? Infinity : height;
-      if (!ofAuto && laid.main >= tall - 0.01) continue;
+      if (
+        !ofAuto &&
+        laid.main >= tall - 0.01 &&
+        measuredApart(box) &&
+        Number.isNaN(read)
+      ) {
+        continue;
+      }
       let content = Number.isNaN(read)
         ? columnContent(box, ctx, laid, width, containingWidth)
         : read;
@@ -2768,6 +2775,14 @@ function autoMinimums(
     changed = true;
   }
   return changed;
+}
+
+/** Whether what a column item holds reads a height of the item's own, and its
+ *  content is measured in a layout without it (`columnContent`). */
+function measuredApart(box: Box): boolean {
+  return (
+    box.style.height !== AUTO && (box.kind === 'flex' || percentHeightsIn(box))
+  );
 }
 
 /**
@@ -2798,10 +2813,7 @@ function columnContent(
     const content = replacedHeight(box, across - box.horizontalExtra);
     return content === null ? laid.height : content + box.verticalExtra;
   }
-  if (
-    box.style.height !== AUTO &&
-    (box.kind === 'flex' || percentHeightsIn(box))
-  ) {
+  if (measuredApart(box)) {
     // what its content comes to where it has no height to take
     // percentages of, as an intrinsic size is measured: laid out so
     // apart, and the final pass lays it out again. What that came to is
