@@ -1039,6 +1039,18 @@ test('a later cascade layer wins over an earlier one, and no layer over any', as
     blue,
     'a layer with no name is one of its own',
   );
+  // over the named layer between the two sheets
+  assert.strictEqual(
+    await colorOf(
+      '',
+      '<style>@layer { .x { color: #ff0000 } }</style>' +
+        '<style>@layer a { .x { color: #ff0000 } }</style>' +
+        '<style>@layer { .x { color: #0000ff } }</style>' +
+        '<p id="p" class="x">x</p>',
+    ),
+    blue,
+    "a later sheet's is none of an earlier's",
+  );
 });
 
 test('a nested rule is relative to its parent, and a nested @media holds for it', () => {
