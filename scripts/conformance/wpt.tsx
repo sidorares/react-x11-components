@@ -129,8 +129,9 @@ export interface Outcome {
   allowed?: { maxDifference: number; totalPixels: number };
   ms?: number;
   error?: string;
-  /** URLs of a network scheme off the checkout's origin that the test or
-   *  its reference asked for, each answered with nothing (`resourcesFor`). */
+  /** URLs of a network scheme off the checkout's origin, and paths outside
+   *  the checkout, that the test or its reference asked for, each answered
+   *  with nothing (`resourcesFor`, `inCheckout`). */
   outside?: string[];
 }
 
@@ -186,28 +187,48 @@ function fuzzyOf(
   return allowed;
 }
 
+/** A path of the checkout, and one there is a file at, or null: the
+ *  checkout itself or something in it. A sibling whose name starts as the
+ *  checkout's does is neither. */
+function inCheckout(abs: string): string | null {
+  if (abs !== ROOT && !abs.startsWith(ROOT + sep)) {
+    outside.push(abs);
+    return null;
+  }
+  return existsSync(abs) ? abs : null;
+}
+
+/** A URL's path with its escapes read, or null where one is malformed. */
+function decoded(path: string): string | null {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return null;
+  }
+}
+
 /** A URL as a document wrote it, against the document's own path. */
 function fileFor(url: string, docPath: string): string | null {
   // what `<Html>` resolved against a `baseUrl` (`urlOf`), and nothing else
   // of that origin's or any other
   if (url.startsWith(`${ORIGIN}/`)) {
-    const clean = url.slice(ORIGIN.length).split('#')[0].split('?')[0];
-    let path: string;
-    try {
-      path = decodeURIComponent(clean);
-    } catch {
-      return null;
-    }
-    const abs = join(ROOT, path);
-    return abs.startsWith(ROOT) && existsSync(abs) ? abs : null;
+    const path = decoded(url.slice(ORIGIN.length).split('#')[0].split('?')[0]);
+    return path === null ? null : inCheckout(join(ROOT, path));
   }
   if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return null;
   const clean = url.split('#')[0].split('?')[0];
   if (!clean) return null;
-  const abs = clean.startsWith('/')
-    ? join(ROOT, clean)
-    : resolve(dirname(docPath), decodeURIComponent(clean));
-  return abs.startsWith(ROOT) && existsSync(abs) ? abs : null;
+  if (clean.startsWith('/')) return inCheckout(join(ROOT, clean));
+  const path = decoded(clean);
+  return path === null ? null : inCheckout(resolve(dirname(docPath), path));
+}
+
+/** The file a test's `<link rel=match>` names, as it wrote it, where it is
+ *  one of the checkout's. */
+function referenceFile(href: string, path: string): string | null {
+  return inCheckout(
+    href.startsWith('/') ? join(ROOT, href) : resolve(dirname(path), href),
+  );
 }
 
 function dataUrl(url: string): Uint8Array | string | null {
@@ -219,10 +240,10 @@ function dataUrl(url: string): Uint8Array | string | null {
   return /^text\/css/i.test(m[1]) ? bytes.toString('utf8') : bytes;
 }
 
-/** What a test asked for outside the checkout's origin (`ORIGIN`): a URL
- *  of a network scheme no file stands for, which this host answers with
- *  nothing, as it always has. Noted on the test's outcome (`outside`), so a
- *  run can show that nothing reached for a network. */
+/** What a test asked for outside the checkout: a URL of a network scheme off
+ *  its origin (`ORIGIN`), or a path that is none of its own
+ *  (`inCheckout`). Each is answered with nothing, and noted on the test's
+ *  outcome (`outside`), so a run can show that nothing was reached for. */
 let outside: string[] = [];
 
 function resourcesFor(docPath: string) {
@@ -762,16 +783,17 @@ async function against(
   { kind, href }: { kind: 'match' | 'mismatch'; href: string },
   shotOf: () => Promise<Uint8ClampedArray>,
 ): Promise<Outcome> {
-  const refPath =
-    href === BLANK
-      ? BLANK
-      : href.startsWith('/')
-        ? join(ROOT, href)
-        : resolve(dirname(path), href);
-  const ref = refPath === BLANK ? BLANK : refPath.slice(ROOT.length + 1);
-  if (refPath !== BLANK && !existsSync(refPath)) {
-    return { test, ref, kind, result: 'error', error: 'reference missing' };
+  const refPath = href === BLANK ? BLANK : referenceFile(href, path);
+  if (refPath === null) {
+    return {
+      test,
+      ref: href,
+      kind,
+      result: 'error',
+      error: 'reference missing',
+    };
   }
+  const ref = refPath === BLANK ? BLANK : refPath.slice(ROOT.length + 1);
   const refSource = pageOf(refPath).text;
   if (scripted(source) || scripted(refSource)) {
     return { test, ref, kind, result: 'script' };
