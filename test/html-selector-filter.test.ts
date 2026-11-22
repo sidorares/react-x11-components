@@ -305,10 +305,11 @@ test("the nth pseudo-classes answer from where an element is kept as css-select'
           .sort();
         const want = sheet.rules
           .filter(
-            // css-select's `n` wants an element for a parent, and an element
-            // at the top of the tree has a place (Selectors 4, 13.3)
+            // at the top of the tree, the root, `n` is the specification's
+            // (Selectors 4, 13.3): css-select wants an element for a parent
             (rule) =>
-              /^:nth-[a-z-]+\(\+?n\)$/.test(rule.selector) ||
+              (el.parent?.type !== 'tag' &&
+                /^:nth-[a-z-]+\(\+?n\)$/.test(rule.selector)) ||
               is(el, rule.selector),
           )
           .map((rule) => rule.selector)
