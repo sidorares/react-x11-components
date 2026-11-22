@@ -211,6 +211,7 @@ function generated(seed: number): string {
     // one a soft hyphen may break, and one nothing may
     () => [pick(ARABIC), pick(HEBREW), pick(LATIN)].join('&shy;'),
     () => some(pick(['abcdefgh', 'אבגדהוזח', 'ab1-/אב']), 30, 150),
+    () => some('ilו׳.\u05b0\u0301\u064e\u200b', 10, 60),
     // a break between any two letters, and punctuation that takes none
     () => some('日本語中文字。、「」', 4, 24),
     // and an emoji of several joined
@@ -237,6 +238,10 @@ function generated(seed: number): string {
     body += larger ? `<big>${word}</big>` : word;
     body += random() < 0.01 ? '\n' : ' ';
   }
+  // text smaller than its block's, or of letters of no width: more of it on a
+  // line than a start is guessed to need, so that the cut is near the line
+  const size = pick([0, 0, 5, 7, 9]);
+  if (size) body = `<span style="font-size:${size}px">${body}</span>`;
   const float =
     random() < 0.3
       ? '<div style="float:left;width:60px;height:300px"></div>'
