@@ -6669,8 +6669,8 @@ const CONTENT_DISTRIBUTIONS: ReadonlySet<string> = new Set([
  * words and the order Chrome does, or null for what the property does not
  * take. `justify-content` takes no baseline, and `align-content` no last
  * one, which CSS Box Alignment 3 gives it and no browser takes. An element
- * lays out by the keyword `alignKeyword` makes of this, and `safe` is
- * nothing there: see the note on it.
+ * lays out by the keyword `alignKeyword` makes of this, and reads `safe` and
+ * `unsafe` from this.
  */
 function alignmentText(name: string, value: string): string | null {
   const v = value.trim().toLowerCase().replace(/\s+/g, ' ');
@@ -6759,19 +6759,15 @@ function justifyKeyword(value: string): ComputedStyle['justifyContent'] | null {
   }
 }
 
-/** An alignment's keyword, with `unsafe` before it read past, which is
- *  what an alignment does anyway. A `safe` one sets the subject at the
- *  start where it overflows its room, which is not done here: it is no
- *  value, and the declaration is dropped — which is the start's for the
- *  flex box that overflows, as it was before `safe` was read at all. */
 /** `anchor-center`, which takes an overflow position as the other
  *  self-positions do. */
 const ANCHOR_CENTER = /^(?:(?:safe|unsafe)\s+)?anchor-center$/;
 
+/** An alignment's position, with `safe` or `unsafe` before it read past:
+ *  which of the two it is is in the text a layout asks (`alignmentText`). */
 function overflowAligned(value: string): string {
   const v = value.trim().toLowerCase().replace(/\s+/g, ' ');
-  const m = /^unsafe (.+)$/.exec(v);
-  return m ? m[1] : v;
+  return v.replace(/^(?:safe|unsafe) /, '');
 }
 
 function alignKeyword(value: string): string | null {

@@ -514,6 +514,9 @@ export function layoutGridLanes(
           trackReverse,
         ),
         gridRoom,
+        (rows ? style.alignContentText : style.justifyContentText).startsWith(
+          'safe ',
+        ),
       );
 
   // the tie threshold: `normal` is 1em here, a percentage is of the grid
@@ -792,7 +795,10 @@ export function layoutGridLanes(
       const kind = flow ?? selfAcross;
       if (kind === 'center') across = (area - crossOuter) / 2;
       else if (kind === 'flex-end') across = area - crossOuter;
-      else if (
+      // past its lanes, at their start where it is `safe` (CSS Box Alignment
+      // 3, 4.4)
+      if (across < 0 && textAcross.startsWith('safe ')) across = 0;
+      if (
         rows &&
         !subgridded[index] &&
         flow === null &&

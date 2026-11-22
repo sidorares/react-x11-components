@@ -6311,7 +6311,13 @@ start and end, by its direction and its writing mode: an item whose
 Grid lanes lay their lanes, or their stacking range, out from the right the
 same way. An item is stretched to its area or aligned in it by
 `justify-self`, `align-self` and its `auto` margins, and one that is not
-stretched is as wide as its content fits. `normal`, which is what an unset
+stretched is as wide as its content fits. One larger than its area runs past
+both its sides where it is centred and past its start where it is ended, as in
+every browser; `safe` before the position keeps it at the area's start, as an
+`auto` margin does (CSS Box Alignment 3, 4.4). `safe` is the same for a grid's
+tracks larger than the grid, for a flex box's items larger than their line, and
+for a line or lines larger than the box: `start` is the box's own, its top and
+its left where it runs left to right, whichever way its lines run and wrap. `normal`, which is what an unset
 `align-items` is, stretches an item but an
 image, which keeps its own size, and a box with an `aspect-ratio`, which is
 as wide as a height it has makes it, and as a block would be where it has
@@ -9161,8 +9167,8 @@ kept with its colour's calculations simplified, `calc(1 + 1 / 1)` as
 
 `getComputedStyle` reads the flex and alignment properties as Chrome does,
 which is not always what they are laid out by. `align-items: start` is laid
-out as `flex-start` and reads `start`; `safe center`, which lays out nothing
-here, reads as it was written; a `-webkit-box` and its items read the flex
+out as `flex-start` and reads `start`; `safe center` reads as it was
+written; a `-webkit-box` and its items read the flex
 properties written on them, though `-webkit-box-orient` and
 `-webkit-box-flex` lay them out; and a position option that flips a box reads
 its `align-self` or `justify-self` turned over, `start` as `end`. A number
