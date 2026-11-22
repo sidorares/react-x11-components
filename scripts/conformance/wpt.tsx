@@ -535,6 +535,9 @@ let frames = 0;
 /** What `<Html>` could not lay out or paint of the page being shot: it
  *  leaves the document blank and says so once, on the console. */
 let failure: string | null = null;
+
+/** Whether the page shot before this one failed. */
+let failedLast = false;
 {
   const proto = HtmlViewNode.prototype as unknown as {
     _fail(error: unknown, ...more: unknown[]): void;
@@ -637,6 +640,7 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
  *  once two reads agree — an image decode or a stylesheet settles a frame
  *  or two after the first paint. */
 async function shoot(path: string): Promise<Uint8ClampedArray> {
+  failedLast = failure !== null;
   failure = null;
   const shot = await drawn(path);
   if (failure) FAILURES.set(shot, failure);
@@ -645,6 +649,13 @@ async function shoot(path: string): Promise<Uint8ClampedArray> {
 
 async function drawn(path: string): Promise<Uint8ClampedArray> {
   const before = frames;
+  // A page `<Html>` failed on may have left its clip on the window's picture
+  // (ntk's glyph draw takes it off again only where it did not throw), and
+  // every later page of the shard would be drawn inside it.
+  if (mounted && failedLast) {
+    await mounted.dispose();
+    mounted = null;
+  }
   if (!mounted) {
     mounted =
       BACKEND === 'cocoa'
