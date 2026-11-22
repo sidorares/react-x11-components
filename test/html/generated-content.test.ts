@@ -510,6 +510,27 @@ test('a counter is reset, set and incremented by a calculation, rounded to an in
   assert.match(drawnText(el), /8/);
 });
 
+test('an increment past the range of a counter leaves it where it was', async () => {
+  // WPT counter-reset-increment-overflow-underflow: it stopped at the end
+  // of the range, 2147483647. Chrome's answers
+  assert.strictEqual(
+    await documentText(
+      '<style>p:before{content:counter(o) " "} p{counter-increment:o 50000000}' +
+        ' #d p:before{content:counter(u) " "}' +
+        ' #d p{counter-increment:u -50000000}</style>' +
+        '<div style="counter-reset:o 2000000000"><p></p><p></p><p></p>' +
+        '<p style="counter-increment:o 47483647"></p>' +
+        '<p style="counter-increment:o 1"></p>' +
+        '<p style="counter-increment:o -1"></p></div>' +
+        '<div id="d" style="counter-reset:u -2000000000"><p></p><p></p><p></p>' +
+        '<p style="counter-increment:u -47483648"></p>' +
+        '<p style="counter-increment:u -1"></p></div>',
+    ),
+    '205000000021000000002100000000214748364721474836472147483646' +
+      '-2050000000-2100000000-2100000000-2147483648-2147483648',
+  );
+});
+
 test('quotes open and close by depth, and none writes nothing', async () => {
   assert.strictEqual(
     await documentText(
