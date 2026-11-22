@@ -1650,14 +1650,14 @@ function throughSubgrid(item: Item, axis: 'cols' | 'rows'): Item[] {
       : gapOf(style.rowGap, NaN);
   const half = (gap - sub.gap) / 2;
   const out: Item[] = [];
-  const add = (it: Item, start: number, span: number) => {
+  const add = (it: Item, start: number, span: number, within = half) => {
     const end = start + span;
     const moved: Item = {
       ...it,
       min: -1,
       max: -1,
-      before: it.before + (start === 0 ? edgeBefore : half),
-      after: it.after + (end === n ? edgeAfter : half),
+      before: it.before + (start === 0 ? edgeBefore : within),
+      after: it.after + (end === n ? edgeAfter : within),
     };
     if (across) {
       // in the parent's columns, the other way round where they run the
@@ -1680,8 +1680,8 @@ function throughSubgrid(item: Item, axis: 'cols' | 'rows'): Item[] {
     add(it, startOf(it), spanOfItem(it));
   }
   const edge = { ...item, before: 0, after: 0, shim: 0, edge: true };
-  if (first > 0) add(edge, 0, 1);
-  if (last < n && !(n === 1 && first > 0)) add(edge, n - 1, 1);
+  if (first > 0) add(edge, 0, 1, 0);
+  if (last < n && !(n === 1 && first > 0)) add(edge, n - 1, 1, 0);
   return out;
 }
 
