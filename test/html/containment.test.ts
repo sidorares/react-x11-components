@@ -398,6 +398,28 @@ metric(
   },
 );
 
+test('a size-contained multicol container is as wide as its columns and their gaps', async () => {
+  // as though it held nothing, its columns as wide as `column-width` and no
+  // wider; every width is Chromium's
+  const { node } = await render(
+    '<style>body{margin:0;font-size:16px}.c{contain:size;float:left;clear:left}' +
+      'i{display:block;width:70px;height:9px}</style>' +
+      '<div class="c" id="a" style="columns:3"><i></i></div>' +
+      '<div class="c" id="b" style="columns:3 20px;column-gap:5px"><i></i></div>' +
+      '<div class="c" id="c" style="columns:3 20px;' +
+      'contain-intrinsic-width:33px"><i></i></div>' +
+      '<div class="c" id="d" style="columns:2;contain:inline-size"><i></i></div>' +
+      '<div style="display:flex;clear:left">' +
+      '<div class="c" id="e" style="columns:2 30px"></div></div>' +
+      '<div style="position:absolute">' +
+      '<div class="c" style="float:none;columns:2 30px" id="f"></div></div>',
+    400,
+  );
+  const el = view(node);
+  const widths = [...'abcdef'].map((id) => boxOf(el, id).width);
+  assert.deepStrictEqual(widths, [32, 70, 33, 16, 76, 76]);
+});
+
 test('overflow: clip cuts what overflows, and is no scroll container', async () => {
   // It was read as `hidden`: a formatting context of its own, and no
   // automatic minimum for a flex item (CSS Overflow 3, 3.1)
@@ -792,6 +814,17 @@ test('a style-contained list numbers its items from its start, wherever it is', 
   );
   assert.ok((await text(list(' reversed'))).includes('2. a1. b'));
   assert.ok((await text(list(' reversed start="9"'))).includes('9. a8. b'));
+  // and a box with style containment in one counts for itself, up from 1,
+  // and is no part of what the list counts down from
+  const inside = (attrs: string) =>
+    `<ol${attrs}><li>a</li><li>b</li><div class="c"><li>x</li><li>y</li>` +
+    '</div><li>c</li></ol>';
+  assert.ok((await text(inside(' reversed'))).includes('3. a2. b1. x2. y1. c'));
+  assert.ok(
+    (await text(inside(' reversed start="9"'))).includes(
+      '9. a8. b1. x2. y7. c',
+    ),
+  );
   // and it leaves a list around it as it found it
   assert.ok(
     (

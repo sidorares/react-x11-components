@@ -6243,7 +6243,9 @@ columns in its frame, along the inline axis down the page and as tall as its
 block size, and what is positioned in them is cut where they are. A box positioned in a block a spanner breaks is laid out
 against all of the block, its rows one after another down the strip, and
 cut into the columns of each row it reaches. Its static position is where
-the row it is in has the block, so one after a spanner starts under it.
+the row it is in has the block, so one after a spanner starts under it. Under
+size containment it is as wide as its `column-width`s and the gaps between
+them.
 
 `column-height` and `column-wrap` (CSS Multi-column 2) set the columns in
 rows, a `row-gap` apart, each row as many columns as there are and as tall
@@ -6945,11 +6947,12 @@ after it that a negative margin draws up under it, and over a relative
 box before it. An inline-block or an image is one as much as a block is,
 and so is one that is positioned: painted with the positioned boxes, over
 the text after it on its line and on the lines after that. So is an inline
-box an inset moves, `position: relative` or `sticky`, with all it holds: its
+box an inset moves or a `z-index` places, `position: relative` or `sticky`,
+with all it holds: its
 text, its background and borders and what is on its lines are drawn and hit
 in its turn among the positioned boxes, so the text after it goes under it,
 and it goes over an absolute box before it, as all three engines have it. One
-with every inset `auto` is in its paragraph's one layout and stays on its
+with every inset and its `z-index` `auto` is in its paragraph's one layout and stays on its
 line, so an absolute box before it, or a line a negative margin draws up over
 it, goes over it where a browser draws that under it. So does what is over
 one inside an inline box `opacity` fades, whose text has the fade in its
@@ -7406,7 +7409,8 @@ and `elementRect` answers what `getBoundingClientRect` does in Chrome. A
 box moved toward the viewer — `translate: 0 0 100px` as much as
 `translateZ(100px)` — is drawn larger about the perspective origin; with
 no perspective a turn out of the plane squashes it; and what is behind the
-viewer is not drawn. No context draws through a perspective — a 2d
+viewer is not drawn, nor what a transform with no inverse flattens, in depth
+alone as much as across. No context draws through a perspective — a 2d
 context's matrix is one of the plane — so such a box is painted on a
 surface as it was laid out, and the surface drawn a tile of the window's
 pixels at a time, each through the matrix nearest the perspective over it:
@@ -7436,8 +7440,8 @@ by turning the box its two faces are in shows its front mirrored, and
 `backface-visibility` is asked of a box's own turn alone. `transform-box`
 does nothing. A form control in a turned or scaled box is mounted where the
 box was laid out, as it is: a widget is a node of its own, which no matrix
-of the document's reaches. `background-attachment: fixed` in a transformed
-box is still fixed, where CSS has it scroll.
+of the document's reaches. `background-attachment: fixed` is `scroll`
+in a transformed box, or one whose `will-change` says it may be.
 
 **Scroll-driven timelines** drive an animation that names one in
 `animation-timeline` (Scroll-driven Animations 1): `scroll()` is how far

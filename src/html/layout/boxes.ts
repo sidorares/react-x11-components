@@ -5569,7 +5569,10 @@ class Builder {
           continue;
         }
         note(st);
-        inside(child, st, shared.key);
+        // what is in one with style containment counts for itself
+        if (!(st.contain & CONTAIN_STYLE) || st.display === 'contents') {
+          inside(child, st, shared.key);
+        }
       }
       return false;
     };
@@ -6270,33 +6273,39 @@ class CounterScopes {
     const instance = this._innermost(name);
     const detached = this._detached;
     if (detached && !this._answers(instance)) detached.escapedWrite = true;
-    const bound = this._contained[this._contained.length - 1];
-    const level = this._made.length - 1;
-    if (bound === undefined || level <= bound || instance.level > bound) {
-      return instance;
-    }
-    // what the contained element reset itself is no more in its subtree than
-    // what is around it, whether that reaches its siblings or not — but a
-    // list's, whose items Chrome and WebKit number from its `start`
-    if (instance.level === bound && (!instance.own || name === 'list-item')) {
-      return instance;
-    }
-    const parent = level - 1;
+    if (!this._containedFrom(instance, name)) return instance;
+    const parent = this._made.length - 2;
     const fresh = { level: parent, own: false, value: 0, reversed: false };
     this._instances.get(name)!.push(fresh);
     (this._made[parent] ??= []).push(name);
     return fresh;
   }
 
-  /** Whether the innermost instance counts down: a list item takes one
-   *  from it rather than adding one. */
+  /** Whether an instance was made outside an element with style containment
+   *  that this is inside, which counts none of it. */
+  private _containedFrom(instance: CounterInstance, name: string): boolean {
+    const bound = this._contained[this._contained.length - 1];
+    if (bound === undefined || this._made.length - 1 <= bound) return false;
+    if (instance.level > bound) return false;
+    // what the contained element reset itself is no more in its subtree than
+    // what is around it, whether that reaches its siblings or not — but a
+    // list's, whose items Chrome and WebKit number from its `start`
+    return !(
+      instance.level === bound &&
+      (!instance.own || name === 'list-item')
+    );
+  }
+
+  /** Whether the instance an increment counts on (`_counted`) counts down: a
+   *  list item takes one from it rather than adding one. One made for it
+   *  inside an element with style containment counts up. */
   reversed(name: string): boolean {
     const instance = this._innermost(name);
     // the way a list item counts, which is its write's
     if (this._detached && !this._answers(instance)) {
       this._detached.escapedWrite = true;
     }
-    return instance.reversed;
+    return instance.reversed && !this._containedFrom(instance, name);
   }
 
   value(name: string): number {
@@ -7614,12 +7623,13 @@ export function isOffset(style: ComputedStyle): boolean {
 
 /** Whether an inline box's text is laid out apart from the text around it,
  *  and painted at its own turn among the layers (`paintsApart`): one an
- *  inset moves, one a view transition may capture by a name, whose image
- *  is it alone (CSS View Transitions 1, 7.4), and one a `clip-path` cuts,
- *  under its clip (CSS Masking 1, 5). */
+ *  inset moves or a `z-index` places, one a view transition may capture by
+ *  a name, whose image is it alone (CSS View Transitions 1, 7.4), and one a
+ *  `clip-path` cuts, under its clip (CSS Masking 1, 5). */
 export function laidApart(style: ComputedStyle): boolean {
   return (
     isOffset(style) ||
+    (typeof style.zIndex === 'number' && isRelative(style)) ||
     style.viewTransitionName !== 'none' ||
     style.clipPath !== null
   );

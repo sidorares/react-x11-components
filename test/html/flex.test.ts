@@ -1297,6 +1297,51 @@ metric(
   },
 );
 
+test("`start` and `end` across a line are the flex box's own edges, and `self-start` and `self-end` the item's", async () => {
+  // whichever way its lines wrap, and whatever the item's direction and
+  // writing mode (CSS Box Alignment 3, 4.3); every place is Chromium's
+  const box = (flow: string, style: string, item = '') =>
+    `<div class="f" style="flex-flow:${flow};${style}"><b style="${item}"></b></div>`;
+  const cases: [string, number, number][] = [
+    [box('row wrap-reverse', 'align-items:start'), 0, 0],
+    [box('row wrap-reverse', 'align-items:end'), 0, 30],
+    [box('row wrap-reverse', 'align-items:flex-start'), 0, 30],
+    [box('row wrap-reverse', '', 'align-self:end'), 0, 30],
+    [box('column wrap-reverse', 'align-items:start'), 0, 0],
+    [box('column wrap-reverse', 'align-items:end;direction:rtl'), 0, 0],
+    [box('column', 'align-items:self-start', 'direction:rtl'), 80, 0],
+    [
+      box('column', 'align-items:self-end;direction:rtl', 'direction:ltr'),
+      80,
+      0,
+    ],
+    [
+      box(
+        'row',
+        '',
+        'align-self:self-start;writing-mode:vertical-lr;direction:rtl',
+      ),
+      0,
+      30,
+    ],
+    [box('row wrap-reverse', 'align-items:self-start'), 0, 0],
+  ];
+  const { node } = await render(
+    '<style>body{margin:0}.f{display:flex;position:relative;width:100px;' +
+      'height:40px}b{display:block;width:20px;height:10px}</style>' +
+      cases.map(([html], i) => html.replace('<b', `<b id="i${i}"`)).join(''),
+    400,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(
+    cases.map(([html], i) => {
+      const { x, y } = boxOf(el, `i${i}`);
+      return [html, x, y - i * 40];
+    }),
+    cases,
+  );
+});
+
 metric(
   'an absolute box in a flex box is where it would be as its one item',
   async () => {

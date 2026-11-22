@@ -66,7 +66,8 @@ import {
   moveTo,
   ownLeastWidth,
   percentBaseInside,
-  percentHeightsIn,
+  takesPercentHeights,
+  percentInset,
   percentOwn,
   percentPadding,
   positionOutOfFlow,
@@ -672,7 +673,13 @@ export function layoutGrid(
     // — and it stays that tall, what the rows come to then running past it
     // or leaving room in it
     let tall = NaN;
-    if (!own && [...plan.explicitRows, style.gridAutoRows].some(percentTrack)) {
+    // and flexible rows whose factors come to less than one are shared the
+    // height that makes (12.7.1), which is definite by then
+    if (
+      !own &&
+      ([...plan.explicitRows, style.gridAutoRows].some(percentTrack) ||
+        fractionOf(rowDefs) < 1)
+    ) {
       tall = rowGap * Math.max(0, heights.length - 1);
       for (const h of heights) tall += h;
       tall = Math.max(tall, least);
@@ -774,8 +781,12 @@ export function layoutGrid(
     if (item.row >= cut) continue;
     const child = item.box;
     const tall = extent(heights, tops, item.row, item.rows);
-    if (Object.is(child.percentHeightBase, tall) || !percentOwn(child))
+    if (Object.is(child.percentHeightBase, tall)) continue;
+    if (!percentOwn(child)) {
+      // one that is moved by it is laid out no other way
+      if (percentInset(child)) child.percentHeightBase = tall;
       continue;
+    }
     child.percentHeightBase = tall;
     layoutItem(item, extent(widths, lefts, item.col, item.cols), ctx, tall);
   }
@@ -946,7 +957,7 @@ export function layoutGrid(
       if (
         child.kind !== 'replaced' &&
         (wide !== null ||
-          percentHeightsIn(child) ||
+          takesPercentHeights(child) ||
           itemsTakeHeight(child, height, ctx) ||
           (child.kind === 'flex' && height !== child.height) ||
           (child.kind === 'table' && height > child.height + 0.01))
@@ -2422,7 +2433,7 @@ function keptItem(
           last.ctx !== ctx &&
           natural.flexed === flexed &&
           natural.used === used &&
-          percentHeightsIn(child)
+          takesPercentHeights(child)
         ? natural
         : null;
   if (
@@ -2774,6 +2785,15 @@ export function autoMargins(box: Box, axis: 'x' | 'y'): [boolean, boolean] {
 }
 
 /** Whether a track's least or greatest size is a percentage. */
+/** What the flex factors of some tracks come to, or 1 where none has one. */
+function fractionOf(defs: readonly GridTrack[]): number {
+  let sum = 0;
+  for (const { max } of defs) {
+    if (typeof max === 'object' && 'fr' in max) sum += max.fr;
+  }
+  return sum || 1;
+}
+
 export function percentTrack(track: GridTrack): boolean {
   const { min, max } = track;
   if (typeof min === 'object' && isPct(min)) return true;

@@ -96,6 +96,7 @@ import {
   urlImageOf,
   urlOf,
   WILL_CONTAIN,
+  WILL_HOLD_FIXED_BOX,
   WILL_STACK,
   WILL_STACK_BOX,
   WILL_STACK_Z,
@@ -2293,6 +2294,29 @@ function frameHeight(box: Frame): number {
  * inline box's fragments — is the box around it's, whose ink holds it.
  */
 let painting: Box | null = null;
+
+/** Whether a background of the box being painted is fixed to the viewport:
+ *  `fixed`, and not in a transformed box, its own among them, where that is
+ *  `scroll` (CSS Transforms 1, 3) — nor where `will-change` says it may be
+ *  one, as in Chrome. The canvas's, which no box paints, always is. */
+function fixedGround(style: ComputedStyle): boolean {
+  if (style.backgroundAttachment !== 'fixed') return false;
+  for (let at = painting; at?.parent; at = at.parent) {
+    // a writing mode's frame turns with no transform of the page's
+    if (at.kind === 'inline' || !(at.el || at.pseudo)) continue;
+    const own = at.style;
+    if (
+      own.transform !== null ||
+      own.translate !== null ||
+      own.rotate !== null ||
+      own.scale !== null ||
+      own.willChange & WILL_HOLD_FIXED_BOX
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const was = painting;
@@ -9580,13 +9604,15 @@ export function layered(parent: Box, child: Box): boolean {
  * Whether an inline box is painted as one of its stacking context's layers
  * rather than by its lines (CSS 2.1 Appendix E, step 8): one an inset moves,
  * so that what is after it in the flow goes under it, and it over a
- * positioned box before it. Its text is what makes it possible: a box with
- * an inset has its text laid out apart from the text around it (`collect`),
- * and a line paints a batch a layout, so what is the box's can be left out
- * of the line (`LinesApart`) and drawn at its turn (`paintApart`). A box
- * with every inset `auto` is in its paragraph's layout, moves nowhere, and
- * stays on its line: laid out apart, joshwcomeau.com's hundreds of them
- * would each take a paragraph off the one layout it is. One with a
+ * positioned box before it, or one its `z-index` places, under the flow of
+ * its context where that is negative. Its text is what makes it possible: a
+ * box with an inset has its text laid out apart from the text around it
+ * (`collect`), and a line paints a batch a layout, so what is the box's can
+ * be left out of the line (`LinesApart`) and drawn at its turn
+ * (`paintApart`). A box with every inset and its `z-index` `auto` is in its
+ * paragraph's layout, moves nowhere, and stays on its line: laid out apart,
+ * joshwcomeau.com's hundreds of them would each take a paragraph off the one
+ * layout it is. One with a
  * `view-transition-name` is laid out apart too (`laidApart`): a transition
  * captures it alone, and leaves it out of what it is in. Nor is one in a
  * faded inline box a layer: its fade is in the colours of its text, and
@@ -11070,9 +11096,7 @@ function paintBackground(
     // box, which is where it starts, and repeated under the borders — or
     // the viewport's, where it is fixed; its line runs across the whole of
     // it, not the part this paint reaches
-    const fixed =
-      style.backgroundAttachment === 'fixed' &&
-      (options.viewport ?? options.canvas);
+    const fixed = fixedGround(style) && (options.viewport ?? options.canvas);
     const origin = fixed || originBox(box, options, style);
     const at = snapped(origin.x, origin.y, origin.width, origin.height);
     // level with the page in a frame that turns the box (`levelOf`), cut
@@ -12515,7 +12539,7 @@ function tileBlock(
 
 /**
  * A `background-image` (CSS 2.1 14.2.1): positioned in `at`, the padding
- * box — or the viewport, the element, for `background-attachment: fixed` —
+ * box — or the viewport, the element, where it is fixed (`fixedGround`) —
  * repeated across `area`, the border box within the damage, over the
  * colour and under the borders. Filled with a pattern where the context has
  * one, drawn a tile at a time where it does not.
@@ -12528,7 +12552,7 @@ function paintBackgroundImage(
   options: PaintOptions,
   corners: Corners | null = null,
 ): void {
-  if (style.backgroundAttachment === 'fixed' && options.canvas) {
+  if (fixedGround(style) && options.canvas) {
     at = options.viewport ?? options.canvas;
   }
   const url = urlOf(style.backgroundImage);

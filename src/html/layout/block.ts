@@ -126,6 +126,7 @@ import type { ScrollOffset, Viewport } from './scroll.js';
 import type { Matrix, Placed } from '../css/transform.js';
 import {
   affineOf,
+  determinant4,
   facesAway,
   lift,
   multiply4,
@@ -6009,6 +6010,33 @@ export function percentHeightsIn(box: Box): boolean {
 
 const PERCENT_HEIGHTS = new WeakMap<Box, boolean>();
 
+/** Whether a box is moved by a percentage of its containing block's height:
+ *  a relative or a sticky one's `top` or `bottom`. */
+export function percentInset(box: Box): boolean {
+  const { position, top, bottom } = box.style;
+  return (
+    (position === 'relative' || position === 'sticky') &&
+    (isPct(top) || isPct(bottom))
+  );
+}
+
+/** Whether anything in a box takes a percentage of a height or is moved by
+ *  one: what is laid out again in a height that is made definite. */
+export function takesPercentHeights(box: Box): boolean {
+  return percentHeightsIn(box) || percentInsetsIn(box);
+}
+
+function percentInsetsIn(box: Box): boolean {
+  let found = PERCENT_INSETS.get(box);
+  if (found === undefined) {
+    found = box.children.some((at) => percentInset(at) || percentInsetsIn(at));
+    PERCENT_INSETS.set(box, found);
+  }
+  return found;
+}
+
+const PERCENT_INSETS = new WeakMap<Box, boolean>();
+
 /**
  * A box's own height, where it has one, as `box-sizing` measures it: a
  * length, a percentage of a height that resolves, or `stretch`'s, and else
@@ -7409,6 +7437,7 @@ function forgetOne(at: Box): void {
   at.intrinsicMaxContent = -1;
   PREFERRED.delete(at);
   PERCENT_HEIGHTS.delete(at);
+  PERCENT_INSETS.delete(at);
   TAKES_HEIGHT.delete(at);
   AT_HEIGHT.delete(at);
   FLOW_PLACE.delete(at);
@@ -8435,7 +8464,7 @@ export function intrinsicWidth(
   // under size containment, as though it held nothing: the size
   // `contain-intrinsic-size` gives it, or none (CSS Containment 2, 3.2)
   if (contained(box, CONTAIN_WIDTH)) {
-    return box.style.containIntrinsicWidth ?? 0;
+    return box.style.containIntrinsicWidth ?? columnsWide(box, 0);
   }
   // the root of an orthogonal flow is as wide as its frame came to down
   // its block axis, at its least and its most (CSS Writing Modes 4, 7.3.2),
@@ -8694,20 +8723,25 @@ export function intrinsicWidth(
     }
     widest = Math.max(widest, lined);
   }
-  // A multicol container is as wide as its columns side by side, each as
-  // wide as its content or as `column-width` where that is wider, and the
-  // gaps between them (as Blink measures one,
-  // `NGColumnLayoutAlgorithm::ComputeMinMaxSizes`)
+  // and no narrower than a box that spans them
   if (box.style.columns && box.kind === 'block') {
-    const count = box.style.columnCount ?? 1;
-    const gap = box.style.columnGapNormal
-      ? box.style.fontSize
-      : gapOf(box.style.columnGap, NaN);
-    widest = Math.max(widest, box.style.columnWidth ?? 0);
-    // and no narrower than a box that spans them
-    widest = Math.max(widest * count + gap * (count - 1), spanned);
+    return Math.max(columnsWide(box, widest), spanned);
   }
   return widest;
+}
+
+/** How wide a multicol container is whose content is `widest`: as its columns
+ *  side by side, each as wide as that or as `column-width` where that is
+ *  wider, and the gaps between them (as Blink measures one,
+ *  `NGColumnLayoutAlgorithm::ComputeMinMaxSizes`). Any other box's content. */
+function columnsWide(box: Box, widest: number): number {
+  const style = box.style;
+  if (!style.columns || box.kind !== 'block') return widest;
+  const count = style.columnCount ?? 1;
+  const gap = style.columnGapNormal
+    ? style.fontSize
+    : gapOf(style.columnGap, NaN);
+  return Math.max(widest, style.columnWidth ?? 0) * count + gap * (count - 1);
 }
 
 /**
@@ -12648,7 +12682,7 @@ function ownStartSide(style: ComputedStyle, down: boolean): 'low' | 'high' {
 /** Whether `self-start` or `self-end` in an alignment's text is the other
  *  end of the room from the container's start: where the item's own start
  *  is on the other side of the page from the container's. */
-function selfFlips(
+export function selfFlips(
   text: string | undefined,
   own: ComputedStyle,
   container: ComputedStyle,
@@ -13349,11 +13383,14 @@ const NOWHERE: Placed = [0, 0, 0, 0, 0, 0];
  * smaller where it is not. A box wholly behind the viewer is nowhere, and
  * so is one turned to face away from it under `backface-visibility:
  * hidden` — by its own transform and the perspective, since what a box
- * holds is flattened into its plane (`transform-style: flat`).
+ * holds is flattened into its plane (`transform-style: flat`) — and one whose
+ * transform has no inverse, flat in depth though its plane is whole
+ * (`scale3d(2, 2, 0)`; CSS Transforms 1, 2).
  */
 function projectedMatrix(box: Box, ox: number, oy: number): Placed | null {
   const style = box.style;
   const m = matrix4Of(style, box.width, box.height)!;
+  if (Math.abs(determinant4(m)) < 1e-20) return NOWHERE;
   const [tx, ty] = translation4(m);
   const oz = style.transformOriginZ;
   let placed = multiply4(

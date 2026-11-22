@@ -1965,8 +1965,8 @@ metric(
     // over one after it, and below its context's flow with a negative one.
     // Every other way round was what painting it by its lines made of it
     const stage = '<div style="position:relative;width:200px;height:60px">';
-    const span = (more: string) =>
-      `<span id="s" class="s" style="position:relative;top:1px;${more}">` +
+    const span = (more: string, top = 'top:1px;') =>
+      `<span id="s" class="s" style="position:relative;${top}${more}">` +
       'XXXXXXXX</span>';
     const abs = (more: string) =>
       `<div id="abs" style="position:absolute;inset:0;background:#00ff00;${more}"></div>`;
@@ -1981,6 +1981,21 @@ metric(
           '</p>',
         'abs',
         'under the flow, with a negative z-index',
+      ],
+      // and one a `z-index` places where no inset moves it
+      [stage + abs('') + span('z-index:0', ''), 's', 'a z-index alone'],
+      [
+        stage + span('z-index:2', '') + abs('z-index:1'),
+        's',
+        'by its z-index alone',
+      ],
+      [
+        '<div style="position:relative;z-index:0;width:200px;height:60px">' +
+          span('z-index:-1', '') +
+          '<p id="abs" style="margin-top:-20px;background:#00ff00;height:40px">' +
+          '</p>',
+        'abs',
+        'under the flow, with a negative z-index alone',
       ],
     ] as const) {
       const { result, node } = await render(POSITIONED_INLINE + source);
@@ -4255,4 +4270,58 @@ test('a clip-path on an inline box cuts all its fragments by a shape measured in
   assert.ok(clip && clip.op === 'clip', 'under a clip');
   assert.strictEqual(clip.x, Math.round(green[0].x), 'from its first fragment');
   assert.strictEqual(clip.w, Math.round(green[0].w / 2), 'half of it across');
+});
+
+test('a percentage `top` or `bottom` is of a height a flex box or a grid makes definite', async () => {
+  // stretched, flexed, or an area's; every place is Chromium's, from the top
+  // of its case
+  const r = (id: string, style = 'top:50%') =>
+    `<div class="r" id="${id}" style="${style}"></div>`;
+  const cases: [string, string, number][] = [
+    ['a', `<div class="f">${'<div>' + r('a') + '</div>'}</div>`, 30],
+    [
+      'b',
+      `<div class="f"><div style="align-self:start">${r('b')}</div></div>`,
+      0,
+    ],
+    [
+      'c',
+      `<div class="f" style="height:auto"><p></p><div>${r('c', 'top:-50%')}</div></div>`,
+      -25,
+    ],
+    [
+      'd',
+      `<div class="f" style="flex-direction:column"><div style="flex:1">${r('d')}</div></div>`,
+      30,
+    ],
+    [
+      'e',
+      `<div class="f" style="flex-direction:column"><div>${r('e', 'bottom:50%')}</div></div>`,
+      -5,
+    ],
+    ['f', `<div class="g"><div>${r('f')}</div></div>`, 30],
+    ['g', `<div class="g">${r('g')}</div>`, 30],
+    [
+      'h',
+      `<div class="g" style="height:auto"><p></p><div style="grid-area:1/2">${r('h')}</div></div>`,
+      25,
+    ],
+    [
+      'i',
+      `<div class="f"><div class="g" style="height:auto"><div>${r('i')}</div></div></div>`,
+      30,
+    ],
+    ['j', `<div style="height:60px"><div>${r('j')}</div></div>`, 0],
+  ];
+  const { node } = await render(
+    '<style>body,p{margin:0}p{height:50px}.f{display:flex;height:60px}' +
+      '.g{display:grid;height:60px}.r{position:relative;width:20px;height:10px}' +
+      'section{height:100px}</style>' +
+      cases.map(([, html]) => `<section>${html}</section>`).join(''),
+  );
+  const el = view(node);
+  assert.deepStrictEqual(
+    cases.map(([id], i) => [id, boxOf(el, id).y - i * 100]),
+    cases.map(([id, , y]) => [id, y]),
+  );
 });

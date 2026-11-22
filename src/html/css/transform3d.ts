@@ -334,7 +334,7 @@ interface Decomposed3 {
 }
 
 /** The determinant of a 4×4. */
-function determinant4(m: Mat4): number {
+export function determinant4(m: Mat4): number {
   const [a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o, p] = m;
   const kp = k * p - l * o;
   const jp = j * p - l * n;
