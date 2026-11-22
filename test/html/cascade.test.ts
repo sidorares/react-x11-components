@@ -2044,6 +2044,43 @@ test('a @supports test of subgrid is answered', () => {
   assert.strictEqual(supportsCondition('(grid-template-rows: masonry)'), false);
 });
 
+test("an :nth-child()'s of needs no space after it", async () => {
+  // WPT nth-child-of-no-space-after-of: a delimiter ends it, and so does a
+  // comment, as in Chrome
+  const { node } = await render(
+    '<style>' +
+      'p:nth-child(2 of/* c */p) { color: #00ff00 }' +
+      '.a:nth-child(2 of.a) { color: #00ff01 }' +
+      '[b]:nth-last-child(1 of[b]) { color: #00ff02 }' +
+      'i:nth-child(2 of:is(i)) { color: #00ff03 }' +
+      'b:nth-child(2 of#b1,#b2) { color: #00ff04 }' +
+      's:nth-child(2 of*) { color: #00ff05 }' +
+      'u:nth-child(2of.u) { color: #ff0000 }' +
+      'ul { & li:nth-child(2 of.l) { color: #00ff06 } }' +
+      'q:nth-child(1 of.q) { color: #00ff07 } .q.q { color: #ff0000 }' +
+      '</style>' +
+      '<div><p></p><p id="p"></p></div>' +
+      '<div><em class="a"></em><em></em><em id="a" class="a"></em></div>' +
+      '<div><em b></em><em id="lb" b></em><em></em></div>' +
+      '<div><i></i><em></em><i id="i"></i></div>' +
+      '<div><b id="b1"></b><em></em><b id="b2"></b></div>' +
+      '<div><s></s><s id="s"></s></div>' +
+      '<div><u class="u"></u><u id="u" class="u"></u></div>' +
+      '<ul><li class="l"></li><li></li><li id="l" class="l"></li></ul>' +
+      '<div><q id="q" class="q"></q></div>',
+  );
+  const el = view(node);
+  const color = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)!.color;
+  assert.deepStrictEqual(
+    ['p', 'a', 'lb', 'i', 'b2', 's', 'l'].map(color),
+    [0, 1, 2, 3, 4, 5, 6].map((n) => `rgb(0, 255, ${n})`),
+  );
+  assert.notStrictEqual(color('u'), 'rgb(255, 0, 0)');
+  // and its specificity is the class's with the pseudo-class's
+  assert.strictEqual(color('q'), 'rgb(0, 255, 7)');
+});
+
 test('the names that would style an element are the ones some rule would match it with', async () => {
   const { node } = await render(
     '<style>' +

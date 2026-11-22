@@ -877,13 +877,17 @@ export function parseStylesheet(
   return sheet;
 }
 
+/** The text of an `:nth-child()` as far as its `of`. */
+const NTH_OF_ENDS = /:nth-(?:last-)?child\([^()]*\sof$/i;
+
 /**
  * A style sheet with its comments taken out, strings left alone. CSS drops a
  * comment wherever it stands (CSS 2.1 4.1.9) — between rules, which the
  * scanner already skipped, but also inside a selector: `div /* note *\/ {`
  * kept the note in the selector, the matcher refused it, and the rule was
  * dropped whole. In a selector a comment is replaced by nothing, as the
- * tokenizer does: `.a/**\/.b` is one compound selector. In a declaration
+ * tokenizer does: `.a/**\/.b` is one compound selector, but that it ends an
+ * `:nth-child(3 of/**\/li)`'s `of`. In a declaration
  * it is replaced by a space, since there it still ends the token before it:
  * `1/**\/0px` is two values and no length, and `-/**\/10px` is no
  * negative one. `decls` says the text starts inside a declaration block,
@@ -941,7 +945,13 @@ function withoutComments(text: string, decls = false, cuts?: number[]): string {
       const close = text.indexOf('*/', i + 2);
       const inDecls = blocks.length ? blocks[blocks.length - 1] : decls;
       // `@media/**\/all` is `@media all`
-      out += text.slice(from, i) + (inDecls || atRule ? ' ' : '');
+      out +=
+        text.slice(from, i) +
+        (inDecls ||
+        atRule ||
+        NTH_OF_ENDS.test(text.slice(Math.max(0, i - 64), i))
+          ? ' '
+          : '');
       i = close < 0 ? text.length : close + 1;
       from = i + 1;
       cuts?.push(out.length, from - out.length);
@@ -1204,6 +1214,9 @@ const COMPOUND_ARGUMENTS = new Set([
  * every scan of a rule reads it as an attribute selector, as it is one, and a
  * page's own writing of the name is a prefix it did not declare.
  *
+ * And `:nth-child(3 of.a)` is written with the space a reader of it looks
+ * for after the `of`, which needs none.
+ *
  * Done once, where a rule's text is final: this is what `rule.selector` is, so
  * filing a rule, reading its reach and its hover all see a type and a
  * pseudo-class they know, and none of them learns what a bar means.
@@ -1212,9 +1225,15 @@ export function qualifiedSelector(
   selector: string,
   names: SelectorNamespaces = NO_NAMESPACES,
 ): string | null {
+  if (selector.includes(':nth-')) {
+    selector = selector.replace(NTH_OF_TIGHT, '$1 ');
+  }
   if (names.fallback === null && !selector.includes('|')) return selector;
   return qualifiedList(selector, names, false, false);
 }
+
+/** `:nth-child()`'s `of` with what it is of straight after it. */
+const NTH_OF_TIGHT = /(:nth-(?:last-)?child\([^()]*\sof)(?=[.#[:*|])/gi;
 
 /** `qualifiedSelector` of a list: `resists` where it is the argument of a
  *  function whose subjects no default namespace reaches, and `forgiving`
