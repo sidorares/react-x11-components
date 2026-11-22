@@ -7852,7 +7852,8 @@ number, and until it is 2 the cards after it are painted over its glow.
 `style`, and `strict` and `content` for them — and `contain-intrinsic-size`
 (CSS Containment 2). A box with size containment is laid out as though it
 held nothing, as large as `contain-intrinsic-size` says or no larger than
-its padding and border, and an image as though it had no size or ratio of
+its padding and border — and, for a multicol container, its `column-width`s and
+the gaps between them — and an image as though it had no size or ratio of
 its own; `inline-size` does that across alone. Layout and paint
 containment make the box a formatting context, a stacking context and the
 containing block of every absolute and fixed box in it, and layout
