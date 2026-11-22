@@ -265,6 +265,7 @@ import type { PhysicalSide } from './writing.js';
 import {
   boundsAfterMove,
   clipsFor,
+  inkOnly,
   computePaintBounds,
   containingBlockOf,
   DOCUMENT_FLOW,
@@ -2249,6 +2250,7 @@ function layoutDocumentPass(
   // is among (`reuseBlockers`)
   for (const box of ctx.keptPositioned ?? []) {
     if (box.style.position === 'fixed' || clipsFor(box, root).length) continue;
+    if (inkOnly(box)) continue;
     bottom = Math.max(bottom, OUT_OF_FLOW_REACH.get(box) ?? box.y + box.height);
   }
   for (const { box } of ctx.positioned) {
@@ -2256,7 +2258,7 @@ function layoutDocumentPass(
       if (fixedToViewport(box)) (fixed ??= []).push(box);
       continue;
     }
-    if (clipsFor(box, root).length) continue;
+    if (clipsFor(box, root).length || inkOnly(box)) continue;
     positionedRight = Math.max(positionedRight, box.x + box.width);
     // and what it holds, where it does not clip it: a page set in an
     // absolute wrapper 497px tall runs on below it, and the document with

@@ -18,7 +18,12 @@
 // scrolling `main` stays where it is.
 import type { Element } from 'domhandler';
 
-import { CONTAIN_PAINT, scrolls, scrollsAlong } from '../css/style.js';
+import {
+  CONTAIN_LAYOUT,
+  CONTAIN_PAINT,
+  scrolls,
+  scrollsAlong,
+} from '../css/style.js';
 import { contained } from './block.js';
 import { CLAMPED, clampBox, unclampBox } from './boxes.js';
 import {
@@ -818,6 +823,9 @@ function reachOf(
       }
       return;
     }
+    // and what overflows a box of layout containment is ink, and no one's to
+    // scroll (CSS Containment 2, 3.3)
+    if (contained(child, CONTAIN_LAYOUT)) return;
     linesOf(child.lines, outOfFlow, dx, dy);
     for (const inner of child.children) walk(inner, outOfFlow, false, dx, dy);
     aside(child, outOfFlow, dy);

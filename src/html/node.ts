@@ -217,6 +217,7 @@ import {
   INLINE_BEFORE_ABSOLUTE,
   COLOR_SOURCE_FIELDS,
   CONTAIN_INLINE_SIZE,
+  CONTAIN_LAYOUT,
   NO_SNAP_ALIGN,
   copyStyle,
   inherit,
@@ -292,6 +293,7 @@ import {
   ANCHOR_FALLBACK_AXES,
   anchorAt,
   carryBlockers,
+  contained,
   containmentApplies,
   containsOutOfFlow,
   forgetLayout,
@@ -23726,7 +23728,9 @@ function sameLines(a: LineBox[] | null, b: LineBox[] | null): boolean {
 function heldByClip(box: Box): boolean {
   if (box.outOfFlow) return false;
   for (let at = box.parent; at?.parent; at = at.parent) {
-    if (hasRect(at) && clipsOverflow(at)) return true;
+    if (hasRect(at) && (clipsOverflow(at) || contained(at, CONTAIN_LAYOUT))) {
+      return true;
+    }
     if (at.outOfFlow) return false;
   }
   return false;
