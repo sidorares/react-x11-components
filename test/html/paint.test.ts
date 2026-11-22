@@ -1721,7 +1721,7 @@ test('a paint that left a save open, or none, leaves the context as it was lent'
 });
 
 metric(
-  'a paint that leaves a save open has the next document drawn whole',
+  'a paint that leaves saves open has the next document drawn whole',
   async (t) => {
     const page = (color: string, key: string) =>
       h(
@@ -1746,6 +1746,8 @@ metric(
       ctx.beginPath();
       ctx.rect(0, 0, 20, 20);
       ctx.clip();
+      ctx.save();
+      ctx.save();
       ctx.lineWidth = 7;
     } as typeof inner);
     const result = await renderX11(page('#00f', 'a'), {
