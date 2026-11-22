@@ -113,9 +113,9 @@ export interface Item {
    *  are sized on (`throughSubgrid`); none for an item of the grid. */
   before: number;
   after: number;
-  /** Whether it is no box but the edge of a subgrid with nothing in its
-   *  track there: `before` and `after` are all it makes of it. */
-  edge?: boolean;
+  /** Which edges of a subgrid it is, where it is no box: `before` and `after`
+   *  are all it makes of its track. */
+  edge?: 'start' | 'end' | 'both';
   /** Its border box's height as the subgrid it is in laid it out, which
    *  its parent's rows are sized with; NaN for its box's own. */
   height: number;
@@ -1615,8 +1615,8 @@ function sizedBy(items: Item[], axis: 'cols' | 'rows'): Item[] {
  * margin, border and padding at an edge of it as more margin for an item
  * at that edge, and half what its gap is more than its parent's for one
  * that is not — an item of a subgrid in it as its items are, the margins
- * adding up. Where the track at an edge holds nothing, the margin there is
- * that track's all the same, as an empty item's. The other axis is the subgrid's, and none of the parent's.
+ * adding up. The margin at an edge is the track's there whatever is in it,
+ * as an empty item's (`Item.edge`), which takes no part of a gap. The other axis is the subgrid's, and none of the parent's.
  */
 function throughSubgrid(item: Item, axis: 'cols' | 'rows'): Item[] {
   const box = item.box;
@@ -1650,19 +1650,24 @@ function throughSubgrid(item: Item, axis: 'cols' | 'rows'): Item[] {
       : gapOf(style.rowGap, NaN);
   const half = (gap - sub.gap) / 2;
   const out: Item[] = [];
-  const add = (it: Item, start: number, span: number, within = half) => {
+  const add = (it: Item, start: number, span: number) => {
     const end = start + span;
     const moved: Item = {
       ...it,
       min: -1,
       max: -1,
-      before: it.before + (start === 0 ? edgeBefore : within),
-      after: it.after + (end === n ? edgeAfter : within),
+      before:
+        it.before + (it.edge === 'end' ? 0 : start === 0 ? edgeBefore : half),
+      after:
+        it.after + (it.edge === 'start' ? 0 : end === n ? edgeAfter : half),
     };
     if (across) {
       // in the parent's columns, the other way round where they run the
       // other way
       moved.col = at + (sub.flipped ? n - end : start);
+      if (sub.flipped && it.edge && it.edge !== 'both') {
+        moved.edge = it.edge === 'start' ? 'end' : 'start';
+      }
       moved.cols = span;
       moved.row = -1;
     } else {
@@ -1672,16 +1677,14 @@ function throughSubgrid(item: Item, axis: 'cols' | 'rows'): Item[] {
     }
     out.push(moved);
   };
-  let first = n;
-  let last = 0;
-  for (const it of inner) {
-    first = Math.min(first, startOf(it));
-    last = Math.max(last, startOf(it) + spanOfItem(it));
-    add(it, startOf(it), spanOfItem(it));
-  }
-  const edge = { ...item, before: 0, after: 0, shim: 0, edge: true };
-  if (first > 0) add(edge, 0, 1, 0);
-  if (last < n && !(n === 1 && first > 0)) add(edge, n - 1, 1, 0);
+  for (const it of inner) add(it, startOf(it), spanOfItem(it));
+  const edge = (at: Item['edge']): Item => {
+    return { ...item, before: 0, after: 0, shim: 0, edge: at };
+  };
+  if (n > 1) {
+    add(edge('start'), 0, 1);
+    add(edge('end'), n - 1, 1);
+  } else add(edge('both'), 0, 1);
   return out;
 }
 
