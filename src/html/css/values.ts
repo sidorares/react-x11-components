@@ -132,6 +132,9 @@ export interface UnitContext {
   /** The x-height of the font the lengths are in, asked only for a length
    *  in `ex`; half an em where it is missing. */
   ex?: () => number;
+  /** The height of that font's capitals, asked only for a length in `cap`;
+   *  seven tenths of an em where it is missing. */
+  cap?: () => number;
   /** The advance of that font's "0", asked only for a length in `ch`; half
    *  an em where it is missing. */
   ch?: () => number;
@@ -189,7 +192,7 @@ export interface UnitContext {
 const NUMBER_SRC = '[+-]?(?:\\d*\\.\\d+|\\d+)(?:e[+-]?\\d+)?';
 
 const LENGTH_RE = new RegExp(
-  `^(${NUMBER_SRC})(px|em|rem|pt|pc|in|cm|mm|ex|ch|ic|lh|rlh|[sld]?v(?:w|h|i|b|min|max)|cq(?:w|h|i|b|min|max)|q|%)?$`,
+  `^(${NUMBER_SRC})(px|em|rem|pt|pc|in|cm|mm|ex|cap|ch|ic|lh|rlh|[sld]?v(?:w|h|i|b|min|max)|cq(?:w|h|i|b|min|max)|q|%)?$`,
 );
 
 /**
@@ -303,6 +306,11 @@ function unitScale(unit: string, ctx: UnitContext): number {
     // is not.
     case 'ex':
       return ctx.ex ? ctx.ex() : ctx.em * 0.5;
+    // the height of its capitals, or its ascent where it states none, and
+    // seven tenths of an em, about what most faces' are, where the cascade
+    // cannot ask
+    case 'cap':
+      return ctx.cap ? ctx.cap() : ctx.em * 0.7;
     // the advance of the font's "0" (CSS Values 4, 6.1.1), where the
     // cascade can ask for it: half an em is Times's, a little under
     // Arial's, and half of Ahem's and a monospace font's
@@ -864,4 +872,4 @@ export function fontSizeBasis(
   return parent === 'absolute' ? 'absolute' : 'relative';
 }
 
-const RELATIVE_SIZE = new RegExp(`^${NUMBER_SRC}(?:em|ex|ch|r?lh|%)$`);
+const RELATIVE_SIZE = new RegExp(`^${NUMBER_SRC}(?:em|ex|cap|ch|r?lh|%)$`);

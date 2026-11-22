@@ -4477,7 +4477,8 @@ export interface MetricFace {
   stretch: number;
 }
 
-/** What a face measures, where the fonts can say. */
+/** What a face measures, where the fonts can say: of a text, for a width,
+ *  and `cap` for the height of its capitals where it is asked heights. */
 export type FaceMetric = (face: MetricFace, text?: string) => number | null;
 
 /** What a style's face is read from: a computed style, or the part of one
@@ -4735,6 +4736,7 @@ export class Cascade {
   /** A face's x-height, for `ex`, where the fonts can say. */
   private _xHeightOf: FaceMetric | null;
   private _xHeights = new Map<string, number>();
+  private _capHeights = new Map<string, number>();
   /** The advance of a face's "0", for `ch`, likewise. */
   private _zeroWidthOf: FaceMetric | null;
   private _zeroWidths = new Map<string, number>();
@@ -9083,6 +9085,7 @@ export class Cascade {
    *  (`HtmlViewNode._takeFaces`). */
   facesChanged(): void {
     this._xHeights.clear();
+    this._capHeights.clear();
     this._zeroWidths.clear();
     this._waterWidths.clear();
     this._normalLines.clear();
@@ -9108,6 +9111,7 @@ export class Cascade {
       scale: this.scale * zoom,
       zoom,
       ex: () => this._exOf(style),
+      cap: () => this._capOf(style),
       ch: () => this._chIn(style, style),
       ic: () => this._icIn(style, style),
       lh: () => this._lineHeightOf(style),
@@ -9130,6 +9134,21 @@ export class Cascade {
       this._xHeights.set(key, ex);
     }
     return ex;
+  }
+
+  /** The height of the capitals of a style's font: the font's own, asked
+   *  once per face, its ascent where it states none, or seven tenths of an
+   *  em. */
+  private _capOf(style: FaceSource): number {
+    this._faceRead = true;
+    const key = faceKey(style);
+    let cap = this._capHeights.get(key);
+    if (cap === undefined) {
+      cap = this._xHeightOf?.(faceOf(style), 'cap') ?? NaN;
+      if (!(cap > 0)) cap = style.fontSize * 0.7;
+      this._capHeights.set(key, cap);
+    }
+    return cap;
   }
 
   /** A `ch` for an element: the advance of its "0" along its inline axis
@@ -9947,6 +9966,7 @@ export class Cascade {
       scale: this.scale * zoom,
       zoom,
       ex: () => this._exOf(parentStyle),
+      cap: () => this._capOf(parentStyle),
       ch: () => this._chIn(parentStyle, parentStyle),
       ic: () => this._icIn(parentStyle, parentStyle),
       families: this._mapFamilies,
@@ -10055,6 +10075,7 @@ export class Cascade {
       em: face.fontSize,
       rem: root ? face.fontSize : ctxParent.rem,
       ex: () => this._exOf(face),
+      cap: () => this._capOf(face),
       ch: () => this._chIn(style, face),
       ic: () => this._icIn(style, face),
       lh: () => this._lineHeightOf(line ?? style),

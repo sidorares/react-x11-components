@@ -8685,7 +8685,7 @@ the selection, in `Mark` under `MarkText` where no rule says otherwise: see
 a text field's hint its colour and its opacity, which its widget draws:
 see [Forms](#forms).
 
-**Lengths:** `px`, `em`, `rem`, `ex`, `ch`, `ic`, `lh`, `rlh`, `vw`, `vh`,
+**Lengths:** `px`, `em`, `rem`, `ex`, `cap`, `ch`, `ic`, `lh`, `rlh`, `vw`, `vh`,
 `vi`, `vb` (the element's own inline and block axes, so the height and
 the width in a vertical writing mode), `vmin`, `vmax` — and the small,
 large and dynamic viewports'
@@ -8693,7 +8693,8 @@ large and dynamic viewports'
 viewport — and the absolute units, and `calc()`, `min()`, `max()` and
 `clamp()` over them (CSS Values 4). An `ex` is the font's x-height and a
 `ch` the advance of its "0", as the text engine reports them, or half an em
-where it cannot say; an `ic` the advance of its "水", or an em, and an em
+where it cannot say; a `cap` the height of its capitals, or its ascent
+where the face states none; an `ic` the advance of its "水", or an em, and an em
 down a vertical line, where an ideograph stands upright; an `lh` is the element's line height, `normal` as its
 font's own — in `line-height` itself its parent's, as an `em` in
 `font-size` is — and an `rlh` the root's. A `rem` is the root element's font
