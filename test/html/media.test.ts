@@ -21,6 +21,7 @@ import type { Element } from 'domhandler';
 import {
   FONTS,
   boxOf,
+  drawnText,
   fillsOf,
   findById,
   h,
@@ -196,6 +197,67 @@ test("an @import's media queries are the conditions the sheet it imports is unde
   );
 });
 
+test('a range of an aspect ratio, a resolution or a number is read', () => {
+  // Media Queries 4, 2.4.3: only the viewport's sizes took one, so the rest
+  // held nowhere. Each is Chrome's `matchMedia`, 800 by 513 at one device
+  // pixel to the pixel.
+  for (const [query, matches] of [
+    ['(aspect-ratio > 1/1)', true],
+    ['(aspect-ratio >= 1/1)', true],
+    ['(aspect-ratio < 1/1)', false],
+    ['(aspect-ratio <= 800/513)', true],
+    ['(aspect-ratio < 800/513)', false],
+    ['(aspect-ratio = 800/513)', true],
+    ['(aspect-ratio > 800/513)', false],
+    ['(1/1 < aspect-ratio)', true],
+    ['(1/1 <= aspect-ratio <= 2/1)', true],
+    ['(1/1 < aspect-ratio < 3/2)', false],
+    ['(2/1 > aspect-ratio > 1/1)', true],
+    ['(2/1 >= aspect-ratio >= 1.6)', false],
+    ['(1/1 < aspect-ratio > 2/1)', false],
+    ['(1/1 = aspect-ratio = 1/1)', false],
+    ['not (aspect-ratio > 2/1)', true],
+    ['not (aspect-ratio < 2/1)', false],
+    ['(device-aspect-ratio > 0.1)', true],
+    ['(resolution > 1dppx)', false],
+    ['(resolution >= 1dppx)', true],
+    ['(resolution = 1x)', true],
+    ['(resolution < 96dpi)', false],
+    ['(resolution <= 96dpi)', true],
+    ['(resolution > 0.5x)', true],
+    ['(0.5x < resolution < 2x)', true],
+    ['(2x > resolution >= 1x)', true],
+    ['(1x < resolution <= 2x)', false],
+    ['not (resolution > 1x)', true],
+    ['(color > 7)', true],
+    ['(color >= 8)', true],
+    ['(color = 8)', true],
+    ['(color < 8)', false],
+    ['(7 < color < 9)', true],
+    ['(8 <= color)', true],
+    ['(monochrome = 0)', true],
+    ['(monochrome > 0)', false],
+    ['(color-index >= 0)', true],
+    ['(color > 1.5)', false],
+    ['(resolution > 1px)', false],
+    ['(resolution > 1)', false],
+    ['(min-aspect-ratio > 1/1)', false],
+    ['(aspect-ratio>1/1)', true],
+    ['(aspect-ratio >1/ 1)', true],
+    ['(foo > 1)', false],
+    ['(hover > 1)', false],
+    ['(grid > 0)', false],
+    ['(grid = 0)', false],
+    ['(1 < grid)', false],
+  ] as const) {
+    assert.strictEqual(
+      mediaMatches([parseMediaQuery(query)], 800, 'light', 513, 1),
+      matches,
+      query,
+    );
+  }
+});
+
 test('a sheet imported under a width is applied at that width, and dropped past it', async () => {
   const sheets: Record<string, string> = {
     'narrow.css': 'p { color: #ff0000 }',
@@ -252,6 +314,38 @@ test('a sheet imported under a width is applied at that width, and dropped past 
     ['#0000ff', 30],
     'and at 500 the sheet it imports under its own width',
   );
+});
+
+test('a @counter-style counts where its media hold, and a resize across one writes the numbers again', async () => {
+  // its media were not read, so the last rule of a name stood whatever it
+  // was under
+  const style = (symbols: string) =>
+    `@counter-style c { system: cyclic; symbols: ${symbols}; suffix: "" }`;
+  const doc = (width: number) =>
+    h(
+      'box',
+      { style: { width, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          `<style>@media all { ${style("'A'")} }` +
+          `@media (min-width: 400px) { ${style("'B'")} }` +
+          `@media (min-width: 400px) { @media (min-width: 500px) { ${style("'C'")} } }` +
+          `@media not all { ${style("'D'")} }` +
+          'p::before { content: counter(n, c) } li { list-style: c inside }' +
+          '</style><p>p</p><ol><li>i</li></ol>',
+        partial: false,
+        'data-testname': 'doc',
+      }),
+    );
+  const result = await renderX11(doc(300), { backend: 'mock' });
+  const text = () => drawnText(view(screen.getByTestName('doc') as DrawnNode));
+  const got: string[] = [text().replace(/\s/g, '')];
+  for (const width of [420, 500, 350]) {
+    await result.rerender(doc(width));
+    await act();
+    got.push(text().replace(/\s/g, ''));
+  }
+  assert.deepStrictEqual(got, ['ApAi', 'BpBi', 'CpCi', 'ApAi']);
 });
 
 test('an @import is left out where its supports() does not hold, and read past where it does', () => {
