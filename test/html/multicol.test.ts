@@ -2820,6 +2820,90 @@ metric(
   },
 );
 
+test('a multicol container moved to its place after it is laid out is balanced over what is positioned in it as one that was not', async () => {
+  // where a row of its columns starts was kept as it stood when it was laid
+  // out, so what is positioned in it reached as much further down as the
+  // container was moved, and the row came out taller (WPT's
+  // css-anchor-position/anchor-position-multicol-colspan-003). Every number
+  // is Chromium's
+  const mc = (spanner: string) =>
+    '<div id="m" style="columns:2;column-gap:0;width:100px">' +
+    '<div style="position:relative;height:60px"><div id="p" style="' +
+    'position:absolute;top:30px;width:100%;height:30px"></div></div>' +
+    `${spanner}<div style="height:20px"></div></div>`;
+  const spans = mc('<div style="column-span:all;height:10px"></div>');
+  const vertical =
+    '<div id="m" style="columns:2;column-gap:0;inline-size:100px">' +
+    '<div style="position:relative;block-size:60px"><div id="p" style="' +
+    'position:absolute;inset-block-start:30px;inline-size:100%;block-size:30px">' +
+    '</div></div><div style="column-span:all;block-size:10px"></div>' +
+    '<div style="block-size:20px"></div></div>';
+  const cell = (inner: string) =>
+    '<div style="display:table;border-spacing:0"><div style="display:' +
+    `table-cell;vertical-align:middle;height:260px">${inner}</div></div>`;
+  const pages: [string, string, number[], number[]][] = [
+    [
+      'where it was laid out',
+      `<div style="height:44px"></div>${spans}`,
+      [0, 44, 100, 50],
+      [50, 44, 50, 30],
+    ],
+    [
+      'in a vertical flow',
+      '<div style="height:44px"></div>' +
+        `<div style="writing-mode:vertical-rl">${vertical}</div>`,
+      [0, 44, 50, 100],
+      [20, 94, 30, 50],
+    ],
+    [
+      'in an inline block',
+      '<div style="height:44px"></div><div style="line-height:0">' +
+        '<div style="display:inline-block;width:10px;height:190px"></div>' +
+        `<div style="display:inline-block">${spans}</div></div>`,
+      [10, 184, 100, 50],
+      [60, 184, 50, 30],
+    ],
+    [
+      'in a flex item, centred',
+      `<div style="display:flex;align-items:center;height:260px"><div>${spans}</div></div>`,
+      [0, 105, 100, 50],
+      [50, 105, 50, 30],
+    ],
+    [
+      'a grid item, centred',
+      `<div style="display:grid;align-content:center;height:260px">${spans}</div>`,
+      [0, 105, 100, 50],
+      [50, 105, 50, 30],
+    ],
+    [
+      'in a cell, aligned to its middle',
+      cell(spans),
+      [0, 105, 100, 50],
+      [50, 105, 50, 30],
+    ],
+    ['with no spanner', cell(mc('')), [0, 110, 100, 40], [0, 110, 100, 40]],
+    [
+      'in an absolute box',
+      `<div style="position:absolute;top:21px">${spans}</div>`,
+      [0, 21, 100, 50],
+      [50, 21, 50, 30],
+    ],
+  ];
+  for (const [name, html, m, p] of pages) {
+    const { node } = await render(
+      `<!DOCTYPE html><style>body{margin:0}</style>${html}`,
+      600,
+    );
+    const el = view(node);
+    const rect = (id: string): number[] => {
+      const r = el.elementRect(findById(el.document, id)!)!;
+      return [r.x, r.y, r.width, r.height];
+    };
+    assert.deepStrictEqual(rect('m'), m, `${name}: the container`);
+    assert.deepStrictEqual(rect('p'), p, `${name}: what is positioned in it`);
+  }
+});
+
 metric(
   'a multicol container of continue: discard keeps what fits in its columns',
   async () => {
