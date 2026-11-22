@@ -4364,24 +4364,6 @@ test("an item's automatic minimum has the percentages in its padding in it", asy
   near('e', 12.71875, 33.90625);
 });
 
-test('an item of a width of its content has an automatic minimum', async () => {
-  // `width: min-content` is a width its basis has the say over, and it is held
-  // at its content as any item is; every size is Chromium's
-  const { node } = await render(
-    '<style>body{margin:0}</style>' +
-      '<div style="display:flex;width:15px">' +
-      '<div id="a" style="width:min-content;flex:0 0 15px;aspect-ratio:3/2">' +
-      '<i style="display:block;width:26px"></i></div></div>' +
-      '<div style="display:flex;width:15px">' +
-      '<div id="b" style="width:max-content;flex:0 0 15px;height:4px">' +
-      '<i style="display:block;width:26px;height:4px"></i></div></div>',
-    400,
-  );
-  const el = view(node);
-  assert.strictEqual(boxOf(el, 'a').width, 26);
-  assert.strictEqual(boxOf(el, 'b').width, 26);
-});
-
 test('what is in a column item takes its percentages of a height its basis makes, and of none its basis is not', async () => {
   // in a column of no height of its own: a basis that is a length is a
   // definite main size, whether or not the item flexes, and `content`, or a
@@ -4413,6 +4395,24 @@ test('what is in a column item takes its percentages of a height its basis makes
   const el = view(node);
   const heights = [...'abcdefghijk'].map((id) => boxOf(el, id).height);
   assert.deepStrictEqual(heights, [100, 100, 50, 80, 90, 60, 0, 0, 0, 0, 30]);
+});
+
+test('an item of a width of its content has an automatic minimum', async () => {
+  // `width: min-content` is a width its basis has the say over, and it is held
+  // at its content as any item is; every size is Chromium's
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;width:15px">' +
+      '<div id="a" style="width:min-content;flex:0 0 15px;aspect-ratio:3/2">' +
+      '<i style="display:block;width:26px"></i></div></div>' +
+      '<div style="display:flex;width:15px">' +
+      '<div id="b" style="width:max-content;flex:0 0 15px;height:4px">' +
+      '<i style="display:block;width:26px;height:4px"></i></div></div>',
+    400,
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').width, 26);
+  assert.strictEqual(boxOf(el, 'b').width, 26);
 });
 
 test("a line of a row that wraps is justified though another line's item has an auto margin", async () => {

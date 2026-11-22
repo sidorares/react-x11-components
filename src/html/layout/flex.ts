@@ -1134,22 +1134,6 @@ function placeItems(
   return bottom;
 }
 
-/** Whether a column item's height is not the flex layout's to make definite,
- *  in a column of no definite height: one of its own that its flex basis is
- *  not, being its content, or a percentage of that column's height, which is
- *  its content (CSS Flexbox 7.2.3). What is in it has no height to take a
- *  percentage of, whatever its own says (9.8), as in Chrome. */
-function basisHidesHeight(box: Box): boolean {
-  const { height, flexBasis, flexBasisKeyword } = box.style;
-  return (
-    height !== AUTO &&
-    (flexBasis !== AUTO || flexBasisKeyword !== null) &&
-    typeof flexBasis !== 'number' &&
-    box.kind !== 'replaced' &&
-    percentHeightsIn(box)
-  );
-}
-
 function layoutItemAt(
   box: Box,
   ctx: LayoutContext,
@@ -1262,6 +1246,22 @@ function layoutItemAt(
   // and a button's content is centred in the height it came to
   centreButton(box);
   moveTo(box, x, y);
+}
+
+/** Whether a column item's height is not the flex layout's to make definite,
+ *  in a column of no definite height: one of its own that its flex basis is
+ *  not, being its content, or a percentage of that column's height, which is
+ *  its content (CSS Flexbox 7.2.3). What is in it has no height to take a
+ *  percentage of, whatever its own says (9.8), as in Chrome. */
+function basisHidesHeight(box: Box): boolean {
+  const { height, flexBasis, flexBasisKeyword } = box.style;
+  return (
+    height !== AUTO &&
+    (flexBasis !== AUTO || flexBasisKeyword !== null) &&
+    typeof flexBasis !== 'number' &&
+    box.kind !== 'replaced' &&
+    percentHeightsIn(box)
+  );
 }
 
 // What a new Yoga node already is is not said again. A call into the
