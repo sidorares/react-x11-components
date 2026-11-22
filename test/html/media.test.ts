@@ -316,38 +316,6 @@ test('a sheet imported under a width is applied at that width, and dropped past 
   );
 });
 
-test('a @counter-style counts where its media hold, and a resize across one writes the numbers again', async () => {
-  // its media were not read, so the last rule of a name stood whatever it
-  // was under
-  const style = (symbols: string) =>
-    `@counter-style c { system: cyclic; symbols: ${symbols}; suffix: "" }`;
-  const doc = (width: number) =>
-    h(
-      'box',
-      { style: { width, flexDirection: 'column' } },
-      h(Html, {
-        source:
-          `<style>@media all { ${style("'A'")} }` +
-          `@media (min-width: 400px) { ${style("'B'")} }` +
-          `@media (min-width: 400px) { @media (min-width: 500px) { ${style("'C'")} } }` +
-          `@media not all { ${style("'D'")} }` +
-          'p::before { content: counter(n, c) } li { list-style: c inside }' +
-          '</style><p>p</p><ol><li>i</li></ol>',
-        partial: false,
-        'data-testname': 'doc',
-      }),
-    );
-  const result = await renderX11(doc(300), { backend: 'mock' });
-  const text = () => drawnText(view(screen.getByTestName('doc') as DrawnNode));
-  const got: string[] = [text().replace(/\s/g, '')];
-  for (const width of [420, 500, 350]) {
-    await result.rerender(doc(width));
-    await act();
-    got.push(text().replace(/\s/g, ''));
-  }
-  assert.deepStrictEqual(got, ['ApAi', 'BpBi', 'CpCi', 'ApAi']);
-});
-
 test('an @import is left out where its supports() does not hold, and read past where it does', () => {
   // CSS Cascade 5, 2.1; WPT import-conditional-002: the condition was read
   // as a media query nobody knows, and no such sheet was asked for
@@ -381,6 +349,38 @@ test('an @import is left out where its supports() does not hold, and read past w
     ).importConditions,
     [[{ min: 40 }]],
   );
+});
+
+test('a @counter-style counts where its media hold, and a resize across one writes the numbers again', async () => {
+  // its media were not read, so the last rule of a name stood whatever it
+  // was under
+  const style = (symbols: string) =>
+    `@counter-style c { system: cyclic; symbols: ${symbols}; suffix: "" }`;
+  const doc = (width: number) =>
+    h(
+      'box',
+      { style: { width, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          `<style>@media all { ${style("'A'")} }` +
+          `@media (min-width: 400px) { ${style("'B'")} }` +
+          `@media (min-width: 400px) { @media (min-width: 500px) { ${style("'C'")} } }` +
+          `@media not all { ${style("'D'")} }` +
+          'p::before { content: counter(n, c) } li { list-style: c inside }' +
+          '</style><p>p</p><ol><li>i</li></ol>',
+        partial: false,
+        'data-testname': 'doc',
+      }),
+    );
+  const result = await renderX11(doc(300), { backend: 'mock' });
+  const text = () => drawnText(view(screen.getByTestName('doc') as DrawnNode));
+  const got: string[] = [text().replace(/\s/g, '')];
+  for (const width of [420, 500, 350]) {
+    await result.rerender(doc(width));
+    await act();
+    got.push(text().replace(/\s/g, ''));
+  }
+  assert.deepStrictEqual(got, ['ApAi', 'BpBi', 'CpCi', 'ApAi']);
 });
 
 test('a sheet under its media attribute applies where it holds, and a resize across one restyles', async () => {
