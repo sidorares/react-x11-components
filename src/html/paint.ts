@@ -12366,8 +12366,9 @@ function paintPartBackgrounds(
 }
 
 /** What a table paints its rows and row groups from where one of them is
- *  painted apart from it (`apart`), each at its own turn: the cells in each, and where the table's first cell
- *  starts and its last ends. */
+ *  painted apart from it (`apart`), each at its own turn: the cells in each,
+ *  and where the table's first cell starts and its last ends, from its row's
+ *  start. */
 interface PartsApart {
   cells: Map<Box, Cell[]>;
   left: number;
