@@ -1018,6 +1018,150 @@ test("logical properties are the physical ones of the element's direction", asyn
   );
 });
 
+test('a logical property maps by the direction the element comes to, wherever it is declared', async () => {
+  // CSS Writing Modes 4, 6.4: a `direction` later in cascade order than the
+  // property mapped nothing, `.rtl { direction: rtl }` under an earlier
+  // `padding-inline-start`. Each row is Chrome's `getComputedStyle`: the
+  // sheet, the element's `style`, the property, and the element of class
+  // `r`, a `::before` where it says so.
+  const cases: [string, string, string, string, string][] = [
+    [
+      'p{padding-inline-start:9px} .r{direction:rtl}',
+      '',
+      'padding-right',
+      'p',
+      '9px',
+    ],
+    [
+      'p{padding-inline-start:9px} .r{direction:rtl}',
+      '',
+      'padding-left',
+      'p',
+      '0px',
+    ],
+    [
+      '.r{direction:rtl} p{padding-inline-start:9px}',
+      '',
+      'padding-right',
+      'p',
+      '9px',
+    ],
+    [
+      'p{direction:rtl;padding-inline-start:9px;direction:ltr}',
+      '',
+      'padding-left',
+      'p',
+      '9px',
+    ],
+    [
+      'p{padding-inline-start:9px;direction:rtl}',
+      '',
+      'padding-right',
+      'p',
+      '9px',
+    ],
+    ['p{margin-inline:3px 5px}', 'direction:rtl', 'margin-left', 'p', '5px'],
+    [
+      'p{margin-inline:3px 5px} p{direction:rtl!important} p.r{direction:ltr}',
+      '',
+      'margin-left',
+      'p',
+      '5px',
+    ],
+    [
+      'p{inset-inline-start:4px;position:relative} .r{direction:rtl}',
+      '',
+      'right',
+      'p',
+      '4px',
+    ],
+    [
+      'p{border-inline-start:4px solid red} .r{direction:rtl}',
+      '',
+      'border-right-width',
+      'p',
+      '4px',
+    ],
+    [
+      'p{border-start-start-radius:6px} .r{direction:rtl}',
+      '',
+      'border-top-right-radius',
+      'p',
+      '6px',
+    ],
+    [
+      'body{direction:rtl} p{padding-inline-start:9px}',
+      '',
+      'padding-right',
+      'p',
+      '9px',
+    ],
+    [
+      'body{direction:rtl} p{padding-inline-start:9px} .r{direction:ltr}',
+      '',
+      'padding-left',
+      'p',
+      '9px',
+    ],
+    ['ul{direction:rtl}', '', 'padding-right', 'ul', '40px'],
+    ['ul{direction:rtl}', '', 'padding-left', 'ul', '0px'],
+    [
+      'p{padding-inline-start:9px} .r{direction:var(--d)} body{--d:rtl}',
+      '',
+      'padding-right',
+      'p',
+      '9px',
+    ],
+    [
+      'p::before{content:"x";padding-inline-start:9px} .r::before{direction:rtl}',
+      '',
+      'padding-right',
+      'p::before',
+      '9px',
+    ],
+    [
+      'p{padding-inline-start:9px} @layer{p{direction:rtl}}',
+      '',
+      'padding-right',
+      'p',
+      '9px',
+    ],
+    ['p{text-align:start} .r{direction:rtl}', '', 'text-align', 'p', 'start'],
+    [
+      'p{scroll-margin-inline-start:9px} .r{direction:rtl}',
+      '',
+      'scroll-margin-right',
+      'p',
+      '9px',
+    ],
+    [
+      'p{padding-inline-start:9px} .r{all:unset;direction:rtl}',
+      '',
+      'padding-right',
+      'p',
+      '0px',
+    ],
+  ];
+  const got: string[] = [];
+  for (const [css, style, prop, what] of cases) {
+    const [tag, pseudo] = what.split('::');
+    const { node } = await render(
+      `<!doctype html><style>body{font-size:16px;color:#000}${css}</style><${tag} id=t class=r style="${style}">x</${tag}>`,
+    );
+    const el = view(node);
+    const own = el.computedStyle(
+      findById(el.document, 't')!,
+      pseudo === 'before' ? 'before' : undefined,
+    )!;
+    got.push(`${css} ${style} -> ${own[prop]}`);
+    await cleanup();
+  }
+  assert.deepStrictEqual(
+    got,
+    cases.map(([css, style, , , want]) => `${css} ${style} -> ${want}`),
+  );
+});
+
 test('inset sets all four offsets, and a corner its radius', async () => {
   const { node } = await render(
     '<style>body{margin:0}</style>' +
