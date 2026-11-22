@@ -1117,6 +1117,32 @@ function wholePixels(n: number): number {
   return Math.max(0, Math.ceil(n - 1 / 64));
 }
 
+/** The line width of the state saved under a paint, which no document asks
+ *  for (`restoreTo`). */
+const PAINT_MARK = 123456789.5;
+
+/** How many saves a paint that threw can have left open. */
+const MAX_OPEN_SAVES = 10000;
+
+/**
+ * The context a paint threw on, put back to the state saved with a line width
+ * of `mark` and then to the one under it: the paint's saves are still open,
+ * and their clips and transforms would stay on a context that outlives the
+ * frame. No context says how many are open, so the state is told by its line
+ * width, which each keeps with the rest. One that does not is left as it is:
+ * a restore too many would take a save of whoever lent it.
+ */
+export function restoreTo(ctx: Context2D, mark: number): void {
+  const was = ctx.lineWidth;
+  ctx.save();
+  ctx.lineWidth = mark + 1;
+  ctx.restore();
+  if (ctx.lineWidth !== was) return;
+  for (let i = 0; i < MAX_OPEN_SAVES && ctx.lineWidth !== mark; i++)
+    ctx.restore();
+  if (ctx.lineWidth === mark) ctx.restore();
+}
+
 /** How deep `@import`s are followed: an import in an import in an import is
  *  a stylesheet; sixteen of them is a loop that changes its URL each time. */
 const MAX_IMPORT_DEPTH = 16;
@@ -17619,10 +17645,19 @@ export class HtmlViewNode extends Node {
     }
     const promised = this._promisedOpaque;
     this._promisedOpaque = false;
+    const width = ctx.lineWidth;
+    ctx.save();
+    ctx.lineWidth = PAINT_MARK;
+    ctx.save();
+    ctx.lineWidth = width;
     try {
       this._paint(ctx, tree, range, damage);
       this._paintCaret(ctx);
+      ctx.restore();
+      ctx.restore();
     } catch (error) {
+      restoreTo(ctx, PAINT_MARK);
+      ctx.lineWidth = width;
       this._fail(error, this._laidOutWidth);
       // nothing under the element was filled: what it promised is the
       // window's ground, where it leaves the document blank

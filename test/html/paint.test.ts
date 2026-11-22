@@ -16,6 +16,7 @@ import {
 } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
+import { restoreTo } from '../../src/html/node.js';
 import { parseColor } from '../../src/html/css/values.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { SpriteStore } from '../../src/html/surfaces.js';
@@ -1575,4 +1576,74 @@ test('a mask longhand with a var() in it resets its own list, not the others', a
   // a var() that substitutes nothing leaves its own list at the start
   assert.deepStrictEqual(mask('i').sizes, ['auto']);
   assert.deepStrictEqual(mask('i').repeats, [['no-repeat', 'no-repeat']]);
+});
+
+metric('a paint that throws leaves the context as it was lent', async (t) => {
+  // The window's context outlives the frame, and a paint that threw left
+  // its saves open on it: a document whose font the engine could not draw
+  // left its clip there, and the page shown after it was drawn inside that.
+  const proto = Object.getPrototypeOf(
+    (await renderX11(h('box'), { width: 200, height: 100, fonts: FONTS! })).ctx,
+  ) as { drawGlyphs(...args: unknown[]): void };
+  await cleanup();
+  const page = (source: string, key: string) =>
+    h(
+      'box',
+      { style: { width: 200, height: 100, backgroundColor: '#ffffff' } },
+      h(Html, {
+        key,
+        source,
+        selectable: false,
+        'data-testname': 'doc',
+        style: { flexGrow: 1 },
+      } as never),
+    );
+  let threw = 0;
+  t.mock.method(console, 'error', () => {});
+  const thrower = t.mock.method(proto, 'drawGlyphs', () => {
+    threw += 1;
+    throw new Error('no such glyph');
+  });
+  const result = await renderX11(
+    page(
+      '<div style="overflow:hidden;width:20px;height:20px;border-radius:4px;' +
+        'transform:translate(3px,0)"><p style="opacity:.5">text</p></div>',
+      'a',
+    ),
+    { width: 200, height: 100, fonts: FONTS! },
+  );
+  await act();
+  assert.ok(threw > 0, 'the paint did not throw');
+  thrower.mock.restore();
+  // the same document painted again, in the same window: blank, and the
+  // window's ground all over it
+  view(screen.getByTestName('doc') as DrawnNode).invalidate();
+  await act();
+  await expectPixel(result.ctx, 150, 80, '#ffffff');
+  const blue =
+    '<body style="margin:0"><div style="height:100px;background:#00f">';
+  // the element again, with something else to draw
+  await result.rerender(page(blue, 'a'));
+  await act();
+  await expectPixel(result.ctx, 150, 80, '#0000ff');
+  await expectPixel(result.ctx, 5, 5, '#0000ff');
+  // and the next one in the same window
+  await result.rerender(page(blue.replace('#00f', '#0f0'), 'b'));
+  await act();
+  await expectPixel(result.ctx, 150, 80, '#00ff00');
+  await expectPixel(result.ctx, 5, 5, '#00ff00');
+});
+
+test('a context that keeps no line width with its state is restored no further than it was', () => {
+  // A restore too many would take a save of whoever lent the context.
+  let restores = 0;
+  const ctx = {
+    lineWidth: 1,
+    save() {},
+    restore() {
+      restores += 1;
+    },
+  };
+  restoreTo(ctx as never, 5);
+  assert.strictEqual(restores, 1, 'its own save, and no more');
 });
