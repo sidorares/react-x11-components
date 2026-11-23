@@ -42,6 +42,9 @@ import type { CustomFunction, FunctionItem, FunctionParam } from './vars.js';
 import { matchesSyntax, validSyntax } from './syntax.js';
 import { evaluateCondition } from './conditions.js';
 import type { Kleene } from './conditions.js';
+import { BROWSER_PROPERTIES } from './property-names.js';
+import { SVG_PROPERTIES } from './svg-properties.js';
+import { cascadeTakes, declaredProperties } from './style.js';
 
 /** One `prop: value` pair, with `!important` already taken off the value. */
 export interface Declaration {
@@ -4248,11 +4251,11 @@ function featureTest(term: string): MediaCondition | boolean | null {
 }
 
 /**
- * The properties whose support a `@supports` condition is answered for:
- * the mask's, which pages test before they draw an icon as a masked colour
- * and keep a background image under `not` for an engine without them.
- * Drawn here, and the fallback drawn too, an icon was its image in black
- * under the mask, over the colour it was meant to be.
+ * The names a declaration is taken under that the cascade's own list does not
+ * have (`declaredProperties`): the mask's, which pages test before they draw
+ * an icon as a masked colour and keep a background image under `not` for an
+ * engine without them. Drawn here, and the fallback drawn too, an icon was
+ * its image in black under the mask, over the colour it was meant to be.
  */
 const ANSWERED = new Set(
   [
@@ -4269,17 +4272,15 @@ const ANSWERED = new Set(
 
 /**
  * Whether a `@supports` condition holds (CSS Conditional 3, 6): true or
- * false where it turns on declarations of the properties this answers for
- * (`ANSWERED`, and those whose grammar `specifiedValue` reads), combined by
- * `not`, `and` and `or`; null where it turns on any other declaration, and
- * the block is entered as every one was. What is no condition is false, and
- * so is what only CSS's own error handling has a name for (6.1's
+ * false where it turns on declarations this can answer for, combined by
+ * `not`, `and` and `or`: by the grammar of a property whose grammar is read
+ * (`specifiedValue`), by what the cascade makes of any other it takes
+ * (`cascadeTakes`), and false for a property no browser has. Null where it
+ * turns on one a browser has and nothing here draws, and the block is
+ * entered, as every one was. What is no condition is false, and so is what
+ * only CSS's own error handling has a name for (6.1's
  * `<general-enclosed>`): brackets with no declaration in them, and a
  * function nothing knows.
- * Answering more is not safe without a list of what this draws: Tailwind 4
- * keeps its variables' starting values under a test for engines without
- * `@property`, which this is, and false there would drop every shadow and
- * gradient it writes.
  */
 export function supportsCondition(
   prelude: string,
@@ -4388,7 +4389,33 @@ function supportsDeclaration(
   }
   if (shorthand) return shorthand(value.toLowerCase());
   // a name the caller knows, with a value this cannot read, is taken
-  return ANSWERED.has(property) || declare ? true : undefined;
+  if (ANSWERED.has(property) || declare || custom) return true;
+  // what is read under Firefox's or Edge's own name is no property of
+  // Chrome's: a page that asks keeps what it found wrong in that engine
+  if (/^-(?:moz|ms)-/.test(property)) return false;
+  if (!drawnProperties().has(property)) {
+    // one no browser has is none, and one only a browser has is left open:
+    // what the block holds besides may be drawn, and so may what a page
+    // keeps under `not` for an engine without it
+    return browserProperties().has(property) ? undefined : false;
+  }
+  return cascadeTakes(property, value) ?? true;
+}
+
+let drawnNames: Set<string> | null = null;
+let browserNames: Set<string> | null = null;
+
+/** Every name the cascade takes a declaration under. */
+function drawnProperties(): Set<string> {
+  return (drawnNames ??= new Set(declaredProperties()));
+}
+
+/** Every name a browser does, drawn here or not. */
+function browserProperties(): Set<string> {
+  return (browserNames ??= new Set([
+    ...BROWSER_PROPERTIES,
+    ...Object.keys(SVG_PROPERTIES),
+  ]));
 }
 
 /** Whether a value has a `;` or a `!` at its top level, which no value

@@ -204,9 +204,9 @@ function scaleSpecified(value: string): string | null | undefined {
  * `el.style`'s setter, `cssText`, a rule's `style` and `CSS.supports()`.
  * A property whose grammar is read here answers by it; any other by what
  * the cascade makes of the value (`cascadeTakes`), where it can say.
- * Undefined where neither can, and the value is kept as written. Not what
- * a sheet's `@supports` asks, which answers only what it must
- * (`supportsCondition`).
+ * Undefined where neither can, and the value is kept as written. A sheet's
+ * `@supports` asks the same of what the cascade takes, and leaves open what
+ * only a browser does (`supportsCondition`).
  */
 export function declarationTaken(
   prop: string,
