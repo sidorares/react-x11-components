@@ -9403,18 +9403,19 @@ GBM/EGL, on Linux. Four things to keep:
   `drawElements`, and an overlay (built again as the view moves). Anything
   new that builds fill records without a `PendingCut` leaves
   `LayerDraw.triangles` undefined, which is what sends a tile to its fan.
-- **earstrip is a regular dependency.** 160 KB, no dependencies of its own,
-  no native code, and reached only from the lazy GL chunk — the `ical.js`
-  judgement, not the `@xterm/headless` one.
-- **Its types are ours, through the `#earstrip` import.** earstrip 0.2.0's
-  `earstrip.d.ts` has an extensionless relative `import()`, which fails
-  `nodenext` with `skipLibCheck` off. `package.json`'s `imports` maps
-  `#earstrip` to the package, with a `types` condition pointing at
-  `src/maps/gl/earstrip.d.ts`: TypeScript reads that, and Node, tsx and
-  esbuild, which never read `types`, load the package. `paths` was tried
-  first and is wrong — tsx honours it at run time and loaded the `.d.ts`.
-  When a release fixes the declaration (GLMap/earstrip#1), delete the copy
-  and import `earstrip` directly.
+- **earstrip is a regular dependency.** Some 380 KB unpacked (the second,
+  scalar WebAssembly module is for engines with no SIMD), no dependencies of
+  its own, no native code, and reached only from the lazy GL chunk — the
+  `ical.js` judgement, not the `@xterm/headless` one.
+- **Its types are its own, and the floor is 0.3.1.** earstrip 0.2.0 and 0.3.0
+  shipped an `earstrip.d.ts` with an extensionless relative `import()`, which
+  fails `nodenext` with `skipLibCheck` off (GLMap/earstrip#1), so this
+  package routed them through a declaration of its own behind a `#earstrip`
+  entry in `imports`. 0.3.1 fixed it and both are gone: `buckets.ts` imports
+  `earstrip`, and the range starts at the release with the fix, since 0.3.0
+  would put the error back in an app's type check. The same lesson as
+  "Vendored from core": a copy of a declaration is for as long as a release
+  takes, and the release is what deletes it.
 
 ## A PDF somebody else draws
 

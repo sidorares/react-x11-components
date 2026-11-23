@@ -55,7 +55,7 @@
 // `ocean` and `water_polygons` at 2048 and everything else at 4096), and a
 // per-draw extent would be one more uniform on the hottest loop in the
 // renderer for no benefit.
-import { batch as triangulate } from '#earstrip';
+import { batch as triangulate } from 'earstrip';
 
 import { GeomType, GeometryBuffer } from '../mvt.js';
 import type { FeatureCursor, VectorTile } from '../mvt.js';
@@ -483,12 +483,18 @@ export function cutTile(
     }
     starts[to - from] = v;
     holeStarts[to - from] = holes.length;
-    const { indices, offsets: own } = triangulate(
+    const cutOne = triangulate(
       xy.subarray(0, v * 2),
       starts,
       holes,
       holeStarts,
     );
+    // earstrip declares its answer as `Uint32Array`, any buffer, but `batch`
+    // returns `slice`s of the module's memory, which are copies on an
+    // `ArrayBuffer` of their own and never shared: the tile hands the buffer
+    // on, so it has to be one.
+    const indices = cutOne.indices as Uint32Array<ArrayBuffer>;
+    const own = cutOne.offsets;
     for (let i = 0; i < indices.length; i++) indices[i] = records[indices[i]];
     const base = offsets[from];
     for (let p = from; p < to; p++) {

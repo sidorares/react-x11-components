@@ -26,12 +26,6 @@
     "src"
   ],
   "sideEffects": false,
-  "imports": {
-    "#earstrip": {
-      "types": "./src/maps/gl/earstrip.d.ts",
-      "default": "earstrip"
-    }
-  },
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
@@ -223,7 +217,7 @@
     "css-select": "^7.0.0",
     "domhandler": "^6.0.0",
     "domutils": "^4.0.0",
-    "earstrip": "^0.2.0",
+    "earstrip": "^0.3.1",
     "htmlparser2": "^12.0.0",
     "image-in-browser": "^3.6.0",
     "linebreak": "^1.1.0",
@@ -241,8 +235,8 @@
   },
   "peerDependencies": {
     "@embedpdf/pdfium": ">=2.15.0 <3.0.0",
-    "@libav.js/variant-webm-vp9": ">=6.10.9 <7.0.0",
     "@lezer/highlight": "^1.0.0",
+    "@libav.js/variant-webm-vp9": ">=6.10.9 <7.0.0",
     "@lydell/node-pty": "^1.0.0",
     "node-pty": "^1.0.0",
     "ondine": ">=0.0.3 <0.1.0",
