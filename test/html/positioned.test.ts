@@ -1363,6 +1363,37 @@ metric('a polygon is placed on the pixels its box is drawn on', async () => {
 });
 
 metric(
+  'a polygon on a box in a vertical flow is placed on the pixels its box is drawn on',
+  async () => {
+    // The same in a frame a vertical writing mode turns: the polygon was
+    // laid down from where the frame has the box's corner, a fraction of a
+    // pixel down, where its background is drawn from the row it falls
+    // nearest (WPT clip-path-inline-002 and 003)
+    const { node } = await render(
+      '<style>body{margin:0}</style><div style="height:10.4px"></div>' +
+        '<div style="writing-mode:vertical-rl;width:100px">' +
+        '<span style="display:inline-block;width:30px;height:50.6px;' +
+        'background:#ff0000;clip-path:polygon(0 0, 100% 0, 100% 50%, 0 50%)">' +
+        '</span></div>',
+    );
+    const el = view(node);
+    const { fills } = await pathsOf(el, {
+      x: 0,
+      y: 0,
+      width: 400,
+      height: 600,
+    });
+    const red = fills.find((f) => f.style === parseColor('#ff0000'))!;
+    const clip = red.clips[red.clips.length - 1][0];
+    const ys = clip.map(([, y]) => y);
+    assert.ok(
+      ys.every((v) => Number.isInteger(v)),
+      `on whole pixels: ${ys}`,
+    );
+  },
+);
+
+metric(
   'what a polygon cuts away is not under the pointer, and its fill rule says what is inside',
   async () => {
     // a star, its five points joined every second one: its middle is

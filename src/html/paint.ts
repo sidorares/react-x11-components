@@ -8956,10 +8956,24 @@ function framedClipPath(box: Box, options: ClipSpace): PathClip | null {
   const at = (p: number, q: number): [number, number] =>
     up ? [x0 + h - q, y0 + p] : [x0 + q, y0 + w - p];
   if (laid.polygons) {
-    const polygons = laid.polygons.map((poly) => {
+    // the box on the pixels its background is drawn on, as `polygonClip`
+    // places one in the page's own axes: placed from where the frame has
+    // its fractional corner, a polygon along its edges drew a row of half
+    // coverage above and below what it cut
+    const left = Math.round(x0);
+    const top = Math.round(y0);
+    const across = Math.round(x0 + h) - left;
+    const down = Math.round(y0 + w) - top;
+    const snapped = clipPathOf(
+      { ...page, width: down, height: across } as Box,
+      DOCUMENT,
+    );
+    const on = (p: number, q: number): [number, number] =>
+      up ? [left + across - q, top + p] : [left + q, top + down - p];
+    const polygons = (snapped.polygons ?? laid.polygons).map((poly) => {
       const out: number[] = [];
       for (let i = 0; i + 1 < poly.length; i += 2) {
-        out.push(...at(poly[i], poly[i + 1]));
+        out.push(...on(poly[i], poly[i + 1]));
       }
       return out;
     });
