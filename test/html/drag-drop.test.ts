@@ -432,7 +432,7 @@ test('an <Html> rendered again with the props it had is not repainted whole', as
     await act(() => new Promise((r) => setTimeout(r, 5)));
   }
   const node = screen.getByTestName('again') as DrawnNode;
-  const win = node.root as unknown as {
+  const win = (node as unknown as { root: unknown }).root as {
     invalidate(...args: unknown[]): unknown;
   };
   const was = win.invalidate;
