@@ -1100,6 +1100,28 @@ test('what is painted behind a box with a backdrop filter is painted small, its 
   assert.ok(first >= 0 && own > first, 'before the box paints its own');
 });
 
+test('a box both filtered and blended blends what its filter made', async (t: TestContext) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // CSS Compositing 1, 3.2: the group is blended, after its filter. The
+  // filtered box was drawn unblended (WPT's filter-effects/
+  // filter-with-mix-blend-mode): a grey square where a screen of it over
+  // green is lighter green
+  const result = await drawn(
+    '<div style="background:#008000;padding:10px">' +
+      '<div style="width:40px;height:20px;background:#ff0000;' +
+      'filter:grayscale();mix-blend-mode:screen"></div>' +
+      '<div style="width:40px;height:20px;background:#ff0000;' +
+      'filter:grayscale();transform:rotate(180deg);' +
+      'mix-blend-mode:screen"></div></div>',
+  );
+  const ctx = result.ctx;
+  // grey 54 screened over green 128: 54 + 128 - 54 * 128 / 255
+  await waitForPixel(ctx, 20, 20, '#369b36', { message: 'blended' });
+  await expectPixel(ctx, 20, 40, '#369b36', {
+    message: 'and through a matrix',
+  });
+});
+
 test('no backdrop is made where the box hides it, or no surface runs the filter', async () => {
   const { node } = await render(
     GLASS.replace('rgba(255, 255, 255, 0.5)', '#ffffff'),

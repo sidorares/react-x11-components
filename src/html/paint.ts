@@ -2391,9 +2391,18 @@ function paintOwnBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   // what it has on its lines, ahead of what a group of its holds: that is
   // faded as it is drawn, in its colours (`inlineFade`, `paintsApart`)
   if (box.kind === 'inline') paintApart(ctx, box, options);
+  // a box both filtered and blended blends what its filter made (CSS
+  // Compositing 1, 3.2: blending is of the group, after the filter)
   if (
     box.style.filter !== null &&
-    paintFiltered(ctx, box, options, null, opacity)
+    paintFiltered(
+      ctx,
+      box,
+      options,
+      null,
+      opacity,
+      TRANSITION_IMAGES.has(box) ? null : blendOf(ctx, box),
+    )
   ) {
     return;
   }
@@ -2768,7 +2777,14 @@ function paintThroughInside(
   // comes before the transform)
   if (
     box.style.filter !== null &&
-    paintFiltered(ctx, box, inside, through, opacityOf(box))
+    paintFiltered(
+      ctx,
+      box,
+      inside,
+      through,
+      opacityOf(box),
+      TRANSITION_IMAGES.has(box) ? null : blendOf(ctx, box),
+    )
   ) {
     return;
   }
@@ -3681,12 +3697,15 @@ function paintFiltered(
   options: PaintOptions,
   through: Matrix | null,
   opacity: number,
+  blend: string | null = null,
 ): boolean {
   const colour = colourOf(box.style.filter!);
   if (!runsOverPixels(colour)) return false;
   const kept = filteredFor(ctx, box, options, through, colour!);
   if (kept === null) return false;
-  if (kept) drawThrough(ctx, kept.surface, through, kept.x, kept.y, opacity);
+  if (kept) {
+    drawThrough(ctx, kept.surface, through, kept.x, kept.y, opacity, blend);
+  }
   return true;
 }
 
