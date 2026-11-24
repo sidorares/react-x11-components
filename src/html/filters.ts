@@ -473,6 +473,27 @@ export class FilterStore {
     return kept.out;
   }
 
+  /**
+   * The shadows a box casts, as drawn for the silhouette it has now, where
+   * they are kept and nothing but colours moved inside it: the surface to
+   * draw under the box, which is drawn straight onto the window with
+   * nothing between (the group over the shadows, drawn over what is behind
+   * it, is the box drawn over the shadows drawn over what is behind it).
+   * Null where they are not kept for it, and the box goes the long way,
+   * which makes them.
+   */
+  shadowsUnder(
+    kept: Filtered,
+    key: string,
+    fx: number,
+    fy: number,
+  ): SurfaceLike | null {
+    if (this.unfiltered || !kept.under || !kept.underFor) return null;
+    if (kept.rawX !== fx || kept.rawY !== fy) return null;
+    const want = `${key} ${kept.width}x${kept.height} ${kept.rawX},${kept.rawY}`;
+    return kept.underFor === want ? kept.under.surface : null;
+  }
+
   /** Whether a context was found that runs no filter of its own, and every
    *  box is drawn from a read. */
   unfiltered = false;
@@ -769,6 +790,26 @@ export class FilterStore {
   stale(owner: object, pseudo: string, coloursOnly = false): void {
     const hit = this.kept.get(owner)?.get(pseudo);
     if (hit) this._stale(hit, coloursOnly);
+  }
+
+  /**
+   * `stale` for the elements of `made`, and those around them: a box the
+   * subtrees of a build apart did not reach, and holds none of, is the box
+   * it was and draws what it drew. What has no element is drawn again.
+   */
+  staleAmong(made: ReadonlySet<object>): void {
+    const touched = new Set<object>();
+    for (const el of made) {
+      let at: object | null | undefined = el;
+      while (at && !touched.has(at)) {
+        touched.add(at);
+        at = (at as { parent?: object | null }).parent;
+      }
+    }
+    for (const [owner, slots] of this.kept) {
+      if (!('el' in owner) && !touched.has(owner)) continue;
+      for (const hit of slots.values()) this._stale(hit);
+    }
   }
 
   /** `stale` for every element. */
