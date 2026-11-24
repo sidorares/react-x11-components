@@ -1607,8 +1607,10 @@ export class HtmlViewNode extends Node {
   private _pageHeld = false;
   private _heldThisDrag = false;
   private _viewportDear = false;
-  /** When the last frame of the drag under way was painted. */
+  /** When the last frame of the drag under way was painted, and whether
+   *  the width has moved since the drag last rested (`DragPaint.moving`). */
   private _dragFrameAt = -Infinity;
+  private _dragMoving = false;
   /** The tile each background layer was drawn at in the drag under way, by
    *  the layer's style, or true for one drawn at two sizes: whose size
    *  moves with the drag, and which a drag drawn cheaper steps
@@ -5542,6 +5544,7 @@ export class HtmlViewNode extends Node {
         if (this._widthLaid !== -1 && this._widthLaid !== target) {
           this._widthMovedAt = resizeClock.now();
           this._laidSincePaint = true;
+          if (this._liveResizing()) this._dragMoving = true;
           // a drag the frames before fell behind is drawn cheaper from the
           // frame this layout is for
           if (!this._cheap && this._behind()) this._cheapen();
@@ -5923,11 +5926,16 @@ export class HtmlViewNode extends Node {
       // held from hearing of its viewport hears then
       if (!live || (!late && now - this._dragFrameAt >= DRAG_REST_MS)) {
         this._dragSlow = false;
-        if (this._cheap) this._drawAtRest();
+        if (this._cheap || this._drawnCheaper) this._drawAtRest();
         else if (this._pageHeld) this._tellPage();
       }
       if (live) {
-        if (this._partial || this._cheap || this._overBudget.length) {
+        if (
+          this._partial ||
+          this._cheap ||
+          this._drawnCheaper ||
+          this._overBudget.length
+        ) {
           this._armSettle();
         }
         return;
@@ -6016,6 +6024,7 @@ export class HtmlViewNode extends Node {
    */
   private _drawAtRest(): void {
     this._cheap = false;
+    this._dragMoving = false;
     if (this._drawnCheaper) {
       this._drawnCheaper = false;
       this._sprites?.clear();
@@ -18821,6 +18830,7 @@ export class HtmlViewNode extends Node {
       drag: this._liveResizing()
         ? {
             cheap: this._cheap,
+            moving: this._dragMoving,
             moved: this._tileMoved,
             paused: this._paused,
             drawn: this._noteCheaper,

@@ -4373,7 +4373,14 @@ whole was some 0.75 ms a paragraph of links, at every width. **Only an
 engine whose runs carry no glyphs has its coverage read** (`coverageGaps`):
 ntk's runs carry them and their faces outline them, CoreText's and
 DirectWrite's hand a run's geometry back and nothing else, and an engine
-that answers no coverage draws the rule unbroken. **What a line leaves out
+that answers no coverage draws the rule unbroken. A layout read whole is
+some 0.75 ms a paragraph of links at every width, so **a live drag reads
+none**: while the width moves (`DragPaint.moving`) such a rule whose gaps
+are not known is drawn unbroken, and says so (`drawn`), and the settle
+draws the page at rest whenever anything was drawn cheaper, not only a drag
+that fell behind (`_drawAtRest`). The glyphs' path costs lookups and draws
+its gaps at every step. A test sends ntk down the other path
+(`INK_FROM_GLYPHS`). **What a line leaves out
 is kept by the line and band** (`INK_GAPS`), so a repaint asks nothing.
 **The value is the text's own**, read from the text box under the stretch's
 runs (`textBoxIn`) — the decorated element's or a `::marker`'s — and not

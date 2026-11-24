@@ -463,6 +463,9 @@ function drawOnKept(
 export interface DragPaint {
   /** Whether the drag is drawn cheaper. */
   readonly cheap: boolean;
+  /** Whether the width is moving: false once the drag rests, which is
+   *  drawn as at rest though the window's edge is still held. */
+  readonly moving?: boolean;
   /** Whether a background layer, its tile `width` by `height` now, was
    *  another size at a frame of the drag before: one whose size moves
    *  with it. Asked at every frame, so that it knows. */
@@ -16893,7 +16896,17 @@ function paintLinePart(
 
   // an underline goes under the glyphs, a line through over them (CSS 2.1
   // Appendix E): a descender crosses its own underline
-  paintRules(ctx, box, visible, dx, dy, options.scale ?? 1, 'under', skip);
+  paintRules(
+    ctx,
+    box,
+    visible,
+    dx,
+    dy,
+    options.scale ?? 1,
+    'under',
+    skip,
+    options.drag,
+  );
   paintHighlightRules(ctx, visible, options, dx, dy, 'under', skip);
 
   if (CLIPPED_TEXT.has(box)) {
@@ -17716,6 +17729,9 @@ function paintRules(
   rules: 'under' | 'over',
   /** What of the lines another part of them paints (`LinePart`). */
   skip?: ReadonlySet<unknown>,
+  /** The window's edge being dragged, under which no layout's coverage is
+   *  read (`inkGapsOf`). */
+  drag?: DragPaint | null,
 ): void {
   // whose each rule is and how far in it is drawn, where any element has
   // said (`text-decoration-inset`): nothing is asked of a page that has not
@@ -17745,7 +17761,7 @@ function paintRules(
         rules === 'under'
           ? (top, thickness, first, last) =>
               skipsInk(textBoxIn(text, first.start, last.end) ?? paragraph)
-                ? inkGapsOf(text.layout, natural, top + drop, thickness)
+                ? inkGapsOf(text.layout, natural, top + drop, thickness, drag)
                 : null
           : undefined;
       for (const whole of [natural, trailOf(text, natural)]) {
@@ -17847,17 +17863,35 @@ function inkGapsOf(
   line: InkLine,
   top: number,
   thickness: number,
+  /** While the window's edge is dragged, no layout's coverage is read: each
+   *  step lays the text out at a new width, and an engine whose runs carry
+   *  no glyphs would read it again, some 0.75 ms a paragraph of links. The
+   *  rule is drawn unbroken, and the paint once the drag rests draws its
+   *  gaps (`DragPaint.drawn`). The glyphs' path costs lookups, and draws
+   *  them at every step. */
+  drag?: DragPaint | null,
 ): readonly number[] | null {
   let kept = INK_GAPS.get(line);
   const key = `${top} ${thickness}`;
   const known = kept?.get(key);
   if (known !== undefined) return known;
+  const fromGlyphs = INK_FROM_GLYPHS.on
+    ? lineGaps(line, top, thickness)
+    : undefined;
+  if (fromGlyphs === undefined && drag?.moving) {
+    drag.drawn();
+    return null;
+  }
   if (!kept) INK_GAPS.set(line, (kept = new Map()));
-  const gaps =
-    lineGaps(line, top, thickness) ?? coverageGaps(layout, top, thickness);
+  const gaps = fromGlyphs ?? coverageGaps(layout, top, thickness);
   kept.set(key, gaps);
   return gaps;
 }
+
+/** Whether a line's gaps are worked out from its glyphs where its runs
+ *  carry them; off, a test has ntk take the path an engine with none
+ *  does (`coverageGaps`). */
+export const INK_FROM_GLYPHS = { on: true };
 
 /** A line as `lineGaps` reads it: each run's glyphs where its engine hands
  *  them over, as ntk's does, with the face that outlines them. */

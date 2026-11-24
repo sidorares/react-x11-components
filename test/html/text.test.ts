@@ -13,6 +13,7 @@ import type {
 import type { TextRun } from '../../src/richtext/index.js';
 import { parseColor } from '../../src/html/css/values.js';
 import { textOverflowMarkOf } from '../../src/html/css/style.js';
+import { INK_FROM_GLYPHS } from '../../src/html/paint.js';
 import {
   boxOf,
   extentOf,
@@ -3077,6 +3078,49 @@ metric(
     );
     assert.ok(pieces.length > 1, `cut under its descenders: ${pieces.length}`);
     assert.strictEqual(read, 0, 'no coverage read');
+  },
+);
+
+metric(
+  'a drag of the window draws an underline whole where its gaps are not known and its runs carry no glyphs, and the rest draws them',
+  async (t) => {
+    // the path CoreText and DirectWrite take, whose runs carry no glyphs
+    INK_FROM_GLYPHS.on = false;
+    t.after(() => {
+      INK_FROM_GLYPHS.on = true;
+    });
+    // reading a layout's coverage costs some 0.75 ms a paragraph of links,
+    // and a step of a drag lays the text out again: the drag draws the rule
+    // unbroken and says so, and a paint at rest leaves the glyphs out. The
+    // text is below the window, which has painted none of it
+    const { node } = await render(
+      '<style>body{margin:0;font:20px serif}' +
+        'div{text-decoration:underline;color:#ff0000}</style>' +
+        '<p style="height:2000px"></p><div>gypsy</div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    let drawn = 0;
+    const drag = {
+      cheap: false,
+      moving: true,
+      moved: () => false,
+      paused: () => false,
+      drawn: () => {
+        drawn += 1;
+      },
+    };
+    const pieces = (fills: Awaited<ReturnType<typeof fillsOf>>) =>
+      fills.filter((f) => f.style === parseColor('#ff0000') && f.h <= 2);
+    assert.strictEqual(
+      pieces(await fillsOf(el, undefined, { drag })).length,
+      1,
+    );
+    assert.ok(drawn > 0, 'the drag says it drew the rule cheaper');
+    assert.ok(pieces(await fillsOf(el)).length > 1, 'at rest it is broken');
+    // and once known, a drag draws the gaps it has
+    assert.ok(pieces(await fillsOf(el, undefined, { drag })).length > 1);
   },
 );
 
