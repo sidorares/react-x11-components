@@ -285,6 +285,28 @@ test('an auto repetition counts a greatest size under its least one as the least
   assert.deepStrictEqual(at('c4'), [100, 40]);
 });
 
+test('implicit tracks take the sizes of grid-auto-columns and -rows in turn, back from the explicit grid', async () => {
+  // CSS Grid 1, 7.6: the first past the explicit grid takes the first size,
+  // the last before it the last. Only the first was taken (WPT's
+  // grid-support-grid-auto-columns-rows-002)
+  const { node } = await render(
+    '<style>body{margin:0}.g>*{height:5px}</style>' +
+      '<div class="g" style="display:grid;grid-template-columns:10px;' +
+      'grid-auto-columns:20px 30px;grid-auto-rows:5px 7px">' +
+      '<i id="a" style="grid-column:2"></i><i id="b" style="grid-column:3"></i>' +
+      '<i id="c" style="grid-column:4"></i><i id="d" style="grid-column:-3"></i>' +
+      '<i id="e" style="grid-column:1;grid-row:3"></i></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).width];
+  // the one before the explicit grid is 30px, so the explicit one is at 30
+  assert.deepStrictEqual(at('d'), [0, 30]);
+  assert.deepStrictEqual(at('a'), [40, 20]);
+  assert.deepStrictEqual(at('b'), [60, 30]);
+  assert.deepStrictEqual(at('c'), [90, 20]);
+  assert.strictEqual(boxOf(el, 'e').y, 12, 'rows of 5px and 7px');
+});
+
 test("a grid's gaps carry its rules, down its column gaps and across its row gaps", async () => {
   // the column gaps are at 100 to 120 and 220 to 240, the row gap at 50
   // to 70; each rule on its gap's middle, the grid's length, through the
