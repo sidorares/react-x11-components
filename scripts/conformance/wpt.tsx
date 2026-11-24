@@ -341,6 +341,22 @@ function servedCharset(file: string): string | undefined {
   return type ? /charset=["']?([^;"'\s]+)/i.exec(type[1])?.[1] : undefined;
 }
 
+/** The headers a file's `.headers` has WPT's server send it with, as
+ *  `<Html headers>` takes a response's: a document's `Content-Language`
+ *  among them, which is its language where nothing in it says one. */
+function servedHeaders(file: string): [string, string][] | undefined {
+  const headers = `${file}.headers`;
+  if (!existsSync(headers)) return undefined;
+  const out: [string, string][] = [];
+  for (const line of readFileSync(headers, 'utf8').split(/\r?\n/)) {
+    const colon = line.indexOf(':');
+    if (colon > 0) {
+      out.push([line.slice(0, colon).trim(), line.slice(colon + 1).trim()]);
+    }
+  }
+  return out;
+}
+
 /** The extensions WPT's server sends as something other than CSS, of the
  *  ones a test links a style sheet from. Any other is taken as CSS. */
 const NOT_CSS = new Set([
@@ -515,6 +531,7 @@ function tree(path: string): React.ReactElement {
         source: page.text,
         contentType: servedType(path),
         charset: page.charset,
+        headers: path === BLANK ? undefined : servedHeaders(path),
         partial: false,
         selectable: false,
         fontSize: 16,
