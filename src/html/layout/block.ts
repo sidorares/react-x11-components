@@ -278,6 +278,7 @@ import {
   fixedToViewport,
   forgetLayers,
   OUT_OF_FLOW_REACH,
+  brokenZIndex,
   stackAfterLayout,
 } from '../paint.js';
 
@@ -1982,6 +1983,9 @@ function layoutDocumentPass(
   const marks = layerMarks.moved;
   // whether any box's layout asks whether it holds a frame
   framed.any = tree.vertical;
+  // and whether the layers gathered after it ask for a broken block's
+  // inline box (`brokenZIndex`)
+  brokenZIndex.any = tree.positionedInline;
   const cuts =
     (until !== undefined || above !== undefined) && !LAID_WHOLE.has(tree);
   if (cuts && !OUT_OF_FLOW.has(tree)) escapes(tree);
@@ -2386,6 +2390,7 @@ export function layoutApart(
   }
   const marks = layerMarks.moved;
   framed.any = false;
+  brokenZIndex.any = tree.positionedInline;
   const ctx: LayoutContext = {
     fonts,
     shapeImages: shapeImagesOf(tree),
@@ -5142,6 +5147,15 @@ const SIZED_FROM = new WeakMap<Box, { serial: number; inline: number }>();
 function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
   const own = percentBaseInside(box);
   if (Number.isFinite(own)) return own;
+  // a height a grid's sized rows, or a flex row of a height, stretch it
+  // down, which is as good as one of its own (CSS Sizing 4, 5.1): a row
+  // `fit-content()` sized from its narrowest is what it wraps to fit
+  if (box.style.height === AUTO && box.parent && !box.outOfFlow) {
+    const given = heightGiven(box);
+    if (given !== null && Number.isFinite(given)) {
+      return Math.max(0, given - box.verticalExtra);
+    }
+  }
   // the initial containing block's, which is the viewport's height, read
   // as a percentage height on the root reads it (`readsViewportHeight`)
   let base = box.percentHeightBase;
@@ -5192,6 +5206,16 @@ function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
   }
   if (frame.intrinsicMaxContent < 0) {
     frame.intrinsicMaxContent = measureIntrinsicWidth(frame, ctx, Infinity);
+  }
+  // and its narrowest, for a grid item, whose rows ask for both
+  // (`orthogonalRange`) after the frame is laid out, which a measure then
+  // would undo
+  if (frame.intrinsicMinContent < 0 && box.parent?.style.grid) {
+    frame.intrinsicMinContent = measureIntrinsicWidth(
+      frame,
+      ctx,
+      MIN_CONTENT_PROBE,
+    );
   }
   // a table's own width, which is no less than its narrowest (CSS 2.1
   // 17.5.2), where it has one

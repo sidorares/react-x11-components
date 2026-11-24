@@ -16,7 +16,7 @@ import {
   waitFor,
 } from 'react-x11/test';
 import { parseColor } from '../../src/html/css/values.js';
-import { blend } from '../../src/html/css/color.js';
+import { blend, mixIn } from '../../src/html/css/color.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { SvgDrawing } from '../../src/html/svg.js';
 import {
@@ -523,6 +523,36 @@ test("a gradient's colours mix in the space it names, or oklab for a colour no l
   );
 });
 
+test('a gradient mixes in a predefined space whose name has a digit in it', async () => {
+  // `in display-p3`, `in rec2020`, `in xyz-d50`: the method was cut from
+  // the first argument at its first digit, and what was left of it was no
+  // direction, so the gradient was dropped (WPT's css-images/gradient/
+  // display-p3-linear-gradient)
+  const spaces = [
+    'display-p3',
+    'display-p3-linear',
+    'rec2020',
+    'a98-rgb',
+    'xyz-d50',
+  ];
+  const { node } = await render(
+    '<style>body{margin:0}div{width:100px;height:4px}</style>' +
+      spaces
+        .map(
+          (space) =>
+            `<div style="background-image:linear-gradient(to right in ${space},#ff0000,#00ff00)"></div>`,
+        )
+        .join(''),
+  );
+  const gradients = (await fillsOf(view(node)))
+    .map((f) => f.style as { line?: number[]; stops?: [number, string][] })
+    .filter((g) => g && g.line);
+  assert.strictEqual(gradients.length, spaces.length);
+  for (const [i, g] of gradients.entries()) {
+    assert.ok(g.stops!.length > 2, `${spaces[i]}: mixed in its space`);
+  }
+});
+
 test('a gradient mixes the colours of its stops as written, outside sRGB as much as in it', async () => {
   // CSS Images 4, 3.5.2: the transition is mixed from the colours, and
   // only what it comes to is clipped. Mixed from the stops clipped to
@@ -544,6 +574,50 @@ test('a gradient mixes the colours of its stops as written, outside sRGB as much
   assert.deepStrictEqual(parseRgb(middle[1]), [255, 0, 0]);
   // and the stops themselves are drawn clipped
   assert.deepStrictEqual(parseRgb(g.stops![0][1]), [255, 0, 0]);
+});
+
+test("a gradient's mixed stops keep a hundredth of a level", async () => {
+  // a stop rounded to a whole level came a level apart from the same
+  // transition drawn through other stops (WPT's
+  // gradient-longer-hue-hsl-002): the context lerps at more than 8 bits
+  const { node } = await render(
+    '<style>body{margin:0}div{width:100px;height:10px}</style>' +
+      '<div style="background-image:linear-gradient(to right in hsl,#ff0000,#00ff00)"></div>',
+  );
+  const [g] = (await fillsOf(view(node)))
+    .map((f) => f.style as { line?: number[]; stops?: [number, string][] })
+    .filter((f) => f && f.line);
+  // the first step is a 64th of 120deg along, 1.875deg: green at
+  // 255 * 1.875 / 60
+  assert.deepStrictEqual(parseRgb(g.stops![1][1]), [255, 7.97, 0]);
+});
+
+test('a gradient mixed in another space is drawn within a level or two of the mix all along it', async () => {
+  // Drawn as straight runs in sRGB between colours mixed in lch, a
+  // transition that leaves sRGB bends where it is clipped, and a run across
+  // the bend was tens of levels off (WPT's gradient-decreasing-hue-lch)
+  const { node } = await render(
+    '<style>body{margin:0}div{width:200px;height:10px}</style>' +
+      '<div style="background-image:linear-gradient(to right in lch decreasing hue,#ff00ff,#00ff00)"></div>',
+  );
+  const [g] = (await fillsOf(view(node)))
+    .map((f) => f.style as { line?: number[]; stops?: [number, string][] })
+    .filter((f) => f && f.line);
+  const stops = g.stops!.map(([at, c]) => [at, parseRgb(c)] as const);
+  let worst = 0;
+  for (let i = 0; i <= 1000; i += 1) {
+    const t = i / 1000;
+    let j = 1;
+    while (j < stops.length - 1 && stops[j][0] < t) j += 1;
+    const [t0, c0] = stops[j - 1];
+    const [t1, c1] = stops[j];
+    const f = t1 > t0 ? (t - t0) / (t1 - t0) : 0;
+    const want = parseRgb(mixIn('#ff00ff', '#00ff00', t, 'lch', 'decreasing')!);
+    for (let k = 0; k < 3; k += 1) {
+      worst = Math.max(worst, Math.abs(c0[k] + (c1[k] - c0[k]) * f - want[k]));
+    }
+  }
+  assert.ok(worst <= 2, `${worst.toFixed(1)} levels from the mix`);
 });
 
 /** A colour's channels, 0 to 255, from a hex or an rgb()/rgba() string. */

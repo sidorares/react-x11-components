@@ -1179,6 +1179,18 @@ function serialize(rgb: Triple, a: number): string {
   return `rgba(${r}, ${g}, ${b}, ${Math.round(a * 1000) / 1000})`;
 }
 
+/**
+ * A colour a gradient is drawn through, to a hundredth of a level: the
+ * context lerps between stops at more than eight bits, as a browser shades
+ * a gradient at each pixel, and stops rounded to whole levels came a level
+ * apart wherever two gradients drew one transition through different stops
+ * (WPT's gradient-longer-hue-hsl-002 and -006).
+ */
+function serializeFine(rgb: Triple, a: number): string {
+  const [r, g, b] = rgb.map((x) => Math.round(clamp01(x) * 25500) / 100);
+  return `rgba(${r}, ${g}, ${b}, ${Math.round(a * 1000) / 1000})`;
+}
+
 function hex2(n: number): string {
   return n.toString(16).padStart(2, '0');
 }
@@ -1714,5 +1726,5 @@ export function mixIn(
   }
   const rgb = fromSpace(space, out);
   if (!rgb) return null;
-  return serialize([clamp01(rgb[0]), clamp01(rgb[1]), clamp01(rgb[2])], alpha);
+  return serializeFine(rgb, alpha);
 }

@@ -36,6 +36,7 @@ import {
 } from '../richtext/runs.js';
 import type {
   FillContext,
+  InkGaps,
   LaidLine,
   LaidRun,
   RuleInsets,
@@ -176,6 +177,7 @@ import {
   COLUMN_ROWS,
   columned,
   DRAWING_SCALE,
+  BROKEN_BY,
   FADED_BLOCKS,
   GENERATED_FROM,
   PAINT_ORDER,
@@ -1091,6 +1093,17 @@ function boundsOf(
           bottom,
           baseline + (natural.descent ?? 0) + (cast?.bottom ?? 0),
         );
+        // and an underline `text-underline-offset` puts past them, which is
+        // ink as the glyphs are: a frame a vertical flow is turned in is
+        // painted on a surface its bounds size, and cut such a rule off
+        for (const run of natural.runs) {
+          const span = run.span;
+          if (!span?.underline || span.underlineOffset === undefined) continue;
+          const at = baseline + span.underlineOffset;
+          const thick = Math.max(2, Math.ceil(span.underlineThickness ?? 0));
+          top = Math.min(top, at);
+          bottom = Math.max(bottom, at + thick);
+        }
       }
       if (top < line.y) {
         y1 = Math.min(y1, top);
@@ -1590,6 +1603,7 @@ export function paintDocument(
   if (!canFill(ctx)) return;
   // whether any box's paint asks whether it is a vertical flow's
   framed.any = tree.vertical;
+  brokenZIndex.any = tree.positionedInline;
   ctx.save();
   const canvas = canvasBackground(tree);
   const scheme = rootScheme(tree);
@@ -1622,7 +1636,18 @@ export function paintDocument(
     until: null,
     matrix: options.matrix,
   };
-  if (canvas && !options.noCanvas) {
+  // the root element's filter runs over the canvas too, as Chrome and
+  // Firefox draw it: the canvas is painted in the root's group
+  // (`paintGroupOf`) where the filter is one this paint runs
+  const top = topBox(tree.root);
+  const filtered =
+    canvas &&
+    !options.noCanvas &&
+    top.style.filter !== null &&
+    runsOverPixels(colourOf(top.style.filter));
+  if (filtered) FILTERED_CANVAS.set(top, { canvas, tree });
+  else FILTERED_CANVAS.delete(top);
+  if (canvas && !options.noCanvas && !filtered) {
     paintCanvas(ctx, canvas, tree, { ...options, backdrop });
   }
   const painted: PaintOptions = {
@@ -1682,6 +1707,7 @@ export function paintCapture(
 ): void {
   if (!canFill(ctx)) return;
   framed.any = tree.vertical;
+  brokenZIndex.any = tree.positionedInline;
   ctx.save();
   const backdrop: BackdropPaint = {
     tree,
@@ -1872,6 +1898,15 @@ function canvasArea(
   tree: BoxTree,
   options: PaintOptions,
 ): { x: number; y: number; w: number; h: number } | null {
+  const { x, y, w, h } = canvasExtent(tree, options);
+  return clampRect(options, x, y, w, h);
+}
+
+/** All of the canvas, in the window's pixels, whatever the damage. */
+function canvasExtent(
+  tree: BoxTree,
+  options: PaintOptions,
+): { x: number; y: number; w: number; h: number } {
   const flow = DOCUMENT_FLOW.get(tree) ?? tree.root;
   const whole = options.canvas ?? {
     x: options.originX,
@@ -1879,13 +1914,32 @@ function canvasArea(
     width: flow.width,
     height: flow.height,
   };
-  return clampRect(
-    options,
-    Math.round(whole.x),
-    Math.round(whole.y),
-    Math.ceil(whole.width),
-    Math.ceil(whole.height),
-  );
+  return {
+    x: Math.round(whole.x),
+    y: Math.round(whole.y),
+    w: Math.ceil(whole.width),
+    h: Math.ceil(whole.height),
+  };
+}
+
+/** The canvas a root element's filter runs over, by the root element's
+ *  box (`paintDocument`). */
+const FILTERED_CANVAS = new WeakMap<
+  Box,
+  { canvas: CanvasBackground; tree: BoxTree }
+>();
+
+/** What a filter runs over (`filteredFor`): the box and what it holds
+ *  (`paintFilterGroup`), on the canvas where it is the root element's
+ *  (`FILTERED_CANVAS`). */
+function paintGroupOf(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  const under = FILTERED_CANVAS.get(box);
+  if (under) paintCanvas(ctx, under.canvas, under.tree, options);
+  paintFilterGroup(ctx, box, options);
 }
 
 /** A box's child element of that name, or one inside the anonymous boxes
@@ -3378,6 +3432,7 @@ export function paintLiftedBox(
 ): void {
   if (!canFill(ctx)) return;
   framed.any = tree.vertical;
+  brokenZIndex.any = tree.positionedInline;
   // where the document draws it: at the viewport, for one fixed to it or in
   // one that is (`atViewport`)
   const viewport = options.viewport;
@@ -3422,6 +3477,7 @@ export function paintCover(
 ): void {
   if (!canFill(ctx)) return;
   framed.any = tree.vertical;
+  brokenZIndex.any = tree.positionedInline;
   const inner: PaintOptions = {
     ...options,
     damage: null,
@@ -3804,7 +3860,7 @@ function filteredFor(
   if (box.kind === 'inline') return null;
   // a shadow in `currentColor` is in the box's colour
   const steps = colour.steps && resolvedSteps(colour.steps, box.style.color);
-  const own =
+  let own =
     FILTERED_INK.get(box) ??
     (through
       ? ownBounds(box)
@@ -3814,6 +3870,19 @@ function filteredFor(
           width: box.boundsWidth,
           height: box.boundsHeight,
         });
+  const under = FILTERED_CANVAS.get(box);
+  const area = under && !through ? canvasExtent(under.tree, options) : null;
+  if (area) {
+    const x = Math.min(own.x, area.x - options.originX);
+    const y = Math.min(own.y, area.y - options.originY);
+    own = {
+      x,
+      y,
+      width: Math.max(own.x + own.width, area.x + area.w - options.originX) - x,
+      height:
+        Math.max(own.y + own.height, area.y + area.h - options.originY) - y,
+    };
+  }
   const left = own.x + options.originX;
   const top = own.y + options.originY;
   const x0 = Math.floor(left);
@@ -3845,7 +3914,7 @@ function filteredFor(
     if (!kept.fresh) {
       const group = store.group(kept, fx, fy);
       if (!group) return null;
-      paintFilterGroup(
+      paintGroupOf(
         group.ctx as PaintContext,
         box,
         through
@@ -3871,7 +3940,7 @@ function filteredFor(
     const surface = options.surface(w, h);
     if (!surface) return null;
     const on = surface.getContext('2d') as PaintContext;
-    paintFilterGroup(
+    paintGroupOf(
       on,
       box,
       through
@@ -11363,7 +11432,36 @@ export function stacksLayers(box: Box): boolean {
   // the opacity taken from an inline box, asked last: `layered` asks this
   // of every box in the flow at every paint, and a map lookup is the one
   // question here that is not a field read
-  return FADED_BLOCKS.has(box);
+  if (FADED_BLOCKS.has(box)) return true;
+  // and the `z-index` of a positioned inline box it was broken around by,
+  // whose layer it is painted in with the inline box's pieces (`brokenZ`)
+  return brokenZ(box) !== null;
+}
+
+/**
+ * Whether the tree being painted may hold a block broken around a
+ * positioned inline box (`BoxTree.positionedInline`), set as a paint of a
+ * tree begins, as `framed.any` is: where it may not, `brokenZ` asks no map,
+ * since `layered` and `layerOf` ask it of every box at every paint.
+ */
+export const brokenZIndex = { any: false };
+
+/**
+ * The `z-index` of the positioned inline box a block was broken around by
+ * (CSS 2.1 9.2.1.1), where that box has one: the block is the box's as its
+ * pieces are, and is painted at the box's place among its stacking
+ * context's layers, where in the flow it went under a layer the box is
+ * over (WPT's CSS2 zindex-affects-block-in-inline). Null for any other
+ * block.
+ */
+function brokenZ(box: Box): number | null {
+  if (!brokenZIndex.any) return null;
+  const head = BROKEN_BY.get(box);
+  if (!head) return null;
+  const style = head.style;
+  return typeof style.zIndex === 'number' && style.position !== 'static'
+    ? style.zIndex
+    : null;
 }
 
 /** Whether what `will-change` names makes a box a stacking context: each
@@ -11612,7 +11710,10 @@ export function layerOf(box: Box): number {
   }
   const style = box.style;
   const z = style.zIndex;
-  if (z === 'auto') return 0;
+  if (z === 'auto') {
+    // a block a positioned inline box was broken around, at the box's
+    return style.position === 'static' ? (brokenZ(box) ?? 0) : 0;
+  }
   return style.position !== 'static' || flexItem(box) ? z : 0;
 }
 
@@ -17949,6 +18050,16 @@ function paintRules(
             'text-decoration-skip-spaces',
           )
         : 'start end';
+      const drop = shifted ? ruleDrop(text) : 0;
+      // the glyphs' ink, where an underline leaves it out: a rule a raise
+      // moved is that much further down the glyphs than its line says
+      const gaps: InkGaps | undefined =
+        rules === 'under'
+          ? (top, thickness, first, last) =>
+              skipsInk(textBoxIn(text, first.start, last.end) ?? paragraph)
+                ? inkGapsOf(natural, top + drop, thickness)
+                : null
+          : undefined;
       for (const whole of [natural, trailOf(text, natural)]) {
         if (!whole) continue;
         const laid =
@@ -17967,14 +18078,226 @@ function paintRules(
           ctx,
           laid,
           text.drawX + dx,
-          text.drawY + dy + (shifted ? ruleDrop(text) : 0),
+          text.drawY + dy + drop,
           scale,
           rules,
           insets,
+          gaps,
         );
       }
     }
   }
+}
+
+/** Whether the underline under a text box's glyphs leaves them out
+ *  (`text-decoration-skip-ink`, CSS Text Decoration 4): `auto`, the initial
+ *  value, and `all`, as the text's own style has it, which is its element's
+ *  or a `::marker`'s. */
+function skipsInk(box: Box): boolean {
+  const passive = box.style.passiveInherited;
+  return (
+    !passive || passiveValue(passive, 'text-decoration-skip-ink') !== 'none'
+  );
+}
+
+/** The first text box of a text's between two offsets of its layout: past
+ *  what is no box's, the bidi control a marker is isolated in. */
+function textBoxIn(text: LineText, from: number, to: number): Box | null {
+  const boxAt = text.spans.boxAt;
+  if (!boxAt) return null;
+  for (let at = from; at < to; at += 1) {
+    const box = boxAt.call(text.spans, at);
+    if (box) return box;
+  }
+  return null;
+}
+
+/** How far an underline stays from the ink it leaves out, as a multiple of
+ *  its thickness, and the most it is in pixels. */
+const INK_CLEARANCE = 1;
+const INK_CLEARANCE_MAX = 13;
+
+/** What each line's underline leaves out, by the band it crosses: kept
+ *  for the line's life, so a repaint asks the engine nothing again. */
+const INK_GAPS = new WeakMap<object, Map<string, readonly number[] | null>>();
+
+/**
+ * The stretches across a line of a layout an underline `thickness` thick
+ * whose top is `top` down it leaves out for the glyphs it would cross, in
+ * the layout's coordinates, a start and an end each; null where nothing is
+ * crossed, or the line's runs carry no glyphs to work it out from, which
+ * draws the rule unbroken. Kept by line and band (`INK_GAPS`), so a repaint
+ * asks nothing, and worked out from each glyph's own ink across the band
+ * (`lineGaps`), which a new layout of known text costs lookups. A layout
+ * read whole, which an engine whose runs carry no glyphs would need, is
+ * some 0.75 ms a paragraph of links at every new width: such a line's rule
+ * is drawn unbroken, as it was.
+ */
+function inkGapsOf(
+  line: InkLine,
+  top: number,
+  thickness: number,
+): readonly number[] | null {
+  let kept = INK_GAPS.get(line);
+  const key = `${top} ${thickness}`;
+  const known = kept?.get(key);
+  if (known !== undefined) return known;
+  if (!kept) INK_GAPS.set(line, (kept = new Map()));
+  const gaps = lineGaps(line, top, thickness) ?? null;
+  kept.set(key, gaps);
+  return gaps;
+}
+
+/** A line as `lineGaps` reads it: each run's glyphs where its engine hands
+ *  them over, as ntk's does, with the face that outlines them. */
+interface InkLine {
+  x: number;
+  baseline: number;
+  runs: readonly {
+    x: number;
+    run?: unknown;
+  }[];
+}
+
+/** A run's glyphs and the face they are in, as ntk shapes them: an id and
+ *  the advance and offsets each is placed by. Structural. */
+interface GlyphRun {
+  font: {
+    outline(glyphId: number, size: number): readonly ArrayLike<number>[];
+  };
+  size: number;
+  glyphs: readonly { id: number; ax: number; dx: number; dy: number }[];
+}
+
+function glyphRunOf(run: unknown): GlyphRun | null {
+  const r = run as Partial<GlyphRun> | null | undefined;
+  return r &&
+    Array.isArray(r.glyphs) &&
+    typeof r.size === 'number' &&
+    typeof r.font?.outline === 'function'
+    ? (r as GlyphRun)
+    : null;
+}
+
+/**
+ * A line's gaps from its glyphs: each glyph's ink across the band, from its
+ * outline (`glyphInk`), placed where the engine draws the glyph — the run's
+ * place, its pen moved by each advance and the glyph by its offsets, as
+ * ntk's `draw` and `coverage` place them — widened by the clearance and
+ * joined where they meet. Undefined where a run carries no glyphs, as
+ * CoreText's and DirectWrite's carry none: the rule is drawn unbroken.
+ */
+function lineGaps(
+  line: InkLine,
+  top: number,
+  thickness: number,
+): readonly number[] | null | undefined {
+  const runs: GlyphRun[] = [];
+  for (const r of line.runs) {
+    const run = glyphRunOf(r.run);
+    if (!run) return undefined;
+    runs.push(run);
+  }
+  // the rows the rule is drawn on, which it is drawn rounded to
+  const y0 = Math.round(top);
+  const clear = Math.min(INK_CLEARANCE * thickness, INK_CLEARANCE_MAX);
+  const spans: number[] = [];
+  for (let k = 0; k < runs.length; k += 1) {
+    const run = runs[k];
+    let pen = line.x + line.runs[k].x;
+    for (const g of run.glyphs) {
+      const gx = pen + g.dx;
+      const gy = line.baseline - g.dy;
+      pen += g.ax;
+      const ink = glyphInk(run.font, run.size, g.id, y0 - gy, thickness);
+      for (let i = 0; i < ink.length; i += 2) {
+        spans.push(gx + ink[i] - clear, gx + ink[i + 1] + clear);
+      }
+    }
+  }
+  return joined(spans);
+}
+
+/** Stretches, a start and an end each, sorted and joined where they meet;
+ *  null for none. */
+function joined(spans: number[]): readonly number[] | null {
+  if (!spans.length) return null;
+  const order: number[] = [];
+  for (let i = 0; i < spans.length; i += 2) order.push(i);
+  order.sort((a, b) => spans[a] - spans[b]);
+  const out: number[] = [];
+  for (const i of order) {
+    const from = spans[i];
+    const to = spans[i + 1];
+    if (out.length && from <= out[out.length - 1]) {
+      out[out.length - 1] = Math.max(out[out.length - 1], to);
+    } else {
+      out.push(from, to);
+    }
+  }
+  return out;
+}
+
+/** What each face's glyphs cross of a band, by size, glyph and band. */
+const GLYPH_INK = new WeakMap<object, Map<string, readonly number[]>>();
+
+/** How finely a band's place on a glyph is told apart: a quarter of a
+ *  pixel, since a line's baseline falls anywhere within one. */
+const BAND_STEP = 4;
+
+/**
+ * Where a glyph's outline crosses the band from `from` down `thickness`,
+ * from its origin on the baseline, down positive: for each of its contours
+ * that reaches the band, the extent across of the parts of its edges inside
+ * it, joined where they meet. Worked out once for a face, a size, a glyph
+ * and a band; nothing is rasterized.
+ */
+function glyphInk(
+  font: GlyphRun['font'],
+  size: number,
+  glyph: number,
+  from: number,
+  thickness: number,
+): readonly number[] {
+  const a = Math.round(from * BAND_STEP) / BAND_STEP;
+  const b = a + thickness;
+  let kept = GLYPH_INK.get(font);
+  if (!kept) GLYPH_INK.set(font, (kept = new Map()));
+  const key = `${size} ${glyph} ${a} ${thickness}`;
+  const known = kept.get(key);
+  if (known) return known;
+  const spans: number[] = [];
+  for (const poly of font.outline(glyph, size)) {
+    let lo = Infinity;
+    let hi = -Infinity;
+    const n = poly.length;
+    for (let i = 0; i < n; i += 2) {
+      const x0 = poly[i];
+      const y0 = poly[i + 1];
+      const x1 = poly[(i + 2) % n];
+      const y1 = poly[(i + 3) % n];
+      if ((y0 < a && y1 < a) || (y0 > b && y1 > b)) continue;
+      // the part of the edge inside the band
+      const dy = y1 - y0;
+      let t0 = 0;
+      let t1 = 1;
+      if (dy !== 0) {
+        const ta = (a - y0) / dy;
+        const tb = (b - y0) / dy;
+        t0 = Math.max(0, Math.min(ta, tb));
+        t1 = Math.min(1, Math.max(ta, tb));
+        if (t0 > t1) continue;
+      }
+      const xa = x0 + (x1 - x0) * t0;
+      const xb = x0 + (x1 - x0) * t1;
+      lo = Math.min(lo, xa, xb);
+      hi = Math.max(hi, xa, xb);
+    }
+    if (lo <= hi) spans.push(lo, hi);
+  }
+  const ink = joined(spans) ?? [];
+  kept.set(key, ink);
+  return ink;
 }
 
 /** Whether a text is at its line's start, and at its end, by where in the

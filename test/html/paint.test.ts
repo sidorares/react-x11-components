@@ -746,6 +746,39 @@ test('a block inside an inline element is faded with it', async (t) => {
   });
 });
 
+test("a block inside a positioned inline element is painted at the element's z-index", async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // CSS 2.1 9.2.1.1: the block the inline box is broken around is still its
+  // content, painted in its layer, over a layer of a lower `z-index` it was
+  // painted under in the flow (WPT's stacking-context/
+  // zindex-affects-block-in-inline); and one of a higher `z-index` is over
+  // it still
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width: 200, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<body style="margin:0;background:#ffffff">' +
+          '<div style="position:relative;z-index:1;height:20px;' +
+          'background:#ff0000"></div>' +
+          '<span style="position:relative;z-index:2;top:-20px">' +
+          '<div style="height:20px;background:#00ff00"></div></span>' +
+          '<div style="position:relative;z-index:3;top:-40px;height:20px;' +
+          'width:100px;background:#0000ff"></div></body>',
+        partial: false,
+      }),
+    ),
+    { width: 240, height: 100, fonts: FONTS },
+  );
+  await expectPixel(result.ctx, 150, 10, '#00ff00', {
+    message: 'over the layer under its z-index',
+  });
+  await expectPixel(result.ctx, 50, 10, '#0000ff', {
+    message: 'and under the one over it',
+  });
+});
+
 /** How tall each row of a `ROWS` document is, a case a row. */
 const ROW = 30;
 

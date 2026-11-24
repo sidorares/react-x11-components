@@ -8106,7 +8106,7 @@ function withoutInterpolation(arg: string): string {
   return arg
     .toLowerCase()
     .replace(
-      /\bin\s+[a-z-]+(?:\s+(?:shorter|longer|increasing|decreasing)\s+hue)?/,
+      /\bin\s+[a-z0-9-]+(?:\s+(?:shorter|longer|increasing|decreasing)\s+hue)?/,
       '',
     )
     .trim();
@@ -8213,6 +8213,57 @@ function parseStops(
  *  as: enough that what lies between them is within a level of the curve. */
 const MIX_STEPS = 64;
 
+/** How many times a run between two of those is halved where the mix bends
+ *  away from it (`expandStops`): to a 1,024th of the transition. */
+const MIX_DEPTH = 4;
+
+/** The most stops halving makes a gradient (`expandStops`): past it the
+ *  runs are drawn as they are. */
+const MIX_STOPS_MOST = 1024;
+
+/** A colour's channels as `mixIn` writes them, alpha in levels too. */
+function channelsOf(color: string): number[] | null {
+  const hex = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(color);
+  if (hex) {
+    const n = parseInt(hex[1], 16);
+    const alpha = hex[2] ? parseInt(hex[2], 16) : 255;
+    return [n >> 16, (n >> 8) & 255, n & 255, alpha];
+  }
+  const m =
+    /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,/]+([\d.]+))?\s*\)$/i.exec(
+      color,
+    );
+  if (!m) return null;
+  return [+m[1], +m[2], +m[3], m[4] === undefined ? 255 : +m[4] * 255];
+}
+
+/** Whether a mix bends at `y` more than a level, between the steps `x` and
+ *  `z` either side of it (`channelsOf` each). */
+function bent(
+  x: number[] | null,
+  y: number[] | null,
+  z: number[] | null,
+): boolean {
+  if (!x || !y || !z) return false;
+  for (let i = 0; i < 4; i += 1) {
+    if (Math.abs(x[i] - 2 * y[i] + z[i]) > 2) return true;
+  }
+  return false;
+}
+
+/** Whether `color` is more than a level from the straight run from `from`
+ *  to `to`, at `f` along it, in any channel. */
+function offRun(from: string, to: string, color: string, f: number): boolean {
+  const x = channelsOf(from);
+  const y = channelsOf(to);
+  const z = channelsOf(color);
+  if (!x || !y || !z) return false;
+  for (let i = 0; i < 4; i += 1) {
+    if (Math.abs(z[i] - (x[i] + (y[i] - x[i]) * f)) > 1) return true;
+  }
+  return false;
+}
+
 /** A position as a percentage and a length added to it, or null for one
  *  that is neither (`min()`, `max()`). */
 function pctPx(len: Len): [number, number] | null {
@@ -8296,14 +8347,69 @@ function expandStops(
       // the colours as written where both are read so, else as drawn
       const unclipped = mixIn(written[i - 1], written[i], 0, space, hue);
       const [m0, m1] = unclipped ? [written[i - 1], written[i]] : [c0, c1];
-      for (let k = 1; k < MIX_STEPS; k += 1) {
-        const t = k / MIX_STEPS;
-        const color = mixIn(m0, m1, eased(t), space, hue) ?? null;
-        if (color === null) break;
+      const mixAt = (t: number): string | null =>
+        mixIn(m0, m1, eased(t), space, hue);
+      const push = (t: number, color: string): void => {
         out.push({
           color,
           at: lenOf([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]),
         });
+      };
+      // a run between two steps is drawn straight in sRGB, which the mix
+      // is not: where its middle is more than a level from the run's, the
+      // run is cut there, as far as `MIX_DEPTH` halvings. Where the mix
+      // clips to sRGB it bends sharply, and a run across the bend was
+      // tens of levels off (WPT's gradient-decreasing-hue-lch)
+      const refine = (
+        t0: number,
+        from: string,
+        t1: number,
+        to: string,
+        depth: number,
+      ): boolean => {
+        if (depth === 0 || out.length >= MIX_STOPS_MOST) return true;
+        const t = (t0 + t1) / 2;
+        const color = mixAt(t);
+        if (color === null) return false;
+        // the middle alone can sit on the run with a bend either side of it
+        const quarter = mixAt((3 * t0 + t1) / 4);
+        const last = mixAt((t0 + 3 * t1) / 4);
+        if (
+          !offRun(from, to, color, 0.5) &&
+          (quarter === null || !offRun(from, to, quarter, 0.25)) &&
+          (last === null || !offRun(from, to, last, 0.75))
+        ) {
+          return true;
+        }
+        if (!refine(t0, from, t, color, depth - 1)) return false;
+        push(t, color);
+        return refine(t, color, t1, to, depth - 1);
+      };
+      // the steps first; a run is looked into only where the steps either
+      // side of it say the mix bends there, so one that bends nowhere
+      // costs what it did
+      const grid: string[] = [];
+      for (let k = 0; k <= MIX_STEPS; k += 1) {
+        const color = mixAt(k / MIX_STEPS);
+        if (color === null) break;
+        grid.push(color);
+      }
+      const levels = grid.map(channelsOf);
+      const bends = levels.map((y, k) =>
+        k > 0 && k < grid.length - 1
+          ? bent(levels[k - 1], y, levels[k + 1])
+          : false,
+      );
+      for (let k = 1; k < grid.length; k += 1) {
+        const t0 = (k - 1) / MIX_STEPS;
+        const t = k / MIX_STEPS;
+        if (
+          (bends[k - 1] || bends[k]) &&
+          !refine(t0, grid[k - 1], t, grid[k], MIX_DEPTH)
+        ) {
+          break;
+        }
+        if (k < MIX_STEPS) push(t, grid[k]);
       }
     }
     out.push({ color: c1, at: lenOf(b) });
@@ -12248,7 +12354,10 @@ function decorationLength(
   const pct = /^(-?\d*\.?\d+)%$/.exec(v);
   if (pct) return (Number(pct[1]) / 100) * ctx.em;
   const len = parseLength(v, ctx);
-  return typeof len === 'number' ? len : undefined;
+  if (typeof len === 'number') return len;
+  // a percentage is of the font size, in a `calc()` as much as alone
+  // (`calc(50% + 4px)`, WPT's text-decoration-thickness-calc)
+  return len !== null && isPct(len) ? resolve(len, ctx.em) : undefined;
 }
 
 /**

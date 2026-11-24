@@ -28,6 +28,9 @@ export interface FillContext {
   beginPath?(): void;
   roundRect?(x: number, y: number, w: number, h: number, radii: number[]): void;
   fill?(): void;
+  /** Many rectangles in one request, `x, y, w, h` each, where the backend
+   *  has it: the pieces of an underline broken around glyphs. */
+  fillRects?(rects: number[]): void;
 }
 
 export function canFill(ctx: unknown): ctx is FillContext {
@@ -246,6 +249,9 @@ export function paintRunRules(
   /** Who draws each run's rule and how far in a stretch of it is drawn,
    *  where an element says (`text-decoration-inset`); none for all of it. */
   insets?: RuleInsets,
+  /** Where an underline leaves out the glyphs it would cross
+   *  (`text-decoration-skip-ink`); none to draw it unbroken. */
+  inkGaps?: InkGaps,
 ): void {
   const t = ruleThickness(scale);
   if (rules !== 'over') {
@@ -264,7 +270,63 @@ export function paintRunRules(
         const thick = ruled.underlineThickness ?? t;
         [a, b] = insetStretch(insets, first, last, a, b, 'under', thick);
       }
-      if (b > a) stretchRule(ctx, ruled, line, dx + a, dx + b, dy, t);
+      if (b <= a) return;
+      const gaps =
+        first &&
+        last &&
+        inkGaps?.(
+          line.baseline + (ruled.underlineOffset ?? 2 * t),
+          ruled.underlineThickness === undefined
+            ? t
+            : Math.max(1, Math.round(ruled.underlineThickness)),
+          first,
+          last,
+        );
+      if (!gaps?.length) {
+        stretchRule(ctx, ruled, line, dx + a, dx + b, dy, t);
+        return;
+      }
+      // the pieces between the gaps, which are where the layout has them:
+      // gathered and sent as one request where the context takes a list,
+      // as a word with descenders is a rule of several pieces, and a page
+      // of links many such words (a dotted rule's dots may be a path)
+      const rects: number[] = [];
+      const into: FillContext =
+        ctx.fillRects && ruled.underlineStyle !== 'dotted'
+          ? {
+              fillStyle: null,
+              save() {},
+              restore() {},
+              fillRect: (x, y, w, h) => {
+                rects.push(x, y, w, h);
+              },
+            }
+          : ctx;
+      let at = line.x + a;
+      const end = line.x + b;
+      for (let k = 0; k < gaps.length && at < end; k += 2) {
+        if (gaps[k + 1] <= at) continue;
+        if (gaps[k] >= end) break;
+        if (gaps[k] > at) {
+          stretchRule(
+            into,
+            ruled,
+            line,
+            dx + at - line.x,
+            dx + gaps[k] - line.x,
+            dy,
+            t,
+          );
+        }
+        at = Math.max(at, gaps[k + 1]);
+      }
+      if (at < end) {
+        stretchRule(into, ruled, line, dx + at - line.x, dx + b, dy, t);
+      }
+      if (into !== ctx && rects.length) {
+        ctx.fillStyle = ruled.underline;
+        ctx.fillRects!(rects);
+      }
     };
     for (const r of line.runs) {
       const span = r.span;
@@ -361,6 +423,21 @@ export function paintRunRules(
   }
   flush();
 }
+
+/**
+ * Where an underline whose top is `top` down a layout and `thickness` thick
+ * leaves the glyphs it would cross out (`text-decoration-skip-ink`): the
+ * stretches across the layout it is not drawn in, sorted, a start and an
+ * end each, in the layout's own coordinates. Null to draw it unbroken.
+ */
+export type InkGaps = (
+  top: number,
+  thickness: number,
+  /** The stretch's first and last runs by their place in the text, whose
+   *  element says whether its underline leaves ink out at all. */
+  first: LaidRun,
+  last: LaidRun,
+) => readonly number[] | null;
 
 /**
  * Who draws a run's rule, and how far in a stretch of it is drawn, as a

@@ -285,6 +285,26 @@ test('an auto repetition counts a greatest size under its least one as the least
   assert.deepStrictEqual(at('c4'), [100, 40]);
 });
 
+test("an item aligned by its baseline across a column whose lines stack the other way is at the column's end", async () => {
+  // CSS Box Alignment 3, 9.1: a vertical-lr box in a right-to-left grid
+  // takes part in its column's last baselines, beside the vertical-rl one
+  // that takes part in its first, and alone, falls back to the end. It
+  // stood at the start (WPT's grid-justify-baseline-001; every place is
+  // Chromium's)
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:grid;width:100px;height:100px;direction:rtl;' +
+      'justify-items:baseline">' +
+      '<div id="a" style="writing-mode:vertical-rl">one<br>two</div>' +
+      '<div id="b" style="writing-mode:vertical-lr;font-size:30px">one<br>two</div>' +
+      '</div>',
+  );
+  const el = view(node);
+  const a = boxOf(el, 'a');
+  assert.strictEqual(a.x + a.width, 100, 'at the start, the right');
+  assert.strictEqual(boxOf(el, 'b').x, 0, 'at the end, the left');
+});
+
 test('an auto repetition with no size to count against fills the least size, its own or through its ratio', async () => {
   // CSS Grid 1, 7.2.3.2: as few as reach the grid's least size; and a
   // `min-height` reaches the columns through `aspect-ratio`. A float of
@@ -2182,6 +2202,63 @@ test('a flex box stretched as tall as it came is not laid out again for it', asy
     '<canvas width="32" height="32" style="display:block;height:32px;width:32px"></canvas>',
   );
   assert.ok(drawn <= plain, `${drawn} boxes laid out, and ${plain}`);
+});
+
+test('an item whose lines run down the rows sizes them from its narrowest and its widest, and wraps to the row it gets', async () => {
+  // css-grid/grid-definition/grid-template-rows-fit-content-001: the row
+  // took the item's height at the room down the page for its narrowest as
+  // well as its widest, and the item stayed on one line where the row it
+  // sized was shorter; Chrome, Firefox and Safari wrap it to the row, as
+  // they do in a row of a fixed height
+  const item = (rows: string) =>
+    `<div style="display:grid;width:40px;height:100px;align-content:start;` +
+    `justify-content:start;grid-template-rows:${rows}"><div id="i" ` +
+    `style="writing-mode:vertical-lr;font:10px/1 monospace">XXXX XXXX</div></div>`;
+  const size = async (rows: string) => {
+    const { node } = await render(item(rows), 300);
+    const box = boxOf(view(node), 'i');
+    const out = { width: box.width, height: box.height };
+    await cleanup();
+    return out;
+  };
+  const fixed = await size('40px');
+  const fit = await size('fit-content(40px)');
+  const roomy = await size('fit-content(200px)');
+  assert.strictEqual(fit.height, 40, 'the row is the fit-content limit');
+  assert.deepStrictEqual(
+    fit,
+    fixed,
+    'and the item wraps to it as in a row of 40px',
+  );
+  assert.ok(
+    fit.width > roomy.width,
+    `on more lines: ${fit.width}, ${roomy.width}`,
+  );
+  const narrow = await size('min-content');
+  assert.ok(
+    narrow.height < roomy.height,
+    'its narrowest is less than its widest',
+  );
+});
+
+test('a dozen grids around an item whose lines run down the rows lay it out about as often as one that does not', async () => {
+  const nest = (core: string) =>
+    '<div style="display:grid">'.repeat(12) + core + '</div>'.repeat(12);
+  const layouts = async (held: string): Promise<number> => {
+    const start = boxLayoutsMade();
+    await render(
+      `<style>body{margin:0}</style><div style="float:left">${held}</div>`,
+      400,
+    );
+    const made = boxLayoutsMade() - start;
+    await cleanup();
+    return made;
+  };
+  const turned = await layouts(
+    nest('<div style="writing-mode:vertical-lr">XX XX XX</div>'),
+  );
+  const plain = await layouts(nest('<div>XX XX XX</div>'));
+  assert.ok(turned <= plain * 1.5, `${turned} boxes laid out, and ${plain}`);
 });
 
 test('what a height reaches through grids is laid out a few times a level, and not twice a level', async () => {

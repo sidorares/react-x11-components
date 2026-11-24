@@ -132,6 +132,9 @@ export interface Item {
   /** And across its column, for one aligned by its first baseline there
    *  (`alignColumnBaselines`), which the column is sized with. */
   shimX?: number;
+  /** Whether `shimX` is from its column's end: one whose lines stack the
+   *  other way from the column's (`alignColumnBaselines`). */
+  shimXEnd?: boolean;
 }
 
 /** Whether a grid lanes container's lanes are rows, its stacking axis the
@@ -400,7 +403,22 @@ export function alignColumnBaselines(
       const forward = turnsUp(turn) || reflects(turn);
       against = rtl ? forward : !forward;
     }
-    const offset = rtl ? start - at : at - start;
+    // one whose lines stack the other way takes part in its column's last
+    // baselines (CSS Box Alignment 3, 9.1): measured from its end, and with
+    // none to meet, at its end, last baseline's fallback. At the start, a
+    // `vertical-lr` box in a right-to-left grid stood beside a `vertical-rl`
+    // one it shares no baseline with (WPT's grid-justify-baseline-001)
+    const end = rtl
+      ? child.x - child.marginLeft
+      : child.x + child.width + child.marginRight;
+    const offset = against
+      ? rtl
+        ? at - end
+        : end - at
+      : rtl
+        ? start - at
+        : at - start;
+    item.shimXEnd = against;
     const key = `${columnOf(item)} ${against}`;
     const list = groups.get(key);
     if (list) list.push({ item, offset });
@@ -508,7 +526,7 @@ export function layoutGrid(
   /** Whether an item may be wider for its rows, in a row this layout has laid
    *  out, since a kept one's is of the width before. */
   const takingHeight = (item: Item): boolean =>
-    item.row < cut && takesHeight(item.box);
+    item.row < cut && (takesHeight(item.box) || orthogonalAuto(item.box));
   const measure = (item: Item): void => {
     if (item.max >= 0) return;
     const extra = item.before + item.after;
@@ -592,7 +610,10 @@ export function layoutGrid(
       );
     }
   };
-  for (const item of items) item.shimX = undefined;
+  for (const item of items) {
+    item.shimX = undefined;
+    item.shimXEnd = undefined;
+  }
   layOut(0, cut);
   // the items aligned by their baselines across each column, moved along it
   // to meet the furthest of theirs, and the columns sized again with them
@@ -666,7 +687,7 @@ export function layoutGrid(
       if (cut < rowCount) sizedItems = sizedItems.filter((i) => i.row < cut);
       return sizeTracks(
         rowTracks,
-        sizedItems.map((item) => rowItem(item, rowTracks, rowGap)),
+        sizedItems.map((item) => rowItem(item, rowTracks, rowGap, ctx)),
         {
           available,
           least: atLeast,
@@ -759,11 +780,19 @@ export function layoutGrid(
       const child = item.box;
       const base = child.percentHeightBase;
       child.percentHeightBase = spanBefore(item);
-      if (heightGiven(child) === null) child.percentHeightBase = base;
-      else {
+      const given = heightGiven(child);
+      if (given === null || laidAsGiven(child, given, ctx)) {
+        child.percentHeightBase = base;
+      } else {
         again.push({ item, base, serial: child.layoutSerial });
         item.min = -1;
         item.max = -1;
+        // an orthogonal flow's root is as wide as its frame comes to at the
+        // height it is given, which what it measured before was not at
+        if (framed.any && FRAMES.has(child)) {
+          child.intrinsicMinContent = -1;
+          child.intrinsicMaxContent = -1;
+        }
       }
     }
     const before = widths;
@@ -870,8 +899,10 @@ export function layoutGrid(
       // a subgrid is stretched across its area, whatever aligns it
     } else if (atStart || atEnd) {
       dx = (area - outerWidth) * (atStart && atEnd ? 0.5 : atStart ? 1 : 0);
-    } else if (item.shimX !== undefined) dx = item.shimX;
-    else if (justify === 'center' || justify === 'flex-end') {
+    } else if (item.shimX !== undefined) {
+      dx = item.shimXEnd ? area - outerWidth - item.shimX : item.shimX;
+      safeX = !item.shimXEnd;
+    } else if (justify === 'center' || justify === 'flex-end') {
       dx = (area - outerWidth) / (justify === 'center' ? 2 : 1);
       safeX = keptIn(justifyText);
     }
@@ -2692,6 +2723,8 @@ export function rowItem(
   item: Item,
   tracks: SizingTrack[],
   gap: number,
+  /** What measures an orthogonal item's frame (`orthogonalRange`). */
+  ctx?: LayoutContext,
 ): TrackItem {
   if (item.edge) {
     const outer = () => item.before + item.after;
@@ -2714,11 +2747,16 @@ export function rowItem(
     (item.shimEnd ?? 0);
   const height = () => (Number.isNaN(item.height) ? box.height : item.height);
   const outer = () => height() + margins;
+  // an item whose lines run down the rows gives them its inline sizes, its
+  // narrowest and its widest, where its height is at the one it was laid
+  // out at (CSS Writing Modes 4, 7.3; CSS Grid 1, 6.6)
+  const range = ctx ? orthogonalRange(box) : null;
+  const least = range ? () => range.least + margins : outer;
   return {
     start: item.row,
     span: item.rows,
-    minContent: outer,
-    maxContent: outer,
+    minContent: least,
+    maxContent: range ? () => range.most + margins : outer,
     minimum: () => {
       const style = box.style;
       if (style.height !== AUTO && !isPct(style.height)) return outer();
@@ -2736,10 +2774,68 @@ export function rowItem(
           gap,
           style.overflowY,
           margins,
-          height(),
+          range ? range.least : height(),
         ) + margins
       );
     },
+  };
+}
+
+/**
+ * Whether an item is an orthogonal flow's root with no height of its own,
+ * whose width is its frame's block size at the height its rows give it
+ * (`frameInlineSize`): the grid's columns are sized again for it once the
+ * rows are. Asked of the grid's own items alone, and not through
+ * `takesHeight`, which every grid around it asks of what it holds: there,
+ * a dozen grids around one item laid it out three times as often.
+ */
+function orthogonalAuto(box: Box): boolean {
+  return framed.any && box.style.height === AUTO && FRAMES.has(box);
+}
+
+/**
+ * Whether an orthogonal item comes to what it was laid out as at the height
+ * its rows give it: its lines are all on one line at either, its frame laid
+ * out at its widest and the height no less, so no line of it moves. Most
+ * such items are laid out in rows their own widest sized.
+ */
+function laidAsGiven(box: Box, given: number, ctx: LayoutContext): boolean {
+  if (takesHeight(box) || !orthogonalAuto(box)) return false;
+  const frame = FRAMES.get(box)!;
+  const range = orthogonalRange(box);
+  if (!range) return false;
+  const widest = range.most - box.verticalExtra;
+  return (
+    frame.width >= widest - 0.01 && given - box.verticalExtra >= widest - 0.01
+  );
+}
+
+/**
+ * The border-box heights an orthogonal flow's root in a grid's rows comes
+ * to at its narrowest and at its widest: its frame's least and greatest
+ * inline sizes, which are how tall it is (CSS Writing Modes 4, 7.3), with
+ * its own edges down the page. Laid out at the room down the page, its
+ * height is only the second, or the room: a row `fit-content()` sizes took
+ * it for its narrowest too, and an item that wraps to fit the row was taken
+ * to need its whole line. Null for any other box, and for one with a
+ * height of its own, which its layout already has.
+ */
+export function orthogonalRange(box: Box): {
+  least: number;
+  most: number;
+} | null {
+  if (!orthogonalAuto(box)) return null;
+  // measured before its frame was laid out (`frameInlineSize`): measured
+  // here, after, the frame would be left laid out at a probe's width
+  const frame = FRAMES.get(box)!;
+  if (frame.intrinsicMinContent < 0 || frame.intrinsicMaxContent < 0) {
+    return null;
+  }
+  const extra = box.verticalExtra;
+  return {
+    least: frame.intrinsicMinContent + extra,
+    most:
+      Math.max(frame.intrinsicMinContent, frame.intrinsicMaxContent) + extra,
   };
 }
 
