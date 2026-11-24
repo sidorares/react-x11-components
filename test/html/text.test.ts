@@ -3124,6 +3124,38 @@ metric(
 );
 
 metric(
+  'text-decoration-thickness takes a percentage of the font size inside calc() as well as alone',
+  async () => {
+    // CSS Text Decoration 4: a percentage is of 1em; `calc(50% + 4px)` was
+    // turned down, and the rule drawn as thick as `auto` (WPT's
+    // css-text-decor/text-decoration-thickness-calc)
+    const { node } = await render(
+      '<style>body{margin:0;font:20px serif}div{text-decoration:underline;' +
+        'text-decoration-skip-ink:none}#a{color:#ff0000;' +
+        'text-decoration-thickness:50%}#b{color:#0000ff;' +
+        'text-decoration-thickness:calc(50% + 4px)}</style>' +
+        '<div id="a">xxxxxxxx</div><div id="b">xxxxxxxx</div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const fills = await fillsOf(el);
+    const rule = (color: string) =>
+      fills.filter((f) => f.style === parseColor(color) && f.w > f.h);
+    assert.deepStrictEqual(
+      rule('#ff0000').map((f) => f.h),
+      [10],
+      'half of 20px',
+    );
+    assert.deepStrictEqual(
+      rule('#0000ff').map((f) => f.h),
+      [14],
+      'and 4px more',
+    );
+  },
+);
+
+metric(
   'a clamp cuts a layout its last line shares with lines it drops',
   async () => {
     // a float beside the first lines sets the paragraph a line at a time, and

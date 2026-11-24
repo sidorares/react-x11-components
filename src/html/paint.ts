@@ -177,6 +177,7 @@ import {
   COLUMN_ROWS,
   columned,
   DRAWING_SCALE,
+  BROKEN_BY,
   FADED_BLOCKS,
   GENERATED_FROM,
   PAINT_ORDER,
@@ -1591,6 +1592,7 @@ export function paintDocument(
   if (!canFill(ctx)) return;
   // whether any box's paint asks whether it is a vertical flow's
   framed.any = tree.vertical;
+  brokenZIndex.any = tree.positionedInline;
   ctx.save();
   const canvas = canvasBackground(tree);
   const scheme = rootScheme(tree);
@@ -1683,6 +1685,7 @@ export function paintCapture(
 ): void {
   if (!canFill(ctx)) return;
   framed.any = tree.vertical;
+  brokenZIndex.any = tree.positionedInline;
   ctx.save();
   const backdrop: BackdropPaint = {
     tree,
@@ -3379,6 +3382,7 @@ export function paintLiftedBox(
 ): void {
   if (!canFill(ctx)) return;
   framed.any = tree.vertical;
+  brokenZIndex.any = tree.positionedInline;
   // where the document draws it: at the viewport, for one fixed to it or in
   // one that is (`atViewport`)
   const viewport = options.viewport;
@@ -3423,6 +3427,7 @@ export function paintCover(
 ): void {
   if (!canFill(ctx)) return;
   framed.any = tree.vertical;
+  brokenZIndex.any = tree.positionedInline;
   const inner: PaintOptions = {
     ...options,
     damage: null,
@@ -11364,7 +11369,36 @@ export function stacksLayers(box: Box): boolean {
   // the opacity taken from an inline box, asked last: `layered` asks this
   // of every box in the flow at every paint, and a map lookup is the one
   // question here that is not a field read
-  return FADED_BLOCKS.has(box);
+  if (FADED_BLOCKS.has(box)) return true;
+  // and the `z-index` of a positioned inline box it was broken around by,
+  // whose layer it is painted in with the inline box's pieces (`brokenZ`)
+  return brokenZ(box) !== null;
+}
+
+/**
+ * Whether the tree being painted may hold a block broken around a
+ * positioned inline box (`BoxTree.positionedInline`), set as a paint of a
+ * tree begins, as `framed.any` is: where it may not, `brokenZ` asks no map,
+ * since `layered` and `layerOf` ask it of every box at every paint.
+ */
+export const brokenZIndex = { any: false };
+
+/**
+ * The `z-index` of the positioned inline box a block was broken around by
+ * (CSS 2.1 9.2.1.1), where that box has one: the block is the box's as its
+ * pieces are, and is painted at the box's place among its stacking
+ * context's layers, where in the flow it went under a layer the box is
+ * over (WPT's CSS2 zindex-affects-block-in-inline). Null for any other
+ * block.
+ */
+function brokenZ(box: Box): number | null {
+  if (!brokenZIndex.any) return null;
+  const head = BROKEN_BY.get(box);
+  if (!head) return null;
+  const style = head.style;
+  return typeof style.zIndex === 'number' && style.position !== 'static'
+    ? style.zIndex
+    : null;
 }
 
 /** Whether what `will-change` names makes a box a stacking context: each
@@ -11613,7 +11647,10 @@ export function layerOf(box: Box): number {
   }
   const style = box.style;
   const z = style.zIndex;
-  if (z === 'auto') return 0;
+  if (z === 'auto') {
+    // a block a positioned inline box was broken around, at the box's
+    return style.position === 'static' ? (brokenZ(box) ?? 0) : 0;
+  }
   return style.position !== 'static' || flexItem(box) ? z : 0;
 }
 
