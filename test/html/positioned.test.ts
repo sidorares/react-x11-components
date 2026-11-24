@@ -872,6 +872,39 @@ metric('clip shows the part of an absolute box it names', async () => {
 });
 
 metric(
+  'clip in a vertical flow names the part of the box on the page',
+  async () => {
+    // its edges are measured from the border box's top left on the page
+    // (CSS 2.1 11.1.2), whatever the writing mode: in a vertical flow's
+    // frame they were the frame's, turned, and cut the wrong quarter
+    for (const mode of ['vertical-rl', 'vertical-lr', 'sideways-lr']) {
+      const { node, result } = await render(
+        '<style>body{margin:0;background:#ffffff}</style>' +
+          `<div style="writing-mode:${mode};width:100px;height:100px">` +
+          '<div style="position:absolute;top:0;left:0;width:40px;height:40px;' +
+          'background:#ff0000;clip:rect(0, 20px, 20px, 0)"></div></div>',
+      );
+      const el = view(node);
+      const { abs } = el as unknown as { abs: { x: number; y: number } };
+      for (const [x, y, shown] of [
+        [5, 5, true],
+        [30, 5, false],
+        [5, 30, false],
+        [30, 30, false],
+      ] as const) {
+        const [r, g] = await pixelAt(result.ctx, abs.x + x, abs.y + y);
+        assert.strictEqual(
+          r > 200 && g < 100,
+          shown,
+          `${mode}: drawn at ${x},${y}`,
+        );
+      }
+      await result.unmount();
+    }
+  },
+);
+
+metric(
   'what a clip cuts away is not under the pointer, and what paint draws past it is',
   async () => {
     // Nothing `clip` cuts away is drawn (CSS 2.1 11.1.2), so nothing of it
