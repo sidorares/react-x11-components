@@ -1242,6 +1242,29 @@ metric(
   },
 );
 
+metric('a clip-path circle() is set as a box rounded to it is', async () => {
+  // A circle cut into chords of our own was a quarter of a pixel from the
+  // context's own curves at the diagonals: 64 levels apart from a box
+  // rounded to the same circle, where WPT allows 60 (clip-path-circle-001
+  // to 009, and the reference boxes'). The context sets the curve now.
+  const { result } = await render(
+    '<style>body{margin:0}div{width:200px;height:200px;background:#008000}</style>' +
+      '<div style="clip-path:circle()"></div>' +
+      '<div style="border-radius:100px"></div>',
+  );
+  await act();
+  const at = (y: number, height: number) =>
+    pixelsIn(result.ctx, { x: 0, y, width: 200, height });
+  const apart = (a: Uint8ClampedArray, b: Uint8ClampedArray) => {
+    let most = 0;
+    for (let i = 0; i < a.length; i++) {
+      most = Math.max(most, Math.abs(a[i] - b[i]));
+    }
+    return most;
+  };
+  assert.strictEqual(apart(await at(0, 200), await at(200, 200)), 0);
+});
+
 metric('a polygon is placed on the pixels its box is drawn on', async () => {
   // A box laid out a fraction of a pixel down draws its background from
   // the row it falls nearest; a polygon along its edges is measured from
