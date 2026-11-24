@@ -40,6 +40,14 @@ export interface Pixels {
   data: Uint8ClampedArray;
 }
 
+/** A surface and its context, kept for a size. */
+interface PooledSurface {
+  surface: SurfaceLike;
+  ctx: Partial<Filtering>;
+  width: number;
+  height: number;
+}
+
 /** What is kept for one element's box. */
 export interface Filtered {
   /** The box last painted, which a read arriving repaints. */
@@ -81,6 +89,9 @@ export interface Filtered {
   outHeight: number;
   outFor: string | null;
   scratch: Pixels | null;
+  /** Surfaces a shadow's steps drew on a frame ago, kept to be drawn on
+   *  again rather than made, which costs more than the drawing. */
+  pool?: PooledSurface[];
   /** Where a context runs the filter itself (`through`): the box's group,
    *  painted unfiltered as it draws under `key` while `fresh`, kept to be
    *  filtered again as the filter changes, and bumped as it is painted. */
@@ -90,6 +101,10 @@ export interface Filtered {
   groupHeight: number;
   groupSerial: number;
 }
+
+/** Blurs of this many pixels or more are made on a smaller copy: a half
+ *  from 6, a fourth from 12, an eighth from 32. */
+const SHADOW_SHRINK_FROM = 12;
 
 /** What a surface hands back for its pixels: ntk's context and the native
  *  ones, each a promise. */
@@ -112,7 +127,13 @@ interface Filtering {
   save(): void;
   restore(): void;
   clearRect(x: number, y: number, width: number, height: number): void;
-  drawImage(image: unknown, x: number, y: number): void;
+  drawImage(
+    image: unknown,
+    x: number,
+    y: number,
+    width?: number,
+    height?: number,
+  ): void;
   globalCompositeOperation: string;
   fillStyle: string;
   fillRect(x: number, y: number, width: number, height: number): void;
@@ -466,18 +487,29 @@ export class FilterStore {
     want: string,
   ): SurfaceLike | null {
     const { width, height } = kept;
-    type Made = { surface: SurfaceLike; ctx: Partial<Filtering> };
+    type Made = PooledSurface;
     const made: Made[] = [];
-    const fresh = (): Made | null => {
-      const surface = this.make(width, height);
-      if (!surface) return null;
-      const one = {
-        surface,
-        ctx: surface.getContext('2d') as Partial<Filtering>,
-      };
+    const pool = (kept.pool ??= []);
+    /** A surface of a size, cleared: one kept from the last frame, or made. */
+    const take = (w: number, h: number): Made | null => {
+      const at = pool.findIndex((p) => p.width === w && p.height === h);
+      let one: Made | undefined = at >= 0 ? pool.splice(at, 1)[0] : undefined;
+      if (one) {
+        one.ctx.clearRect?.(0, 0, w, h);
+      } else {
+        const surface = this.make(w, h);
+        if (!surface) return null;
+        one = {
+          surface,
+          ctx: surface.getContext('2d') as Partial<Filtering>,
+          width: w,
+          height: h,
+        };
+      }
       made.push(one);
       return one;
     };
+    const fresh = (): Made | null => take(width, height);
     const runs = (ctx: Partial<Filtering>, filter: string): boolean => {
       if (!('filter' in ctx)) return false;
       ctx.filter = filter;
@@ -499,20 +531,46 @@ export class FilterStore {
           took = runs(ctx, step.css || 'none');
           if (took) ctx.drawImage(from, 0, 0);
         } else {
-          const cast = fresh();
+          // a wide blur is smooth, so it is made on a copy a fraction of the
+          // size and drawn up: its cost is its pixels, and a window's
+          // shadow is most of a large surface
+          const f =
+            step.blur >= 32
+              ? 8
+              : step.blur >= SHADOW_SHRINK_FROM
+                ? 4
+                : step.blur >= 3
+                  ? 2
+                  : 1;
+          const sw = Math.max(1, Math.ceil(width / f));
+          const sh = Math.max(1, Math.ceil(height / f));
+          const cast = take(sw, sh);
           if (!cast || typeof cast.ctx.fillRect !== 'function') {
             took = false;
           } else {
             const tint = cast.ctx as Filtering;
             tint.save();
-            tint.drawImage(from, 0, 0);
+            if (f === 1) tint.drawImage(from, 0, 0);
+            else tint.drawImage(from, 0, 0, sw, sh);
             tint.globalCompositeOperation = 'source-in';
             tint.fillStyle = step.color;
-            tint.fillRect(0, 0, width, height);
+            tint.fillRect(0, 0, sw, sh);
             tint.restore();
-            took = runs(ctx, step.blur > 0 ? `blur(${step.blur}px)` : 'none');
+            if (f === 1) {
+              took = runs(ctx, step.blur > 0 ? `blur(${step.blur}px)` : 'none');
+              if (took) ctx.drawImage(cast.surface, step.x, step.y);
+            } else {
+              // the blur on the small copy, then up to the size it was
+              const soft = take(sw, sh);
+              took = !!soft && runs(soft.ctx, `blur(${step.blur / f}px)`);
+              if (took) {
+                soft!.ctx.drawImage!(cast.surface, 0, 0);
+                soft!.ctx.filter = 'none';
+                ctx.filter = 'none';
+                ctx.drawImage(soft!.surface, step.x, step.y, width, height);
+              }
+            }
             if (took) {
-              ctx.drawImage(cast.surface, step.x, step.y);
               ctx.filter = 'none';
               ctx.drawImage(from, 0, 0);
             }
@@ -525,20 +583,34 @@ export class FilterStore {
       from = to.surface;
       last = to;
     }
-    // each context is the caller's to destroy, as `dropOut` destroys the
-    // one kept
-    for (const one of made) {
-      if (took && one === last) continue;
+    // what was drawn on goes back to be drawn on again, but for what the
+    // box now draws from; a context is the caller's to destroy
+    const destroy = (one: Made) => {
       (one.ctx as { destroy?(): void }).destroy?.();
       one.surface.destroy?.();
+    };
+    if (took && last && kept.out && kept.outCtx) {
+      pool.push({
+        surface: kept.out,
+        ctx: kept.outCtx as Partial<Filtering>,
+        width: kept.outWidth,
+        height: kept.outHeight,
+      });
+      kept.out = null;
+      kept.outCtx = null;
     }
+    for (const one of made) {
+      if (took && one === last) continue;
+      if (took) pool.push(one);
+      else destroy(one);
+    }
+    while (pool.length > 6) destroy(pool.shift()!);
     if (!took || !last) {
       this.unfiltered = true;
       // what is fresh is a group painted, and no read: one is asked for
       kept.fresh = false;
       return null;
     }
-    dropOut(kept);
     kept.out = last.surface;
     kept.outCtx = last.ctx as Partial<Writable>;
     kept.outWidth = width;
@@ -637,6 +709,11 @@ export class FilterStore {
     hit.dropped = true;
     dropOut(hit);
     dropGroup(hit);
+    for (const one of hit.pool ?? []) {
+      (one.ctx as { destroy?(): void }).destroy?.();
+      one.surface.destroy?.();
+    }
+    hit.pool = [];
   }
 
   /** Give up the least recently drawn past the budget, but `keep`. */

@@ -1070,6 +1070,10 @@ export function installRaster(
     x1: number;
     y1: number;
     cov: Float32Array;
+    /** Where each row's coverage is, as local columns from `lo` up to and
+     *  including `hi`, and none where `hi < lo`: the rest is 0. */
+    lo?: Int32Array;
+    hi?: Int32Array;
   }
 
   const cover = (
@@ -1135,6 +1139,10 @@ export function installRaster(
     const ds: number[] = [];
     const frac = new Float32Array(w + 1);
     const diff = new Float32Array(w + 2);
+    const rowLo = new Int32Array(y1 - y0);
+    const rowHi = new Int32Array(y1 - y0);
+    let lo = 0;
+    let hi = -1;
     const span = (a: number, b: number) => {
       // local, cut to the rectangle
       a = Math.max(a - x0, 0);
@@ -1142,6 +1150,8 @@ export function installRaster(
       if (b <= a) return;
       const fa = Math.floor(a);
       const fb = Math.floor(b);
+      if (fa < lo) lo = fa;
+      if (fb > hi) hi = fb;
       if (fa === fb) {
         frac[fa] += b - a;
         return;
@@ -1152,8 +1162,8 @@ export function installRaster(
       if (fb < w) frac[fb] += b - fb;
     };
     for (let py = y0; py < y1; py += 1) {
-      frac.fill(0);
-      diff.fill(0);
+      lo = w;
+      hi = -1;
       for (let s = 0; s < SUB; s += 1) {
         const sy = py + (s + 0.5) / SUB;
         while (next < order.length && ey0[order[next]] <= sy) {
@@ -1195,14 +1205,22 @@ export function installRaster(
         }
       }
       const row = (py - y0) * w;
+      rowLo[py - y0] = lo;
+      rowHi[py - y0] = hi;
+      if (hi < lo) continue;
+      // only the columns a span reached have anything in them, and the
+      // run the differences make is 0 again past the last
+      const end = Math.min(w - 1, hi);
       let run = 0;
-      for (let x = 0; x < w; x += 1) {
+      for (let x = lo; x <= end; x += 1) {
         run += diff[x];
         const c = (run + frac[x]) / SUB;
         cov[row + x] = c > 1 ? 1 : c;
       }
+      frac.fill(0, lo, Math.min(frac.length, hi + 1));
+      diff.fill(0, lo, Math.min(diff.length, hi + 2));
     }
-    return { x0, y0, x1, y1, cov };
+    return { x0, y0, x1, y1, cov, lo: rowLo, hi: rowHi };
   };
 
   /** The polygons a path's fill is: its polylines, each closed. */
@@ -2190,6 +2208,48 @@ export function installRaster(
     const src = new Float64Array(4);
     if (draw.paint.solid) draw.paint.at(0, 0, src);
     const clip = draw.clip;
+    // a solid colour over what is there, the commonest draw: the shape's
+    // rectangle is inside the bitmap's, so no pixel asks whether it is, and
+    // one the colour covers whole and nothing cuts is the colour, which is
+    // every byte `blend` would make of it (its factors are 1 and 0 there)
+    if (!unbounded && draw.paint.solid && draw.op === 'source-over') {
+      const sw = shape!.x1 - shape!.x0;
+      const full = src[3] * alpha;
+      const r255 = src[0] * alpha * 255;
+      const g255 = src[1] * alpha * 255;
+      const b255 = src[2] * alpha * 255;
+      const rlo = shape!.lo;
+      const rhi = shape!.hi;
+      for (let py = y0; py < y1; py += 1) {
+        // the columns coverage reaches in this row, where it says
+        let from = x0;
+        let to = x1;
+        if (rlo && rhi) {
+          const r = py - shape!.y0;
+          if (rhi[r] < rlo[r]) continue;
+          from = Math.max(x0, shape!.x0 + rlo[r]);
+          to = Math.min(x1, shape!.x0 + rhi[r] + 1);
+        }
+        let ci = (py - shape!.y0) * sw + from - shape!.x0;
+        let o = (py * width + from) * 4;
+        const cut = py * width;
+        for (let px = from; px < to; px += 1, ci += 1, o += 4) {
+          const c = shape!.cov[ci];
+          if (c <= 0) continue;
+          const k = clip ? clip[cut + px] : 1;
+          if (k <= 0) continue;
+          if (k >= 1 && c >= 1 && full >= 1) {
+            data[o] = r255;
+            data[o + 1] = g255;
+            data[o + 2] = b255;
+            data[o + 3] = 255;
+            continue;
+          }
+          blend(data, o, src, c * alpha, draw.op, k);
+        }
+      }
+      return [x0, y0, x1, y1];
+    }
     for (let py = y0; py < y1; py += 1) {
       for (let px = x0; px < x1; px += 1) {
         const k = clip ? clip[py * width + px] : 1;
@@ -2226,6 +2286,7 @@ export function installRaster(
     dx: number,
     dy: number,
     alpha: number,
+    clip?: Float32Array | null,
   ): number[] | null => {
     const a = Math.min(1, Math.max(0, alpha));
     const x0 = Math.max(0, dx);
@@ -2242,7 +2303,9 @@ export function installRaster(
         const sa = src[i + 3];
         if (!sa) continue;
         const o = (y * target.width + x) * 4;
-        if (sa === 255 && a === 1) {
+        const kc = clip ? clip[y * target.width + x] : 1;
+        if (kc <= 0) continue;
+        if (sa === 255 && a === 1 && kc >= 1) {
           out[o] = src[i];
           out[o + 1] = src[i + 1];
           out[o + 2] = src[i + 2];
@@ -2254,7 +2317,7 @@ export function installRaster(
         px[1] = (src[i + 1] / 255) * k;
         px[2] = (src[i + 2] / 255) * k;
         px[3] = k;
-        blend(out, o, px, a, 'source-over', 1);
+        blend(out, o, px, a, 'source-over', kc);
       }
     }
     return [x0, y0, x1, y1];
@@ -2305,18 +2368,106 @@ export function installRaster(
     return evenodd ? (wind & 1) === 1 : wind !== 0;
   };
 
+  const makeClipMask = (
+    width: number,
+    height: number,
+    path: PathData,
+    m: Matrix,
+    rule: string,
+    was: Float32Array | null,
+  ): Float32Array => {
+    const mask = new Float32Array(width * height);
+    const shape = cover(fillPolys(path, m), rule === 'evenodd', width, height);
+    if (!shape) return mask;
+    const w = shape.x1 - shape.x0;
+    for (let y = shape.y0; y < shape.y1; y += 1) {
+      const r = y - shape.y0;
+      let from = shape.x0;
+      let to = shape.x1;
+      if (shape.lo && shape.hi) {
+        if (shape.hi[r] < shape.lo[r]) continue;
+        from = shape.x0 + shape.lo[r];
+        to = Math.min(to, shape.x0 + shape.hi[r] + 1);
+      }
+      for (let x = from; x < to; x += 1) {
+        const c = shape.cov[(y - shape.y0) * w + x - shape.x0];
+        mask[y * width + x] = was ? c * was[y * width + x] : c;
+      }
+    }
+    return mask;
+  };
+  /** A number for each mask, so that one cut from another is kept by it. */
+  const maskIds = new WeakMap<object, number>();
+  let maskCount = 0;
+  const maskId = (mask: Float32Array): number => {
+    let id = maskIds.get(mask);
+    if (!id) maskIds.set(mask, (id = maskCount += 1));
+    return id;
+  };
+
+  /** What a shape covers, and the masks a clip makes, kept by the shape
+   *  and where it is drawn: a page that repaints its whole scene each frame
+   *  draws the same windows, borders and clips again, and the coverage is
+   *  most of what each costs. Read-only once made, newest last, and held to
+   *  a few tens of megabytes. */
+  const MEMO_BYTES = 48 << 20;
+  const MEMO_FROM = 4096;
+  const memo = new Map<string, { v: unknown; bytes: number }>();
+  let memoBytes = 0;
+  const memoized = <T>(
+    key: string,
+    size: (v: T) => number,
+    make: () => T,
+    cmds: number,
+  ): T => {
+    // a long path costs as much to key as it does to cover
+    if (cmds > 2000) return make();
+    const hit = memo.get(key);
+    if (hit) {
+      memo.delete(key);
+      memo.set(key, hit);
+      return hit.v as T;
+    }
+    const v = make();
+    const bytes = size(v);
+    // a small shape costs less to make than to keep
+    if (bytes < MEMO_FROM * 4 || bytes > MEMO_BYTES / 4) return v;
+    memo.set(key, { v, bytes });
+    memoBytes += bytes;
+    while (memoBytes > MEMO_BYTES) {
+      const [oldest, entry] = memo.entries().next().value as [
+        string,
+        { bytes: number },
+      ];
+      memo.delete(oldest);
+      memoBytes -= entry.bytes;
+    }
+    return v;
+  };
+  const coverBytes = (c: Coverage | null): number => (c ? c.cov.byteLength : 0);
+
   return {
     classes: { Path2D, CanvasGradient, CanvasPattern },
     newPath: () => new Path(),
     pathOf: (p) => (p && typeof p === 'object' ? (PATHS.get(p) ?? null) : null),
     fill(target, path, m, rule, draw) {
       const [l, t, r, b] = regionOf(target, draw);
-      const shape = cover(fillPolys(path, m), rule === 'evenodd', r, b, l, t);
+      const shape = memoized(
+        `f|${rule}|${l},${t},${r},${b}|${m.join(',')}|${path.cmds.join(',')}`,
+        coverBytes,
+        () => cover(fillPolys(path, m), rule === 'evenodd', r, b, l, t),
+        path.cmds.length,
+      );
       return paintCoverage(target, shape, draw);
     },
     stroke(target, path, m, style, draw) {
       const [l, t, r, b] = regionOf(target, draw);
-      const shape = cover(strokePolys(path, m, style), false, r, b, l, t);
+      const shape = memoized(
+        `s|${l},${t},${r},${b}|${m.join(',')}|${JSON.stringify(style)}|${path.cmds.join(',')}`,
+        coverBytes,
+        () => cover(strokePolys(path, m, style), false, r, b, l, t),
+        path.cmds.length,
+      );
       return paintCoverage(target, shape, draw);
     },
     mask(target, mask, width, ink, m, draw) {
@@ -2325,22 +2476,14 @@ export function installRaster(
       return paintCoverage(target, shape, draw);
     },
     clipMask(width, height, path, m, rule, was) {
-      const mask = new Float32Array(width * height);
-      const shape = cover(
-        fillPolys(path, m),
-        rule === 'evenodd',
-        width,
-        height,
+      // the mask a clip makes is the shape's, times the one it is cut from:
+      // kept by the shape, and by that mask's own number
+      return memoized(
+        `c|${width}x${height}|${rule}|${m.join(',')}|${path.cmds.join(',')}|${was ? maskId(was) : 0}`,
+        (v: Float32Array) => v.byteLength,
+        () => makeClipMask(width, height, path, m, rule, was),
+        path.cmds.length,
       );
-      if (!shape) return mask;
-      const w = shape.x1 - shape.x0;
-      for (let y = shape.y0; y < shape.y1; y += 1) {
-        for (let x = shape.x0; x < shape.x1; x += 1) {
-          const c = shape.cov[(y - shape.y0) * w + x - shape.x0];
-          mask[y * width + x] = was ? c * was[y * width + x] : c;
-        }
-      }
-      return mask;
     },
     contains(path, m, x, y, rule) {
       return inside(fillPolys(path, m), x, y, rule === 'evenodd');
@@ -2377,19 +2520,21 @@ export function installRaster(
       }
       // a sprite: drawn at its size, at a whole pixel, over what is there,
       // with nothing to cut it or cast from it, is a copy a row at a time,
-      // which is every pixel the general path would make
+      // which is every pixel the general path would make. The size is the
+      // bitmap's pixels, so a page drawing at a device scale (a transform
+      // of 2, a destination of half the source) is the same copy
+      const scale = m[0];
       if (
         draw.op === 'source-over' &&
-        !draw.clip &&
         !(draw.shadow && draw.shadow.rgba[3] > 0) &&
-        m[0] === 1 &&
         m[1] === 0 &&
         m[2] === 0 &&
-        m[3] === 1 &&
-        sw === dw &&
-        sh === dh &&
-        Number.isInteger(dx + m[4]) &&
-        Number.isInteger(dy + m[5]) &&
+        m[3] === scale &&
+        scale > 0 &&
+        sw === dw * scale &&
+        sh === dh * scale &&
+        Number.isInteger(dx * scale + m[4]) &&
+        Number.isInteger(dy * scale + m[5]) &&
         Number.isInteger(sx) &&
         Number.isInteger(sy) &&
         Number.isInteger(sw) &&
@@ -2402,9 +2547,10 @@ export function installRaster(
           sy,
           sw,
           sh,
-          dx + m[4],
-          dy + m[5],
+          dx * scale + m[4],
+          dy * scale + m[5],
           draw.alpha,
+          draw.clip,
         );
       }
       const path = new Path();

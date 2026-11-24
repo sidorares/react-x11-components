@@ -331,3 +331,42 @@ test('an arc from 0 to a whole turn anticlockwise is a circle, and a stop of no 
   assert.equal(system, true, 'a system colour is a colour');
   assert.equal(stop, 'TypeError');
 });
+
+test('a sprite drawn at a device scale, clipped, is the copy the general path makes', async () => {
+  // a page at 2x draws a bitmap its own size through scale(2), under a
+  // rounded clip: a row copy, which is every pixel the resampling path
+  // makes of it, and the same each time the scene is drawn again
+  const out = (await inPage(
+    `var d = document.createElement('canvas'); d.width = 80; d.height = 40;
+     var y = d.getContext('2d');
+     for (var i = 0; i < 80; i += 1) {
+       y.fillStyle = 'rgba(' + (i * 3) + ', 200, 40, ' + (i % 5 === 0 ? 0.5 : 1) + ')';
+       y.fillRect(i, 0, 1, 40);
+     }
+     var draw = function (w) {
+       x.setTransform(1, 0, 0, 1, 0, 0);
+       x.clearRect(0, 0, 100, 50);
+       x.save();
+       x.scale(2, 2);
+       x.beginPath();
+       x.roundRect(2, 2, 36, 18, 8);
+       x.clip();
+       x.globalAlpha = 0.9;
+       x.drawImage(d, 0, 0, w, 20);
+       x.restore();
+       return Array.from(x.getImageData(0, 0, 100, 50).data);
+     };
+     var fast = draw(40);
+     var again = draw(40);
+     var general = draw(40 + 1e-9);
+     var worst = 0;
+     for (var k = 0; k < fast.length; k += 1) {
+       worst = Math.max(worst, Math.abs(fast[k] - general[k]));
+     }
+     return { same: fast.every(function (v, k) { return v === again[k]; }),
+              worst: worst, drawn: fast.some(function (v) { return v > 0; }) };`,
+  )) as { same: boolean; worst: number; drawn: boolean };
+  assert.equal(out.drawn, true);
+  assert.equal(out.same, true);
+  assert.ok(out.worst <= 1, `${out.worst} levels from the general path`);
+});

@@ -751,6 +751,11 @@ export function runSteps(
   }
 }
 
+/** The blurred casts of `castShadow`, newest last, by what they were cast
+ *  from. Read-only once made. */
+const CAST_KEPT = new Map<string, Float32Array>();
+const CAST_KEPT_BYTES = 32 << 20;
+
 /**
  * `drop-shadow()` over straight RGBA pixels in place (Filter Effects 1,
  * 13): what is there, over its alpha moved by the offset, blurred by the
@@ -771,19 +776,49 @@ export function castShadow(
   const dx = Math.round(shadow.x);
   const dy = Math.round(shadow.y);
   const n = width * height;
-  const cast = new Float32Array(n);
-  for (let y = Math.max(0, dy); y < Math.min(height, height + dy); y += 1) {
-    const from = (y - dy) * width;
-    const to = y * width;
-    for (let x = Math.max(0, dx); x < Math.min(width, width + dx); x += 1) {
-      cast[to + x] = (data[(from + x - dx) * 4 + 3] / 255) * sa;
-    }
+  // The blurred cast is a function of the alpha plane alone, and a group
+  // that repaints inside an opaque window (a canvas drawn on, a chart
+  // ticking) leaves its alpha as it was: kept by a hash of it, so the
+  // blur, nearly all of this, is done when the silhouette changes.
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9747b28c;
+  for (let i = 3; i < n * 4; i += 4) {
+    const a = data[i];
+    h1 = Math.imul(h1 ^ a, 0x01000193);
+    h2 = Math.imul(h2 + a, 0x85ebca6b) ^ (h2 >>> 13);
   }
-  if (shadow.blur > 0) blurPlanes([cast], width, height, shadow.blur);
+  const key = `${width}x${height}/${dx},${dy}/${shadow.blur}/${sa}/${h1}/${h2}`;
+  let cast = CAST_KEPT.get(key);
+  if (cast) {
+    CAST_KEPT.delete(key);
+  } else {
+    cast = new Float32Array(n);
+    for (let y = Math.max(0, dy); y < Math.min(height, height + dy); y += 1) {
+      const from = (y - dy) * width;
+      const to = y * width;
+      for (let x = Math.max(0, dx); x < Math.min(width, width + dx); x += 1) {
+        cast[to + x] = (data[(from + x - dx) * 4 + 3] / 255) * sa;
+      }
+    }
+    if (shadow.blur > 0) blurPlanes([cast], width, height, shadow.blur);
+  }
+  CAST_KEPT.set(key, cast);
+  let bytes = 0;
+  for (const kept of CAST_KEPT.values()) bytes += kept.byteLength;
+  while (CAST_KEPT.size > 1 && bytes > CAST_KEPT_BYTES) {
+    const [oldest, plane] = CAST_KEPT.entries().next().value as [
+      string,
+      Float32Array,
+    ];
+    CAST_KEPT.delete(oldest);
+    bytes -= plane.byteLength;
+  }
   const r = sr * 255;
   const g = sg * 255;
   const b = sb * 255;
   for (let p = 0, i = 0; p < n; p += 1, i += 4) {
+    // a pixel nothing shows through has nothing cast under it
+    if (data[i + 3] === 255) continue;
     const s = cast[p];
     if (!(s > 0)) continue;
     const a = data[i + 3] / 255;
