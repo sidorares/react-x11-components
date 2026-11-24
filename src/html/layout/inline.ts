@@ -40,6 +40,7 @@ import {
   copyStyle,
   holdsItems,
   INLINE_BEFORE_ABSOLUTE,
+  masked,
   scrolls,
 } from '../css/style.js';
 import { inkColor, isTransparent, parseColor, resolve } from '../css/values.js';
@@ -2167,9 +2168,14 @@ function linesOf(
       const outer = options.floatBoxes!.size(item.box);
       // and after a float that waits for the next line, since none goes
       // higher than one before it (9.5.1, rule 5)
+      // the white space the line ends on so far is removed at its end, and
+      // takes none of the room (CSS Text 3, 4.1.2): a float after `A ` fits
+      // beside the `A`. Not where white space is kept: `pre-wrap`'s and
+      // `break-spaces`' take room for a float, as Chrome has it
+      const held = keepsSpaces ? open.x : open.x - Math.max(0, open.hang);
       let fits =
         !deferred.length &&
-        (isEmpty(open) || open.x + pendingWidth + outer <= available);
+        (isEmpty(open) || held + pendingWidth + outer <= available);
       if (fits && !isEmpty(open) && !breaksAtEnd(open, style)) {
         const after = unbreakableAfter(
           lineItems,
@@ -6843,8 +6849,10 @@ export function inlineDecoration(
     box.borderTop + box.borderRight + box.borderBottom + box.borderLeft > 0 ||
     s.outlineStyle !== 'none' ||
     s.boxShadow !== null ||
-    // a clip-path is measured in its first fragment (`inlineClipPath`)
-    s.clipPath !== null;
+    // a clip-path is measured in its first fragment (`inlineClipPath`), and
+    // a mask is laid down in its fragments (`maskAreas`)
+    s.clipPath !== null ||
+    masked(s);
   return !decorated ? null : fonts ? faceExtent(fonts, s) : NO_EXTENT;
 }
 
