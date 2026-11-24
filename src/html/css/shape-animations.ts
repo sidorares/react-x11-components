@@ -425,6 +425,16 @@ const NUMERIC = new Set([
   'stroke-width',
   'stroke-dashoffset',
   'stroke-miterlimit',
+  // the geometry properties, in user units; a percentage goes by halves
+  'x',
+  'y',
+  'cx',
+  'cy',
+  'width',
+  'height',
+  'r',
+  'rx',
+  'ry',
 ]);
 
 /** A shape's property `q` of the way from `a` to `b`, as CSS interpolates
@@ -438,7 +448,15 @@ function mix(prop: string, a: string, b: string, q: number): string {
     if (Number.isFinite(x) && Number.isFinite(y)) {
       let v = x + (y - x) * q;
       if (prop.endsWith('opacity')) v = Math.min(1, Math.max(0, v));
-      else if (prop !== 'stroke-dashoffset') v = Math.max(0, v);
+      else if (
+        prop !== 'stroke-dashoffset' &&
+        prop !== 'x' &&
+        prop !== 'y' &&
+        prop !== 'cx' &&
+        prop !== 'cy'
+      ) {
+        v = Math.max(0, v);
+      }
       return String(v);
     }
   }

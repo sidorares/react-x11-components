@@ -156,6 +156,35 @@ const PROPS: Record<string, boolean> = {
   'clip-path': false,
   'stop-color': false,
   'stop-opacity': false,
+  // the geometry properties (SVG 2, 6.1), each of the elements
+  // `GEOMETRY_OF` says, which the drawing's copy writes as the attribute
+  // `SvgView` reads, a rule over the attribute that is its hint
+  x: false,
+  y: false,
+  width: false,
+  height: false,
+  cx: false,
+  cy: false,
+  r: false,
+  rx: false,
+  ry: false,
+  d: false,
+};
+
+/** The elements each geometry property applies to (SVG 2, 10 and 9.2–9.4;
+ *  a `<foreignObject>`'s is the attribute, since its HTML is laid out from
+ *  it). */
+export const GEOMETRY_OF: Readonly<Record<string, ReadonlySet<string>>> = {
+  x: new Set(['rect', 'image', 'svg', 'use']),
+  y: new Set(['rect', 'image', 'svg', 'use']),
+  width: new Set(['rect', 'image', 'svg', 'use']),
+  height: new Set(['rect', 'image', 'svg', 'use']),
+  cx: new Set(['circle', 'ellipse']),
+  cy: new Set(['circle', 'ellipse']),
+  r: new Set(['circle']),
+  rx: new Set(['rect', 'ellipse']),
+  ry: new Set(['rect', 'ellipse']),
+  d: new Set(['path']),
 };
 
 /** Whether a rule with this declaration is one to keep for drawings. */
@@ -174,6 +203,11 @@ export const ROOT_BOX_PROPS: ReadonlySet<string> = new Set([
   'visibility',
   'opacity',
   'clip-path',
+  // and where it is and how large, which its box is laid out by
+  'x',
+  'y',
+  'width',
+  'height',
   // and its font, which its text inherits (`SvgDrawing.draw`'s `font`)
   'font',
   'font-family',
@@ -202,6 +236,16 @@ const INITIAL: Record<string, string> = {
   'clip-path': 'none',
   'stop-color': '#000000',
   'stop-opacity': '1',
+  x: '0',
+  y: '0',
+  width: 'auto',
+  height: 'auto',
+  cx: '0',
+  cy: '0',
+  r: '0',
+  rx: 'auto',
+  ry: 'auto',
+  d: 'none',
   'font-size': 'medium',
   'font-style': 'normal',
   'font-weight': '400',
@@ -378,6 +422,37 @@ export function shapeValue(
     }
     case 'stroke-linejoin':
       return LINE_JOINS[value.toLowerCase()] ?? null;
+    case 'x':
+    case 'y':
+    case 'cx':
+    case 'cy':
+    case 'width':
+    case 'height':
+    case 'r':
+    case 'rx':
+    case 'ry': {
+      // a length in user units, or a percentage, of the viewport, which only
+      // the drawing has; `auto` where the property takes it
+      const v = value.toLowerCase();
+      if (v === 'auto') return INITIAL[prop] === 'auto' ? v : null;
+      // a number is user units, as an attribute's is, which an animation
+      // under it reads through here
+      const px = NUMBER.test(value)
+        ? Number(value)
+        : lengthIn(value, ctx.units);
+      if (px !== null) {
+        const sized =
+          prop !== 'x' && prop !== 'y' && prop !== 'cx' && prop !== 'cy';
+        return sized && px < 0 ? null : String(px);
+      }
+      return /%|^calc\(/i.test(v) && !/^[+-]?\d*\.?\d+$/.test(v) ? value : null;
+    }
+    case 'd': {
+      // `none`, or a `path()` string, the attribute's data
+      if (value.toLowerCase() === 'none') return 'none';
+      const path = /^path\(\s*(["'])([^]*)\1\s*\)$/i.exec(value);
+      return path ? `path(${path[1]}${path[2]}${path[1]})` : null;
+    }
     case 'fill-rule':
     case 'clip-rule': {
       const v = value.toLowerCase();

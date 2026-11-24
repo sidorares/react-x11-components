@@ -6786,7 +6786,13 @@ than CSS is worked out in the drawing's copy** (`geometryLength`,
 `px` — it read `x2="2.5em"` as 2.5 and a `rem` as 16 — in user units,
 which are CSS pixels unzoomed, since a zoom is the scale the drawing is
 drawn at; a rule's lengths are read at the drawing's zoom and come to the
-same (`DrawingUnits`). An SVG _image_ is the same
+same (`DrawingUnits`). **The geometry properties are written as the
+attributes they stand for** (`placeBy`): `x`, `width`, `cx`, `r`, `d` and
+their kin, each only on the elements `GEOMETRY_OF` names, over the
+attribute, which is their presentation hint. A percentage among them is
+left for the copy's lengths, so a drawing a rule gives one is copied
+with its viewport (`placesByPercent`). A `<foreignObject>`'s place is
+its attribute's, since its HTML is laid out from that. An SVG _image_ is the same
 cascade over a document of its own: `SvgDrawing.drawImage` builds a
 `Cascade` over the image's `<style>` sheets alone, one per colour scheme,
 tells it the image's `<svg>` is `:root` (the cascade's own `:root` is
