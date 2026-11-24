@@ -1534,6 +1534,25 @@ metric(
 );
 
 metric(
+  "an <svg>'s clip-path attribute cuts it, as its property does",
+  async () => {
+    // SVG 2, 6.6: `clip-path` is a presentation attribute, and `SvgView`
+    // clips no drawing's root, which is the box's to cut (WPT
+    // clip-path-on-svg-001, 002 and 004): the attribute drew the whole square
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}svg{display:block}</style>' +
+        '<svg width="40" height="40" clip-path="url(#c)">' +
+        '<clipPath id="c"><rect x="10" y="10" width="20" height="20"/></clipPath>' +
+        '<rect width="40" height="40" fill="#00ff00"/></svg>',
+      {},
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 20, 20, '#00ff00', { message: 'inside the clip' });
+    await expectPixel(ctx, 5, 5, '#ffffff', { message: 'cut outside it' });
+  },
+);
+
+metric(
   "an SVG's currentcolor and none are paint keywords in any case",
   async () => {
     // CSS Values 4, 2.5: Apple's tab strips draw their arrows with
