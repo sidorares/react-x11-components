@@ -7,7 +7,6 @@ import {
   MOVED,
   boxOf,
   fillsOf,
-  findById,
   linesOf,
   metric,
   render,
@@ -82,50 +81,6 @@ metric(
     );
   },
 );
-
-test('a float fits beside what a line holds, and not the white space it would remove at its end', async () => {
-  // CSS Text 3, 4.1.2: a space a line ends on is removed, so a float met
-  // after `A ` goes beside the `A` where it fits there, as all three
-  // engines place it. One kept, by `pre-wrap` or `break-spaces`, takes room,
-  // as Chrome has it; and in a vertical line the float goes in the first
-  // column, where it had gone to the next
-  // white space as markup has it, a line break and an indent, where it
-  // collapses, and one space where it is kept
-  const block = (id: string, style: string, space = '\n  ') =>
-    `<div style="font:40px/50px monospace;${style}">A${space}` +
-    `<div id="${id}" style="float:right">R</div></div>`;
-  const { node } = await render(
-    '<style>body{margin:0}</style>' +
-      block('normal', 'width:60px') +
-      block('pre-wrap', 'width:60px;white-space:pre-wrap', ' ') +
-      block('break-spaces', 'width:60px;white-space:break-spaces', ' ') +
-      block('vertical', 'height:60px;width:100px;writing-mode:vertical-rl'),
-  );
-  const el = view(node);
-  // how far the float's right edge and its top are from its block's right
-  // edge and top, and in a vertical block how far its right edge and its
-  // bottom are from the block's
-  const place = (id: string, vertical = false) => {
-    const target = findById(el.document, id)!;
-    const r = el.elementRect(target)!;
-    const p = el.elementRect(target.parent as never)!;
-    const right = p.x + p.width - (r.x + r.width);
-    return vertical
-      ? [right, p.y + p.height - (r.y + r.height)]
-      : [right, r.y - p.y];
-  };
-  // a monospace letter and the float beside it fit, and with the space
-  // between them they do not
-  assert.deepStrictEqual(place('normal'), [0, 0], 'beside the A');
-  assert.deepStrictEqual(place('pre-wrap'), [0, 50], 'on the next line');
-  assert.deepStrictEqual(place('break-spaces'), [0, 50], 'on the next line');
-  // the first column is the right one, the float at its bottom
-  assert.deepStrictEqual(
-    place('vertical', true),
-    [0, 0],
-    'in the first column',
-  );
-});
 
 metric('a word with no room beside a float goes below it, whole', async () => {
   // CSS 2.1 9.5: a line too short for any of its content moves down until

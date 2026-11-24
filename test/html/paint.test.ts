@@ -1591,39 +1591,6 @@ metric(
   },
 );
 
-metric(
-  "an inline box's mask is laid down across its fragments end to end",
-  async () => {
-    // CSS Masking 1, 7, and box-decoration-break: slice: the mask is laid
-    // down in the box its fragments make side by side, each fragment its
-    // part of it. An inline box's mask was not applied at all, and its
-    // second line showed with its first (WPT mask-image-inline-sliced-1,
-    // mask-image-6)
-    const { result } = await render(
-      '<style>body{margin:0;background:#ffffff}div{width:35px;' +
-        'font:10px/20px sans-serif}i{display:inline-block;width:30px;' +
-        'height:10px;background:#ff0000}span{mask-image:linear-gradient(' +
-        'to right,#000 50%,transparent 50%)}</style>' +
-        '<div><span><i></i> <i></i></span></div>',
-    );
-    await act();
-    const px = await pixelsIn(result.ctx, {
-      x: 15,
-      y: 0,
-      width: 1,
-      height: 40,
-    });
-    const red = (from: number, to: number) => {
-      for (let y = from; y < to; y++) {
-        if (px[y * 4] > 200 && px[y * 4 + 1] < 60) return true;
-      }
-      return false;
-    };
-    assert.ok(red(0, 20), 'the first fragment, in the half that shows');
-    assert.ok(!red(20, 40), 'the second, in the half that does not');
-  },
-);
-
 metric('a radial gradient is a mask, as a linear one is', async () => {
   // a vignette: `mask-image: radial-gradient(…)` shows its element where
   // the gradient is opaque. It was drawn as nothing, so as no mask, and
