@@ -5432,7 +5432,93 @@ function ownBaseline(box: Box): number | null {
         box.kind === 'flex'
         ? firstBaselineIn(box)
         : lastBaselineIn(box);
-  return baseline === null ? null : box.marginTop + (baseline - box.y);
+  if (baseline === null) return null;
+  return box.marginTop + (putBack(box, baseline) - box.y);
+}
+
+/**
+ * Where an atomic's baseline will be once a `vertical-lr` flow is put back
+ * across (`reflectFrame`), which moves the lines and blocks in it and
+ * leaves the line it stands on where it was: laid out as `vertical-rl` is,
+ * a block's last line and a table's first row are at its other side then,
+ * and the line beside it was lined up with its other line. The line the
+ * baseline is on is followed down to through what holds it, each block,
+ * flex box and grid put back across its content box and each table's cells
+ * across the table's;
+ * the baseline as read where it is on no line found so.
+ */
+function putBack(box: Box, baseline: number): number {
+  if (!framed.any) return baseline;
+  const path = baselinePath(box, baseline, 0);
+  if (!path) return baseline;
+  // how far what is being put back has been moved so far
+  let moved = 0;
+  for (let i = 0; i < path.length - 1; i += 1) {
+    const holder = path[i] as Box;
+    const next = path[i + 1];
+    let top: number;
+    let bottom: number;
+    if (holder.kind === 'table') {
+      // its cells across its content box, past the caption (`reflectTable`)
+      top = holder.y + holder.captionBottom + holder.borderTop + holder.padTop;
+      bottom =
+        holder.y +
+        holder.height -
+        holder.captionBottom -
+        holder.borderBottom -
+        holder.padBottom;
+    } else {
+      top = holder.contentY;
+      bottom = top + holder.contentHeight;
+    }
+    const y = 'kind' in next ? (next as Box).y : (next as LineBox).y;
+    const h = 'kind' in next ? (next as Box).height : (next as LineBox).height;
+    const at = top + bottom + moved - y - h;
+    if (!('kind' in next)) return at + (next as LineBox).baseline;
+    moved = at - y;
+  }
+  return baseline;
+}
+
+/** The boxes from an atomic down to the line its baseline is on, each one
+ *  put back across what holds it, and the line; null where it is on none,
+ *  or something on the way is not put back as a block is. */
+function baselinePath(
+  box: Box,
+  baseline: number,
+  depth: number,
+): (Box | LineBox)[] | null {
+  const mode = box.style.writingMode;
+  // `sideways-lr` is a frame turned the other way, and nothing is put back
+  if (depth > 32 || mode !== 'vertical-lr') return null;
+  if (box.kind === 'table') {
+    for (const group of box.children) {
+      for (const row of group.children) {
+        for (const cell of row.children) {
+          if (cell.kind !== 'table-cell') continue;
+          const rest = baselinePath(cell, baseline, depth + 1);
+          if (rest) return [box, ...rest];
+        }
+      }
+    }
+    return null;
+  }
+  // a flex box's items and a grid's are put back across its content box
+  // as a block's children are
+  if (box.kind !== 'block' && box.kind !== 'table-cell' && box.kind !== 'flex')
+    return null;
+  if (box.lines?.length) {
+    for (const line of box.lines) {
+      if (line.y + line.baseline === baseline) return [box, line];
+    }
+    return null;
+  }
+  for (const child of box.children) {
+    if (child.outOfFlow || child.isFloat) continue;
+    const rest = baselinePath(child, baseline, depth + 1);
+    if (rest) return [box, ...rest];
+  }
+  return null;
 }
 
 /** Whether a box is a `<button>` element's, or an input button's the page

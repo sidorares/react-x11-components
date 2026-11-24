@@ -464,6 +464,43 @@ test('a horizontal block in a vertical flow is a frame of its own, which turns b
   assert.strictEqual(short.height, 10, 'one line, across the page');
 });
 
+test("an inline-block's and an inline-table's baseline in a vertical-lr line are where the flow is put back to", async () => {
+  // A `vertical-lr` flow is laid out as `vertical-rl` and put back across
+  // (`reflectFrame`), the line moved whole and the lines inside an atomic
+  // on it put back across the atomic: the line was lined up with the
+  // atomic's other line, its first where its last was meant and its last
+  // where its first was (WPT css-writing-modes/inline-block-alignment-003,
+  // 005, 007 and inline-table-alignment-003, 005)
+  const { node } = await render(
+    '<style>body{margin:0}div{writing-mode:vertical-lr;font:20px/1 sans-serif}' +
+      '.b{display:block}</style>' +
+      '<div>A<span style="display:inline-block;font-size:40px">' +
+      '<span class="b" id="bf">F</span><span class="b" id="bl">L</span></span>' +
+      '<span id="bo">O</span></div>' +
+      '<div>A<span style="display:inline-table;font-size:40px">' +
+      '<span style="display:table-row" id="tf">F</span>' +
+      '<span style="display:table-row" id="tl">L</span></span>' +
+      '<span id="to">O</span></div>',
+  );
+  const el = view(node);
+  const middle = (id: string) => {
+    const r = rectOf(el, id);
+    return r.x + r.width / 2;
+  };
+  // the inline-block's last line, which is at its right
+  assert.ok(middle('bf') < middle('bl'), 'its lines left to right');
+  assert.ok(
+    Math.abs(middle('bo') - middle('bl')) < 1,
+    `on its last line: ${middle('bo')} by ${middle('bl')}`,
+  );
+  // the inline-table's first row, which is at its left
+  assert.ok(middle('tf') < middle('tl'), 'its rows left to right');
+  assert.ok(
+    Math.abs(middle('to') - middle('tf')) < 1,
+    `on its first row: ${middle('to')} by ${middle('tf')}`,
+  );
+});
+
 test('a horizontal block in a vertical-lr flow is a frame of its own too, and holds its lines', async () => {
   // the flow is put back across after it is laid out (`reflectFrame`),
   // which moves the horizontal block whole and nothing in its own frame
