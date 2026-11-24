@@ -91,6 +91,7 @@ import type {
   ResourceRequest,
 } from '../../src/html/index.js';
 import './wpt-hosts.js';
+import { fuzzyOf } from './fuzzy.js';
 
 const h = React.createElement;
 
@@ -1230,36 +1231,6 @@ function referencesOf(
     }
   }
   return out;
-}
-
-/** `<meta name=fuzzy content="maxDifference=a-b;totalPixels=c-d">`, the
- *  upper bounds of both. */
-function fuzzyOf(source: string): {
-  maxDifference: number;
-  totalPixels: number;
-} {
-  let allowed = { maxDifference: 0, totalPixels: 0 };
-  // the name's quotes are optional, as an attribute's are
-  for (const tag of source.match(
-    /<(?:[\w.-]+:)?meta\b[^>]*name\s*=\s*(?:"fuzzy"|'fuzzy'|fuzzy(?=[\s/>]))[^>]*>/gi,
-  ) ?? []) {
-    let spec = /\bcontent\s*=\s*["']([^"']*)["']/i.exec(tag)?.[1];
-    if (!spec) continue;
-    const named = /^([^:;=]+):(.*)$/.exec(spec);
-    if (named && !/=/.test(named[1])) spec = named[2];
-    const parts = spec.split(';').map((p) => p.trim());
-    const upper = (s: string | undefined) => {
-      const m = /(\d+)\s*(?:-\s*(\d+))?\s*$/.exec(s ?? '');
-      return m ? Number(m[2] ?? m[1]) : 0;
-    };
-    const byName = (name: string, index: number) =>
-      parts.find((p) => p.startsWith(name + '=')) ?? parts[index];
-    allowed = {
-      maxDifference: upper(byName('maxDifference', 0)?.replace(/^.*=/, '')),
-      totalPixels: upper(byName('totalPixels', 1)?.replace(/^.*=/, '')),
-    };
-  }
-  return allowed;
 }
 
 function readViewport(): Promise<Uint8ClampedArray> {
