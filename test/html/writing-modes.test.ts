@@ -1389,6 +1389,30 @@ metric(
   },
 );
 
+test("a clip-path in a vertical flow is the page's shape, turned with the frame", async () => {
+  // a box 100px across and 40px down the page, clipped to its left half:
+  // the shape is the page's, measured in the box as the page has it, and
+  // the frame it is laid out in is turned a quarter (WPT's
+  // css-shapes/shape-outside-polygon-024)
+  for (const mode of ['vertical-rl', 'sideways-lr', 'vertical-lr']) {
+    const { result, node } = await render(
+      `<style>body{margin:0}.v{writing-mode:${mode}}` +
+        '.c{inline-size:40px;block-size:100px;background:#00ff00;' +
+        'clip-path:polygon(0 0, 50% 0, 50% 100%, 0 100%)}</style>' +
+        '<div class="v"><div class="c"></div></div>',
+    );
+    await act();
+    const { abs } = view(node) as unknown as DrawnNode;
+    const green = async (x: number, y: number) =>
+      (await pixelAt(result.ctx, abs.x + x, abs.y + y))[1] === 255 &&
+      (await pixelAt(result.ctx, abs.x + x, abs.y + y))[0] === 0;
+    for (const y of [5, 35]) {
+      assert.ok(await green(10, y), `${mode}: the left half, at 10, ${y}`);
+      assert.ok(!(await green(90, y)), `${mode}: not the right, at 90, ${y}`);
+    }
+  }
+});
+
 test('a frame turned up stands where its root ends, to the fraction', async () => {
   // a frame turned up — `sideways-lr`, or a horizontal block turned back in
   // a vertical flow — was placed on a whole pixel down the page, which set

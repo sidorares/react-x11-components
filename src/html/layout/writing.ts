@@ -320,6 +320,11 @@ const ANTICLOCKWISE_SIDES: readonly Side[] = ['Left', 'Top', 'Right', 'Bottom'];
 const REFLECTED_MARGINS: readonly Side[] = ['Left', 'Bottom', 'Right', 'Top'];
 const FRAME_SIDES: readonly Side[] = ['Top', 'Right', 'Bottom', 'Left'];
 
+/** The style each turned one was made from (`framedStyle`): what a float's
+ *  `shape-outside` is laid down from, on the page, before it is turned into
+ *  the frame (`float-shape.ts`). */
+export const UNFRAMED = new WeakMap<ComputedStyle, ComputedStyle>();
+
 /**
  * A style as the frame of a writing mode lays it out: its physical sides
  * each handed to the side of the frame that is drawn there, its widths to
@@ -332,6 +337,7 @@ export function framedStyle(
   mode: WritingMode,
 ): ComputedStyle {
   const out = copyStyle(style);
+  UNFRAMED.set(out, style);
   // what was inline-level before it was made absolute still is: its
   // static position is on its line (`staticPositions`), which a mark kept
   // by the style it was made with says
