@@ -78,6 +78,7 @@ import type {
   ImageRepeat,
   LinearGradient,
   MaskComposite,
+  MaskMode,
   RadialGradient,
   ConicGradient,
   RepeatMode,
@@ -216,6 +217,7 @@ import { tableGrid } from './layout/grid.js';
 import type { Cell } from './layout/grid.js';
 import {
   SvgDrawing,
+  maskDrawing,
   atDensity,
   concreteSize,
   inlineDrawing,
@@ -4750,6 +4752,60 @@ function underPath(options: PaintOptions): PaintOptions {
 
 const MASK_LAYERS = new WeakMap<ComputedStyle, ComputedStyle[]>();
 
+/** Each mask layer's `mask-mode`. */
+const LAYER_MODES = new WeakMap<ComputedStyle, MaskMode>();
+
+/** The drawings made of a `<mask>` for the boxes it masks, by size and
+ *  mode, as of a tree generation (`maskDrawing`). */
+const MASK_DRAWINGS = new WeakMap<
+  Element,
+  { generation: number; drawings: Map<string, SvgDrawing> }
+>();
+
+/**
+ * The options a mask layer is painted with: one whose image is a
+ * `url(#id)` is the `<mask>` it names in the document, drawn over the box
+ * (CSS Masking 1, 7.1), and a transparent layer where it names none, as
+ * an image that cannot be had is (7.2).
+ */
+function maskLayerOptions(
+  box: Box,
+  layer: ComputedStyle,
+  options: PaintOptions,
+): PaintOptions {
+  const url = urlOf(layer.backgroundImage);
+  if (url === null || url[0] !== '#') return options;
+  const images = options.backgroundImageFor;
+  return {
+    ...options,
+    backgroundImageFor: (asked, at) => {
+      if (asked !== url) return images?.(asked, at) ?? null;
+      const mask = documentIds(box)?.get(decodeURIComponent(url.slice(1)));
+      if (!mask || mask.name.toLowerCase() !== 'mask') return null;
+      // in the box's CSS pixels, its border box's
+      const unit = (options.scale ?? 1) * box.style.effectiveZoom;
+      const width = box.width / unit;
+      const height = frameHeight(box) / unit;
+      if (!(width > 0 && height > 0)) return null;
+      const mode = LAYER_MODES.get(layer);
+      const type = mode === 'alpha' || mode === 'luminance' ? mode : null;
+      const generation = treeGeneration();
+      let kept = MASK_DRAWINGS.get(mask);
+      if (!kept || kept.generation !== generation) {
+        kept = { generation, drawings: new Map() };
+        MASK_DRAWINGS.set(mask, kept);
+      }
+      const key = `${width} ${height} ${type}`;
+      let image = kept.drawings.get(key);
+      if (!image) {
+        image = maskDrawing(mask, documentIds(box)!, width, height, type);
+        kept.drawings.set(key, image);
+      }
+      return { image, width, height, ratio: width / height };
+    },
+  };
+}
+
 /** No corners: a mask layer is placed in the box's rectangle, which its
  *  radii do not round (CSS Masking 1, 7). */
 const SQUARE_RADII: ComputedStyle['borderRadius'] = [0, 0, 0, 0];
@@ -4773,6 +4829,7 @@ function maskLayersOf(style: ComputedStyle): ComputedStyle[] {
     layer.backgroundImages = null;
     layer.backgroundImage = urlImageOf(image);
     layer.backgroundGradient = gradientOf(image);
+    LAYER_MODES.set(layer, nth(mask.modes, i));
     layer.backgroundRepeat = nth(mask.repeats, i);
     layer.backgroundSize = nth(mask.sizes, i);
     layer.backgroundAttachment = 'scroll';
@@ -4984,7 +5041,8 @@ function paintMasked(
   const drawable = layers.some((layer) => {
     if (layer.backgroundGradient) return true;
     const url = urlOf(layer.backgroundImage);
-    return url !== null && !!options.backgroundImageFor?.(url, painting);
+    const images = maskLayerOptions(box, layer, options).backgroundImageFor;
+    return url !== null && !!images?.(url, painting);
   });
   if (!drawable) return true;
   if (!options.surface || !ctx.drawImage) return false;
@@ -5014,14 +5072,16 @@ function paintMasked(
       const op = composites[i % composites.length];
       // the bottom layer has nothing below it to composite with (7.8)
       if (op === 'add' || i === layers.length - 1) {
-        paintLayer(mctx, box, on, layers[i], frameImages(mctx, box, on));
+        const lon = maskLayerOptions(box, layers[i], on);
+        paintLayer(mctx, box, lon, layers[i], frameImages(mctx, box, lon));
         continue;
       }
       const one = options.surface(w, h);
       if (!one) return false;
       try {
         const octx = one.getContext('2d') as PaintContext;
-        paintLayer(octx, box, on, layers[i], frameImages(octx, box, on));
+        const lon = maskLayerOptions(box, layers[i], on);
+        paintLayer(octx, box, lon, layers[i], frameImages(octx, box, lon));
         compositeMask(mctx, one, op);
       } finally {
         one.destroy?.();
@@ -8792,20 +8852,9 @@ const CLIP_IDS = new WeakMap<
   { generation: number; ids: Map<string, Element> }
 >();
 
-/**
- * What a `<clipPath>` a `url(#id)` names clips to, laid down for a box `w`
- * by `h` (CSS Masking 1, 6): the union of its shapes — a path, a rectangle,
- * a circle, an ellipse, a polygon — in CSS pixels from the box's corner, or
- * in fractions of it under `clipPathUnits="objectBoundingBox"`, each filled
- * by its own `clip-rule`, the first one's taken for all. Null for an id
- * that names no `<clipPath>`.
- */
-function clipSourceOf(
-  box: Box,
-  url: { id: string; scale: number },
-  w: number,
-  h: number,
-): { polys: number[][]; rule: FillRule } | null {
+/** The elements of the document a box is in, by id, as of a tree
+ *  generation; null for a box of no element. */
+function documentIds(box: Box): Map<string, Element> | null {
   let node: { parent?: unknown } | null =
     box.el ?? GENERATED_FROM.get(box) ?? null;
   if (!node) return null;
@@ -8827,7 +8876,26 @@ function clipSourceOf(
     kept = { generation, ids };
     CLIP_IDS.set(node, kept);
   }
-  const source = kept.ids.get(url.id);
+  return kept.ids;
+}
+
+/**
+ * What a `<clipPath>` a `url(#id)` names clips to, laid down for a box `w`
+ * by `h` (CSS Masking 1, 6): the union of its shapes — a path, a rectangle,
+ * a circle, an ellipse, a polygon — in CSS pixels from the box's corner, or
+ * in fractions of it under `clipPathUnits="objectBoundingBox"`, each filled
+ * by its own `clip-rule`, the first one's taken for all. Null for an id
+ * that names no `<clipPath>`.
+ */
+function clipSourceOf(
+  box: Box,
+  url: { id: string; scale: number },
+  w: number,
+  h: number,
+): { polys: number[][]; rule: FillRule } | null {
+  const ids = documentIds(box);
+  if (!ids) return null;
+  const source = ids.get(url.id);
   if (!source || source.name.toLowerCase() !== 'clippath') return null;
   const units = source.attribs.clippathunits ?? source.attribs.clipPathUnits;
   const bounding = units === 'objectBoundingBox';

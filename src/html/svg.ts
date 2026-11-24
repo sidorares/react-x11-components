@@ -13,7 +13,7 @@
 // intrinsic sizing), and its viewport — the `viewBox` scaled into the box
 // as `preserveAspectRatio` says, and clipped to it.
 import { parseDocument } from 'htmlparser2';
-import { Element, Text } from 'domhandler';
+import { Element, Text, cloneNode } from 'domhandler';
 import type { AnyNode, ChildNode, ParentNode } from 'domhandler';
 import * as ntk from 'react-x11/ntk';
 import {
@@ -2514,6 +2514,88 @@ function restyle(attribs: Record<string, string>, own: ShapeStyle): void {
   style = style && added ? `${style};${added}` : style || added;
   if (style) attribs.style = style;
   else delete attribs.style;
+}
+
+/** The id a `<mask>`'s copy goes by in `maskDrawing`'s drawing: one the
+ *  elements it names are unlikely to have, since a space, as a copy's has
+ *  (`CLIP_COPY`), would end the `url()` that names it. */
+const MASK_COPY = '-rx-mask';
+
+/**
+ * A `<mask>` in the document as a mask layer's image (CSS Masking 1, 7.1):
+ * a drawing `width` by `height` CSS pixels, the box it masks, of a white
+ * rectangle over it drawn through a copy of the mask, which `SvgView`
+ * composites as it does any `<mask>` — by its `mask-type`, or by `type`
+ * where the layer's `mask-mode` says one — so the drawing's alpha is the
+ * mask's. The box is the rectangle's, which is what the mask's
+ * `objectBoundingBox` units are of, and its user space starts at the box's
+ * corner. What the mask's content names by an id outside it — a gradient,
+ * a `<clipPath>`, a `<use>`'s element — is copied in with it.
+ */
+export function maskDrawing(
+  mask: Element,
+  ids: ReadonlyMap<string, Element>,
+  width: number,
+  height: number,
+  type: 'alpha' | 'luminance' | null,
+): SvgDrawing {
+  const attribs: Record<string, string> = { ...mask.attribs, id: MASK_COPY };
+  if (type) {
+    attribs['mask-type'] = type;
+    if (attribs.style) attribs.style += `;mask-type:${type}`;
+  }
+  const copy = new Element('mask', attribs);
+  adopt(
+    copy,
+    mask.children.map((child) => cloneNode(child, true)),
+  );
+  // what it names outside itself, and what that names in turn
+  const brought: Element[] = [];
+  const seen = new Set<Element>([mask]);
+  const named = (el: Element): void => {
+    const each = (id: string): void => {
+      const to = ids.get(id);
+      if (!to || seen.has(to)) return;
+      seen.add(to);
+      brought.push(to);
+      named(to);
+    };
+    urlIds(el.name, el.attribs, each);
+    const href = el.attribs.href ?? el.attribs['xlink:href'];
+    if (href && href[0] === '#') each(href.slice(1));
+    for (const child of el.children) {
+      if ((child as Element).attribs) named(child as Element);
+    }
+  };
+  named(mask);
+  const defs = new Element('defs', {});
+  adopt(
+    defs,
+    brought.map((el) => cloneNode(el, true)),
+  );
+  const ground = new Element('rect', {
+    width: String(width),
+    height: String(height),
+    fill: 'white',
+    mask: `url(#${MASK_COPY})`,
+  });
+  const root = new Element('svg', {
+    xmlns: 'http://www.w3.org/2000/svg',
+    width: String(width),
+    height: String(height),
+  });
+  adopt(root, [defs, copy, ground]);
+  return new SvgDrawing(root, svgIntrinsics(root), true, null);
+}
+
+/** `children` made `parent`'s, in order. */
+function adopt(parent: Element, children: ChildNode[]): void {
+  parent.children = children;
+  children.forEach((child, i) => {
+    child.parent = parent;
+    child.prev = children[i - 1] ?? null;
+    child.next = children[i + 1] ?? null;
+  });
 }
 
 /**
