@@ -204,6 +204,7 @@ import type {
   Marker,
   SelectionStyler,
   ShapeStyler,
+  MaskTyper,
 } from './layout/boxes.js';
 import type { SelectionStyle } from './css/cascade.js';
 import type { DrawingUnits } from './css/shapes.js';
@@ -627,6 +628,8 @@ export interface PaintOptions {
   /** @internal What the rules give the shapes in each drawing, where one
    *  could reach any (`BoxTree.shapeStyler`). */
   shapeStyler?: ShapeStyler | null;
+  /** A `<mask>`'s `mask-type` as the rules give it (`BoxTree.maskType`). */
+  maskType?: MaskTyper | null;
   /** @internal What a `rem` and a `vw` in a drawing's geometry are of
    *  (`BoxTree.drawingUnits`). */
   drawingUnits?: (() => DrawingUnits) | null;
@@ -1619,6 +1622,7 @@ export function paintDocument(
     fixed: FIXED_BOXES.get(tree) ?? null,
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
+    maskType: tree.maskType,
     drawingUnits: tree.drawingUnits,
     foreign: tree.foreign ?? null,
     backdrop,
@@ -1675,6 +1679,7 @@ export function paintCapture(
     fixed: FIXED_BOXES.get(tree) ?? null,
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
+    maskType: tree.maskType,
     drawingUnits: tree.drawingUnits,
     foreign: tree.foreign ?? null,
     backdrop,
@@ -3352,6 +3357,7 @@ export function paintLiftedBox(
     fixed: FIXED_BOXES.get(tree) ?? null,
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
+    maskType: tree.maskType,
     drawingUnits: tree.drawingUnits,
     foreign: tree.foreign ?? null,
   });
@@ -3387,6 +3393,7 @@ export function paintCover(
     fixed: FIXED_BOXES.get(tree) ?? null,
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
+    maskType: tree.maskType,
     drawingUnits: tree.drawingUnits,
     foreign: tree.foreign ?? null,
   };
@@ -4897,7 +4904,12 @@ function maskLayerOptions(
       const height = frameHeight(box) / unit;
       if (!(width > 0 && height > 0)) return null;
       const mode = LAYER_MODES.get(layer);
-      const type = mode === 'alpha' || mode === 'luminance' ? mode : null;
+      // a layer's `mask-mode` of its own, else the mask's `mask-type`, which
+      // a rule may set as well as the attribute (CSS Masking 1, 7.3.1)
+      const type =
+        mode === 'alpha' || mode === 'luminance'
+          ? mode
+          : (options.maskType?.(mask) ?? null);
       const generation = treeGeneration();
       let kept = MASK_DRAWINGS.get(mask);
       if (!kept || kept.generation !== generation) {
