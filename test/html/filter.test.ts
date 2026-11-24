@@ -645,7 +645,7 @@ test("a context that runs a filter itself draws a shadow a step at a time: what 
   const kept = store.at({}, '', {}, 30, 20, 'k');
   assert.ok(store.group(kept));
   const steps = colourFilter([
-    { fn: 'drop-shadow', x: 2, y: 3, blur: 4, color: '#ff0000' },
+    { fn: 'drop-shadow', x: 2, y: 3, blur: 2, color: '#ff0000' },
     { fn: 'invert', amount: 1 },
   ])!.steps!;
   const out = store.through(kept, 'key', steps);
@@ -653,12 +653,99 @@ test("a context that runs a filter itself draws a shadow a step at a time: what 
   assert.deepStrictEqual(drawn, [
     'draw surface 1 on surface 3 at 0,0 through none',
     'fill surface 3 #ff0000 source-in',
-    'draw surface 3 on surface 2 at 2,3 through blur(4px)',
+    'draw surface 3 on surface 2 at 2,3 through blur(2px)',
     'draw surface 1 on surface 2 at 0,0 through none',
     'draw surface 2 on surface 4 at 0,0 through invert(1)',
   ]);
   assert.strictEqual(store.through(kept, 'key', steps), out, 'kept');
   assert.strictEqual(store.unfiltered, false);
+});
+
+test('a wide shadow is made on a smaller copy and drawn up, and what it was made on is drawn on again by the next frame', () => {
+  const drawn: string[] = [];
+  let made = 0;
+  const surface = () => {
+    const name = `surface ${++made}`;
+    let filter = 'none';
+    const ctx: Record<string, unknown> = {
+      globalCompositeOperation: 'source-over',
+      fillStyle: '#000000',
+      save() {},
+      restore() {},
+      clearRect: () => {},
+      fillRect: () =>
+        drawn.push(
+          `fill ${name} ${ctx.fillStyle} ${ctx.globalCompositeOperation}`,
+        ),
+      drawImage: (
+        image: { name: string },
+        x: number,
+        y: number,
+        w?: number,
+        h?: number,
+      ) =>
+        drawn.push(
+          `draw ${image.name} on ${name} at ${x},${y}${w ? ` ${w}x${h}` : ''} through ${filter}`,
+        ),
+    };
+    Object.defineProperty(ctx, 'filter', {
+      get: () => filter,
+      set: (v: string) => {
+        filter = v;
+      },
+    });
+    return { name, getContext: () => ctx, destroy() {} };
+  };
+  const store = new FilterStore(null, () => {}, undefined, surface);
+  const owner = {};
+  const kept = store.at(owner, '', {}, 30, 20, 'k');
+  assert.ok(store.group(kept));
+  const steps = colourFilter([
+    { fn: 'drop-shadow', x: 2, y: 3, blur: 8, color: '#ff0000' },
+  ])!.steps!;
+  assert.ok(store.through(kept, 'one', steps));
+  assert.deepStrictEqual(drawn, [
+    'draw surface 1 on surface 2 at 0,0 15x10 through none',
+    'fill surface 2 #ff0000 source-in',
+    'draw surface 2 on surface 3 at 0,0 through blur(4px)',
+    'draw surface 3 on surface 5 at 2,3 30x20 through none',
+    'draw surface 5 on surface 4 at 0,0 through none',
+    'draw surface 1 on surface 4 at 0,0 through none',
+  ]);
+  // only colours moved since: the shadows are what they were, and nothing
+  // is cast again
+  drawn.length = 0;
+  store.stale(owner, '', true);
+  kept.fresh = false;
+  assert.ok(store.group(kept));
+  assert.ok(store.through(kept, 'colours', steps));
+  assert.deepStrictEqual(
+    drawn.filter((d) => /source-in|blur/.test(d)),
+    [],
+    'no cast, no blur',
+  );
+  // two shadows: the second is cast from the group over the first, each
+  // made small, and the box drawn once over both
+  const two = new FilterStore(null, () => {}, undefined, surface);
+  const kept2 = two.at({}, '', {}, 30, 20, 'k');
+  assert.ok(two.group(kept2));
+  drawn.length = 0;
+  const pair = colourFilter([
+    { fn: 'drop-shadow', x: 0, y: 10, blur: 8, color: '#000000' },
+    { fn: 'drop-shadow', x: 0, y: 1, blur: 3, color: '#000000' },
+  ])!.steps!;
+  assert.ok(two.through(kept2, 'pair', pair));
+  assert.strictEqual(
+    drawn.filter((d) => / on surface \d+ at \d+,\d+ 30x20/.test(d)).length,
+    2,
+    'each shadow drawn up once',
+  );
+  assert.ok(drawn[drawn.length - 1].startsWith('draw surface'), 'the box last');
+  // the next frame draws on what the last one did, and makes nothing
+  drawn.length = 0;
+  const before = made;
+  assert.ok(store.through(kept, 'two', steps));
+  assert.ok(made <= before + 1, 'at most one more, for the one in use');
 });
 
 test('blur() draws the box past where it is by three deviations, its ink reaching as far, at any scale', async (t) => {
@@ -1309,4 +1396,38 @@ test('a filter list adds onto what is under it, a backdrop as much as a filter, 
     ),
     [blur(40)],
   );
+});
+
+test('a shadow cast from the same silhouette is made once and is what a fresh cast makes', () => {
+  const width = 24;
+  const height = 20;
+  const make = (inner: number) => {
+    const data = new Uint8ClampedArray(width * height * 4);
+    for (let y = 4; y < 16; y += 1) {
+      for (let x = 4; x < 16; x += 1) {
+        const i = (y * width + x) * 4;
+        data[i] = inner;
+        data[i + 1] = 255 - inner;
+        data[i + 3] = 255;
+      }
+    }
+    return data;
+  };
+  const shadow = { x: 3, y: 2, blur: 3, color: '#000000' };
+  const a = make(10);
+  castShadow(a, width, height, shadow);
+  // the colours inside change and the silhouette does not: the cast is
+  // kept, and the result is the one a first cast makes of those colours
+  const b = make(200);
+  castShadow(b, width, height, shadow);
+  const c = make(200);
+  castShadow(c, width, height, { ...shadow, blur: 3.0001 });
+  for (let i = 0; i < b.length; i += 1) {
+    assert.ok(Math.abs(b[i] - c[i]) <= 1, `byte ${i}: ${b[i]} against ${c[i]}`);
+  }
+  // another silhouette is another cast
+  const d = make(200);
+  d[(10 * width + 17) * 4 + 3] = 255;
+  castShadow(d, width, height, shadow);
+  assert.notDeepEqual(Array.from(d), Array.from(b));
 });

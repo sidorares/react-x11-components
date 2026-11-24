@@ -535,7 +535,10 @@ export function useScripts(
     }
     unwatch.current =
       runner.current?.host.onCanvas((canvas) =>
-        seams.current.handle.canvasChanged(canvas),
+        seams.current.handle.canvasChanged(
+          canvas,
+          runner.current?.host.canvasAlpha(canvas),
+        ),
       ) ?? null;
     ran();
     for (const go of waitingForRunner.current.splice(0)) go();
