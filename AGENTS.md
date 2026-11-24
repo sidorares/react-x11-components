@@ -4357,6 +4357,33 @@ Two things it changed elsewhere, both extractions rather than copies:
   two directories need the code-point/code-unit conversions. Exactly the
   promotion path "Layout" describes for `src/internal/`.
 
+**An underline leaves out the glyphs it crosses, glyph by glyph**
+(`text-decoration-skip-ink`, `inkGapsOf` in `paint.ts`, the `InkGaps`
+`paintRunRules` takes). `auto` is the initial value, so every underlined
+link on a page goes this way. Four things are load-bearing. **A glyph's ink
+across the rule's band is worked out once** (`glyphInk`): from its outline,
+for each contour the extent across of its edges inside the band, kept by
+face, size, glyph and the band's place on the glyph to a quarter of a
+pixel. A line's gaps are those, placed where the engine draws each glyph
+(`lineGaps`: the run's place, its pen moved by each advance and the glyph by
+its offsets, as ntk's `draw` and `coverage` place them), widened by the
+rule's thickness. So a new layout of text the page has drawn before, a step
+of a window drag among them, costs lookups: reading the layout's coverage
+whole was some 0.75 ms a paragraph of links, at every width. **A layout whose runs carry no glyphs draws its rule
+unbroken**, as before, and reads nothing: ntk's runs carry them and their
+faces outline them, and CoreText's and DirectWrite's hand a run's geometry
+back and no glyphs. Reading such a layout's coverage whole instead was some
+0.75 ms a paragraph of links at every new width, every step of a window
+drag among them, which tripled a new layout's first paint on a Mac. They
+leave gaps once core hands their glyphs over. **What a line leaves out
+is kept by the line and band** (`INK_GAPS`), so a repaint asks nothing.
+**The value is the text's own**, read from the text box under the stretch's
+runs (`textBoxIn`) — the decorated element's or a `::marker`'s — and not
+the block's: a `<u>` with `text-decoration-skip-ink: none` keeps its rule
+whole. And a rule's pieces go to the context as one list where it takes one
+(`fillRects`): a word with descenders is several pieces, and a page of links
+thousands.
+
 **Resolving a URL is the component's; fetching one is not.** A host cannot
 resolve a `url()` in a linked stylesheet: by the time a background is asked
 for it is a computed value, and nothing says which sheet it was written in.

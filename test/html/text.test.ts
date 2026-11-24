@@ -3013,6 +3013,117 @@ metric(
 );
 
 metric(
+  'text-decoration-skip-ink leaves the glyphs an underline crosses out of it',
+  async () => {
+    // CSS Text Decoration 4: `auto`, the initial value, breaks an underline
+    // where it would cross a descender, and `none` draws it unbroken (WPT's
+    // css-text-decor/text-decoration-skip-ink-001 and -002)
+    const { node } = await render(
+      '<style>body{margin:0;font:20px serif}div{text-decoration:underline}' +
+        '#a{color:#ff0000}#b{color:#0000ff;' +
+        'text-decoration-skip-ink:none}</style>' +
+        '<div id="a">gypsy</div><div id="b">gypsy</div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const fills = await fillsOf(el);
+    const pieces = (color: string) =>
+      fills.filter((f) => f.style === parseColor(color) && f.h <= 2);
+    assert.strictEqual(pieces('#0000ff').length, 1, 'one rule with none');
+    assert.ok(
+      pieces('#ff0000').length > 1,
+      `broken under the descenders: ${pieces('#ff0000').length}`,
+    );
+    // and the pieces leave out what the unbroken rule draws under them
+    const whole = pieces('#0000ff')[0];
+    const drawn = pieces('#ff0000').reduce((sum, f) => sum + f.w, 0);
+    assert.ok(drawn < whole.w, `${drawn} of ${whole.w}`);
+  },
+);
+
+metric(
+  'text-decoration-skip-ink cuts an underline from its glyphs’ outlines, reading no layout’s coverage',
+  async () => {
+    // a layout read whole costs some 0.75 ms a paragraph of links, at every
+    // width a window drag lays the text out at; each glyph's ink across the
+    // band is worked out once from its outline, and a new layout of known
+    // text costs lookups. The text is below the window, which has painted
+    // none of it
+    const { node } = await render(
+      '<style>body{margin:0;font:20px serif}' +
+        'div{text-decoration:underline;color:#ff0000}</style>' +
+        '<p style="height:2000px"></p><div id="d">gypsy</div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    let read = 0;
+    for (const line of linesOf(el, 'd')) {
+      for (const text of line.texts) {
+        const layout = text.layout as unknown as {
+          coverage?: (...args: unknown[]) => unknown;
+        };
+        const was = layout.coverage;
+        if (!was) continue;
+        layout.coverage = (...args: unknown[]) => {
+          read += 1;
+          return was.apply(layout, args);
+        };
+      }
+    }
+    const pieces = (await fillsOf(el)).filter(
+      (f) => f.style === parseColor('#ff0000') && f.h <= 2,
+    );
+    assert.ok(pieces.length > 1, `cut under its descenders: ${pieces.length}`);
+    assert.strictEqual(read, 0, 'no coverage read');
+  },
+);
+
+metric(
+  'text-decoration-skip-ink draws the rule whole under a layout whose runs carry no glyphs, and reads no coverage',
+  async () => {
+    // CoreText's and DirectWrite's runs hand over their geometry and no
+    // glyphs: reading such a layout's coverage whole costs some 0.75 ms a
+    // paragraph of links at every new width, so its rule is drawn unbroken,
+    // as before. The text is below the window, which has painted none of it
+    const { node } = await render(
+      '<style>body{margin:0;font:20px serif}' +
+        'div{text-decoration:underline;color:#ff0000}</style>' +
+        '<p style="height:2000px"></p><div id="d">gypsy</div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    let read = 0;
+    for (const line of linesOf(el, 'd')) {
+      for (const text of line.texts) {
+        const layout = text.layout as unknown as {
+          coverage?: (...args: unknown[]) => unknown;
+          lines: { runs: { run?: Record<string, unknown> }[] }[];
+        };
+        const was = layout.coverage;
+        if (was) {
+          layout.coverage = (...args: unknown[]) => {
+            read += 1;
+            return was.apply(layout, args);
+          };
+        }
+        // runs as an engine hands them back that names no glyphs
+        for (const r of layout.lines[text.layoutLine].runs) {
+          if (r.run) r.run = { ...r.run, glyphs: undefined };
+        }
+      }
+    }
+    const pieces = (await fillsOf(el)).filter(
+      (f) => f.style === parseColor('#ff0000') && f.h <= 2,
+    );
+    assert.strictEqual(pieces.length, 1, 'one rule, whole');
+    assert.strictEqual(read, 0, 'no coverage read');
+  },
+);
+
+metric(
   'text-decoration-thickness takes a percentage of the font size inside calc() as well as alone',
   async () => {
     // CSS Text Decoration 4: a percentage is of 1em; `calc(50% + 4px)` was
