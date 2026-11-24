@@ -463,9 +463,6 @@ function drawOnKept(
 export interface DragPaint {
   /** Whether the drag is drawn cheaper. */
   readonly cheap: boolean;
-  /** Whether the hand is moving: false once the drag rests, which is
-   *  drawn as at rest though the window's edge is still held. */
-  readonly moving?: boolean;
   /** Whether a background layer, its tile `width` by `height` now, was
    *  another size at a frame of the drag before: one whose size moves
    *  with it. Asked at every frame, so that it knows. */
@@ -16830,17 +16827,7 @@ function paintLinePart(
 
   // an underline goes under the glyphs, a line through over them (CSS 2.1
   // Appendix E): a descender crosses its own underline
-  paintRules(
-    ctx,
-    box,
-    visible,
-    dx,
-    dy,
-    options.scale ?? 1,
-    'under',
-    skip,
-    options.drag,
-  );
+  paintRules(ctx, box, visible, dx, dy, options.scale ?? 1, 'under', skip);
   paintHighlightRules(ctx, visible, options, dx, dy, 'under', skip);
 
   if (CLIPPED_TEXT.has(box)) {
@@ -17663,8 +17650,6 @@ function paintRules(
   rules: 'under' | 'over',
   /** What of the lines another part of them paints (`LinePart`). */
   skip?: ReadonlySet<unknown>,
-  /** The window's edge being dragged, which reads no new coverage. */
-  drag?: DragPaint | null,
 ): void {
   // whose each rule is and how far in it is drawn, where any element has
   // said (`text-decoration-inset`): nothing is asked of a page that has not
@@ -17694,7 +17679,7 @@ function paintRules(
         rules === 'under'
           ? (top, thickness, first, last) =>
               skipsInk(textBoxIn(text, first.start, last.end) ?? paragraph)
-                ? inkGapsOf(text.layout, top + drop, thickness, drag)
+                ? inkGapsOf(text.layout, natural, top + drop, thickness)
                 : null
           : undefined;
       for (const whole of [natural, trailOf(text, natural)]) {
@@ -17768,8 +17753,8 @@ const INK_PAD = 4;
 const INK_CLEARANCE = 1;
 const INK_CLEARANCE_MAX = 13;
 
-/** What each layout's underlines leave out, by the band they cross: kept
- *  for the layout's life, so a repaint asks the engine nothing again. */
+/** What each line's underline leaves out, by the band it crosses: kept
+ *  for the line's life, so a repaint asks the engine nothing again. */
 const INK_GAPS = new WeakMap<object, Map<string, readonly number[] | null>>();
 
 /** The last layout whose coverage was read, and what it came to: a
@@ -17782,29 +17767,194 @@ let coverageRead: {
 
 /**
  * The stretches across a layout an underline `thickness` thick whose top is
- * `top` down it leaves out for the glyphs it would cross, in the layout's
- * coordinates, a start and an end each; null where the engine has no
- * coverage to read, which draws the rule unbroken, or nothing is crossed.
+ * `top` down it leaves out for the glyphs it would cross, on one of its
+ * lines, in the layout's coordinates, a start and an end each; null where
+ * nothing is crossed, or the engine has nothing to read, which draws the
+ * rule unbroken. Kept by line and band (`INK_GAPS`), so a repaint asks
+ * nothing; and worked out from each glyph's own ink across the band where
+ * the runs carry their glyphs (`lineGaps`), which a new layout of known text
+ * costs lookups. Only a layout whose runs carry none has its coverage read
+ * whole (`coverageGaps`).
  */
 function inkGapsOf(
   layout: object,
+  line: InkLine,
   top: number,
   thickness: number,
-  /** While the window's edge is dragged, no coverage is read: each step
-   *  lays the text out at a new width, which would read it again, some
-   *  0.75 ms a paragraph of links. The rule is drawn unbroken, and the
-   *  paint once the drag rests draws the gaps (`DragPaint.drawn`). */
-  drag?: DragPaint | null,
 ): readonly number[] | null {
-  let kept = INK_GAPS.get(layout);
+  let kept = INK_GAPS.get(line);
   const key = `${top} ${thickness}`;
   const known = kept?.get(key);
   if (known !== undefined) return known;
-  if (drag?.moving) {
-    drag.drawn();
-    return null;
+  if (!kept) INK_GAPS.set(line, (kept = new Map()));
+  const gaps =
+    lineGaps(line, top, thickness) ?? coverageGaps(layout, top, thickness);
+  kept.set(key, gaps);
+  return gaps;
+}
+
+/** A line as `lineGaps` reads it: each run's glyphs where its engine hands
+ *  them over, as ntk's does, with the face that outlines them. */
+interface InkLine {
+  x: number;
+  baseline: number;
+  runs: readonly {
+    x: number;
+    run?: unknown;
+  }[];
+}
+
+/** A run's glyphs and the face they are in, as ntk shapes them: an id and
+ *  the advance and offsets each is placed by. Structural. */
+interface GlyphRun {
+  font: {
+    outline(glyphId: number, size: number): readonly ArrayLike<number>[];
+  };
+  size: number;
+  glyphs: readonly { id: number; ax: number; dx: number; dy: number }[];
+}
+
+function glyphRunOf(run: unknown): GlyphRun | null {
+  const r = run as Partial<GlyphRun> | null | undefined;
+  return r &&
+    Array.isArray(r.glyphs) &&
+    typeof r.size === 'number' &&
+    typeof r.font?.outline === 'function'
+    ? (r as GlyphRun)
+    : null;
+}
+
+/**
+ * A line's gaps from its glyphs: each glyph's ink across the band, from its
+ * outline (`glyphInk`), placed where the engine draws the glyph — the run's
+ * place, its pen moved by each advance and the glyph by its offsets, as
+ * ntk's `draw` and `coverage` place them — widened by the clearance and
+ * joined where they meet. Undefined where a run carries no glyphs: the
+ * engine's coverage is read instead.
+ */
+function lineGaps(
+  line: InkLine,
+  top: number,
+  thickness: number,
+): readonly number[] | null | undefined {
+  const runs: GlyphRun[] = [];
+  for (const r of line.runs) {
+    const run = glyphRunOf(r.run);
+    if (!run) return undefined;
+    runs.push(run);
   }
-  if (!kept) INK_GAPS.set(layout, (kept = new Map()));
+  // the rows the rule is drawn on, which it is drawn rounded to
+  const y0 = Math.round(top);
+  const clear = Math.min(INK_CLEARANCE * thickness, INK_CLEARANCE_MAX);
+  const spans: number[] = [];
+  for (let k = 0; k < runs.length; k += 1) {
+    const run = runs[k];
+    let pen = line.x + line.runs[k].x;
+    for (const g of run.glyphs) {
+      const gx = pen + g.dx;
+      const gy = line.baseline - g.dy;
+      pen += g.ax;
+      const ink = glyphInk(run.font, run.size, g.id, y0 - gy, thickness);
+      for (let i = 0; i < ink.length; i += 2) {
+        spans.push(gx + ink[i] - clear, gx + ink[i + 1] + clear);
+      }
+    }
+  }
+  return joined(spans);
+}
+
+/** Stretches, a start and an end each, sorted and joined where they meet;
+ *  null for none. */
+function joined(spans: number[]): readonly number[] | null {
+  if (!spans.length) return null;
+  const order: number[] = [];
+  for (let i = 0; i < spans.length; i += 2) order.push(i);
+  order.sort((a, b) => spans[a] - spans[b]);
+  const out: number[] = [];
+  for (const i of order) {
+    const from = spans[i];
+    const to = spans[i + 1];
+    if (out.length && from <= out[out.length - 1]) {
+      out[out.length - 1] = Math.max(out[out.length - 1], to);
+    } else {
+      out.push(from, to);
+    }
+  }
+  return out;
+}
+
+/** What each face's glyphs cross of a band, by size, glyph and band. */
+const GLYPH_INK = new WeakMap<object, Map<string, readonly number[]>>();
+
+/** How finely a band's place on a glyph is told apart: a quarter of a
+ *  pixel, since a line's baseline falls anywhere within one. */
+const BAND_STEP = 4;
+
+/**
+ * Where a glyph's outline crosses the band from `from` down `thickness`,
+ * from its origin on the baseline, down positive: for each of its contours
+ * that reaches the band, the extent across of the parts of its edges inside
+ * it, joined where they meet. Worked out once for a face, a size, a glyph
+ * and a band; nothing is rasterized.
+ */
+function glyphInk(
+  font: GlyphRun['font'],
+  size: number,
+  glyph: number,
+  from: number,
+  thickness: number,
+): readonly number[] {
+  const a = Math.round(from * BAND_STEP) / BAND_STEP;
+  const b = a + thickness;
+  let kept = GLYPH_INK.get(font);
+  if (!kept) GLYPH_INK.set(font, (kept = new Map()));
+  const key = `${size} ${glyph} ${a} ${thickness}`;
+  const known = kept.get(key);
+  if (known) return known;
+  const spans: number[] = [];
+  for (const poly of font.outline(glyph, size)) {
+    let lo = Infinity;
+    let hi = -Infinity;
+    const n = poly.length;
+    for (let i = 0; i < n; i += 2) {
+      const x0 = poly[i];
+      const y0 = poly[i + 1];
+      const x1 = poly[(i + 2) % n];
+      const y1 = poly[(i + 3) % n];
+      if ((y0 < a && y1 < a) || (y0 > b && y1 > b)) continue;
+      // the part of the edge inside the band
+      const dy = y1 - y0;
+      let t0 = 0;
+      let t1 = 1;
+      if (dy !== 0) {
+        const ta = (a - y0) / dy;
+        const tb = (b - y0) / dy;
+        t0 = Math.max(0, Math.min(ta, tb));
+        t1 = Math.min(1, Math.max(ta, tb));
+        if (t0 > t1) continue;
+      }
+      const xa = x0 + (x1 - x0) * t0;
+      const xb = x0 + (x1 - x0) * t1;
+      lo = Math.min(lo, xa, xb);
+      hi = Math.max(hi, xa, xb);
+    }
+    if (lo <= hi) spans.push(lo, hi);
+  }
+  const ink = joined(spans) ?? [];
+  kept.set(key, ink);
+  return ink;
+}
+
+/**
+ * The gaps across a layout at a band from its coverage, for an engine whose
+ * runs carry no glyphs (CoreText's, DirectWrite's): the whole layout read,
+ * which the last one read is kept for, as a paragraph's lines ask in turn.
+ */
+function coverageGaps(
+  layout: object,
+  top: number,
+  thickness: number,
+): readonly number[] | null {
   if (coverageRead?.layout !== layout) {
     coverageRead = {
       layout,
@@ -17812,9 +17962,7 @@ function inkGapsOf(
     };
   }
   const raster = coverageRead.raster;
-  const gaps = raster ? gapsAcross(raster, top, thickness) : null;
-  kept.set(key, gaps);
-  return gaps;
+  return raster ? gapsAcross(raster, top, thickness) : null;
 }
 
 /** The columns of a coverage raster with ink in the rows from `top` down

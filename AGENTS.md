@@ -4357,26 +4357,30 @@ Two things it changed elsewhere, both extractions rather than copies:
   two directories need the code-point/code-unit conversions. Exactly the
   promotion path "Layout" describes for `src/internal/`.
 
-**An underline leaves out the glyphs it crosses, from the engine's coverage
-of the layout** (`text-decoration-skip-ink`, `inkGapsOf` in `paint.ts`, the
-`InkGaps` `paintRunRules` takes). `auto` is the initial value, so every
-underlined link on a page goes this way: the columns of `layout.coverage()`
-with ink in the rule's band, widened by its thickness, are cut out of it. An
-engine that answers null draws the rule unbroken, as before. Three things
-are load-bearing. **What it leaves out is kept by layout and band**
-(`INK_GAPS`), so a repaint asks the engine nothing: reading the coverage is
-some 0.75 ms a paragraph of links on ntk, paid once a layout, and a layout
-at another width pays it again. So **a drag reads none**: while the width
-moves (`DragPaint.moving`) a rule whose gaps are not known is drawn
-unbroken, and says so (`drawn`), and the settle draws the page at rest
-whenever anything was drawn cheaper, not only a drag that fell behind
-(`_drawAtRest`). Only a window that says it is being resized
-(`liveResizing`) gets this: X11's says nothing of a drag. **The value is the text's own**, read from
-the text box under the stretch's runs (`textBoxIn`) — the decorated
-element's or a `::marker`'s — and not the block's: a `<u>` with
-`text-decoration-skip-ink: none` keeps its rule whole. And **a rule's pieces
-go to the context as one list** where it takes one (`fillRects`): a word
-with descenders is several pieces, and a page of links thousands.
+**An underline leaves out the glyphs it crosses, glyph by glyph**
+(`text-decoration-skip-ink`, `inkGapsOf` in `paint.ts`, the `InkGaps`
+`paintRunRules` takes). `auto` is the initial value, so every underlined
+link on a page goes this way. Four things are load-bearing. **A glyph's ink
+across the rule's band is worked out once** (`glyphInk`): from its outline,
+for each contour the extent across of its edges inside the band, kept by
+face, size, glyph and the band's place on the glyph to a quarter of a
+pixel. A line's gaps are those, placed where the engine draws each glyph
+(`lineGaps`: the run's place, its pen moved by each advance and the glyph by
+its offsets, as ntk's `draw` and `coverage` place them), widened by the
+rule's thickness. So a new layout of text the page has drawn before, a step
+of a window drag among them, costs lookups: reading the layout's coverage
+whole was some 0.75 ms a paragraph of links, at every width. **Only an
+engine whose runs carry no glyphs has its coverage read** (`coverageGaps`):
+ntk's runs carry them and their faces outline them, CoreText's and
+DirectWrite's hand a run's geometry back and nothing else, and an engine
+that answers no coverage draws the rule unbroken. **What a line leaves out
+is kept by the line and band** (`INK_GAPS`), so a repaint asks nothing.
+**The value is the text's own**, read from the text box under the stretch's
+runs (`textBoxIn`) — the decorated element's or a `::marker`'s — and not
+the block's: a `<u>` with `text-decoration-skip-ink: none` keeps its rule
+whole. And a rule's pieces go to the context as one list where it takes one
+(`fillRects`): a word with descenders is several pieces, and a page of links
+thousands.
 
 **Resolving a URL is the component's; fetching one is not.** A host cannot
 resolve a `url()` in a linked stylesheet: by the time a background is asked

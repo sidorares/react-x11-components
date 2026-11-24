@@ -3043,40 +3043,40 @@ metric(
 );
 
 metric(
-  'a drag of the window draws an underline whole where its gaps are not known, and the rest draws them',
+  'text-decoration-skip-ink cuts an underline from its glyphs’ outlines, reading no layout’s coverage',
   async () => {
-    // reading a layout's coverage costs some 0.75 ms a paragraph of links,
-    // and a step of a drag lays the text out again: the drag draws the rule
-    // unbroken and says so, and a paint at rest leaves the glyphs out. The
-    // text is below the window, which has painted none of it
+    // a layout read whole costs some 0.75 ms a paragraph of links, at every
+    // width a window drag lays the text out at; each glyph's ink across the
+    // band is worked out once from its outline, and a new layout of known
+    // text costs lookups. The text is below the window, which has painted
+    // none of it
     const { node } = await render(
       '<style>body{margin:0;font:20px serif}' +
         'div{text-decoration:underline;color:#ff0000}</style>' +
-        '<p style="height:2000px"></p><div>gypsy</div>',
+        '<p style="height:2000px"></p><div id="d">gypsy</div>',
       300,
     );
     const el = view(node);
     await act();
-    let drawn = 0;
-    const drag = {
-      cheap: false,
-      moving: true,
-      moved: () => false,
-      paused: () => false,
-      drawn: () => {
-        drawn += 1;
-      },
-    };
-    const pieces = (fills: Awaited<ReturnType<typeof fillsOf>>) =>
-      fills.filter((f) => f.style === parseColor('#ff0000') && f.h <= 2);
-    assert.strictEqual(
-      pieces(await fillsOf(el, undefined, { drag })).length,
-      1,
+    let read = 0;
+    for (const line of linesOf(el, 'd')) {
+      for (const text of line.texts) {
+        const layout = text.layout as unknown as {
+          coverage?: (...args: unknown[]) => unknown;
+        };
+        const was = layout.coverage;
+        if (!was) continue;
+        layout.coverage = (...args: unknown[]) => {
+          read += 1;
+          return was.apply(layout, args);
+        };
+      }
+    }
+    const pieces = (await fillsOf(el)).filter(
+      (f) => f.style === parseColor('#ff0000') && f.h <= 2,
     );
-    assert.ok(drawn > 0, 'the drag says it drew the rule cheaper');
-    assert.ok(pieces(await fillsOf(el)).length > 1, 'at rest it is broken');
-    // and once known, a drag draws the gaps it has
-    assert.ok(pieces(await fillsOf(el, undefined, { drag })).length > 1);
+    assert.ok(pieces.length > 1, `cut under its descenders: ${pieces.length}`);
+    assert.strictEqual(read, 0, 'no coverage read');
   },
 );
 

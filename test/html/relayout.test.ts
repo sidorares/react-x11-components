@@ -1920,43 +1920,6 @@ test('a thread busy past a rest of the hand is no rest of the hand: the drag res
   }
 });
 
-test('a live drag draws an underline at a new width whole, and the rest leaves its glyphs out', async (t) => {
-  // reading a layout's coverage for `text-decoration-skip-ink` costs some
-  // 0.75 ms a paragraph of links, and every step lays the text out at a
-  // new width: a drag the document keeps up with draws the rule unbroken
-  // all the same, and the paint at rest breaks it
-  const clock = holdClock(t, resizeClock);
-  costing(t, { value: 0 });
-  const { el, resize, result } = await renderScrolled(
-    '<style>body{margin:0;font:20px serif}div{text-decoration:underline;' +
-      'text-decoration-color:#ff0000}</style><div>gypsy jumpy pygmy</div>',
-    300,
-    400,
-  );
-  const red = async (): Promise<number> => {
-    const px = await snapshot(result, el);
-    let n = 0;
-    for (let i = 0; i < px.length; i += 4) {
-      if (px[i] > 200 && px[i + 1] < 60 && px[i + 2] < 60) n += 1;
-    }
-    return n;
-  };
-  const still = await red();
-  const wnd = windowOf(el);
-  wnd.liveResizing = true;
-  let dragged = 0;
-  try {
-    await resize(300, 380);
-    assert.ok(!cheap(el), 'a drag the document keeps up with');
-    dragged = await red();
-    assert.ok(dragged > still, `whole while it moves: ${dragged} of ${still}`);
-    for (let i = 0; i < 40; i += 1) await clock.frame();
-    assert.strictEqual(await red(), still, 'broken again once the hand rests');
-  } finally {
-    wnd.liveResizing = false;
-  }
-});
-
 test('a drag the document keeps up with, and one the window does not say is live, are drawn as at rest', async (t) => {
   holdClock(t, resizeClock);
   const cost = { value: 0 };

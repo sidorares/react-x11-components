@@ -678,7 +678,6 @@ export async function fillsOf(
     /** A paint of a drag of the window's edge (`DragPaint`). */
     drag?: {
       cheap: boolean;
-      moving?: boolean;
       moved(layer: object, width: number, height: number): boolean;
       paused(box: never): boolean;
       drawn(): void;
