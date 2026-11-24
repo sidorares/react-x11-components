@@ -16617,10 +16617,30 @@ function paintLinePart(
   // painted for every line first, then the ink once per layout, then the
   // rules over it.
   const bleeds: Bleed[] = [];
-  for (const line of visible) {
+  // where a fragment over text before it is painted after that text, which
+  // only a whole block's lines, of ntk's layouts, drawn in no other
+  // colours, can have (`Interleave`)
+  const interleave: Interleave | null =
+    !part &&
+    !options.selectionStyler &&
+    !options.highlights?.length &&
+    !CLIPPED_TEXT.has(box) &&
+    !(columned.any && COLUMN_LINES.has(lines)) &&
+    !(framed.any && box.style.writingMode !== 'horizontal-tb') &&
+    visible.every((line) => line.texts.every((t) => ownLayout(t.layout)))
+      ? {
+          visible,
+          index: 0,
+          below: LINE_INK.get(lines)?.below ?? 0,
+          late: [],
+        }
+      : null;
+  for (let i = 0; i < visible.length; i += 1) {
+    const line = visible[i];
     if (line.background && (!part || (!part.apart && startsIn(part, line)))) {
       paintLineBackground(ctx, line, options);
     }
+    if (interleave) interleave.index = i;
     paintInlineBoxes(
       ctx,
       line,
@@ -16628,6 +16648,7 @@ function paintLinePart(
       options,
       line === lines[0] ? null : bleeds,
       part,
+      interleave,
     );
     for (const text of line.texts) {
       if (skip?.has(text)) continue;
@@ -16679,7 +16700,10 @@ function paintLinePart(
     options.selectionStyler || lit.length
       ? recoloredWith(visible, [...lit, options], skip)
       : null;
-  for (const line of visible) {
+  if (interleave?.late.length) {
+    drawInterleaved(ctx, visible, interleave.late, dx, dy);
+  }
+  for (const line of interleave?.late.length ? [] : visible) {
     for (const text of line.texts) {
       if (skip?.has(text)) continue;
       // once for each column its lines are in, where they are in several
@@ -16963,6 +16987,134 @@ function textMeets(
     baseline + (natural.descent ?? 0),
   );
   return top < y2 && bottom > y1;
+}
+
+/**
+ * The inline fragments a part of a block's lines paints after text that is
+ * before them in the lines' order (CSS 2.1 Appendix E, 7.2.1.4: each inline
+ * box's background, then what it holds, a line at a time). A paragraph's
+ * text is one layout, drawn in one batch after every fragment's background,
+ * which is that order wherever no fragment reaches text before it. One that
+ * does is put off (`late`), and the text is drawn in pieces around it
+ * (`drawInterleaved`): a box a line's small `line-height` hangs up over the
+ * line before, and one a negative margin pulls back over the words before
+ * it. Only where one does, since a piece is a draw of its own.
+ */
+interface Interleave {
+  visible: LineBox[];
+  /** The line being painted, in `visible`. */
+  index: number;
+  /** How far a line's glyphs reach above and below it (`LINE_INK`). */
+  below: number;
+  late: LateFragment[];
+}
+
+/** A fragment put off until the text before it is drawn: where it starts
+ *  in the lines' order (`InlineFragment.at`), and its painting. */
+interface LateFragment {
+  line: number;
+  t: number;
+  c: number;
+  paint: () => void;
+}
+
+/** Whether a fragment's rectangle meets text before it in the lines'
+ *  order: on its own line before where it starts, or on a line before. */
+function coversEarlier(
+  interleave: Interleave,
+  line: LineBox,
+  at: { t: number; c: number },
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): boolean {
+  if (!(x2 > x1 && y2 > y1)) return false;
+  const texts = line.texts;
+  for (let i = 0; i < texts.length && i <= at.t; i += 1) {
+    const text = texts[i];
+    if (!textMeets(text, x1, y1, x2, y2)) continue;
+    if (i < at.t) return true;
+    const natural = text.layout.lines[text.layoutLine];
+    const left = text.drawX + natural.x;
+    for (const run of natural.runs) {
+      if (run.start >= at.c) continue;
+      const from = left + run.x;
+      if (from < x2 && from + run.width > x1) return true;
+    }
+  }
+  const { visible, index, below } = interleave;
+  for (let k = index - 1; k >= 0; k -= 1) {
+    const before = visible[k];
+    if (before.y + before.height + below <= y1) break;
+    for (const text of before.texts) {
+      if (textMeets(text, x1, y1, x2, y2)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The text of a part of a block's lines with the fragments put off
+ * (`Interleave`) painted among it: each text a line holds drawn as far as
+ * the next fragment that starts in it, which is painted there, then on. A
+ * text is drawn a line at a time (`onlyOf`), where it is otherwise drawn a
+ * layout at a time.
+ */
+function drawInterleaved(
+  ctx: PaintContext,
+  visible: LineBox[],
+  late: LateFragment[],
+  dx: number,
+  dy: number,
+): void {
+  late.sort((a, b) => a.line - b.line || a.t - b.t || a.c - b.c);
+  let next = 0;
+  for (let li = 0; li < visible.length; li += 1) {
+    const texts = visible[li].texts;
+    for (let ti = 0; ti < texts.length; ti += 1) {
+      while (
+        next < late.length &&
+        (late[next].line < li || (late[next].line === li && late[next].t < ti))
+      ) {
+        late[next++].paint();
+      }
+      const text = texts[ti];
+      const natural = text.layout.lines[text.layoutLine];
+      const left = text.drawX + dx;
+      const top = text.drawY + dy;
+      if (
+        !natural ||
+        top < -COORD_LIMIT ||
+        top + text.layout.height > COORD_LIMIT
+      ) {
+        continue;
+      }
+      let from = Infinity;
+      let to = -Infinity;
+      for (const run of natural.runs) {
+        from = Math.min(from, run.start);
+        to = Math.max(to, run.end);
+      }
+      if (!(to > from)) continue;
+      let at = from;
+      while (
+        next < late.length &&
+        late[next].line === li &&
+        late[next].t === ti
+      ) {
+        const cut = Math.max(at, Math.min(late[next].c, to));
+        if (cut > at) {
+          onlyOf(text.layout, [{ from: at, to: cut }]).draw(ctx, left, top);
+        }
+        at = cut;
+        late[next++].paint();
+      }
+      if (to > at) onlyOf(text.layout, [{ from: at, to }]).draw(ctx, left, top);
+    }
+    while (next < late.length && late[next].line === li) late[next++].paint();
+  }
+  while (next < late.length) late[next++].paint();
 }
 
 /** Whether any of the lines moved content was taken off, and the damage
@@ -18180,6 +18332,11 @@ function fragmentsOn(
     edge?: EdgePlacement;
     /** Its text's or atomic's place on the line (`placesOn`). */
     place?: number;
+    /** Where it is in the line's logical order: the index of its text, or
+     *  of the text an atomic is before, and its first character in that
+     *  text's layout (-1 for an atomic) (`InlineFragment.at`). */
+    t?: number;
+    c?: number;
   }[] = [];
   const shifted = SHIFTED_LINES.has(line);
   const atomics = line.atomics;
@@ -18203,7 +18360,14 @@ function fragmentsOn(
       const left = Math.max(x, x + run.x);
       const right = Math.min(x + natural.width, x + run.x + run.width);
       if (right <= left) continue;
-      marks.push({ left, right, boxes: decoratedAncestors(owner), place });
+      marks.push({
+        left,
+        right,
+        boxes: decoratedAncestors(owner),
+        place,
+        t: i,
+        c: run.start,
+      });
     }
     // and the spaces `pre-wrap` keeps that the line ends on, which hang
     // past it and are their box's all the same (`LineText.hung`)
@@ -18216,6 +18380,8 @@ function fragmentsOn(
         right: left + space.width,
         boxes: decoratedAncestors(owner),
         place,
+        t: i,
+        c: space.at,
       });
     }
   }
@@ -18227,6 +18393,8 @@ function fragmentsOn(
       right: placed.x + atomic.width + atomic.marginRight,
       boxes: decoratedAncestors(atomic),
       place: places ? placed.before + j : undefined,
+      t: placed.before,
+      c: -1,
     });
   }
   for (const edge of line.edges ?? []) {
@@ -18286,6 +18454,14 @@ function fragmentsOn(
       if (mark.place !== undefined) {
         open.first = Math.min(open.first ?? Infinity, mark.place);
       }
+      if (
+        mark.t !== undefined &&
+        (!open.at ||
+          mark.t < open.at.t ||
+          (mark.t === open.at.t && mark.c! < open.at.c))
+      ) {
+        open.at = { t: mark.t, c: mark.c! };
+      }
     }
     (fragments ??= new Map()).set(box, out);
   }
@@ -18328,6 +18504,10 @@ function paintInlineBoxes(
    *  that start in it: one is painted before what it is around, and over
    *  an atomic before it (`LinePart`). */
   part: LinePart | null = null,
+  /** Where a fragment over text before it in the lines' order goes, to be
+   *  painted after that text (`Interleave`): null where it is not looked
+   *  for. */
+  interleave: Interleave | null = null,
 ): void {
   // where the part starts and ends on this line, in places
   const from = part && line === part.lines[0] ? part.from : 0;
@@ -18375,6 +18555,7 @@ function paintInlineBoxes(
         f,
         baseline,
         fade,
+        interleave,
       );
     }
   }
@@ -18391,6 +18572,7 @@ function paintInlineFragment(
   f: InlineFragment,
   baseline: number,
   fade: number,
+  interleave: Interleave | null = null,
 ): void {
   const shifted = SHIFTED_LINES.has(line);
   {
@@ -18444,19 +18626,48 @@ function paintInlineFragment(
       if (strip && sliced(box.style)) fragment.strip = strip;
       if (strip && shadows) caster = strip;
     }
-    const faded = fade < 1 && typeof ctx.globalAlpha === 'number';
-    if (faded) {
-      ctx.save();
-      ctx.globalAlpha = ctx.globalAlpha! * fade;
+    const draw = (): void => {
+      const faded = fade < 1 && typeof ctx.globalAlpha === 'number';
+      if (faded) {
+        ctx.save();
+        ctx.globalAlpha = ctx.globalAlpha! * fade;
+      }
+      // the outer shadows under the background, the inset ones over it and
+      // under the border, as a block's (CSS Backgrounds 3, 7.1)
+      if (shadows) paintFragmentShadows(ctx, fragment, caster, options, false);
+      paintLayers(ctx, fragment, options, frameImages(ctx, fragment, options));
+      if (shadows) paintFragmentShadows(ctx, fragment, caster, options, true);
+      paintBorders(ctx, fragment, options);
+      if (box.style.outlineStyle !== 'none') {
+        paintOutline(ctx, fragment, options);
+      }
+      if (faded) ctx.restore();
+    };
+    // over text before it in the lines' order, which is painted first
+    if (interleave) {
+      const at = f.at ?? { t: 0, c: -1 };
+      const out = shadows ? shadowOutsets(shadows) : null;
+      if (
+        coversEarlier(
+          interleave,
+          line,
+          at,
+          fragment.x - (out?.left ?? 0),
+          fragment.y - (out?.top ?? 0),
+          fragment.x + fragment.width + (out?.right ?? 0),
+          fragment.y + fragment.height + (out?.bottom ?? 0),
+        )
+      ) {
+        interleave.late.push({
+          line: interleave.index,
+          t: at.t,
+          c: at.c,
+          paint: draw,
+        });
+        return;
+      }
     }
-    // the outer shadows under the background, the inset ones over it and
-    // under the border, as a block's (CSS Backgrounds 3, 7.1)
-    if (shadows) paintFragmentShadows(ctx, fragment, caster, options, false);
-    paintLayers(ctx, fragment, options, frameImages(ctx, fragment, options));
-    if (shadows) paintFragmentShadows(ctx, fragment, caster, options, true);
-    paintBorders(ctx, fragment, options);
-    if (box.style.outlineStyle !== 'none') paintOutline(ctx, fragment, options);
-    if (faded) ctx.restore();
+    draw();
     const reach = shadows ? shadowOutsets(shadows).top : 0;
     if (bleeds && fragment.y - reach < line.y - 0.5) {
       bleeds.push({
@@ -18672,6 +18883,11 @@ interface InlineFragment {
    *  (`placesOn`), where that was asked; none for one around nothing but
    *  its edges, which goes with the line's start. */
   first?: number;
+  /** Where it starts in the line's logical order: the index of the first
+   *  text it is around, or of the text the first atomic is before, and the
+   *  character it starts at in that text's layout, -1 for an atomic; none
+   *  for one around nothing but its edges. */
+  at?: { t: number; c: number };
 }
 
 /** The inline boxes around a box, within its line's block, that paint a

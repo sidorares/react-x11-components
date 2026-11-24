@@ -308,6 +308,65 @@ metric('a huge <pre> is chunked, renders deep, and still selects', async () => {
   assert.ok(bands.length >= 2, `bands across the seam (${bands.length})`);
 });
 
+test("an inline box's background is painted over the text before it that it reaches, and under its own", async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // CSS 2.1 Appendix E, 7.2.1.4: each inline box's background, then what
+  // it holds, a line at a time. A paragraph's text was drawn in one batch
+  // after every background, so a span a negative margin pulls back over
+  // the words before it, and one a small line-height hangs up over the
+  // line before (css1/c5504-imrgn-l-005, linebox/line-height-125), was
+  // drawn under the text it covers.
+  const redIn = async (
+    source: string,
+    region: [number, number, number, number],
+  ) => {
+    const result = await renderX11(
+      h(
+        'box',
+        { style: { width: 200, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<body style="margin:0;background:#ffffff">' + source + '</body>',
+          partial: false,
+        }),
+      ),
+      { width: 240, height: 120, fonts: FONTS! },
+    );
+    await act();
+    const [x, y, width, height] = region;
+    const data = await pixelsIn(result.ctx, { x, y, width, height });
+    let red = 0;
+    let green = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] > 200 && data[i + 1] < 60) red += 1;
+      if (data[i + 1] > 200 && data[i] < 60) green += 1;
+    }
+    return { red, green };
+  };
+  const pulled = await redIn(
+    '<div style="font:20px/30px monospace;color:#ff0000">MM<span ' +
+      'style="margin-left:-24px;background:#00ff00;color:#00ff00">..</span></div>',
+    [0, 0, 24, 30],
+  );
+  assert.ok(
+    pulled.green > 100,
+    `the span's background is there: ${pulled.green}`,
+  );
+  assert.strictEqual(
+    pulled.red,
+    0,
+    'and over the words it was pulled back over',
+  );
+  const hung = await redIn(
+    '<div style="font:40px/4px monospace;width:60px;padding-top:40px;' +
+      'color:#ff0000">MM <span style="background:#00ff00;color:#00ff00;' +
+      'padding-top:30px">MM</span></div>',
+    [0, 30, 48, 20],
+  );
+  assert.ok(hung.green > 100, `the span's background is there: ${hung.green}`);
+  assert.strictEqual(hung.red, 0, 'and over the line before it hangs over');
+});
+
 test('an element at no opacity is not drawn, and at half is drawn faded', async (t) => {
   if (!FONTS) return t.skip('no font files for the in-process server');
   // `opacity` was read and never painted, so the control a page keeps at
