@@ -12,32 +12,33 @@ component.
 
 ## Components
 
-| Page                                                   | Import                                   | What it is                                                   |
-| ------------------------------------------------------ | ---------------------------------------- | ------------------------------------------------------------ |
-| [Calendar / DatePicker](components/calendar.md)        | `@react-x11/components/calendar`         | A month grid: one date or a range, any day blockable.        |
-| [Charts](components/charts.md)                         | `@react-x11/components/charts`           | Cartesian charts; a million points is a normal input.        |
-| [ColorPicker / ColorField](components/color-picker.md) | `@react-x11/components/color-picker`     | A colour input: field, hue, alpha, swatches, eyedropper.     |
-| [Code](components/code.md)                             | `@react-x11/components/code`             | A static code block: highlighted, selectable.                |
-| [CodeEditor](components/code-editor.md)                | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.            |
-| [Flow](components/flow.md)                             | `@react-x11/components/flow`             | A directed-graph editor: nodes, edges, pan and zoom.         |
-| [Formula](components/formula.md)                       | `@react-x11/components/formula`          | TeX mathematics: KaTeX layout, native ink, selectable.       |
-| [Html](components/html.md)                             | `@react-x11/components/html`             | A static HTML + CSS document, selectable, with seams.        |
-| [Map](components/maps.md)                              | `@react-x11/components/maps`             | A 2D vector-tile map: pan, zoom, markers, overlays.          |
-| [Markdown](components/markdown.md)                     | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
-| [MediaPlayer](components/media-player.md)              | `@react-x11/components/media-player`     | mpv or VLC embedded, or ffmpeg into a `<video>`; transport.  |
-| [Mermaid](components/mermaid.md)                       | `@react-x11/components/mermaid`          | Mermaid diagrams: ondine's layout, native ink, selectable.   |
-| [Pdf](components/pdf.md)                               | `@react-x11/components/pdf`              | A PDF, drawn: PDFium on a thread, zoom, selection, links.    |
-| [QML](components/qml.md)                               | `@react-x11/components/qml`              | Qt's QML language as an authoring layer. No Qt.              |
-| [ReorderList](components/reorder.md)                   | `@react-x11/components/reorder`          | A drag-and-drop list, over core's own drag and drop.         |
-| [RichTextEditor](components/rich-text-editor.md)       | `@react-x11/components/rich-text-editor` | WYSIWYG editing over ProseMirror; markdown in and out.       |
-| [Table](components/table.md)                           | `@react-x11/components/table`            | A data table: sortable, virtualized, any row height.         |
-| [Tabs](components/tabs.md)                             | `@react-x11/components/tabs`             | One visible panel at a time, five strip styles.              |
-| [Terminal](components/terminal.md)                     | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.           |
-| [TerminalOutput](components/terminal-output.md)        | `@react-x11/components/terminal-output`  | A captured session, rendered. `<Terminal>`'s static sibling. |
-| [Three](components/three.md)                           | `@react-x11/components/three`            | A three-fiber-shaped 3D scene over either GL backend.        |
-| [Timeline](components/timeline.md)                     | `@react-x11/components/timeline`         | A run of events: a mark per step, a line between.            |
-| [TrayHost](components/tray-host.md)                    | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.           |
-| [Tree](components/tree.md)                             | `@react-x11/components/tree`             | A disclosure tree: seams throughout, and virtualized.        |
+| Page                                                   | Import                                   | What it is                                                                        |
+| ------------------------------------------------------ | ---------------------------------------- | --------------------------------------------------------------------------------- |
+| [Calendar / DatePicker](components/calendar.md)        | `@react-x11/components/calendar`         | A month grid: one date or a range, any day blockable.                             |
+| [Charts](components/charts.md)                         | `@react-x11/components/charts`           | Cartesian charts; a million points is a normal input.                             |
+| [ColorPicker / ColorField](components/color-picker.md) | `@react-x11/components/color-picker`     | A colour input: field, hue, alpha, swatches, eyedropper.                          |
+| [Code](components/code.md)                             | `@react-x11/components/code`             | A static code block: highlighted, selectable.                                     |
+| [CodeEditor](components/code-editor.md)                | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.                                 |
+| [Flow](components/flow.md)                             | `@react-x11/components/flow`             | A directed-graph editor: nodes, edges, pan and zoom.                              |
+| [Formula](components/formula.md)                       | `@react-x11/components/formula`          | TeX mathematics: KaTeX layout, native ink, selectable.                            |
+| [Html](components/html.md)                             | `@react-x11/components/html`             | A static HTML + CSS document, selectable, with seams.                             |
+| [Map3D](components/map3d.md)                           | `@react-x11/components/map3d`            | Google's Photorealistic 3D Tiles (or any 3D Tiles tileset) under an orbit camera. |
+| [Map](components/maps.md)                              | `@react-x11/components/maps`             | A 2D vector-tile map: pan, zoom, markers, overlays.                               |
+| [Markdown](components/markdown.md)                     | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.                                |
+| [MediaPlayer](components/media-player.md)              | `@react-x11/components/media-player`     | mpv or VLC embedded, or ffmpeg into a `<video>`; transport.                       |
+| [Mermaid](components/mermaid.md)                       | `@react-x11/components/mermaid`          | Mermaid diagrams: ondine's layout, native ink, selectable.                        |
+| [Pdf](components/pdf.md)                               | `@react-x11/components/pdf`              | A PDF, drawn: PDFium on a thread, zoom, selection, links.                         |
+| [QML](components/qml.md)                               | `@react-x11/components/qml`              | Qt's QML language as an authoring layer. No Qt.                                   |
+| [ReorderList](components/reorder.md)                   | `@react-x11/components/reorder`          | A drag-and-drop list, over core's own drag and drop.                              |
+| [RichTextEditor](components/rich-text-editor.md)       | `@react-x11/components/rich-text-editor` | WYSIWYG editing over ProseMirror; markdown in and out.                            |
+| [Table](components/table.md)                           | `@react-x11/components/table`            | A data table: sortable, virtualized, any row height.                              |
+| [Tabs](components/tabs.md)                             | `@react-x11/components/tabs`             | One visible panel at a time, five strip styles.                                   |
+| [Terminal](components/terminal.md)                     | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.                                |
+| [TerminalOutput](components/terminal-output.md)        | `@react-x11/components/terminal-output`  | A captured session, rendered. `<Terminal>`'s static sibling.                      |
+| [Three](components/three.md)                           | `@react-x11/components/three`            | A three-fiber-shaped 3D scene over either GL backend.                             |
+| [Timeline](components/timeline.md)                     | `@react-x11/components/timeline`         | A run of events: a mark per step, a line between.                                 |
+| [TrayHost](components/tray-host.md)                    | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.                                |
+| [Tree](components/tree.md)                             | `@react-x11/components/tree`             | A disclosure tree: seams throughout, and virtualized.                             |
 
 ## Shared modules
 

@@ -86,6 +86,9 @@ const COMPONENTS = [
   // `<Map>` shares nothing with anything here; the element name is a string
   // no other module writes.
   { exportName: 'Map', dir: 'maps', marker: 'mapview' },
+  // `<Map3D>` is the tilted-camera sibling of `<Map>` and shares nothing with it; its shader error is a
+  // string only it writes.
+  { exportName: 'Map3D', dir: 'map3d', marker: 'map3d shader' },
   // `<Formula>` reaches katex only through a dynamic import, so the marker
   // is a face name only its own font table writes
   { exportName: 'Formula', dir: 'formula', marker: 'KaTeX_Size4' },
