@@ -2748,9 +2748,17 @@ function paintThroughInside(
   ) {
     return;
   }
+  // A frame of a writing mode is drawn on a surface in its own axes whether
+  // or not it holds text: X RENDER samples a pixel 17 across and 15 down,
+  // so an edge rasterized through the turn comes out a level or two apart
+  // from the same edge rasterized in the frame, and a frame of paths alone
+  // differed from one that also held a word (WPT's css-shapes
+  // shape-outside-polygon-020, whose reference holds no text)
+  const turnedFrame =
+    framed.any && FRAME_ROOTS.has(box) && axisAligned(a, b, c, d) && a === 0;
   if (
     ctx.scalesText !== true &&
-    !drawnAsPaths(box) &&
+    (turnedFrame || !drawnAsPaths(box)) &&
     paintRaster(ctx, box, inside, through)
   ) {
     return;
