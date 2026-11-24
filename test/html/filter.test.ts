@@ -1129,6 +1129,33 @@ test('what is painted behind a box with a backdrop filter is painted small, its 
   assert.ok(first >= 0 && own > first, 'before the box paints its own');
 });
 
+test("a box's clip, clip-path and mask cut what its filter made, after it", async (t: TestContext) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // CSS Masking 1, 1.1: the filter, then the clips, then the mask. Cut
+  // before it, a box's drop shadow reached past them (WPT's
+  // css-masking/clip/clip-filter-order and clip-path-filter-order)
+  const shadow = 'filter: drop-shadow(40px 0 0 #0000ff)';
+  const result = await drawn(
+    `<style>div { width: 40px; height: 20px; background: #ff0000; ${shadow} }` +
+      '#c { position: absolute; top: 0; clip: rect(0px, 40px, 20px, 0px) }' +
+      '#p { position: absolute; top: 20px; clip-path: inset(0) }' +
+      '#m { position: absolute; top: 40px;' +
+      ' mask-image: linear-gradient(#000, #000) }' +
+      '#n { position: absolute; top: 60px }</style>' +
+      '<div id="c"></div><div id="p"></div><div id="m"></div><div id="n"></div>',
+  );
+  const ctx = result.ctx;
+  await waitForPixel(ctx, 60, 70, '#0000ff', { message: 'a shadow, uncut' });
+  for (const [y, what] of [
+    [10, 'clip'],
+    [30, 'clip-path'],
+    [50, 'mask'],
+  ] as const) {
+    await expectPixel(ctx, 20, y, '#ff0000', { message: `in its ${what}` });
+    await expectPixel(ctx, 60, y, '#ffffff', { message: `cut by its ${what}` });
+  }
+});
+
 test('a box both filtered and blended blends what its filter made', async (t: TestContext) => {
   if (!FONTS) return t.skip('no font files for the in-process server');
   // CSS Compositing 1, 3.2: the group is blended, after its filter. The
@@ -1149,6 +1176,22 @@ test('a box both filtered and blended blends what its filter made', async (t: Te
   await expectPixel(ctx, 20, 40, '#369b36', {
     message: 'and through a matrix',
   });
+});
+
+test('a filtered box is cut by its clip-path before it is blended', async (t: TestContext) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // Filter, then clip, then blend: the shadow is cut away, and what is
+  // left is screened over the ground, never a surface on the way
+  const result = await drawn(
+    '<div style="background:#008000;padding:10px;width:120px">' +
+      '<div style="width:40px;height:20px;background:#ff0000;' +
+      'filter:drop-shadow(40px 0 0 #0000ff);clip-path:inset(0);' +
+      'mix-blend-mode:screen"></div></div>',
+  );
+  const ctx = result.ctx;
+  // red 255 screened over green 128: #ff8000
+  await waitForPixel(ctx, 30, 20, '#ff8000', { message: 'blended' });
+  await expectPixel(ctx, 70, 20, '#008000', { message: 'the shadow cut' });
 });
 
 test('no backdrop is made where the box hides it, or no surface runs the filter', async () => {
