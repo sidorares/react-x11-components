@@ -190,6 +190,12 @@ export const GEOMETRY_OF: Readonly<Record<string, ReadonlySet<string>>> = {
   d: new Set(['path']),
 };
 
+/** The elements a geometry property applies to, any of them: what a rule
+ *  that sets nothing else of a drawing is asked of (`Cascade._geometry`). */
+export const GEOMETRY_TAGS: ReadonlySet<string> = new Set(
+  Object.values(GEOMETRY_OF).flatMap((tags) => [...tags]),
+);
+
 /** A geometry attribute's value as a keyframe starts from it: a plain
  *  number is user units there, as `SvgView` reads the attribute, and
  *  anything else is read as the property's (`shapeValue`). Null for a
