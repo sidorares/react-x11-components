@@ -38,6 +38,7 @@ import {
   gripPoint,
   handleAnchor,
   inflateRect,
+  NODE_BODY_INSET,
   NODE_DESC_SIZE,
   NODE_LABEL_SIZE,
   NODE_PAD_X,
@@ -797,6 +798,9 @@ export interface SceneNodeSource {
   /** Whether a React body is mounted over this node, which is what makes
    *  the card draw a title bar rather than a centred label. */
   mounted: boolean;
+  /** Whether the GL renderer draws a body of the type's `glBody` in this
+   *  card — a title bar too, and the body's box in the item. Left out, no. */
+  glBody?: boolean;
   connectable: boolean;
   /** Which resize grips to draw, already filtered. Empty for most nodes. */
   grips: readonly XYPosition[];
@@ -1003,6 +1007,10 @@ export interface SceneNodeItem {
   ink: readonly (SceneText | SceneRule)[];
   handles: readonly SceneHandle[];
   grips: readonly SceneRect[];
+  /** Where a GL body is drawn (`FlowNodeType.glBody`): the card less its
+   *  title bar and an inset, in the scene's units — what `<Flow>` mounts a
+   *  `render` body in, worked out the same way. The 2D painter leaves it. */
+  glBody?: FlowRect;
   /** Set when the type has a `paint`: the painter calls it, and a renderer
    *  that cannot must say so rather than draw the wrong thing. */
   custom?: {
@@ -1758,13 +1766,15 @@ function buildNodes(input: SceneInput): SceneNodeItem[] {
       grips: [],
     };
 
-    if (source.type?.paint) {
+    if (source.type?.paint && !source.glBody) {
       // Never described: a type that draws its own body is drawing whatever
-      // it likes, in an order only it knows.
+      // it likes, in an order only it knows. Its `paint` is the 2D fallback
+      // of a type with a GL body, which the GL renderer draws in a card.
       item.custom = { type: source.type, node: source.node, anchors };
     } else {
       item.card = buildCard(input, source, rect, selected, hovered);
       item.ink = buildCardInk(input, source, rect);
+      if (source.glBody) item.glBody = glBodyRect(input, source, rect);
     }
 
     if (source.connectable && (v.zoom >= HANDLE_ZOOM || hovered)) {
@@ -1774,6 +1784,26 @@ function buildNodes(input: SceneInput): SceneNodeItem[] {
     out.push(item);
   }
   return out;
+}
+
+/**
+ * The box a GL body is drawn in: the card less its title bar and an inset
+ * on the other three sides — `_emitBodies`'s arithmetic for a `render` body
+ * (`./node.ts`), so the two kinds of body sit in a card alike. Nothing
+ * where nothing is left of it.
+ */
+function glBodyRect(
+  input: SceneInput,
+  source: SceneNodeSource,
+  rect: FlowRect,
+): FlowRect | undefined {
+  const zoom = input.viewport.zoom;
+  const inset = NODE_BODY_INSET * zoom;
+  const header = source.header * zoom;
+  const width = rect.width - inset * 2;
+  const height = rect.height - header - inset;
+  if (width <= 1 || height <= 1) return undefined;
+  return { x: rect.x + inset, y: rect.y + header, width, height };
 }
 
 function buildCard(
@@ -1829,7 +1859,7 @@ function buildCardInk(
   const { viewport: v, palette } = input;
   if (v.zoom < LABEL_ZOOM) return [];
   const style = source.node.style;
-  const header = source.mounted ? source.header : 0;
+  const header = source.mounted || source.glBody ? source.header : 0;
   const data = source.node.data as FlowNodeData | undefined;
   const label = data?.label ?? source.node.id;
   const description = data?.description;

@@ -508,6 +508,54 @@ children inside the GL surface instead, and core draws a surface's children
 above it (`useSupports('glOverlay')`) — on X11 that overlay is opaque, so
 give a legend a background of its own.
 
+## In somebody else's GL context: `GlMapLayer`
+
+A map can also be drawn by a component that owns a GL context already — a
+`<Flow>` node whose body is a live map, drawn by the graph's own surface
+(`FlowNodeType.glBody`, [Flow](flow.md)):
+
+```jsx
+import { useGlMapLayer } from '@react-x11/components/maps';
+
+const london = useGlMapLayer({
+  sources: [source],
+  mapStyle: shortbreadStyle(),
+  defaultCamera: { center: { lon: -0.1281, lat: 51.508 }, zoom: 14 },
+  markers,
+  onMarkerClick,
+});
+// …and a node type's `glBody` hands `london` to <Flow renderer="gl">
+```
+
+`useGlMapLayer(props)` takes `<Map>`'s props, less what only a pane of its
+own reads (`style`, `children`, `renderer`), and keeps one `GlMapLayer` for
+the component's life; `new GlMapLayer(props, { app, theme })` is the same
+thing outside React. Nothing about drawing a map changes for it: the camera,
+the gestures, `onCameraChange`, `onMoveEnd`, the markers' hit test and the
+handle (`layer.handle`, `<Map ref>`'s) are the map's one controller, and the
+drawing is the GL renderer's own driver, into a framebuffer of the layer's —
+a colour texture and a depth-stencil renderbuffer, since a fill is a stencil
+pass. Its host asks it for a frame at a size and a scale, and it answers with
+the texture; it asks its host for frames as a map does its `<glarea>`, when
+a tile lands, a glide steps or a label fades in.
+
+Its shape is `<Flow>`'s `FlowGlBody` — `attach`, `detach`, `draw`, `pointer` —
+written out structurally rather than imported, since no component here
+imports another: the app joins the two by returning the layer from `glBody`.
+
+Three things to know:
+
+- **Its GL half arrives with the GL renderer**, by the same dynamic import,
+  when the layer is first drawn. The frame or two before it has, the layer
+  draws nothing, and it asks for a frame once it can.
+- **Its scale is its host's.** Under `<Flow>` the map is laid out in graph
+  units — `frame.scale` is the display's scale times the zoom — so it zooms
+  with the graph as a mounted body does: its labels grow with it, and a zoom
+  at rest draws it again, its label atlas set at the new scale.
+- **It is one host's at a time**, and the host's to let go of
+  (`detach`), which frees what it made in that context; the component that
+  holds it disposes of it as it goes.
+
 ## The decisions
 
 These are the paragraphs that look like gaps and are not.
