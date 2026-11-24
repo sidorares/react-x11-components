@@ -12248,7 +12248,10 @@ function decorationLength(
   const pct = /^(-?\d*\.?\d+)%$/.exec(v);
   if (pct) return (Number(pct[1]) / 100) * ctx.em;
   const len = parseLength(v, ctx);
-  return typeof len === 'number' ? len : undefined;
+  if (typeof len === 'number') return len;
+  // a percentage is of the font size, in a `calc()` as much as alone
+  // (`calc(50% + 4px)`, WPT's text-decoration-thickness-calc)
+  return len !== null && isPct(len) ? resolve(len, ctx.em) : undefined;
 }
 
 /**
