@@ -8886,6 +8886,17 @@ out in its grid's axes (CSS Grid 2, 9), and what is in it is orthogonal, or
 not, by its grid's writing mode: a vertical item of a vertical subgrid of a
 horizontal grid draws its text down the page.
 
+A table in a vertical writing mode in a horizontal parent is one too, and
+its frame is the table, with all of the table's own style turned into the
+frame's axes: its rows run across the page, from the right in
+`vertical-rl` and the left in `vertical-lr`, its columns down it, its
+caption on its block-start side, and its `border-spacing` across its
+columns first, in its own axes, as all three engines have it. The root is a
+bare block around it, an inline-block for an `inline-table`, which keeps
+what places the table in the page's flow and draws nothing, so a table's
+background is painted with its frame, among the layers after the flow,
+where a browser paints it in the flow.
+
 A `vertical-lr` flow is laid out as `vertical-rl`'s and put back across;
 a block in it that runs right to left, a `vertical-rl` one, keeps its lines
 and blocks in its own order, and is moved whole.

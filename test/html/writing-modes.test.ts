@@ -1513,6 +1513,42 @@ test('a flex box in a vertical writing mode lays its row out down the page', asy
   assert.deepStrictEqual(rect('b'), [80, 40, 20, 160]);
 });
 
+test('a table in a vertical writing mode runs its rows across the page and its columns down it', async () => {
+  // CSS Writing Modes 4, 7.3: a table's rows stack along its block axis and
+  // its columns along its inline axis, which in a vertical writing mode run
+  // across the page and down it: its frame is the table, as a vertical
+  // grid's is its grid. Its caption is on its block-start side and its
+  // spacing is across its columns first, both in its own axes
+  const table = (mode: string) =>
+    `<table style="writing-mode:${mode};border-spacing:2px 0">` +
+    `<caption id="${mode}-cap" style="block-size:10px;padding:0">` +
+    '</caption><tr>' +
+    `<td id="${mode}-a" style="block-size:40px;inline-size:20px"></td>` +
+    `<td id="${mode}-b" style="inline-size:30px"></td></tr>` +
+    `<tr><td id="${mode}-c" style="block-size:50px"></td></tr></table>`;
+  const { node } = await render(
+    '<style>body{margin:0}td{padding:0}</style>' +
+      table('vertical-rl') +
+      table('vertical-lr'),
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const r = rectOf(el, id);
+    return [r.x, r.y, r.width, r.height];
+  };
+  // the caption and the first row at its right in vertical-rl, its
+  // columns 2px apart down the page
+  assert.deepStrictEqual(at('vertical-rl-cap'), [90, 0, 10, 56]);
+  assert.deepStrictEqual(at('vertical-rl-a'), [50, 2, 40, 20]);
+  assert.deepStrictEqual(at('vertical-rl-b'), [50, 24, 40, 30]);
+  assert.deepStrictEqual(at('vertical-rl-c'), [0, 2, 50, 20]);
+  // and at its left in vertical-lr
+  assert.deepStrictEqual(at('vertical-lr-cap'), [0, 56, 10, 56]);
+  assert.deepStrictEqual(at('vertical-lr-a'), [10, 58, 40, 20]);
+  assert.deepStrictEqual(at('vertical-lr-b'), [10, 80, 40, 30]);
+  assert.deepStrictEqual(at('vertical-lr-c'), [50, 58, 50, 20]);
+});
+
 test('an edge on half a pixel across a vertical-rl frame is drawn on the column the page draws it on', async () => {
   // the frame's turn runs its block axis backwards across the page, so a
   // half it rounds up the page rounds down, and the box came out a column
