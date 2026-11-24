@@ -1074,6 +1074,40 @@ export function installRaster(
      *  including `hi`, and none where `hi < lo`: the rest is 0. */
     lo?: Int32Array;
     hi?: Int32Array;
+    /** Where each row's coverage is, as runs of local columns that are all
+     *  whole or all partial, worked out the first time a draw asks
+     *  (`segmentsOf`). */
+    segs?: Segments;
+  }
+
+  /** The rectangle a polygon is, where it is four corners on whole pixels
+   *  and its edges run along them. */
+  const pixelRect = (polys: number[][]): number[] | null => {
+    if (polys.length !== 1) return null;
+    const p = polys[0];
+    let n = p.length / 2;
+    if (n === 5 && p[0] === p[8] && p[1] === p[9]) n = 4;
+    if (n !== 4) return null;
+    for (let i = 0; i < 8; i += 1) if (!Number.isInteger(p[i])) return null;
+    const flat =
+      (p[0] === p[2] && p[3] === p[5] && p[4] === p[6] && p[7] === p[1]) ||
+      (p[1] === p[3] && p[2] === p[4] && p[5] === p[7] && p[6] === p[0]);
+    if (!flat) return null;
+    const x0 = Math.min(p[0], p[2], p[4], p[6]);
+    const x1 = Math.max(p[0], p[2], p[4], p[6]);
+    const y0 = Math.min(p[1], p[3], p[5], p[7]);
+    const y1 = Math.max(p[1], p[3], p[5], p[7]);
+    return x1 > x0 && y1 > y0 ? [x0, y0, x1, y1] : null;
+  };
+
+  interface Segments {
+    /** Where each row's runs start in `a`, and one past the last row's. */
+    off: Int32Array;
+    a: Int32Array;
+    b: Int32Array;
+    /** 1 where the run's coverage is 1 throughout, 0 where it is more than
+     *  0 and less than 1 somewhere. */
+    whole: Uint8Array;
   }
 
   const cover = (
@@ -1084,6 +1118,37 @@ export function installRaster(
     left = 0,
     top = 0,
   ): Coverage | null => {
+    const box = pixelRect(polys);
+    if (box) {
+      // a rectangle on whole pixels is 1 inside and 0 outside, by either
+      // rule, which is what the scan below would make of it
+      const x0 = Math.max(left, box[0]);
+      const x1 = Math.min(width, box[2] + 1);
+      const y0 = Math.max(top, box[1]);
+      const y1 = Math.min(height, box[3]);
+      if (x1 <= x0 || y1 <= y0) return null;
+      const w = x1 - x0;
+      const cov = new Float32Array(w * (y1 - y0));
+      const fx1 = Math.min(box[2], width);
+      if (fx1 > x0) {
+        for (let y = 0; y < y1 - y0; y += 1) {
+          cov.fill(1, y * w, y * w + (fx1 - x0));
+        }
+      }
+      const rowLo = new Int32Array(y1 - y0);
+      const rowHi = new Int32Array(y1 - y0).fill(
+        Math.floor(Math.min(box[2] - x0, w)),
+      );
+      return {
+        x0,
+        y0,
+        x1,
+        y1,
+        cov,
+        lo: rowLo,
+        hi: rowHi,
+      };
+    }
     // the edges, top to bottom, with which way each goes
     const ex0: number[] = [];
     const ey0: number[] = [];
@@ -1861,6 +1926,33 @@ export function installRaster(
 
   /** Composite a source colour, premultiplied, at the coverage `c` it has
    *  there, onto a straight RGBA pixel. */
+  /** `blend` for source-over where nothing cuts the draw: the source as
+   *  its premultiplied colour and alpha already scaled by the coverage, and
+   *  the same bytes as `blend` would make of it. */
+  const srcOver = (
+    data: Uint8ClampedArray,
+    o: number,
+    s0: number,
+    s1: number,
+    s2: number,
+    sa: number,
+  ): void => {
+    const da = data[o + 3] / 255;
+    const fd = 1 - sa;
+    let ra = sa + da * fd;
+    const rr = s0 + (data[o] / 255) * da * fd;
+    const rg = s1 + (data[o + 1] / 255) * da * fd;
+    const rb = s2 + (data[o + 2] / 255) * da * fd;
+    if (ra > 1) ra = 1;
+    if (ra <= 0) {
+      data[o] = data[o + 1] = data[o + 2] = data[o + 3] = 0;
+      return;
+    }
+    data[o] = (rr / ra) * 255;
+    data[o + 1] = (rg / ra) * 255;
+    data[o + 2] = (rb / ra) * 255;
+    data[o + 3] = ra * 255;
+  };
   const blend = (
     data: Uint8ClampedArray,
     o: number,
@@ -2155,6 +2247,39 @@ export function installRaster(
     return r;
   };
 
+  /** The pixels of a shadow that the shape drawn over it will cover with its
+   *  own colour, whole, taken out of the shadow's coverage: they are written
+   *  over as `paintShape` does a colour nothing shows through, so the shadow
+   *  under them is never seen, and a window's shadow, which is mostly the
+   *  window, is painted only where it shows. */
+  const holeOut = (
+    target: Bitmap,
+    shape: Coverage,
+    shadow: Coverage,
+    draw: Draw,
+  ): void => {
+    const src = new Float64Array(4);
+    draw.paint.at(0, 0, src);
+    if (src[3] * Math.min(1, Math.max(0, draw.alpha)) < 1) return;
+    const clip = draw.clip;
+    const sw = shape.x1 - shape.x0;
+    const cw = shadow.x1 - shadow.x0;
+    const x0 = Math.max(0, shape.x0, shadow.x0);
+    const x1 = Math.min(target.width, shape.x1, shadow.x1);
+    const y0 = Math.max(0, shape.y0, shadow.y0);
+    const y1 = Math.min(target.height, shape.y1, shadow.y1);
+    for (let y = y0; y < y1; y += 1) {
+      let si = (y - shape.y0) * sw + x0 - shape.x0;
+      let di = (y - shadow.y0) * cw + x0 - shadow.x0;
+      const cut = y * target.width;
+      for (let x = x0; x < x1; x += 1, si += 1, di += 1) {
+        if (shape.cov[si] >= 1 && (!clip || clip[cut + x] >= 1)) {
+          shadow.cov[di] = 0;
+        }
+      }
+    }
+  };
+
   /** A shape's coverage painted into a bitmap, its shadow first where the
    *  context draws one: answers the rectangle it changed. */
   const paintCoverage = (
@@ -2164,6 +2289,9 @@ export function installRaster(
   ): number[] | null => {
     const shadow = shape && draw.shadow ? shadowOf(target, shape, draw) : null;
     if (!shadow) return paintShape(target, shape, draw);
+    if (draw.op === 'source-over' && draw.paint.solid) {
+      holeOut(target, shape!, shadow, draw);
+    }
     const [r, g, b, a] = draw.shadow!.rgba;
     const alpha = a / 255;
     const colour = {
@@ -2212,8 +2340,15 @@ export function installRaster(
     // rectangle is inside the bitmap's, so no pixel asks whether it is, and
     // one the colour covers whole and nothing cuts is the colour, which is
     // every byte `blend` would make of it (its factors are 1 and 0 there)
-    if (!unbounded && draw.paint.solid && draw.op === 'source-over') {
+    if (!unbounded) {
       const sw = shape!.x1 - shape!.x0;
+      const solid = draw.paint.solid;
+      const segs = segmentsOf(shape!);
+      // a solid colour over what is there, the commonest draw: the shape's
+      // rectangle is inside the bitmap's, so no pixel asks whether it is, and
+      // one the colour covers whole and nothing cuts is the colour, which is
+      // every byte `blend` would make of it (its factors are 1 and 0 there)
+      const over = solid && draw.op === 'source-over';
       const full = src[3] * alpha;
       const r255 = src[0] * alpha * 255;
       const g255 = src[1] * alpha * 255;
@@ -2226,27 +2361,19 @@ export function installRaster(
       one[3] = 255;
       const packed = words(one)?.[0] ?? 0;
       const t32 = words(one) ? words(data) : null;
-      const rlo = shape!.lo;
-      const rhi = shape!.hi;
-      for (let py = y0; py < y1; py += 1) {
-        // the columns coverage reaches in this row, where it says
-        let from = x0;
-        let to = x1;
-        if (rlo && rhi) {
-          const r = py - shape!.y0;
-          if (rhi[r] < rlo[r]) continue;
-          from = Math.max(x0, shape!.x0 + rlo[r]);
-          to = Math.min(x1, shape!.x0 + rhi[r] + 1);
-        }
-        let ci = (py - shape!.y0) * sw + from - shape!.x0;
-        let o = (py * width + from) * 4;
+      // where the clip is whole, a row at a time
+      const cutRuns =
+        over && t32 && full >= 1 && clip ? maskRuns(clip, width) : null;
+      const pixels = (py: number, a: number, b: number): void => {
+        let ci = (py - shape!.y0) * sw + a - shape!.x0;
+        let o = (py * width + a) * 4;
         const cut = py * width;
-        for (let px = from; px < to; px += 1, ci += 1, o += 4) {
+        for (let px = a; px < b; px += 1, ci += 1, o += 4) {
           const c = shape!.cov[ci];
           if (c <= 0) continue;
           const k = clip ? clip[cut + px] : 1;
           if (k <= 0) continue;
-          if (k >= 1 && c >= 1 && full >= 1) {
+          if (over && k >= 1 && c >= 1 && full >= 1) {
             if (t32) {
               t32[o >> 2] = packed;
               continue;
@@ -2257,7 +2384,40 @@ export function installRaster(
             data[o + 3] = 255;
             continue;
           }
-          blend(data, o, src, c * alpha, draw.op, k);
+          if (!solid) draw.paint.at(px + 0.5, py + 0.5, src);
+          if (k >= 1 && draw.op === 'source-over') {
+            const cc = c * alpha;
+            srcOver(
+              data,
+              o,
+              src[0] * cc,
+              src[1] * cc,
+              src[2] * cc,
+              src[3] * cc,
+            );
+          } else blend(data, o, src, c * alpha, draw.op, k);
+        }
+      };
+      for (let py = y0; py < y1; py += 1) {
+        const r = py - shape!.y0;
+        for (let i = segs.off[r]; i < segs.off[r + 1]; i += 1) {
+          const a = Math.max(x0, shape!.x0 + segs.a[i]);
+          const b = Math.min(x1, shape!.x0 + segs.b[i]);
+          if (b <= a) continue;
+          if (cutRuns && segs.whole[i] && b - a >= 16) {
+            const wa = Math.max(a, cutRuns[2 * py]);
+            const wb = Math.min(b, cutRuns[2 * py + 1]);
+            if (wb - wa >= 16) {
+              pixels(py, a, wa);
+              t32!.fill(packed, py * width + wa, py * width + wb);
+              pixels(py, wb, b);
+              continue;
+            }
+          } else if (over && !clip && t32 && full >= 1 && segs.whole[i]) {
+            t32.fill(packed, py * width + a, py * width + b);
+            continue;
+          }
+          pixels(py, a, b);
         }
       }
       return [x0, y0, x1, y1];
@@ -2323,11 +2483,12 @@ export function installRaster(
     const o32 = words(out);
     const s32 = words(src);
     const opaque = a === 1;
-    for (let y = y0; y < y1; y += 1) {
-      let i = ((y - dy + sy) * source.width + (x0 - dx + sx)) * 4;
-      let o = (y * target.width + x0) * 4;
-      let ci = y * target.width + x0;
-      for (let x = x0; x < x1; x += 1, i += 4, o += 4, ci += 1) {
+    // pixels of a row from `xa` to `xb`, as the general case has them
+    const row = (y: number, xa: number, xb: number): void => {
+      let i = ((y - dy + sy) * source.width + (xa - dx + sx)) * 4;
+      let o = (y * target.width + xa) * 4;
+      let ci = y * target.width + xa;
+      for (let x = xa; x < xb; x += 1, i += 4, o += 4, ci += 1) {
         const sa = s32 ? s32[i >> 2] >>> 24 : src[i + 3];
         if (!sa) continue;
         const kc = clip ? clip[ci] : 1;
@@ -2347,8 +2508,42 @@ export function installRaster(
         px[1] = (src[i + 1] / 255) * k;
         px[2] = (src[i + 2] / 255) * k;
         px[3] = k;
-        blend(out, o, px, a, 'source-over', kc);
+        if (kc >= 1) srcOver(out, o, px[0] * a, px[1] * a, px[2] * a, k * a);
+        else blend(out, o, px, a, 'source-over', kc);
       }
+    };
+    // where nothing cuts the row, and the image is drawn whole: a word
+    // read and a word written for each pixel nothing shows through
+    const whole = (y: number, xa: number, xb: number): void => {
+      let i = (y - dy + sy) * source.width + (xa - dx + sx);
+      let o = y * target.width + xa;
+      for (let x = xa; x < xb; x += 1, i += 1, o += 1) {
+        const w = s32![i];
+        const sa = w >>> 24;
+        if (sa === 255) o32![o] = w;
+        else if (sa) {
+          const k = sa / 255;
+          px[0] = (src[i * 4] / 255) * k;
+          px[1] = (src[i * 4 + 1] / 255) * k;
+          px[2] = (src[i * 4 + 2] / 255) * k;
+          srcOver(out, o * 4, px[0] * a, px[1] * a, px[2] * a, k * a);
+        }
+      }
+    };
+    const fast = opaque && s32 !== null && o32 !== null;
+    const cutRuns = fast && clip ? maskRuns(clip, target.width) : null;
+    for (let y = y0; y < y1; y += 1) {
+      if (fast && !clip) {
+        whole(y, x0, x1);
+      } else if (cutRuns) {
+        const wa = Math.max(x0, cutRuns[2 * y]);
+        const wb = Math.min(x1, cutRuns[2 * y + 1]);
+        if (wb - wa >= 16) {
+          row(y, x0, wa);
+          whole(y, wa, wb);
+          row(y, wb, x1);
+        } else row(y, x0, x1);
+      } else row(y, x0, x1);
     }
     return [x0, y0, x1, y1];
   };
@@ -2398,6 +2593,73 @@ export function installRaster(
     return evenodd ? (wind & 1) === 1 : wind !== 0;
   };
 
+  /** A mask's rows' longest runs of whole coverage, as `[from, to)` pairs
+   *  of columns of the bitmap, kept by the mask. */
+  const MASK_RUNS = new WeakMap<Float32Array, Int32Array>();
+  const maskRuns = (mask: Float32Array, width: number): Int32Array => {
+    let runs = MASK_RUNS.get(mask);
+    if (runs) return runs;
+    const height = mask.length / width;
+    runs = new Int32Array(height * 2);
+    for (let y = 0; y < height; y += 1) {
+      let best = 0;
+      let from = 0;
+      let at = 0;
+      const row = y * width;
+      for (let x = 0; x <= width; x += 1) {
+        if (x < width && mask[row + x] >= 1) continue;
+        if (x - at > best) {
+          best = x - at;
+          from = at;
+        }
+        at = x + 1;
+      }
+      runs[2 * y] = from;
+      runs[2 * y + 1] = from + best;
+    }
+    MASK_RUNS.set(mask, runs);
+    return runs;
+  };
+  /** A coverage's runs, row by row (`Coverage.segs`): a draw reads and
+   *  writes only the pixels it covers, and a run that is whole is a row of
+   *  words where the colour is opaque. Made once for a shape, which a page
+   *  that draws the same windows each frame draws again. */
+  const segmentsOf = (shape: Coverage): Segments => {
+    if (shape.segs) return shape.segs;
+    const w = shape.x1 - shape.x0;
+    const h = shape.y1 - shape.y0;
+    const off = new Int32Array(h + 1);
+    const a: number[] = [];
+    const b: number[] = [];
+    const whole: number[] = [];
+    for (let y = 0; y < h; y += 1) {
+      off[y] = a.length;
+      const lo = shape.lo ? shape.lo[y] : 0;
+      const hi = shape.hi ? Math.min(w - 1, shape.hi[y]) : w - 1;
+      const row = y * w;
+      let start = lo;
+      let kind = 0;
+      for (let x = lo; x <= hi + 1; x += 1) {
+        const c = x <= hi ? shape.cov[row + x] : 0;
+        const now = c >= 1 ? 2 : c > 0 ? 1 : 0;
+        if (now === kind) continue;
+        if (kind) {
+          a.push(start);
+          b.push(x);
+          whole.push(kind === 2 ? 1 : 0);
+        }
+        start = x;
+        kind = now;
+      }
+    }
+    off[h] = a.length;
+    return (shape.segs = {
+      off,
+      a: Int32Array.from(a),
+      b: Int32Array.from(b),
+      whole: Uint8Array.from(whole),
+    });
+  };
   const makeClipMask = (
     width: number,
     height: number,

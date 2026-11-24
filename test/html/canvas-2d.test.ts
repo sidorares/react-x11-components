@@ -370,3 +370,64 @@ test('a sprite drawn at a device scale, clipped, is the copy the general path ma
   assert.equal(out.same, true);
   assert.ok(out.worst <= 1, `${out.worst} levels from the general path`);
 });
+
+test('a large opaque fill, a ring and a copy of a canvas keep to a clip and to what they cover', async () => {
+  const out = (await inPage(
+    `c.width = 220; c.height = 140;
+     var at2 = function (px, py) { return Array.from(x.getImageData(px, py, 1, 1).data); };
+     x.fillStyle = 'rgb(10, 20, 30)';
+     x.fillRect(0, 0, 220, 140);
+     // a rounded window: the clip cuts a fill that covers all of the canvas
+     x.save();
+     x.beginPath();
+     x.roundRect(20, 10, 180, 120, 30);
+     x.clip();
+     x.fillStyle = 'rgb(200, 100, 50)';
+     x.fillRect(0, 0, 220, 140);
+     x.restore();
+     var fill = [at2(110, 70), at2(5, 5), at2(21, 11), at2(22, 70), at2(19, 70), at2(110, 11), at2(110, 9)];
+     // a ring: only its line is drawn, whatever its box
+     x.fillStyle = 'rgb(0, 0, 0)';
+     x.fillRect(0, 0, 220, 140);
+     x.strokeStyle = 'rgb(255, 0, 0)';
+     x.lineWidth = 2;
+     x.strokeRect(10, 10, 200, 120);
+     var ring = [at2(110, 70), at2(110, 10), at2(10, 70), at2(110, 30)];
+     // a copy of a canvas with a soft edge, under a clip
+     var d = document.createElement('canvas'); d.width = 220; d.height = 140;
+     var y = d.getContext('2d');
+     y.fillStyle = 'rgb(0, 200, 0)';
+     y.fillRect(40, 30, 140, 80);
+     y.fillStyle = 'rgba(0, 0, 255, 0.5)';
+     y.fillRect(0, 0, 40, 140);
+     x.fillStyle = 'rgb(255, 255, 255)';
+     x.fillRect(0, 0, 220, 140);
+     x.save();
+     x.beginPath();
+     x.roundRect(10, 10, 200, 120, 20);
+     x.clip();
+     x.drawImage(d, 0, 0);
+     x.restore();
+     var copy = [at2(100, 70), at2(20, 70), at2(2, 70), at2(100, 20), at2(11, 11)];
+     return { fill: fill, ring: ring, copy: copy };`,
+  )) as Record<string, number[][]>;
+  // inside the window the colour, outside the old, and a corner is cut round
+  assert.deepEqual(out.fill[0], [200, 100, 50, 255]);
+  assert.deepEqual(out.fill[1], [10, 20, 30, 255]);
+  assert.deepEqual(out.fill[2], [10, 20, 30, 255], 'the corner is rounded off');
+  assert.deepEqual(out.fill[3], [200, 100, 50, 255]);
+  assert.deepEqual(out.fill[4], [10, 20, 30, 255]);
+  assert.deepEqual(out.fill[5], [200, 100, 50, 255]);
+  assert.deepEqual(out.fill[6], [10, 20, 30, 255]);
+  // the ring draws its line and nothing inside it
+  assert.deepEqual(out.ring[0], [0, 0, 0, 255]);
+  assert.deepEqual(out.ring[1], [255, 0, 0, 255]);
+  assert.deepEqual(out.ring[2], [255, 0, 0, 255]);
+  assert.deepEqual(out.ring[3], [0, 0, 0, 255]);
+  // the copy: opaque where it is, mixed where it is not, cut by the clip
+  assert.deepEqual(out.copy[0], [0, 200, 0, 255]);
+  assert.deepEqual(out.copy[1], [127, 127, 255, 255]);
+  assert.deepEqual(out.copy[2], [255, 255, 255, 255]);
+  assert.deepEqual(out.copy[3], [255, 255, 255, 255]);
+  assert.deepEqual(out.copy[4], [255, 255, 255, 255]);
+});
