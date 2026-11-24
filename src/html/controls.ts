@@ -160,6 +160,10 @@ export interface ControlRect {
    *  text in and resolves `start` and `end` against, as the page's: inherited
    *  from the window it would be the application's. */
   direction?: 'ltr' | 'rtl';
+  /** A text area's that draws no scrollbar: one whose `overflow-y` is
+   *  `hidden` or `clip`, or whose `scrollbar-width` is `none`. Core's
+   *  `<textarea>` draws its thumb wherever its text is taller than it is. */
+  noScrollbar?: true;
   /** A file input's: its `::file-selector-button`'s, over the button. */
   buttonCursor?: string;
   /** A range's: what its widget is handed (`rangeLook`). */
@@ -386,6 +390,10 @@ export function controlRectsOf(
           box.style.unicodeBidi !== 'plaintext')) && {
         direction: box.style.direction,
       }),
+      ...(box.replaced === 'textarea' &&
+        (box.style.overflowY === 'hidden' ||
+          box.style.overflowY === 'clip' ||
+          box.style.scrollbarWidth === 'none') && { noScrollbar: true }),
       ...(box.replaced === 'file' && {
         buttonCursor: shownCursor(
           (partOf?.(box.el, box.style, 'file-selector-button') ?? box.style)
