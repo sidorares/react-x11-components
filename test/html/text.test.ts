@@ -3013,6 +3013,36 @@ metric(
 );
 
 metric(
+  'text-decoration-skip-ink leaves the glyphs an underline crosses out of it',
+  async () => {
+    // CSS Text Decoration 4: `auto`, the initial value, breaks an underline
+    // where it would cross a descender, and `none` draws it unbroken (WPT's
+    // css-text-decor/text-decoration-skip-ink-001 and -002)
+    const { node } = await render(
+      '<style>body{margin:0;font:20px serif}div{text-decoration:underline}' +
+        '#a{color:#ff0000}#b{color:#0000ff;' +
+        'text-decoration-skip-ink:none}</style>' +
+        '<div id="a">gypsy</div><div id="b">gypsy</div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const fills = await fillsOf(el);
+    const pieces = (color: string) =>
+      fills.filter((f) => f.style === parseColor(color) && f.h <= 2);
+    assert.strictEqual(pieces('#0000ff').length, 1, 'one rule with none');
+    assert.ok(
+      pieces('#ff0000').length > 1,
+      `broken under the descenders: ${pieces('#ff0000').length}`,
+    );
+    // and the pieces leave out what the unbroken rule draws under them
+    const whole = pieces('#0000ff')[0];
+    const drawn = pieces('#ff0000').reduce((sum, f) => sum + f.w, 0);
+    assert.ok(drawn < whole.w, `${drawn} of ${whole.w}`);
+  },
+);
+
+metric(
   'a clamp cuts a layout its last line shares with lines it drops',
   async () => {
     // a float beside the first lines sets the paragraph a line at a time, and

@@ -36,6 +36,7 @@ import {
 } from '../richtext/runs.js';
 import type {
   FillContext,
+  InkGaps,
   LaidLine,
   LaidRun,
   RuleInsets,
@@ -17671,6 +17672,16 @@ function paintRules(
             'text-decoration-skip-spaces',
           )
         : 'start end';
+      const drop = shifted ? ruleDrop(text) : 0;
+      // the glyphs' ink, where an underline leaves it out: a rule a raise
+      // moved is that much further down the glyphs than its line says
+      const gaps: InkGaps | undefined =
+        rules === 'under'
+          ? (top, thickness, first, last) =>
+              skipsInk(textBoxIn(text, first.start, last.end) ?? paragraph)
+                ? inkGapsOf(text.layout, top + drop, thickness)
+                : null
+          : undefined;
       for (const whole of [natural, trailOf(text, natural)]) {
         if (!whole) continue;
         const laid =
@@ -17689,14 +17700,126 @@ function paintRules(
           ctx,
           laid,
           text.drawX + dx,
-          text.drawY + dy + (shifted ? ruleDrop(text) : 0),
+          text.drawY + dy + drop,
           scale,
           rules,
           insets,
+          gaps,
         );
       }
     }
   }
+}
+
+/** Whether the underline under a text box's glyphs leaves them out
+ *  (`text-decoration-skip-ink`, CSS Text Decoration 4): `auto`, the initial
+ *  value, and `all`, as the text's own style has it, which is its element's
+ *  or a `::marker`'s. */
+function skipsInk(box: Box): boolean {
+  const passive = box.style.passiveInherited;
+  return (
+    !passive || passiveValue(passive, 'text-decoration-skip-ink') !== 'none'
+  );
+}
+
+/** The first text box of a text's between two offsets of its layout: past
+ *  what is no box's, the bidi control a marker is isolated in. */
+function textBoxIn(text: LineText, from: number, to: number): Box | null {
+  const boxAt = text.spans.boxAt;
+  if (!boxAt) return null;
+  for (let at = from; at < to; at += 1) {
+    const box = boxAt.call(text.spans, at);
+    if (box) return box;
+  }
+  return null;
+}
+
+/** A text layout's coverage (`layout.coverage`), a byte a pixel, `pad`
+ *  pixels round the layout's box. Structural: an engine may have none. */
+interface CoveredLayout {
+  coverage?(options: { pad: number }): {
+    width: number;
+    height: number;
+    data: Uint8Array;
+  } | null;
+}
+
+/** How far round a layout its coverage is asked for: what a glyph draws
+ *  past the layout's box, an italic's overhang or a descender. */
+const INK_PAD = 4;
+
+/** How far an underline stays from the ink it leaves out, as a multiple of
+ *  its thickness, and the most it is in pixels. */
+const INK_CLEARANCE = 1;
+const INK_CLEARANCE_MAX = 13;
+
+/** What each layout's underlines leave out, by the band they cross: kept
+ *  for the layout's life, so a repaint asks the engine nothing again. */
+const INK_GAPS = new WeakMap<object, Map<string, readonly number[] | null>>();
+
+/** The last layout whose coverage was read, and what it came to: a
+ *  paragraph's lines ask for it in turn, and its raster is a byte a pixel
+ *  of all of it, which nothing keeps past what the next asks. */
+let coverageRead: {
+  layout: object;
+  raster: ReturnType<NonNullable<CoveredLayout['coverage']>>;
+} | null = null;
+
+/**
+ * The stretches across a layout an underline `thickness` thick whose top is
+ * `top` down it leaves out for the glyphs it would cross, in the layout's
+ * coordinates, a start and an end each; null where the engine has no
+ * coverage to read, which draws the rule unbroken, or nothing is crossed.
+ */
+function inkGapsOf(
+  layout: object,
+  top: number,
+  thickness: number,
+): readonly number[] | null {
+  let kept = INK_GAPS.get(layout);
+  if (!kept) INK_GAPS.set(layout, (kept = new Map()));
+  const key = `${top} ${thickness}`;
+  const known = kept.get(key);
+  if (known !== undefined) return known;
+  if (coverageRead?.layout !== layout) {
+    coverageRead = {
+      layout,
+      raster: (layout as CoveredLayout).coverage?.({ pad: INK_PAD }) ?? null,
+    };
+  }
+  const raster = coverageRead.raster;
+  const gaps = raster ? gapsAcross(raster, top, thickness) : null;
+  kept.set(key, gaps);
+  return gaps;
+}
+
+/** The columns of a coverage raster with ink in the rows from `top` down
+ *  `thickness`, widened by the clearance and joined where they meet. */
+function gapsAcross(
+  raster: { width: number; height: number; data: Uint8Array },
+  top: number,
+  thickness: number,
+): readonly number[] | null {
+  const { width, height, data } = raster;
+  // the rows the rule is drawn on, which it is drawn rounded to
+  const y0 = Math.max(0, Math.round(top) + INK_PAD);
+  const y1 = Math.min(height, Math.round(top) + thickness + INK_PAD);
+  if (y1 <= y0) return null;
+  const clear = Math.min(INK_CLEARANCE * thickness, INK_CLEARANCE_MAX);
+  const gaps: number[] = [];
+  for (let x = 0; x < width; x += 1) {
+    let ink = false;
+    for (let y = y0; y < y1 && !ink; y += 1) ink = data[y * width + x] > 0;
+    if (!ink) continue;
+    const from = x - INK_PAD - clear;
+    const to = x + 1 - INK_PAD + clear;
+    if (gaps.length && from <= gaps[gaps.length - 1]) {
+      gaps[gaps.length - 1] = to;
+    } else {
+      gaps.push(from, to);
+    }
+  }
+  return gaps.length ? gaps : null;
 }
 
 /** Whether a text is at its line's start, and at its end, by where in the

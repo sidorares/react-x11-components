@@ -4357,6 +4357,22 @@ Two things it changed elsewhere, both extractions rather than copies:
   two directories need the code-point/code-unit conversions. Exactly the
   promotion path "Layout" describes for `src/internal/`.
 
+**An underline leaves out the glyphs it crosses, from the engine's coverage
+of the layout** (`text-decoration-skip-ink`, `inkGapsOf` in `paint.ts`, the
+`InkGaps` `paintRunRules` takes). `auto` is the initial value, so every
+underlined link on a page goes this way: the columns of `layout.coverage()`
+with ink in the rule's band, widened by its thickness, are cut out of it. An
+engine that answers null draws the rule unbroken, as before. Three things
+are load-bearing. **What it leaves out is kept by layout and band**
+(`INK_GAPS`), so a repaint asks the engine nothing: reading the coverage is
+some 0.75 ms a paragraph of links on ntk, paid once a layout, and a layout
+at another width pays it again. **The value is the text's own**, read from
+the text box under the stretch's runs (`textBoxIn`) — the decorated
+element's or a `::marker`'s — and not the block's: a `<u>` with
+`text-decoration-skip-ink: none` keeps its rule whole. And **a rule's pieces
+go to the context as one list** where it takes one (`fillRects`): a word
+with descenders is several pieces, and a page of links thousands.
+
 **Resolving a URL is the component's; fetching one is not.** A host cannot
 resolve a `url()` in a linked stylesheet: by the time a background is asked
 for it is a computed value, and nothing says which sheet it was written in.
