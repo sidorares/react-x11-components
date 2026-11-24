@@ -599,6 +599,61 @@ export class SvgDrawing {
     this._target = target;
   }
 
+  private _luminance: SvgDrawing | null = null;
+
+  /**
+   * The image as a luminance mask layer takes it (CSS Masking 1, 7.3):
+   * white, at the luminance times the alpha of what it draws. A drawing of
+   * its own, whose root holds what this one's does in a `<mask>`, which
+   * `SvgView` composites as a luminance mask, over a white rectangle the
+   * size of its viewport. Itself for a drawing in the document, or one
+   * shown through a fragment's view.
+   */
+  luminance(): SvgDrawing {
+    if (!this._standalone || this._target) return this;
+    if (this._luminance) return this._luminance;
+    const root = this._root;
+    const box = viewBoxOf(root);
+    const region: Record<string, string> = box
+      ? {
+          x: String(box[0]),
+          y: String(box[1]),
+          width: String(box[2]),
+          height: String(box[3]),
+        }
+      : { x: '0', y: '0', width: '100%', height: '100%' };
+    // an id the image is unlikely to have: a space, as a copy's has
+    // (`CLIP_COPY`), would end the `url()` that names it
+    const id = '-rx-luminance';
+    const mask = new Element('mask', {
+      id,
+      maskUnits: 'userSpaceOnUse',
+      ...region,
+    });
+    for (const child of root.children) {
+      const copy = cloneNode(child, true);
+      copy.parent = mask;
+      mask.children.push(copy);
+    }
+    const ground = new Element('rect', {
+      ...region,
+      fill: 'white',
+      mask: `url(#${id})`,
+    });
+    const top = new Element(root.name, { ...root.attribs }, [mask, ground]);
+    mask.parent = top;
+    ground.parent = top;
+    mask.prev = null;
+    mask.next = ground;
+    ground.prev = mask;
+    for (let i = 0; i < mask.children.length; i += 1) {
+      mask.children[i].prev = mask.children[i - 1] ?? null;
+      mask.children[i].next = mask.children[i + 1] ?? null;
+    }
+    this._luminance = new SvgDrawing(top, this.intrinsics, true, null);
+    return this._luminance;
+  }
+
   /**
    * Draw into a rectangle — the box's content box, in device pixels —
    * clipped to it. The `viewBox`, where there is one, is fitted to it as

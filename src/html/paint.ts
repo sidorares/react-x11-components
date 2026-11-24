@@ -4795,11 +4795,78 @@ const MASK_DRAWINGS = new WeakMap<
   { generation: number; drawings: Map<string, SvgDrawing> }
 >();
 
+/** The mask layers whose `mask-mode` is `luminance`: what they are
+ *  composited with is their luminance times their alpha (CSS Masking 1,
+ *  7.3), which is the alpha of a layer made white where the layer has its
+ *  luminance. A gradient is made so as the layer is (`luminanceGradient`),
+ *  and an image as it is drawn (`luminanceImage`). */
+const LUMINANCE_LAYERS = new WeakSet<ComputedStyle>();
+
+/** Rec. 709's weights on gamma-encoded sRGB, as browsers take a mask's
+ *  luminance (CSS Masking 1, 7.3; SVG's `luminanceToAlpha`). */
+function luminance(r: number, g: number, b: number): number {
+  return 0.2125 * r + 0.7154 * g + 0.0721 * b;
+}
+
+/** A gradient whose stops are white at their luminance times their alpha:
+ *  stops interpolated premultiplied, as `addStops` hands them over, come to
+ *  the luminance the colours between them have, since it is linear in
+ *  them. */
+function luminanceGradient(gradient: Gradient, current: string): Gradient {
+  const stops = gradient.stops.map((stop) => {
+    const rgba = rgbaOf(inkColor(stop.color, current));
+    const a = rgba ? luminance(rgba[0], rgba[1], rgba[2]) * rgba[3] : 0;
+    return { ...stop, color: `rgba(255, 255, 255, ${a})` };
+  });
+  return { ...gradient, stops } as Gradient;
+}
+
+/** A decoded image white at each pixel's luminance times its alpha, made
+ *  once an image; the image itself where its pixels are not ours to read,
+ *  as a native one's are not. */
+const LUMINANCE_IMAGES = new WeakMap<object, unknown>();
+function luminanceImage(image: unknown): unknown {
+  if (image instanceof SvgDrawing) return image.luminance();
+  const raster = image as {
+    width?: number;
+    height?: number;
+    data?: Uint8Array | Uint8ClampedArray;
+    constructor: new (rgba: {
+      width: number;
+      height: number;
+      data: Uint8ClampedArray;
+    }) => unknown;
+  } | null;
+  if (!raster || typeof raster !== 'object') return image;
+  const width = raster.width ?? 0;
+  const height = raster.height ?? 0;
+  const from = raster.data;
+  if (!from || from.length !== width * height * 4) return image;
+  let out = LUMINANCE_IMAGES.get(raster);
+  if (out === undefined) {
+    const data = new Uint8ClampedArray(from.length);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = data[i + 1] = data[i + 2] = 255;
+      data[i + 3] =
+        (luminance(from[i], from[i + 1], from[i + 2]) * from[i + 3]) / 255;
+    }
+    try {
+      out = new raster.constructor({ width, height, data });
+    } catch {
+      out = image;
+    }
+    LUMINANCE_IMAGES.set(raster, out);
+  }
+  return out;
+}
+
 /**
  * The options a mask layer is painted with: one whose image is a
  * `url(#id)` is the `<mask>` it names in the document, drawn over the box
  * (CSS Masking 1, 7.1), and a transparent layer where it names none, as
- * an image that cannot be had is (7.2).
+ * an image that cannot be had is (7.2); and a luminance layer's images
+ * handed over as their luminance. A `url(#id)` layer's drawing is the
+ * `<mask>` composited by the layer's mode already, so is not made one again.
  */
 function maskLayerOptions(
   box: Box,
@@ -4807,8 +4874,17 @@ function maskLayerOptions(
   options: PaintOptions,
 ): PaintOptions {
   const url = urlOf(layer.backgroundImage);
-  if (url === null || url[0] !== '#') return options;
   const images = options.backgroundImageFor;
+  if (url === null || url[0] !== '#') {
+    if (!LUMINANCE_LAYERS.has(layer) || !images) return options;
+    return {
+      ...options,
+      backgroundImageFor: (asked, at) => {
+        const loaded = images(asked, at);
+        return loaded && { ...loaded, image: luminanceImage(loaded.image) };
+      },
+    };
+  }
   return {
     ...options,
     backgroundImageFor: (asked, at) => {
@@ -4863,6 +4939,16 @@ function maskLayersOf(style: ComputedStyle): ComputedStyle[] {
     layer.backgroundImage = urlImageOf(image);
     layer.backgroundGradient = gradientOf(image);
     LAYER_MODES.set(layer, nth(mask.modes, i));
+    // `match-source` is `alpha` for anything but a `<mask>` (7.3)
+    if (nth(mask.modes, i) === 'luminance') {
+      LUMINANCE_LAYERS.add(layer);
+      if (layer.backgroundGradient) {
+        layer.backgroundGradient = luminanceGradient(
+          layer.backgroundGradient,
+          style.color,
+        );
+      }
+    }
     layer.backgroundRepeat = nth(mask.repeats, i);
     layer.backgroundSize = nth(mask.sizes, i);
     layer.backgroundAttachment = 'scroll';

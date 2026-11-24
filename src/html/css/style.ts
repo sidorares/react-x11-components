@@ -7076,10 +7076,8 @@ function maskBox(text: string): VisualBox | null {
  * The `mask` shorthand (CSS Masking 1, 7.10): a layer a comma group, each
  * an image, a position with a size after a `/`, a repeat, one box for the
  * origin and the clip or two, `no-clip`, a compositing operator and a
- * mode, each at most once, in any order. The mode is read and not
- * honoured: an image masks by its alpha, which is what `match-source`
- * makes of one. Null where a layer is not one, which drops the
- * declaration.
+ * mode, each at most once, in any order. Null where a layer is not one,
+ * which drops the declaration.
  */
 /** Whether the `mask` shorthand takes a value, as the cascade reads it. */
 export function maskShorthandTakes(value: string, ctx: UnitContext): boolean {
