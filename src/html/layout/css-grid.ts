@@ -39,6 +39,7 @@ import type {
   GridTemplate,
   GridTrack,
   SubgridNames,
+  WrittenTrack,
 } from '../css/style.js';
 import { CONTAIN_LAYOUT, CONTAIN_PAINT } from '../css/style.js';
 import { Box, GRID_TRACKS, inOrder, isBlank } from './boxes.js';
@@ -1304,20 +1305,27 @@ function planGrid(
     leadRows + explicitRows,
   );
   const explicit = rowList.tracks;
+  const autoCol = implicitTrack(
+    style.gridAutoColumnsWritten,
+    style.gridAutoColumns,
+  );
+  const autoRow = implicitTrack(style.gridAutoRowsWritten, style.gridAutoRows);
   const cols: GridTrack[] = [];
-  for (let c = 0; c < leadCols; c += 1) cols.push(style.gridAutoColumns);
+  for (let c = 0; c < leadCols; c += 1) cols.push(autoCol(c - leadCols));
   cols.push(...template.tracks);
   // an item placed past the explicit grid makes tracks of its own
   const widest = items.reduce(
     (n, item) => Math.max(n, item.col + item.cols),
     Math.max(1, leadCols + explicitCols),
   );
-  while (cols.length < widest) cols.push(style.gridAutoColumns);
+  while (cols.length < widest) {
+    cols.push(autoCol(cols.length - leadCols - template.tracks.length));
+  }
   const allRowDefs: GridTrack[] = [];
   for (let r = 0; r < allRows; r += 1) {
     allRowDefs.push(
       (r >= leadRows ? explicit[r - leadRows] : undefined) ??
-        style.gridAutoRows,
+        autoRow(r < leadRows ? r - leadRows : r - leadRows - explicit.length),
     );
   }
   // the subgrids among the items, in the lines they span
@@ -2779,6 +2787,22 @@ export function rowItem(
       );
     },
   };
+}
+
+/**
+ * The tracks `grid-auto-columns` or `grid-auto-rows` sizes, by where each
+ * is from the explicit grid's edge (CSS Grid 1, 7.6): the first past its
+ * end takes the first size of the list and on in turn, and the last before
+ * its start the last size and back. Only the first was taken, so
+ * `grid-auto-columns: 0px 100%` made every implicit column 0px wide.
+ */
+function implicitTrack(
+  written: WrittenTrack[] | null,
+  first: GridTrack,
+): (from: number) => GridTrack {
+  if (!written || written.length < 2) return () => first;
+  const n = written.length;
+  return (from) => written[((from % n) + n) % n].track;
 }
 
 /**
