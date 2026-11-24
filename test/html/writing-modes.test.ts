@@ -1489,6 +1489,33 @@ test('a flex box in a vertical writing mode lays its row out down the page', asy
   assert.deepStrictEqual(rect('b'), [80, 40, 20, 160]);
 });
 
+test('a vertical line lines up what is on it in another font by its central baseline', async () => {
+  // CSS Writing Modes 4, 4.2: a vertical line's dominant baseline is the
+  // central one where its text is not set sideways, so a smaller span and
+  // an inline-table in a larger one share their middles across the page,
+  // as they share their alphabetic baselines in a horizontal line
+  const { node } = await render(
+    '<style>body{margin:0}div{writing-mode:vertical-rl;font-size:40px}' +
+      '</style><div><span id="big">x</span><span id="small" ' +
+      'style="font-size:10px">x</span><span id="table" ' +
+      'style="display:inline-table;font-size:20px">x</span></div>',
+  );
+  const el = view(node);
+  const middle = (id: string) => {
+    const r = rectOf(el, id);
+    return r.x + r.width / 2;
+  };
+  const big = middle('big');
+  assert.ok(
+    Math.abs(middle('small') - big) < 0.5,
+    `small at ${middle('small')}, big at ${big}`,
+  );
+  assert.ok(
+    Math.abs(middle('table') - big) < 0.5,
+    `table at ${middle('table')}, big at ${big}`,
+  );
+});
+
 test('an edge on half a pixel across a vertical-rl frame is drawn on the column the page draws it on', async () => {
   // the frame's turn runs its block axis backwards across the page, so a
   // half it rounds up the page rounds down, and the box came out a column

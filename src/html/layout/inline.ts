@@ -1422,6 +1422,10 @@ function linesOf(
   const vertical =
     framed.any && block.style.writingMode !== 'horizontal-tb' && inFrame(block);
   if (vertical) uprightItems(items, fonts, block.style.writingMode);
+  // a vertical line's dominant baseline is the central one, where its text
+  // is not set sideways (CSS Writing Modes 4, 4.2): what is on it in
+  // another font is lined up by its middle
+  const central = vertical && centralBaseline(block.style);
   const apart = vertical && block.style.writingMode === 'vertical-lr';
   // A block that does not wrap holding text that does (CSS Text 3, 5.1:
   // whether a line breaks between two characters is the call of the
@@ -1546,6 +1550,7 @@ function linesOf(
       hasEdges = true;
       if (
         item.box.style.verticalAlign !== 'baseline' ||
+        (central && fonts && offCentre(fonts, item.box)) ||
         ownsLeading(fonts, block.style, item.box.style) ||
         tallerStrut(fonts, block.style, item.box)
       ) {
@@ -2051,7 +2056,8 @@ function linesOf(
   // A 1.4em guess put a line of `line-height: 0` below floats it fitted
   // beside.
   const guess = strut ? strut.ascent + strut.descent : style.fontSize * 1.4;
-  const lifts = raised && fonts ? new Lifts(fonts, block.style) : null;
+  const lifts =
+    raised && fonts ? new Lifts(fonts, block.style, ownStyle, central) : null;
   const restShift = alignShift(style.textAlign, rtl);
   const lastShift = alignShift(lastAlign, rtl);
   // a justified line fills its room, whatever made it a piece at a time
@@ -5276,9 +5282,12 @@ function atomicRaise(
   const va = box.style.verticalAlign;
   switch (va) {
     case 'baseline':
-      return vertical && centralBaseline(parent) && ownBaseline(box) === null
+      if (!vertical || !centralBaseline(parent)) return 0;
+      // by its middle where it has no baseline, and by its own central
+      // one where it has: its first or last line's, in its own font
+      return ownBaseline(box) === null
         ? centred(fonts, box, parent)
-        : 0;
+        : centralLift(fonts, parent) - centralLift(fonts, box.style);
     case 'top':
     case 'bottom':
       return 0;
@@ -5313,6 +5322,23 @@ function centralBaseline(style: ComputedStyle): boolean {
     mode !== 'sideways-rl' &&
     mode !== 'sideways-lr'
   );
+}
+
+/** Whether an inline box's font has another central baseline than its
+ *  parent's, which a vertical line lines it up by (`centralBaseline`). */
+function offCentre(fonts: FontsLike, box: Box): boolean {
+  const parent = box.parent;
+  return (
+    parent !== null &&
+    centralLift(fonts, box.style) !== centralLift(fonts, parent.style)
+  );
+}
+
+/** How far a font's central baseline is above its alphabetic one: half
+ *  way between its ascent and its descent. */
+function centralLift(fonts: FontsLike, style: ComputedStyle): number {
+  const face = faceExtent(fonts, style);
+  return (face.ascent - face.descent) / 2;
 }
 
 /** How far an atomic set by its middle on its parent's central baseline is
@@ -6085,7 +6111,13 @@ function collect(
             child.style.borderRadius.some((r) => r !== 0)) ||
           laidApart(child.style) ||
           child.style.verticalAlign !== 'baseline' ||
-          (fonts !== null && ownsLeading(fonts, block, child.style));
+          (fonts !== null && ownsLeading(fonts, block, child.style)) ||
+          // and one a vertical line lines up by its own middle
+          (fonts !== null &&
+            framed.any &&
+            block.writingMode !== 'horizontal-tb' &&
+            centralBaseline(block) &&
+            offCentre(fonts, child));
         if (edged) {
           out.push({ kind: 'edge', box: child, side: 'start', width: start });
         }
@@ -9974,6 +10006,9 @@ class Lifts {
     /** A box's style on the lines these are for: its own, or the one it
      *  has on a first line (`firstLineSetting`). */
     private readonly styleOf: (box: Box) => ComputedStyle = ownStyle,
+    /** Whether the lines have the central baseline for their dominant one
+     *  (`centralBaseline`), which a box on its baseline is lined up by. */
+    private readonly central = false,
   ) {}
 
   /** Where a text goes, or null for one that is on the line's baseline and
@@ -10076,6 +10111,11 @@ class Lifts {
     const size = this.styleOf(parent).fontSize;
     switch (va) {
       case 'baseline':
+        // its middle on its parent's, both above their alphabetic ones
+        return this.central
+          ? centralLift(this.fonts, this.styleOf(parent)) -
+              centralLift(this.fonts, this.styleOf(box))
+          : 0;
       case 'top':
       case 'bottom':
         return 0;
