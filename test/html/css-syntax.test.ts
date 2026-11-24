@@ -356,6 +356,29 @@ test('@import is collected rather than followed', () => {
   assert.strictEqual(sheet.rules.length, 1);
 });
 
+test("an @import's URL is read with its escapes, to the end of its url()", () => {
+  // cascade-import-001: a data: sheet that imports another has a `\(` and a
+  // `\)` in its url(), which the URL cut at
+  const sheet = parseStylesheet(
+    '@import url(data:text/css,@import%20url\\(a.css\\);) (min-width: 500px); ' +
+      '@import "b\\.css"; @import url( c.css ); p { color: red }',
+  );
+  assert.deepStrictEqual(sheet.imports, [
+    'data:text/css,@import%20url(a.css);',
+    'b.css',
+    'c.css',
+  ]);
+  assert.deepStrictEqual(
+    sheet.importConditions.map((c) => c === null),
+    [false, true, true],
+  );
+  // a bare word is no URL, and a bad url() imports nothing
+  const bad = parseStylesheet('@import d.css; @import url(e f.css); p {}');
+  assert.deepStrictEqual(bad.imports, []);
+  // the end of the sheet closes a string it leaves open
+  assert.deepStrictEqual(parseStylesheet('@import "g.css').imports, ['g.css']);
+});
+
 test('a broken rule does not eat the rest of the sheet', () => {
   const sheet = parseStylesheet('p { color: } h1 { color: red }');
   const h1 = sheet.rules.find((r) => r.selector === 'h1');

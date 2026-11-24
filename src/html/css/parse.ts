@@ -3090,9 +3090,35 @@ function splitTopLevel(text: string, at: string): string[] {
   return out;
 }
 
+/**
+ * An `@import`'s URL, a `url()` or a string, as CSS Syntax 3 reads it, and
+ * the rest of its prelude after it. An unquoted `url()` runs to its `)` with
+ * its escapes resolved, so `url(data:text/css,url\(a\))` is one URL and not
+ * one cut at the first `)`; null where the prelude starts with neither, or
+ * the URL is a bad one.
+ */
+function importTarget(
+  prelude: string,
+): { url: string | null; rest: string } | null {
+  const s = prelude.replace(/^\s+/, '');
+  let end: number;
+  let url: string | null | undefined;
+  if (/^url\(/i.test(s)) {
+    end = urlEnd(s, 3);
+    url = parseUrl(s.slice(0, end));
+  } else if (s[0] === '"' || s[0] === "'") {
+    end = stringEnd(s, 0);
+    // a newline before its quote makes it a bad string; the end of the
+    // sheet closes it (CSS Syntax 3, 4.3.5)
+    if (end < s.length && s[end - 1] !== s[0]) return null;
+    const closed = end > 1 && s[end - 1] === s[0];
+    url = parseUrl(`url(${s.slice(0, end)}${closed ? '' : s[0]})`);
+  } else return null;
+  return url === undefined ? null : { url, rest: s.slice(end) };
+}
+
 function importUrl(prelude: string): string | null {
-  const m = /^\s*(?:url\(\s*)?["']?([^"')\s]+)["']?\s*\)?/.exec(prelude);
-  return m ? m[1] : null;
+  return importTarget(prelude)?.url ?? null;
 }
 
 /**
@@ -3131,11 +3157,7 @@ export function importLayerOf(afterUrl: string): {
  * once.
  */
 function importConditions(prelude: string): MediaCondition[] | null | false {
-  const m =
-    /^\s*(?:url\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)|"[^"]*"|'[^']*')(.*)$/s.exec(
-      prelude,
-    );
-  let { rest } = importLayerOf(m?.[1] ?? '');
+  let { rest } = importLayerOf(importTarget(prelude)?.rest ?? '');
   // `supports()` is a condition, or a declaration with no brackets of its
   // own (CSS Cascade 5, 2.1), ahead of the media
   const supports = /^\s*supports\(/i.exec(rest);
