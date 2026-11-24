@@ -1718,6 +1718,28 @@ test("vertical-align moves a horizontal cell's content down a vertical table, al
   }
 });
 
+test("a vertical-rl root element stands against the viewport's right, as wide as what it holds", async () => {
+  // CSS Writing Modes 4, 8: the initial containing block takes the root's
+  // writing mode, whose block axis starts at its right, so the root is
+  // placed there, and an `auto` width, its block size, is what it holds
+  // (CSS 2.1 10.3.3) — where the root had filled the viewport across, and
+  // its background was positioned and sized from the viewport's left
+  const root = async (style: string) => {
+    const { node, result } = await render(
+      `<html id="root" style="writing-mode:vertical-rl;${style}"><body ` +
+        'style="margin:0"><div style="width:50px;height:20px"></div>' +
+        '</body></html>',
+      400,
+    );
+    const el = view(node);
+    const rect = el.elementRect(findById(el.document, 'root')!)!;
+    await result.unmount();
+    return [rect.x, rect.width];
+  };
+  assert.deepStrictEqual(await root(''), [350, 50], 'as wide as its content');
+  assert.deepStrictEqual(await root('width:100px'), [300, 100], 'its own');
+});
+
 test('an edge on half a pixel across a vertical-rl frame is drawn on the column the page draws it on', async () => {
   // the frame's turn runs its block axis backwards across the page, so a
   // half it rounds up the page rounds down, and the box came out a column
