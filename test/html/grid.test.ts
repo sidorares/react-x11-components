@@ -285,6 +285,28 @@ test('an auto repetition counts a greatest size under its least one as the least
   assert.deepStrictEqual(at('c4'), [100, 40]);
 });
 
+test('an auto repetition with no size to count against fills the least size, its own or through its ratio', async () => {
+  // CSS Grid 1, 7.2.3.2: as few as reach the grid's least size; and a
+  // `min-height` reaches the columns through `aspect-ratio`. A float of
+  // `repeat(auto-fill, 50px)` had one column whatever its least width was
+  // (WPT's grid-auto-repeat-aspect-ratio-001)
+  const { node } = await render(
+    '<style>body{margin:0}.g{display:grid;float:left;clear:left;' +
+      'grid-template-columns:repeat(auto-fill,50px)}</style>' +
+      '<div id="a" class="g" style="min-width:60px"></div>' +
+      '<div id="b" class="g" style="aspect-ratio:1/1;min-height:60px"></div>' +
+      '<div id="c" class="g" style="min-width:60px;column-gap:10px"></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').width, 100, 'two columns reach 60px');
+  assert.deepStrictEqual(
+    [boxOf(el, 'b').width, boxOf(el, 'b').height],
+    [100, 100],
+    'and through its ratio',
+  );
+  assert.strictEqual(boxOf(el, 'c').width, 110, 'a gap between them');
+});
+
 test("a grid's gaps carry its rules, down its column gaps and across its row gaps", async () => {
   // the column gaps are at 100 to 120 and 220 to 240, the row gap at 50
   // to 70; each rule on its gap's middle, the grid's length, through the

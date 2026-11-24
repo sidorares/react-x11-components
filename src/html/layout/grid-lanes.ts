@@ -88,6 +88,7 @@ import {
   subgridAxisOf,
   trackList,
   tracksOf,
+  leastAlong,
 } from './css-grid.js';
 import type { Item } from './css-grid.js';
 import { gridLines, placement, withLead } from './grid-lines.js';
@@ -274,7 +275,13 @@ export function layoutGridLanes(
   const lay = (repetitions?: number) => {
     const template = sub
       ? inherited(sub)
-      : trackList(source, gridSize, gridGap, repetitions);
+      : trackList(
+          source,
+          gridSize,
+          gridGap,
+          repetitions,
+          leastAlong(box, rows),
+        );
     const explicit = sub
       ? sub.lines.tracks
       : Math.max(
