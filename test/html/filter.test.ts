@@ -451,6 +451,35 @@ test('a filtered image is drawn through the colour functions, and so is a filter
   });
 });
 
+test("an SVG image is drawn through its root's filter", async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // Filter Effects 1, 5: a filter applies to the root of an SVG image as to
+  // any element. SvgView draws none, and the image was drawn unfiltered
+  // (WPT's filter-effects/svg-image-root-filter)
+  const svg = new TextEncoder().encode(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"' +
+      ' style="filter: grayscale()"><rect width="40" height="20"' +
+      ' fill="#ff0000"/></svg>',
+  );
+  const sheet = new TextEncoder().encode(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">' +
+      '<style>svg { filter: invert(1) }</style><rect width="40"' +
+      ' height="20" fill="#ff0000"/></svg>',
+  );
+  const { result } = await renderWithBytes(
+    '<body style="margin:0;background:#ffffff">' +
+      '<img src="a.svg" style="display:block">' +
+      '<img src="b.svg" style="display:block">',
+    { 'a.svg': svg, 'b.svg': sheet },
+  );
+  await waitForPixel(result.ctx, 10, 10, '#363636', {
+    message: 'by its style',
+  });
+  await waitForPixel(result.ctx, 10, 30, '#00ffff', {
+    message: 'by its own style sheet',
+  });
+});
+
 test('a filter at 2x is run over the device pixels the box covers, and no more', async (t) => {
   if (!FONTS) return t.skip('no font files for the in-process server');
   const { result } = await render2x(
