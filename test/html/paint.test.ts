@@ -1491,6 +1491,32 @@ metric(
 );
 
 metric(
+  'a <mask> takes the mask-type a rule gives it, as it takes the attribute',
+  async () => {
+    // CSS Masking 1, 7.3.1: under `mask-mode: match-source` a layer is the
+    // mask's `mask-type`, which a style sheet may set as well as the
+    // attribute; read from the attribute alone, a black and opaque mask
+    // was its luminance, and hid the box (WPT mask-mode-to-mask-type), and
+    // so it did for a shape in a drawing that names the mask
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0;background:#ffffff}div{width:40px;height:20px;' +
+        'background:#ff0000;mask-image:url(#m)}#m{mask-type:alpha}' +
+        `</style><div></div><svg ${SVG_NS} width="40" height="20">` +
+        '<mask id="m"><rect width="40" height="20" fill="#000000"/></mask>' +
+        '<rect width="40" height="20" fill="#ff0000" mask="url(#m)"/></svg>',
+      {},
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 20, 10, '#ff0000', {
+      message: 'a box masked by alpha',
+    });
+    await expectPixel(ctx, 20, 30, '#ff0000', {
+      message: 'a shape masked by alpha',
+    });
+  },
+);
+
+metric(
   "a mask layer of mask-mode luminance is its image's luminance",
   async () => {
     // CSS Masking 1, 7.3: luminance times alpha, where every layer was taken

@@ -169,6 +169,9 @@ const PROPS: Record<string, boolean> = {
   rx: false,
   ry: false,
   d: false,
+  // what a `<mask>` is composited by, where a mask layer's `mask-mode`
+  // leaves it to the mask (CSS Masking 1, 7.3.1)
+  'mask-type': false,
 };
 
 /** The elements each geometry property applies to (SVG 2, 10 and 9.2–9.4;
@@ -256,6 +259,7 @@ const INITIAL: Record<string, string> = {
   rx: 'auto',
   ry: 'auto',
   d: 'none',
+  'mask-type': 'luminance',
   'font-size': 'medium',
   'font-style': 'normal',
   'font-weight': '400',
@@ -289,6 +293,7 @@ export const SHAPE_TAGS: ReadonlySet<string> = new Set([
   'image',
   'stop',
   'clippath',
+  'mask',
 ]);
 
 /** What a shape's values are read against: the drawing's own `color` and
@@ -461,6 +466,10 @@ export function shapeValue(
       if (value.toLowerCase() === 'none') return 'none';
       const path = /^path\(\s*(["'])([^]*)\1\s*\)$/i.exec(value);
       return path ? `path(${path[1]}${path[2]}${path[1]})` : null;
+    }
+    case 'mask-type': {
+      const v = value.toLowerCase();
+      return v === 'alpha' || v === 'luminance' ? v : null;
     }
     case 'fill-rule':
     case 'clip-rule': {
