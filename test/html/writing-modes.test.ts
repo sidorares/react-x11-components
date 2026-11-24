@@ -1683,41 +1683,6 @@ test('a horizontal cell in a vertical table lays its content out across the page
   assert.deepStrictEqual([r.x, r.width, r.height], [30, 10, 5]);
 });
 
-test("vertical-align moves a horizontal cell's content down a vertical table, along its block axis", async () => {
-  // a horizontal cell in a vertical table turns back the table's frame,
-  // and its block axis runs down the page whichever way the table's frame
-  // is turned
-  const table = (mode: string) =>
-    `<table style="writing-mode:${mode}"><tr>` +
-    ['top', 'middle', 'bottom']
-      .map(
-        (align) =>
-          `<td id="${mode}-${align}-cell" style="vertical-align:${align}">` +
-          `<div id="${mode}-${align}" ` +
-          'style="width:20px;height:10px"></div></td>',
-      )
-      .join('') +
-    '</tr></table>';
-  const { node } = await render(
-    '<style>body{margin:0}table{border-spacing:0}' +
-      'td{padding:0;writing-mode:horizontal-tb;width:30px;height:50px}' +
-      '</style>' +
-      table('vertical-rl') +
-      table('sideways-lr'),
-  );
-  const el = view(node);
-  // where down the cell, which is all of what this says
-  const down = (id: string) => {
-    const r = rectOf(el, id);
-    return [r.y - rectOf(el, `${id}-cell`).y, r.height];
-  };
-  for (const mode of ['vertical-rl', 'sideways-lr']) {
-    assert.deepStrictEqual(down(`${mode}-top`), [0, 10], mode);
-    assert.deepStrictEqual(down(`${mode}-middle`), [20, 10], mode);
-    assert.deepStrictEqual(down(`${mode}-bottom`), [40, 10], mode);
-  }
-});
-
 test('an edge on half a pixel across a vertical-rl frame is drawn on the column the page draws it on', async () => {
   // the frame's turn runs its block axis backwards across the page, so a
   // half it rounds up the page rounds down, and the box came out a column

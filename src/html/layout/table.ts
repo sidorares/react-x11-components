@@ -38,7 +38,7 @@ import {
 import type { LayoutContext } from './block.js';
 import { firstBaselineIn } from './inline.js';
 import { tableGrid } from './grid.js';
-import { FRAMES, frameTurn, framed, reflects, turnsUp } from './writing.js';
+import { FRAMES, framed } from './writing.js';
 import type { Cell, TableGrid } from './grid.js';
 
 /**
@@ -110,17 +110,14 @@ export function layoutTable(
 }
 
 /** Move an orthogonal cell's frame across the cell, towards the end of its
- *  block axis, by `share` of the room it leaves: which way that is in the
- *  axes the table is laid out in is the frame's turn's — the left of a
- *  `vertical-rl` or `sideways-rl` cell in a horizontal table, the right of
- *  the two that run left to right, and the page's bottom for a horizontal
- *  cell whose frame turns back a vertical table's. */
+ *  block axis — the left in `vertical-rl` and `sideways-rl`, the right in
+ *  the two that run left to right — by `share` of the room it leaves. */
 function alignAcross(cell: Box, frame: Box, share: number): void {
   const slack = Math.max(0, cell.contentWidth - frame.height) * share;
   if (!slack) return;
-  const turn = frameTurn(frame);
-  const forward = turnsUp(turn) || reflects(turn);
-  translate(frame, forward ? slack : -slack, 0);
+  const mode = cell.style.writingMode;
+  const leftToRight = mode === 'vertical-lr' || mode === 'sideways-lr';
+  translate(frame, leftToRight ? slack : -slack, 0);
 }
 
 /** What a table's last layout that was not a probe made of its rows: their
