@@ -308,6 +308,146 @@ metric('a huge <pre> is chunked, renders deep, and still selects', async () => {
   assert.ok(bands.length >= 2, `bands across the seam (${bands.length})`);
 });
 
+test("an inline box's background is painted over the text before it that it reaches, and under its own", async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // CSS 2.1 Appendix E, 7.2.1.4: each inline box's background, then what
+  // it holds, a line at a time. A paragraph's text was drawn in one batch
+  // after every background, so a span a negative margin pulls back over
+  // the words before it, and one a small line-height hangs up over the
+  // line before (css1/c5504-imrgn-l-005, linebox/line-height-125), was
+  // drawn under the text it covers.
+  const redIn = async (
+    source: string,
+    region: [number, number, number, number],
+  ) => {
+    const result = await renderX11(
+      h(
+        'box',
+        { style: { width: 200, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<body style="margin:0;background:#ffffff">' + source + '</body>',
+          partial: false,
+        }),
+      ),
+      { width: 240, height: 120, fonts: FONTS! },
+    );
+    await act();
+    const [x, y, width, height] = region;
+    const data = await pixelsIn(result.ctx, { x, y, width, height });
+    let red = 0;
+    let green = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] > 200 && data[i + 1] < 60) red += 1;
+      if (data[i + 1] > 200 && data[i] < 60) green += 1;
+    }
+    return { red, green };
+  };
+  const pulled = await redIn(
+    '<div style="font:20px/30px monospace;color:#ff0000">MM<span ' +
+      'style="margin-left:-24px;background:#00ff00;color:#00ff00">..</span></div>',
+    [0, 0, 24, 30],
+  );
+  assert.ok(
+    pulled.green > 100,
+    `the span's background is there: ${pulled.green}`,
+  );
+  assert.strictEqual(
+    pulled.red,
+    0,
+    'and over the words it was pulled back over',
+  );
+  const hung = await redIn(
+    '<div style="font:40px/4px monospace;width:60px;padding-top:40px;' +
+      'color:#ff0000">MM <span style="background:#00ff00;color:#00ff00;' +
+      'padding-top:30px">MM</span></div>',
+    [0, 30, 48, 20],
+  );
+  assert.ok(hung.green > 100, `the span's background is there: ${hung.green}`);
+  assert.strictEqual(hung.red, 0, 'and over the line before it hangs over');
+});
+
+test('a box over nothing before it keeps its place under the box it holds and the text', async () => {
+  // CSS2 linebox/inline-formatting-context-002: a black inline box with
+  // nothing drawn before it holds a white one pushed in by a margin. Taken
+  // for one over the text before it, by an empty text at the line's start,
+  // the black box was put off past all the text and over the white box
+  const ops: PaintOp[] = [];
+  const { node } = await render(
+    '<style>div { display: inline; background: #000000 }' +
+      ' div div { background: #ffffff; margin-left: 100px }</style>' +
+      '<div>\n <div>Filler Text</div>\n</div>',
+  );
+  await fillsOf(view(node), ops);
+  const at = (color: string) =>
+    ops.findIndex((o) => o.op === 'fill' && o.style === parseColor(color));
+  // the text the line ends with, "Filler Text"
+  const text = ops.map((o) => o.op).lastIndexOf('text');
+  assert.ok(
+    at('#000000') >= 0 && at('#ffffff') > at('#000000'),
+    'white over black',
+  );
+  assert.ok(text > at('#ffffff'), 'and the text over both');
+});
+
+test('on a layout that cannot be drawn in pieces, a background over the text before it is painted as before', async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // CoreText's layouts on macOS, as any engine's but ntk's, cannot be cut
+  // a line at a time (`onlyOf`), so the interleave leaves them: the
+  // block's backgrounds are painted first and its text drawn whole, once,
+  // as before. Here ntk's layouts are stood in for by copies that are no
+  // ntk layouts.
+  for (const source of [
+    '<div style="font:20px/30px monospace;color:#ff0000">MM<span ' +
+      'style="margin-left:-24px;background:#00ff00">..</span></div>',
+    '<div style="font:40px/4px monospace;width:60px;padding-top:40px">' +
+      'MM <span style="background:#00ff00;padding-top:30px">MM</span></div>',
+  ]) {
+    const { node } = await render(source);
+    const el = view(node);
+    type T = {
+      lines: { texts: { layout: object }[] }[] | null;
+      children: T[];
+    };
+    const copies = new Map<object, object>();
+    const foreign = (b: T): void => {
+      for (const line of b.lines ?? []) {
+        for (const text of line.texts) {
+          let copy = copies.get(text.layout);
+          if (!copy) {
+            copy = Object.assign({}, text.layout);
+            copies.set(text.layout, copy);
+          }
+          text.layout = copy;
+        }
+      }
+      b.children.forEach(foreign);
+    };
+    const tree = (el as unknown as { _tree: { root: T } })._tree;
+    foreign(tree.root);
+    const ops: PaintOp[] = [];
+    await fillsOf(el, ops);
+    const green = ops.findIndex(
+      (o) => o.op === 'fill' && o.style === parseColor('#00ff00'),
+    );
+    const texts = ops.filter((o) => o.op === 'text');
+    assert.ok(green >= 0, "the span's background is painted");
+    assert.strictEqual(texts.length, copies.size, 'each layout drawn once');
+    assert.ok(ops.indexOf(texts[0]) > green, 'after the background, as before');
+    // where ntk's own are drawn in pieces, with the background among them
+    const own: PaintOp[] = [];
+    await fillsOf(view((await render(source)).node), own);
+    const ownGreen = own.findIndex(
+      (o) => o.op === 'fill' && o.style === parseColor('#00ff00'),
+    );
+    assert.ok(
+      own.slice(0, ownGreen).some((o) => o.op === 'text') &&
+        own.slice(ownGreen).some((o) => o.op === 'text'),
+      'text before the background and after it',
+    );
+  }
+});
+
 test('an element at no opacity is not drawn, and at half is drawn faded', async (t) => {
   if (!FONTS) return t.skip('no font files for the in-process server');
   // `opacity` was read and never painted, so the control a page keeps at
