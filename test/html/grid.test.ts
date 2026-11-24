@@ -285,6 +285,26 @@ test('an auto repetition counts a greatest size under its least one as the least
   assert.deepStrictEqual(at('c4'), [100, 40]);
 });
 
+test("an item aligned by its baseline across a column whose lines stack the other way is at the column's end", async () => {
+  // CSS Box Alignment 3, 9.1: a vertical-lr box in a right-to-left grid
+  // takes part in its column's last baselines, beside the vertical-rl one
+  // that takes part in its first, and alone, falls back to the end. It
+  // stood at the start (WPT's grid-justify-baseline-001; every place is
+  // Chromium's)
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:grid;width:100px;height:100px;direction:rtl;' +
+      'justify-items:baseline">' +
+      '<div id="a" style="writing-mode:vertical-rl">one<br>two</div>' +
+      '<div id="b" style="writing-mode:vertical-lr;font-size:30px">one<br>two</div>' +
+      '</div>',
+  );
+  const el = view(node);
+  const a = boxOf(el, 'a');
+  assert.strictEqual(a.x + a.width, 100, 'at the start, the right');
+  assert.strictEqual(boxOf(el, 'b').x, 0, 'at the end, the left');
+});
+
 test("a grid's gaps carry its rules, down its column gaps and across its row gaps", async () => {
   // the column gaps are at 100 to 120 and 220 to 240, the row gap at 50
   // to 70; each rule on its gap's middle, the grid's length, through the
