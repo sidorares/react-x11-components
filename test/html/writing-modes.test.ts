@@ -1389,6 +1389,34 @@ metric(
   },
 );
 
+test('a float in a vertical-lr flow is put back across with the lines beside it', async () => {
+  // a vertical-lr frame is laid out as vertical-rl's and put back across;
+  // a float was moved with the block it is in and no further, so it stood
+  // where the frame's other end is, over the lines that went round it
+  // (WPT's css-writing-modes/margin-collapse-vlr-011)
+  for (const wrap of [false, true]) {
+    const { node } = await render(
+      '<style>body{margin:0}.c{writing-mode:vertical-lr;inline-size:200px;' +
+        'line-height:0}#f{float:left;block-size:40px;inline-size:40px;' +
+        'margin:20px}.b{display:inline-block;inline-size:60px;' +
+        'block-size:20px}</style><main class="c">' +
+        (wrap ? '<div>' : '') +
+        '<div id="f"></div><span class="b" id="b"></span>' +
+        '<span class="b"></span><span class="b"></span>' +
+        (wrap ? '</div>' : '') +
+        '</main>',
+    );
+    const el = view(node);
+    const at = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    // the float at the block start, the page's left, past its margin; the
+    // first line at the left too, beside it down the page
+    assert.equal(at('f').x, 20, `wrapped: ${wrap}`);
+    assert.equal(at('f').y, 20, `wrapped: ${wrap}`);
+    assert.equal(at('b').x, 0, `wrapped: ${wrap}`);
+    assert.equal(at('b').y, 80, `wrapped: ${wrap}`);
+  }
+});
+
 test("a clip-path in a vertical flow is the page's shape, turned with the frame", async () => {
   // a box 100px across and 40px down the page, clipped to its left half:
   // the shape is the page's, measured in the box as the page has it, and

@@ -720,7 +720,11 @@ export function reflectFrame(
   extent: number,
   move: (box: Box, dx: number, dy: number) => void,
   moveLine: (line: LineBox, dy: number) => void,
+  /** Whether a box is a formatting context of its own, which its floats
+   *  are put back across (`establishesBFC`). */
+  formattingRoot: (box: Box) => boolean = () => false,
 ): void {
+  const floats = floatsPutBack(frame, extent, formattingRoot);
   const stack: Box[] = [frame];
   while (stack.length) {
     const box = stack.pop()!;
@@ -802,6 +806,54 @@ export function reflectFrame(
       }
     }
   }
+  // a float is put back across the formatting context it is in, as the
+  // lines beside it are, wherever the blocks around it went
+  for (const { float, root, y } of floats) {
+    move(float, 0, root.contentY + y - float.y);
+  }
+}
+
+/** The floats of a frame `reflectFrame` is to put back, each with where it
+ *  is to be from the top of the formatting context it is in: a block's
+ *  float is moved with the block, which is put back across what holds it,
+ *  and the float has to be put back across its formatting context. Floats
+ *  of a box already put back since its last layout are left as they are. */
+function floatsPutBack(
+  frame: Box,
+  extent: number,
+  formattingRoot: (box: Box) => boolean,
+): { float: Box; root: Box; y: number }[] {
+  const out: { float: Box; root: Box; y: number }[] = [];
+  const walk = (box: Box, root: Box | null): void => {
+    for (const child of box.children) {
+      if (
+        child.kind === 'text' ||
+        child.kind === 'break' ||
+        child.kind === 'replaced' ||
+        FRAME_ROOTS.has(child)
+      ) {
+        continue;
+      }
+      if (child.isFloat && !child.outOfFlow && root) {
+        // from the top of its formatting context, put back across it
+        const bottom =
+          root.contentY + (root === frame ? extent : root.contentHeight);
+        out.push({ float: child, root, y: bottom - child.y - child.height });
+      }
+      const leftToRight =
+        child.style.writingMode === 'vertical-lr' ||
+        child.style.writingMode === 'sideways-lr';
+      const own =
+        child.outOfFlow || child.isFloat || formattingRoot(child)
+          ? leftToRight && REFLECTED.get(child) !== child.layoutSerial
+            ? child
+            : null
+          : root;
+      walk(child, own);
+    }
+  };
+  walk(frame, REFLECTED.get(frame) !== frame.layoutSerial ? frame : null);
+  return out;
 }
 
 /**
