@@ -666,7 +666,7 @@ export function layoutGrid(
       if (cut < rowCount) sizedItems = sizedItems.filter((i) => i.row < cut);
       return sizeTracks(
         rowTracks,
-        sizedItems.map((item) => rowItem(item, rowTracks, rowGap)),
+        sizedItems.map((item) => rowItem(item, rowTracks, rowGap, ctx)),
         {
           available,
           least: atLeast,
@@ -2673,6 +2673,8 @@ export function rowItem(
   item: Item,
   tracks: SizingTrack[],
   gap: number,
+  /** What measures an orthogonal item's frame (`orthogonalRange`). */
+  ctx?: LayoutContext,
 ): TrackItem {
   if (item.edge) {
     const outer = () => item.before + item.after;
@@ -2695,11 +2697,16 @@ export function rowItem(
     (item.shimEnd ?? 0);
   const height = () => (Number.isNaN(item.height) ? box.height : item.height);
   const outer = () => height() + margins;
+  // an item whose lines run down the rows gives them its inline sizes, its
+  // narrowest and its widest, where its height is at the one it was laid
+  // out at (CSS Writing Modes 4, 7.3; CSS Grid 1, 6.6)
+  const range = ctx ? orthogonalRange(box, ctx) : null;
+  const least = range ? () => range.least + margins : outer;
   return {
     start: item.row,
     span: item.rows,
-    minContent: outer,
-    maxContent: outer,
+    minContent: least,
+    maxContent: range ? () => range.most + margins : outer,
     minimum: () => {
       const style = box.style;
       if (style.height !== AUTO && !isPct(style.height)) return outer();
@@ -2717,10 +2724,45 @@ export function rowItem(
           gap,
           style.overflowY,
           margins,
-          height(),
+          range ? range.least : height(),
         ) + margins
       );
     },
+  };
+}
+
+/**
+ * The border-box heights an orthogonal flow's root in a grid's rows comes
+ * to at its narrowest and at its widest: its frame's least and greatest
+ * inline sizes, which are how tall it is (CSS Writing Modes 4, 7.3), with
+ * its own edges down the page. Laid out at the room down the page, its
+ * height is only the second, or the room: a row `fit-content()` sizes took
+ * it for its narrowest too, and an item that wraps to fit the row was taken
+ * to need its whole line. Null for any other box, and for one with a
+ * height of its own, which its layout already has.
+ */
+export function orthogonalRange(
+  box: Box,
+  ctx: LayoutContext,
+): { least: number; most: number } | null {
+  if (!framed.any) return null;
+  const frame = FRAMES.get(box);
+  if (!frame || box.style.height !== AUTO) return null;
+  if (frame.intrinsicMinContent < 0) {
+    frame.intrinsicMinContent = measureIntrinsicWidth(
+      frame,
+      ctx,
+      MIN_CONTENT_PROBE,
+    );
+  }
+  if (frame.intrinsicMaxContent < 0) {
+    frame.intrinsicMaxContent = measureIntrinsicWidth(frame, ctx, Infinity);
+  }
+  const extra = box.verticalExtra;
+  return {
+    least: frame.intrinsicMinContent + extra,
+    most:
+      Math.max(frame.intrinsicMinContent, frame.intrinsicMaxContent) + extra,
   };
 }
 
