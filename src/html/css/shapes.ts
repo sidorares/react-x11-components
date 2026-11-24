@@ -156,10 +156,55 @@ const PROPS: Record<string, boolean> = {
   'clip-path': false,
   'stop-color': false,
   'stop-opacity': false,
+  // the geometry properties (SVG 2, 6.1), each of the elements
+  // `GEOMETRY_OF` says, which the drawing's copy writes as the attribute
+  // `SvgView` reads, a rule over the attribute that is its hint
+  x: false,
+  y: false,
+  width: false,
+  height: false,
+  cx: false,
+  cy: false,
+  r: false,
+  rx: false,
+  ry: false,
+  d: false,
   // what a `<mask>` is composited by, where a mask layer's `mask-mode`
   // leaves it to the mask (CSS Masking 1, 7.3.1)
   'mask-type': false,
 };
+
+/** The elements each geometry property applies to (SVG 2, 10 and 9.2–9.4;
+ *  a `<foreignObject>`'s is the attribute, since its HTML is laid out from
+ *  it). */
+export const GEOMETRY_OF: Readonly<Record<string, ReadonlySet<string>>> = {
+  x: new Set(['rect', 'image', 'svg', 'use']),
+  y: new Set(['rect', 'image', 'svg', 'use']),
+  width: new Set(['rect', 'image', 'svg', 'use']),
+  height: new Set(['rect', 'image', 'svg', 'use']),
+  cx: new Set(['circle', 'ellipse']),
+  cy: new Set(['circle', 'ellipse']),
+  r: new Set(['circle']),
+  rx: new Set(['rect', 'ellipse']),
+  ry: new Set(['rect', 'ellipse']),
+  d: new Set(['path']),
+};
+
+/** The elements a geometry property applies to, any of them: what a rule
+ *  that sets nothing else of a drawing is asked of (`Cascade._geometry`). */
+export const GEOMETRY_TAGS: ReadonlySet<string> = new Set(
+  Object.values(GEOMETRY_OF).flatMap((tags) => [...tags]),
+);
+
+/** A geometry attribute's value as a keyframe starts from it: a plain
+ *  number is user units there, as `SvgView` reads the attribute, and
+ *  anything else is read as the property's (`shapeValue`). Null for a
+ *  property no geometry. */
+export function attributeGeometry(prop: string, value: string): string | null {
+  if (!GEOMETRY_OF[prop]) return null;
+  const v = value.trim();
+  return NUMBER.test(v) ? String(Number(v)) : null;
+}
 
 /** Whether a rule with this declaration is one to keep for drawings. */
 export function isShapeProp(prop: string): boolean {
@@ -177,6 +222,11 @@ export const ROOT_BOX_PROPS: ReadonlySet<string> = new Set([
   'visibility',
   'opacity',
   'clip-path',
+  // and where it is and how large, which its box is laid out by
+  'x',
+  'y',
+  'width',
+  'height',
   // and its font, which its text inherits (`SvgDrawing.draw`'s `font`)
   'font',
   'font-family',
@@ -205,6 +255,16 @@ const INITIAL: Record<string, string> = {
   'clip-path': 'none',
   'stop-color': '#000000',
   'stop-opacity': '1',
+  x: '0',
+  y: '0',
+  width: 'auto',
+  height: 'auto',
+  cx: '0',
+  cy: '0',
+  r: '0',
+  rx: 'auto',
+  ry: 'auto',
+  d: 'none',
   'mask-type': 'luminance',
   'font-size': 'medium',
   'font-style': 'normal',
@@ -383,6 +443,36 @@ export function shapeValue(
     }
     case 'stroke-linejoin':
       return LINE_JOINS[value.toLowerCase()] ?? null;
+    case 'x':
+    case 'y':
+    case 'cx':
+    case 'cy':
+    case 'width':
+    case 'height':
+    case 'r':
+    case 'rx':
+    case 'ry': {
+      // a length in user units, or a percentage, of the viewport, which only
+      // the drawing has; `auto` where the property takes it
+      const v = value.toLowerCase();
+      if (v === 'auto') return INITIAL[prop] === 'auto' ? v : null;
+      // a number is no length but 0 (CSS Values 4, 6.1), as Chrome has it:
+      // an attribute's is read apart from this (`attributeGeometry`)
+      if (v === '0') return v;
+      const px = NUMBER.test(value) ? null : lengthIn(value, ctx.units);
+      if (px !== null) {
+        const sized =
+          prop !== 'x' && prop !== 'y' && prop !== 'cx' && prop !== 'cy';
+        return sized && px < 0 ? null : String(px);
+      }
+      return /%|^calc\(/i.test(v) && !/^[+-]?\d*\.?\d+$/.test(v) ? value : null;
+    }
+    case 'd': {
+      // `none`, or a `path()` string, the attribute's data
+      if (value.toLowerCase() === 'none') return 'none';
+      const path = /^path\(\s*(["'])([^]*)\1\s*\)$/i.exec(value);
+      return path ? `path(${path[1]}${path[2]}${path[1]})` : null;
+    }
     case 'mask-type': {
       const v = value.toLowerCase();
       return v === 'alpha' || v === 'luminance' ? v : null;
