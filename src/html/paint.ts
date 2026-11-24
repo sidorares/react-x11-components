@@ -146,6 +146,7 @@ import {
   ownScroll,
   scrollBarsOf,
   thumbRect,
+  wheelScrolls,
 } from './layout/scroll.js';
 import {
   FRAME_ROOTS,
@@ -5467,16 +5468,47 @@ let bars: BarsOrder | null = null;
 
 function arrangeBars(tree: BoxTree, options: PaintOptions): BarsOrder | null {
   let order: BarsOrder | null = null;
-  const scale = options.scale ?? 1;
-  const stack: Box[] = [tree.root];
+  const damage = options.damage;
+  const inDamage = (x: number, y: number, width: number, height: number) =>
+    !damage ||
+    (x < damage.x + damage.width &&
+      damage.x < x + width &&
+      y < damage.y + damage.height &&
+      damage.y < y + height);
+  // the walk `paintScrollBars` makes, through the boxes whose ink meets the
+  // damage, where the viewport has a box fixed to it; what a container's
+  // bars are is asked as they are painted, and only then
+  const stack: [Box, number, number, boolean][] = [
+    [tree.root, options.originX, options.originY, false],
+  ];
   while (stack.length) {
-    const box = stack.pop()!;
+    const entry = stack.pop()!;
+    const box = entry[0];
+    let [, ox, oy, fixed] = entry;
+    if (!fixed && options.viewport && fixedToViewport(box)) {
+      ox = options.viewport.x;
+      oy = options.viewport.y;
+      fixed = true;
+    }
     if (box.boundsY === Infinity) continue;
     if (framed.any && FRAME_ROOTS.has(box)) continue;
     if (
+      !inDamage(
+        box.boundsX + ox,
+        box.boundsY + oy,
+        box.boundsWidth,
+        box.boundsHeight,
+      )
+    ) {
+      continue;
+    }
+    // a container that may show a bar, as `scrollBarsOf` asks first: not
+    // an `overflow: hidden` one, of which a page has many
+    if (
+      (wheelScrolls(box, 'x') || wheelScrolls(box, 'y')) &&
       isScroller(box) &&
       box.style.visibility === 'visible' &&
-      scrollBarsOf(box, scale, options.scrollbarHidden).length
+      inDamage(box.x + ox, box.y + oy, box.width, box.height)
     ) {
       const place = barsPlace(box, tree.root);
       if (place) {
@@ -5492,7 +5524,8 @@ function arrangeBars(tree: BoxTree, options: PaintOptions): BarsOrder | null {
       const child = box.children[i];
       if (child.kind === 'text' || child.kind === 'break') continue;
       if (child.topLayer) continue;
-      stack.push(child);
+      if (options.captured?.has(child)) continue;
+      stack.push([child, ox, oy, fixed]);
     }
   }
   return order;
