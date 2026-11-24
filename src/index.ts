@@ -298,6 +298,13 @@ export type {
 // module that imports it, so `import { Map as MapView }` is there for a
 // module that needs both.
 export { Map, MapViewNode, MAPVIEW_ELEMENT } from './maps/index.js';
+export { Map3D, GOOGLE_3D_TILES } from './map3d/index.js';
+export type {
+  Map3DProps,
+  Map3DHandle,
+  Map3DStats,
+  Camera3D,
+} from './map3d/index.js';
 // The projection and the tile grid, which an application doing its own
 // geography — clustering markers, deciding what to fetch — needs the same
 // arithmetic for. Qualified on the way through the barrel where a bare name
