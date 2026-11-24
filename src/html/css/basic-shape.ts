@@ -353,47 +353,78 @@ export function shapePolygons(
         rule: shape.shape.rule,
       };
     default: {
-      const [a, b, c, d] = shape.lengths;
-      let x0 = 0;
-      let y0 = 0;
-      let x1 = w;
-      let y1 = h;
-      if (shape.kind === 'inset') {
-        x0 = resolve(d, w);
-        y0 = resolve(a, h);
-        x1 = w - resolve(b, w);
-        y1 = h - resolve(c, h);
-      } else if (shape.kind === 'rect') {
-        y0 = a === AUTO ? 0 : resolve(a, h);
-        x1 = b === AUTO ? w : resolve(b, w);
-        y1 = c === AUTO ? h : resolve(c, h);
-        x0 = d === AUTO ? 0 : resolve(d, w);
-      } else {
-        x0 = resolve(a, w);
-        y0 = resolve(b, h);
-        x1 = x0 + Math.max(0, resolve(c, w));
-        y1 = y0 + Math.max(0, resolve(d, h));
-      }
-      x1 = Math.max(x0, x1);
-      y1 = Math.max(y0, y1);
+      const r = shapeRoundedRect(shape, w, h)!;
       return {
-        polys: [
-          roundedPoints(
-            x0,
-            y0,
-            x1 - x0,
-            y1 - y0,
-            shape.radii,
-            shape.radiiY ?? shape.radii,
-            w,
-            h,
-            tolerance,
-          ),
-        ],
+        polys: [roundedPoints(r, tolerance)],
         rule: 'nonzero',
       };
     }
   }
+}
+
+/** An `inset()`'s, a `rect()`'s or an `xywh()`'s rectangle in a box `w` by
+ *  `h`, from its corner, with each corner's radii across and down, top
+ *  left first, reduced together where two on a side would overlap; null
+ *  for any other shape. */
+export function shapeRoundedRect(
+  shape: BasicShape,
+  w: number,
+  h: number,
+): RoundedRect | null {
+  if (shape.kind !== 'inset' && shape.kind !== 'rect' && shape.kind !== 'xywh')
+    return null;
+  const [a, b, c, d] = shape.lengths;
+  let x0 = 0;
+  let y0 = 0;
+  let x1 = w;
+  let y1 = h;
+  if (shape.kind === 'inset') {
+    x0 = resolve(d, w);
+    y0 = resolve(a, h);
+    x1 = w - resolve(b, w);
+    y1 = h - resolve(c, h);
+  } else if (shape.kind === 'rect') {
+    y0 = a === AUTO ? 0 : resolve(a, h);
+    x1 = b === AUTO ? w : resolve(b, w);
+    y1 = c === AUTO ? h : resolve(c, h);
+    x0 = d === AUTO ? 0 : resolve(d, w);
+  } else {
+    x0 = resolve(a, w);
+    y0 = resolve(b, h);
+    x1 = x0 + Math.max(0, resolve(c, w));
+    y1 = y0 + Math.max(0, resolve(d, h));
+  }
+  x1 = Math.max(x0, x1);
+  y1 = Math.max(y0, y1);
+  const across = shape.radii;
+  const down = shape.radiiY ?? shape.radii;
+  const rect = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  if (!across || !down) return { ...rect, rx: null, ry: null };
+  const rx = across.map((r) => Math.max(0, resolve(r, w)));
+  const ry = down.map((r) => Math.max(0, resolve(r, h)));
+  let f = 1;
+  const fit = (side: number, sum: number) => {
+    if (sum > side) f = Math.min(f, side / sum);
+  };
+  fit(rect.w, rx[0] + rx[1]);
+  fit(rect.h, ry[1] + ry[2]);
+  fit(rect.w, rx[2] + rx[3]);
+  fit(rect.h, ry[3] + ry[0]);
+  for (let i = 0; i < 4; i += 1) {
+    rx[i] *= f;
+    ry[i] *= f;
+  }
+  return { ...rect, rx, ry };
+}
+
+/** A rectangle and its corners' radii, null where it has none. */
+export interface RoundedRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  rx: number[] | null;
+  ry: number[] | null;
 }
 
 /** How many chords a curve that bends through `turn` radians at a radius
@@ -421,35 +452,13 @@ function ellipsePoints(
   return out;
 }
 
-/** A rectangle with its corners rounded by radii resolved against the box
- *  it is in, `boxW` by `boxH`, as `clip-path` resolves them, and reduced
- *  together where two on a side of the rectangle would overlap. */
+/** A rounded rectangle as a polygon, each corner's quarter cut into
+ *  chords. */
 function roundedPoints(
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  across: readonly Len[] | null,
-  down: readonly Len[] | null,
-  boxW: number,
-  boxH: number,
+  { x, y, w, h, rx, ry }: RoundedRect,
   tolerance = TOLERANCE,
 ): number[] {
-  if (!across || !down) return [x, y, x + w, y, x + w, y + h, x, y + h];
-  const rx = across.map((r) => Math.max(0, resolve(r, boxW)));
-  const ry = down.map((r) => Math.max(0, resolve(r, boxH)));
-  let f = 1;
-  const fit = (side: number, sum: number) => {
-    if (sum > side) f = Math.min(f, side / sum);
-  };
-  fit(w, rx[0] + rx[1]);
-  fit(h, ry[1] + ry[2]);
-  fit(w, rx[2] + rx[3]);
-  fit(h, ry[3] + ry[0]);
-  for (let i = 0; i < 4; i += 1) {
-    rx[i] *= f;
-    ry[i] *= f;
-  }
+  if (!rx || !ry) return [x, y, x + w, y, x + w, y + h, x, y + h];
   const out: number[] = [];
   // each corner's quarter, from where it leaves one side to the next
   const corner = (cx: number, cy: number, i: number, from: number) => {

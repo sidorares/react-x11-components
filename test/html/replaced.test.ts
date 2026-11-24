@@ -1534,26 +1534,35 @@ metric(
 );
 
 metric(
-  "a drawing's element clipped to a circle() is set as a <circle> is",
+  "a drawing's element clipped to a circle() or a rounded inset() is set as a <circle> or a rounded <rect> is",
   async () => {
     // The circle was handed to `SvgView` as chords of our own, a quarter of
     // a pixel from its own curve: 64 levels apart from a <circle> of the
-    // same size (WPT clip-path-shape-circle-001, svg-clip-path-circle-offset)
+    // same size (WPT clip-path-shape-circle-001, svg-clip-path-circle-offset);
+    // a rounded inset's corners the same (clip-path-shape-inset-001)
     const { result } = await renderWithBytes(
       '<style>body{margin:0}svg{display:block}</style>' +
-        '<svg width="100" height="200">' +
+        '<svg width="100" height="400">' +
         '<rect width="100" height="100" fill="#008000" style="clip-path:circle()"/>' +
-        '<circle cx="50" cy="150" r="50" fill="#008000"/></svg>',
+        '<circle cx="50" cy="150" r="50" fill="#008000"/>' +
+        '<rect y="200" width="100" height="100" fill="#008000" style="clip-path:inset(10% round 30%)"/>' +
+        '<rect x="10" y="310" width="80" height="80" rx="30" fill="#008000"/></svg>',
       {},
     );
     await act();
     const at = (y: number) =>
       pixelsIn(result.ctx, { x: 0, y, width: 100, height: 100 });
-    const [a, b] = [await at(0), await at(100)];
-    let most = 0;
-    for (let i = 0; i < a.length; i++)
-      most = Math.max(most, Math.abs(a[i] - b[i]));
-    assert.strictEqual(most, 0);
+    const apart = async (y: number) => {
+      const [a, b] = [await at(y), await at(y + 100)];
+      let most = 0;
+      for (let i = 0; i < a.length; i++)
+        most = Math.max(most, Math.abs(a[i] - b[i]));
+      return most;
+    };
+    assert.strictEqual(await apart(0), 0, 'the circle');
+    // a level, where the rect's corners are the context's roundRect
+    const inset = await apart(200);
+    assert.ok(inset <= 2, `the rounded inset: ${inset} apart`);
   },
 );
 

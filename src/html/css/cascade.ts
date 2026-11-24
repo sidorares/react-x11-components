@@ -135,7 +135,11 @@ import {
   presentedMotion,
   underAttributes,
 } from './shape-animations.js';
-import { shapeEllipse, shapePolygons } from './basic-shape.js';
+import {
+  shapeEllipse,
+  shapePolygons,
+  shapeRoundedRect,
+} from './basic-shape.js';
 import type { ShapeAnimations, ShapeMotion } from './shape-animations.js';
 import {
   animatedWillChange,
@@ -13496,6 +13500,34 @@ function drawingClipPath(
       d += `A${r} ${+(x + rx).toFixed(4)} ${y}Z`;
     }
     return `${CLIP_PATH}${rule} ${d || 'M0 0Z'}`;
+  }
+  const rounded = shapeRoundedRect(
+    read.shape,
+    box.width * scale,
+    box.height * scale,
+  );
+  if (rounded?.rx && rounded.ry && rounded.w > 0 && rounded.h > 0) {
+    // its corners as arcs, for the same reason
+    const n = (v: number) => +v.toFixed(4);
+    const x = box.x + rounded.x / scale;
+    const y = box.y + rounded.y / scale;
+    const w = rounded.w / scale;
+    const h = rounded.h / scale;
+    const rx = rounded.rx.map((r) => r / scale);
+    const ry = rounded.ry.map((r) => r / scale);
+    const arc = (i: number, ex: number, ey: number) =>
+      `A${n(rx[i])} ${n(ry[i])} 0 0 1 ${n(ex)} ${n(ey)}`;
+    d =
+      `M${n(x + rx[0])} ${n(y)}H${n(x + w - rx[1])}` +
+      arc(1, x + w, y + ry[1]) +
+      `V${n(y + h - ry[2])}` +
+      arc(2, x + w - rx[2], y + h) +
+      `H${n(x + rx[3])}` +
+      arc(3, x, y + h - ry[3]) +
+      `V${n(y + ry[0])}` +
+      arc(0, x + rx[0], y) +
+      'Z';
+    return `${CLIP_PATH}${rule} ${d}`;
   }
   for (const poly of polys) {
     for (let i = 0; i + 1 < poly.length; i += 2) {
