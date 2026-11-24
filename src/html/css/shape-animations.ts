@@ -33,7 +33,12 @@ import type { Animations } from './animation.js';
 import { blend } from './color.js';
 import { interpolateTransforms } from './interpolate.js';
 import type { KeyframesRule } from './parse.js';
-import { isShapeProp, shapeInitial, shapeValue } from './shapes.js';
+import {
+  attributeGeometry,
+  isShapeProp,
+  shapeInitial,
+  shapeValue,
+} from './shapes.js';
 import type { ShapeContext } from './shapes.js';
 import { IDENTITY, multiply, parseTransform } from './transform.js';
 import type { Matrix, TransformFunction } from './transform.js';
@@ -203,7 +208,10 @@ export class ShapeAnimations {
       const mine = own?.[prop];
       if (mine !== undefined && mine !== 'inherit') return mine;
       const attr = el.attribs[prop];
-      const read = attr === undefined ? null : shapeValue(prop, attr, ctx);
+      const read =
+        attr === undefined
+          ? null
+          : (attributeGeometry(prop, attr) ?? shapeValue(prop, attr, ctx));
       return read ?? shapeInitial(prop) ?? '';
     };
     for (let i = 0; i < animations.names.length; i += 1) {
@@ -425,6 +433,16 @@ const NUMERIC = new Set([
   'stroke-width',
   'stroke-dashoffset',
   'stroke-miterlimit',
+  // the geometry properties, in user units; a percentage goes by halves
+  'x',
+  'y',
+  'cx',
+  'cy',
+  'width',
+  'height',
+  'r',
+  'rx',
+  'ry',
 ]);
 
 /** A shape's property `q` of the way from `a` to `b`, as CSS interpolates
@@ -438,7 +456,15 @@ function mix(prop: string, a: string, b: string, q: number): string {
     if (Number.isFinite(x) && Number.isFinite(y)) {
       let v = x + (y - x) * q;
       if (prop.endsWith('opacity')) v = Math.min(1, Math.max(0, v));
-      else if (prop !== 'stroke-dashoffset') v = Math.max(0, v);
+      else if (
+        prop !== 'stroke-dashoffset' &&
+        prop !== 'x' &&
+        prop !== 'y' &&
+        prop !== 'cx' &&
+        prop !== 'cy'
+      ) {
+        v = Math.max(0, v);
+      }
       return String(v);
     }
   }

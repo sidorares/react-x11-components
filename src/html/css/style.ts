@@ -8148,6 +8148,9 @@ function parseStops(
   position: (part: string) => Len | null = (part) => parseLength(part, ctx),
 ): GradientStop[] | null {
   const stops: GradientStop[] = [];
+  /** Each stop's colour as written, which a transition is mixed from:
+   *  the stop's own is clipped to sRGB for the context to draw. */
+  const written: string[] = [];
   /** The hint before each stop, by the stop's index. */
   const hints: (Len | null)[] = [];
   let modern = false;
@@ -8184,21 +8187,26 @@ function parseStops(
     if (!at.length) {
       hints[stops.length] = pendingHint;
       stops.push({ color, at: null });
+      written.push(parts[0]);
     }
     for (const [k, p] of at.entries()) {
       hints[stops.length] = k === 0 ? pendingHint : null;
       stops.push({ color, at: p as Len });
+      written.push(parts[0]);
     }
     pendingHint = null;
   }
   // a hint must stand between two stops
   if (pendingHint !== null || !stops.length) return null;
   // one stop is that colour all the way
-  if (stops.length === 1) stops.push({ color: stops[0].color, at: null });
+  if (stops.length === 1) {
+    stops.push({ color: stops[0].color, at: null });
+    written.push(written[0]);
+  }
   const space = method?.space ?? (modern ? 'oklab' : 'srgb');
   const hue = method?.hue ?? 'shorter';
   if (space === 'srgb' && !hints.some((h) => h != null)) return stops;
-  return expandStops(stops, hints, space, hue) ?? stops;
+  return expandStops(stops, written, hints, space, hue) ?? stops;
 }
 
 /** How many straight runs a transition mixed in another space is drawn
@@ -8217,11 +8225,16 @@ function pctPx(len: Len): [number, number] | null {
  * The stops of a gradient made many (`parseStops`): positions spread as
  * `stopOffsets` spreads them, worked out as a percentage and a length
  * where the box is not known yet, and between each two of them the colours
- * of the transition, in `space`, eased by its hint. Null where a position
+ * of the transition, in `space`, eased by its hint. A transition is mixed
+ * from the colours as written, outside sRGB as much as in it, as CSS
+ * Images 4, 3.5.2 has it, and only what it comes to is clipped: mixed from
+ * the stops clipped, `lch()` stops a hue apart came to another path round
+ * the hue. Null where a position
  * is one that cannot be spread so, which draws as before.
  */
 function expandStops(
   stops: GradientStop[],
+  written: string[],
   hints: (Len | null)[],
   space: string,
   hue: string,
@@ -8280,9 +8293,12 @@ function expandStops(
     const plain = space === 'srgb' && (!hint || middle === 0.5);
     const mixable = !plain && c0 !== c1 && !/currentcolor/i.test(c0 + c1);
     if (mixable || (hint && c0 !== c1 && !/currentcolor/i.test(c0 + c1))) {
+      // the colours as written where both are read so, else as drawn
+      const unclipped = mixIn(written[i - 1], written[i], 0, space, hue);
+      const [m0, m1] = unclipped ? [written[i - 1], written[i]] : [c0, c1];
       for (let k = 1; k < MIX_STEPS; k += 1) {
         const t = k / MIX_STEPS;
-        const color = mixIn(c0, c1, eased(t), space, hue) ?? null;
+        const color = mixIn(m0, m1, eased(t), space, hue) ?? null;
         if (color === null) break;
         out.push({
           color,

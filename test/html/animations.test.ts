@@ -4584,6 +4584,27 @@ metric(
 );
 
 metric(
+  "a drawing's element animates its geometry from its attribute",
+  async (t) => {
+    // a circle's `r` and a rect's `width` are properties (SVG 2, 6.1), held
+    // at their keyframes' and run between them in user units, from the
+    // attribute where a keyframe leaves the value out
+    const doc = await running(
+      t,
+      '<style>body { margin: 0; background: #fff }' +
+        'rect { animation: w 1s linear paused; animation-delay: -0.5s }' +
+        '@keyframes w { to { width: 80px } }</style>' +
+        '<svg width="100" height="20">' +
+        '<rect width="20" height="20" fill="#ff0000"/></svg>',
+      100,
+    );
+    // half way from 20 to 80
+    assert.deepStrictEqual(await pixelAt(doc, 45, 10), [255, 0, 0]);
+    assert.deepStrictEqual(await pixelAt(doc, 55, 10), [255, 255, 255]);
+  },
+);
+
+metric(
   "an element of a drawing turns about its own box's centre where its transform-box says so",
   async (t) => {
     const doc = await running(

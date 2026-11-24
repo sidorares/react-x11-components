@@ -2211,6 +2211,74 @@ metric(
 );
 
 metric(
+  "a shape's geometry is a property, which a rule sets over its attribute",
+  async () => {
+    // x, y, width, height, cx, cy, r, rx, ry and d are properties (SVG 2,
+    // 6.1), each of the elements it applies to, and the attribute is their
+    // presentation hint: read from the attributes alone, a <rect> a rule
+    // sized was drawn at the markup's size, or not at all with none (WPT's
+    // filter-effects/filter-invalid)
+    const svg = (inside: string) =>
+      `<svg width="40" height="10">${inside}</svg>`;
+    const rows: [string, number, string, string][] = [
+      [svg('<rect class="w"/>'), 25, '#00aa00', 'a rect sized by a rule'],
+      [
+        svg('<g class="chart"><rect class="bar" height="10"/></g>'),
+        25,
+        '#00aa00',
+        'by a rule that names an ancestor',
+      ],
+      [svg('<rect class="w"/>'), 35, '#ffffff', 'and no wider'],
+      [
+        svg('<rect class="w" width="40"/>'),
+        35,
+        '#ffffff',
+        'over the attribute',
+      ],
+      [svg('<rect class="x" width="10" height="10"/>'), 25, '#00aa00', 'x'],
+      [svg('<rect class="x" width="10" height="10"/>'), 5, '#ffffff', 'moved'],
+      [
+        svg('<circle class="c" cx="5" cy="5" r="2"/>'),
+        25,
+        '#00aa00',
+        'cx and r',
+      ],
+      [
+        svg('<circle class="w" cx="5" cy="5" r="5"/>'),
+        25,
+        '#ffffff',
+        "a width is no circle's",
+      ],
+      [svg('<path class="d" d="M0 0H10V10H0Z"/>'), 35, '#00aa00', 'd'],
+      [
+        svg('<circle class="n" cx="5" cy="5" r="5"/>'),
+        1,
+        '#00aa00',
+        'a number is no length: the attribute stands',
+      ],
+      [
+        svg('<rect class="p" height="10"/>'),
+        15,
+        '#00aa00',
+        'a percentage of the viewport',
+      ],
+      [svg('<rect class="p" height="10"/>'), 25, '#ffffff', 'and no more'],
+    ];
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0} svg{display:block;fill:#00aa00}' +
+        '.w{width:30px;height:10px} .x{x:20px} .c{cx:25px;r:5px}' +
+        '.d{d:path("M30 0H40V10H30Z")} .p{width:50%} .chart .bar{width:30px} .n{r:1}</style>' +
+        rows.map(([markup]) => markup).join(''),
+      {},
+    );
+    const ctx = result.ctx;
+    for (const [i, [, x, colour, message]] of rows.entries()) {
+      await expectPixel(ctx, x, i * 10 + 5, colour, { message });
+    }
+  },
+);
+
+metric(
   'a var() in a presentation attribute is the custom property it names',
   async () => {
     // A presentation attribute is a declaration (SVG 2, 6.2), and its
