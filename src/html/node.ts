@@ -144,6 +144,7 @@ import {
   VIEWPORT_WIDTH,
   readsFace,
   highlightKey,
+  setResponseLanguage,
   UNRENDERED,
 } from './css/cascade.js';
 import type {
@@ -655,6 +656,9 @@ export interface HtmlViewProps {
   /** The encoding the host decoded `source` from: what a stylesheet handed
    *  over as bytes falls back to. */
   charset?: string;
+  /** The headers of the response the document came in (`HtmlProps`): its
+   *  `Content-Language` is its language where it says none itself. */
+  headers?: [string, string][];
   /** The URL the document came from, which its relative URLs resolve
    *  against — see `url.ts`. */
   baseUrl?: string | null;
@@ -2642,6 +2646,14 @@ export class HtmlViewNode extends Node {
     return true;
   }
 
+  /** Whether the response's headers came to say another language: noted
+   *  on the document as they do, which its next styles read. */
+  private _languageMoved(next: HtmlViewProps, prev: HtmlViewProps): boolean {
+    if (next.headers === prev.headers) return false;
+    const doc = this._source.document;
+    return setResponseLanguage(doc, next.headers);
+  }
+
   /** Take the props' source into the parser. Cheap when nothing changed, and
    *  an append when the new source extends the old — see `HtmlSource`. */
   private _read(): void {
@@ -2655,6 +2667,7 @@ export class HtmlViewNode extends Node {
       : props.contentType && isXmlType(props.contentType)
         ? this._source.setXml(props.source ?? '', props.contentType, complete)
         : this._source.setSource(props.source ?? '', complete);
+    if (changed) setResponseLanguage(this._source.document, props.headers);
     if (changed) {
       // A stream's chunk restyles and builds what it reaches, as a change
       // an application tells of does (`touchDocument`): the nodes the
@@ -7484,6 +7497,7 @@ export class HtmlViewNode extends Node {
       next.look !== prev.look ||
       !sameStylesheets(next.stylesheet, prev.stylesheet) ||
       next.charset !== prev.charset ||
+      this._languageMoved(next, prev) ||
       // a page's `prefers-reduced-motion` rules hold or fail now, as its
       // `prefers-color-scheme` rules do when the palette changes
       (next.reducedMotion ?? false) !== (prev.reducedMotion ?? false)
