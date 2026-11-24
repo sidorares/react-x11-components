@@ -320,6 +320,11 @@ const ANTICLOCKWISE_SIDES: readonly Side[] = ['Left', 'Top', 'Right', 'Bottom'];
 const REFLECTED_MARGINS: readonly Side[] = ['Left', 'Bottom', 'Right', 'Top'];
 const FRAME_SIDES: readonly Side[] = ['Top', 'Right', 'Bottom', 'Left'];
 
+/** The style each turned one was made from (`framedStyle`): what a float's
+ *  `shape-outside` is laid down from, on the page, before it is turned into
+ *  the frame (`float-shape.ts`). */
+export const UNFRAMED = new WeakMap<ComputedStyle, ComputedStyle>();
+
 /**
  * A style as the frame of a writing mode lays it out: its physical sides
  * each handed to the side of the frame that is drawn there, its widths to
@@ -332,6 +337,7 @@ export function framedStyle(
   mode: WritingMode,
 ): ComputedStyle {
   const out = copyStyle(style);
+  UNFRAMED.set(out, style);
   // what was inline-level before it was made absolute still is: its
   // static position is on its line (`staticPositions`), which a mark kept
   // by the style it was made with says
@@ -865,6 +871,53 @@ export function frameRectOf(
         width: rect.height,
         height: rect.width,
       };
+}
+
+/** Where a point of a framed box's margin box, `p` across and `q` down it
+ *  as the page has it, is in the frame's axes, from the margin box's top
+ *  left: `w` and `h` the margin box's size on the page. A `vertical-lr`
+ *  frame is laid out as `vertical-rl`'s and put back across, so what its
+ *  lines go around is the page's mirrored (`reflectFrame`). */
+export function intoFrame(
+  p: number,
+  q: number,
+  w: number,
+  h: number,
+  mode: WritingMode,
+): [number, number] {
+  if (turnsUp(mode)) return [h - q, p];
+  return reflects(mode) ? [q, p] : [q, w - p];
+}
+
+/** A framed box's borders, paddings and margins as the page has them, its
+ *  top first: `pageSides` and `pageMargins` of the frame's. */
+export function pageEdgesOf(
+  box: Box,
+  mode: WritingMode,
+): {
+  border: [number, number, number, number];
+  pad: [number, number, number, number];
+  margin: [number, number, number, number];
+} {
+  return {
+    border: pageSides(
+      [box.borderTop, box.borderRight, box.borderBottom, box.borderLeft],
+      mode,
+    ),
+    pad: pageSides(
+      [
+        box.padTop ?? 0,
+        box.padRight ?? 0,
+        box.padBottom ?? 0,
+        box.padLeft ?? 0,
+      ],
+      mode,
+    ),
+    margin: pageMargins(
+      [box.marginTop, box.marginRight, box.marginBottom, box.marginLeft],
+      mode,
+    ),
+  };
 }
 
 /** The four values of a framed box's sides, the frame's top first, as the
