@@ -1612,7 +1612,18 @@ export function paintDocument(
     until: null,
     matrix: options.matrix,
   };
-  if (canvas && !options.noCanvas) {
+  // the root element's filter runs over the canvas too, as Chrome and
+  // Firefox draw it: the canvas is painted in the root's group
+  // (`paintGroupOf`) where the filter is one this paint runs
+  const top = topBox(tree.root);
+  const filtered =
+    canvas &&
+    !options.noCanvas &&
+    top.style.filter !== null &&
+    runsOverPixels(colourOf(top.style.filter));
+  if (filtered) FILTERED_CANVAS.set(top, { canvas, tree });
+  else FILTERED_CANVAS.delete(top);
+  if (canvas && !options.noCanvas && !filtered) {
     paintCanvas(ctx, canvas, tree, { ...options, backdrop });
   }
   const painted: PaintOptions = {
@@ -1847,6 +1858,15 @@ function canvasArea(
   tree: BoxTree,
   options: PaintOptions,
 ): { x: number; y: number; w: number; h: number } | null {
+  const { x, y, w, h } = canvasExtent(tree, options);
+  return clampRect(options, x, y, w, h);
+}
+
+/** All of the canvas, in the window's pixels, whatever the damage. */
+function canvasExtent(
+  tree: BoxTree,
+  options: PaintOptions,
+): { x: number; y: number; w: number; h: number } {
   const flow = DOCUMENT_FLOW.get(tree) ?? tree.root;
   const whole = options.canvas ?? {
     x: options.originX,
@@ -1854,13 +1874,31 @@ function canvasArea(
     width: flow.width,
     height: flow.height,
   };
-  return clampRect(
-    options,
-    Math.round(whole.x),
-    Math.round(whole.y),
-    Math.ceil(whole.width),
-    Math.ceil(whole.height),
-  );
+  return {
+    x: Math.round(whole.x),
+    y: Math.round(whole.y),
+    w: Math.ceil(whole.width),
+    h: Math.ceil(whole.height),
+  };
+}
+
+/** The canvas a root element's filter runs over, by the root element's
+ *  box (`paintDocument`). */
+const FILTERED_CANVAS = new WeakMap<
+  Box,
+  { canvas: CanvasBackground; tree: BoxTree }
+>();
+
+/** What a filter runs over (`filteredFor`): the box as it paints, on the
+ *  canvas where it is the root element's (`FILTERED_CANVAS`). */
+function paintGroupOf(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  const under = FILTERED_CANVAS.get(box);
+  if (under) paintCanvas(ctx, under.canvas, under.tree, options);
+  paintUnfaded(ctx, box, options);
 }
 
 /** A box's child element of that name, or one inside the anonymous boxes
@@ -3709,7 +3747,7 @@ function filteredFor(
   if (box.kind === 'inline') return null;
   // a shadow in `currentColor` is in the box's colour
   const steps = colour.steps && resolvedSteps(colour.steps, box.style.color);
-  const own = through
+  let own = through
     ? ownBounds(box)
     : {
         x: box.boundsX,
@@ -3717,6 +3755,19 @@ function filteredFor(
         width: box.boundsWidth,
         height: box.boundsHeight,
       };
+  const under = FILTERED_CANVAS.get(box);
+  const area = under && !through ? canvasExtent(under.tree, options) : null;
+  if (area) {
+    const x = Math.min(own.x, area.x - options.originX);
+    const y = Math.min(own.y, area.y - options.originY);
+    own = {
+      x,
+      y,
+      width: Math.max(own.x + own.width, area.x + area.w - options.originX) - x,
+      height:
+        Math.max(own.y + own.height, area.y + area.h - options.originY) - y,
+    };
+  }
   const left = own.x + options.originX;
   const top = own.y + options.originY;
   const x0 = Math.floor(left);
@@ -3748,7 +3799,7 @@ function filteredFor(
     if (!kept.fresh) {
       const group = store.group(kept, fx, fy);
       if (!group) return null;
-      paintUnfaded(
+      paintGroupOf(
         group.ctx as PaintContext,
         box,
         through
@@ -3774,7 +3825,7 @@ function filteredFor(
     const surface = options.surface(w, h);
     if (!surface) return null;
     const on = surface.getContext('2d') as PaintContext;
-    paintUnfaded(
+    paintGroupOf(
       on,
       box,
       through
