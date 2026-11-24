@@ -273,6 +273,42 @@ function positionOf(
   return x === null || y === null ? null : [x, y];
 }
 
+/** A `circle()`'s or an `ellipse()`'s centre and radii in a box `w` by
+ *  `h`, from its corner; null for any other shape. */
+export function shapeEllipse(
+  shape: BasicShape,
+  w: number,
+  h: number,
+): [number, number, number, number] | null {
+  if (shape.kind !== 'circle' && shape.kind !== 'ellipse') return null;
+  const cx = resolve(shape.at[0], w);
+  const cy = resolve(shape.at[1], h);
+  const side = (r: Radius, base: number, near: number, far: number) =>
+    r === 'closest-side'
+      ? near
+      : r === 'farthest-side'
+        ? far
+        : resolve(r, base);
+  const nearX = Math.min(Math.abs(cx), Math.abs(w - cx));
+  const farX = Math.max(Math.abs(cx), Math.abs(w - cx));
+  const nearY = Math.min(Math.abs(cy), Math.abs(h - cy));
+  const farY = Math.max(Math.abs(cy), Math.abs(h - cy));
+  let rx: number;
+  let ry: number;
+  if (shape.kind === 'circle') {
+    rx = ry = side(
+      shape.r,
+      Math.hypot(w, h) / Math.SQRT2,
+      Math.min(nearX, nearY),
+      Math.max(farX, farY),
+    );
+  } else {
+    rx = side(shape.rx, w, nearX, farX);
+    ry = side(shape.ry, h, nearY, farY);
+  }
+  return [cx, cy, rx, ry];
+}
+
 /**
  * A shape laid down in a box `w` by `h`, as its polygons — each a flat list
  * of `x, y` from the box's corner, in device pixels — and the rule they are
@@ -292,31 +328,7 @@ export function shapePolygons(
   switch (shape.kind) {
     case 'circle':
     case 'ellipse': {
-      const cx = resolve(shape.at[0], w);
-      const cy = resolve(shape.at[1], h);
-      const side = (r: Radius, base: number, near: number, far: number) =>
-        r === 'closest-side'
-          ? near
-          : r === 'farthest-side'
-            ? far
-            : resolve(r, base);
-      const nearX = Math.min(Math.abs(cx), Math.abs(w - cx));
-      const farX = Math.max(Math.abs(cx), Math.abs(w - cx));
-      const nearY = Math.min(Math.abs(cy), Math.abs(h - cy));
-      const farY = Math.max(Math.abs(cy), Math.abs(h - cy));
-      let rx: number;
-      let ry: number;
-      if (shape.kind === 'circle') {
-        rx = ry = side(
-          shape.r,
-          Math.hypot(w, h) / Math.SQRT2,
-          Math.min(nearX, nearY),
-          Math.max(farX, farY),
-        );
-      } else {
-        rx = side(shape.rx, w, nearX, farX);
-        ry = side(shape.ry, h, nearY, farY);
-      }
+      const [cx, cy, rx, ry] = shapeEllipse(shape, w, h)!;
       return {
         polys: [ellipsePoints(cx, cy, rx, ry, tolerance)],
         rule: 'nonzero',

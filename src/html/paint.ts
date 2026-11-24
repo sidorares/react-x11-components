@@ -104,7 +104,12 @@ import {
 import { LARGEST } from './css/calc.js';
 import { passiveValue } from './css/passive-properties.js';
 import { cornerInset, cornerReach } from './css/corner-shape.js';
-import { pathPolygons, shapePolygons, strokeBands } from './css/basic-shape.js';
+import {
+  pathPolygons,
+  shapeEllipse,
+  shapePolygons,
+  strokeBands,
+} from './css/basic-shape.js';
 import type { FillRule } from './css/basic-shape.js';
 import {
   drawnThrough,
@@ -271,6 +276,15 @@ export interface PaintContext extends FillContext {
     y: number,
   ): void;
   closePath?(): void;
+  ellipse?(
+    x: number,
+    y: number,
+    rx: number,
+    ry: number,
+    rotation: number,
+    start: number,
+    end: number,
+  ): void;
   fill?(rule?: 'nonzero' | 'evenodd'): void;
   createLinearGradient?(
     x0: number,
@@ -4717,6 +4731,14 @@ function pushPathClip(ctx: PaintContext, path: PathClip): boolean {
   if (!ctx.beginPath || !ctx.clip) return false;
   ctx.save();
   ctx.beginPath();
+  if (path.ellipse && ctx.ellipse) {
+    // a curve the context sets as it sets every other, a rounded box's
+    // corners among them, where chords of our own came out apart from it
+    const [cx, cy, rx, ry] = path.ellipse;
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, 2 * Math.PI);
+    ctx.clip();
+    return true;
+  }
   for (const points of polygons) {
     ctx.moveTo(points[0], points[1]);
     for (let i = 2; i < points.length; i += 2) {
@@ -8685,6 +8707,9 @@ interface PathClip {
    *  null for a rectangle. */
   polygons: number[][] | null;
   rule: 'nonzero' | 'evenodd';
+  /** A `circle()`'s or an `ellipse()`'s centre and radii, which a context
+   *  that sets curves clips to in place of the polygons. */
+  ellipse?: readonly [number, number, number, number];
 }
 
 /**
@@ -8783,7 +8808,16 @@ function shapeClip(
   const rect = polygons.length
     ? { x, y, w: Math.ceil(maxX) - x, h: Math.ceil(maxY) - y }
     : { x: x0, y: y0, w: 0, h: 0 };
-  return { rect, radii: null, polygons, rule: laid.rule };
+  const e = path.basic && shapeEllipse(path.basic, width, height);
+  return {
+    rect,
+    radii: null,
+    polygons,
+    rule: laid.rule,
+    ...(e && polygons.length
+      ? { ellipse: [x0 + e[0], y0 + e[1], e[2], e[3]] as const }
+      : {}),
+  };
 }
 
 /** Each document's elements by id, as of a tree generation. */

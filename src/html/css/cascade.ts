@@ -135,7 +135,7 @@ import {
   presentedMotion,
   underAttributes,
 } from './shape-animations.js';
-import { shapePolygons } from './basic-shape.js';
+import { shapeEllipse, shapePolygons } from './basic-shape.js';
 import type { ShapeAnimations, ShapeMotion } from './shape-animations.js';
 import {
   animatedWillChange,
@@ -13483,6 +13483,20 @@ function drawingClipPath(
     box.height * scale,
   );
   let d = '';
+  const e = shapeEllipse(read.shape, box.width * scale, box.height * scale);
+  if (e) {
+    // two arcs, which `SvgView` sets as it sets a `<circle>`, where chords
+    // of our own came out apart from it
+    const [cx, cy, rx, ry] = e.map((v) => v / scale);
+    const r = `${+rx.toFixed(4)} ${+ry.toFixed(4)} 0 1 0`;
+    const x = box.x + cx;
+    const y = +(box.y + cy).toFixed(4);
+    if (rx > 0 && ry > 0) {
+      d = `M${+(x + rx).toFixed(4)} ${y}A${r} ${+(x - rx).toFixed(4)} ${y}`;
+      d += `A${r} ${+(x + rx).toFixed(4)} ${y}Z`;
+    }
+    return `${CLIP_PATH}${rule} ${d || 'M0 0Z'}`;
+  }
   for (const poly of polys) {
     for (let i = 0; i + 1 < poly.length; i += 2) {
       const x = box.x + poly[i] / scale;

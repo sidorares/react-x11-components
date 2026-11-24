@@ -1534,6 +1534,30 @@ metric(
 );
 
 metric(
+  "a drawing's element clipped to a circle() is set as a <circle> is",
+  async () => {
+    // The circle was handed to `SvgView` as chords of our own, a quarter of
+    // a pixel from its own curve: 64 levels apart from a <circle> of the
+    // same size (WPT clip-path-shape-circle-001, svg-clip-path-circle-offset)
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}svg{display:block}</style>' +
+        '<svg width="100" height="200">' +
+        '<rect width="100" height="100" fill="#008000" style="clip-path:circle()"/>' +
+        '<circle cx="50" cy="150" r="50" fill="#008000"/></svg>',
+      {},
+    );
+    await act();
+    const at = (y: number) =>
+      pixelsIn(result.ctx, { x: 0, y, width: 100, height: 100 });
+    const [a, b] = [await at(0), await at(100)];
+    let most = 0;
+    for (let i = 0; i < a.length; i++)
+      most = Math.max(most, Math.abs(a[i] - b[i]));
+    assert.strictEqual(most, 0);
+  },
+);
+
+metric(
   "an SVG's currentcolor and none are paint keywords in any case",
   async () => {
     // CSS Values 4, 2.5: Apple's tab strips draw their arrows with
