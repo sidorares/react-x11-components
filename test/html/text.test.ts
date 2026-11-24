@@ -13,7 +13,6 @@ import type {
 import type { TextRun } from '../../src/richtext/index.js';
 import { parseColor } from '../../src/html/css/values.js';
 import { textOverflowMarkOf } from '../../src/html/css/style.js';
-import { INK_FROM_GLYPHS } from '../../src/html/paint.js';
 import {
   boxOf,
   extentOf,
@@ -3082,45 +3081,45 @@ metric(
 );
 
 metric(
-  'a drag of the window draws an underline whole where its gaps are not known and its runs carry no glyphs, and the rest draws them',
-  async (t) => {
-    // the path CoreText and DirectWrite take, whose runs carry no glyphs
-    INK_FROM_GLYPHS.on = false;
-    t.after(() => {
-      INK_FROM_GLYPHS.on = true;
-    });
-    // reading a layout's coverage costs some 0.75 ms a paragraph of links,
-    // and a step of a drag lays the text out again: the drag draws the rule
-    // unbroken and says so, and a paint at rest leaves the glyphs out. The
-    // text is below the window, which has painted none of it
+  'text-decoration-skip-ink draws the rule whole under a layout whose runs carry no glyphs, and reads no coverage',
+  async () => {
+    // CoreText's and DirectWrite's runs hand over their geometry and no
+    // glyphs: reading such a layout's coverage whole costs some 0.75 ms a
+    // paragraph of links at every new width, so its rule is drawn unbroken,
+    // as before. The text is below the window, which has painted none of it
     const { node } = await render(
       '<style>body{margin:0;font:20px serif}' +
         'div{text-decoration:underline;color:#ff0000}</style>' +
-        '<p style="height:2000px"></p><div>gypsy</div>',
+        '<p style="height:2000px"></p><div id="d">gypsy</div>',
       300,
     );
     const el = view(node);
     await act();
-    let drawn = 0;
-    const drag = {
-      cheap: false,
-      moving: true,
-      moved: () => false,
-      paused: () => false,
-      drawn: () => {
-        drawn += 1;
-      },
-    };
-    const pieces = (fills: Awaited<ReturnType<typeof fillsOf>>) =>
-      fills.filter((f) => f.style === parseColor('#ff0000') && f.h <= 2);
-    assert.strictEqual(
-      pieces(await fillsOf(el, undefined, { drag })).length,
-      1,
+    let read = 0;
+    for (const line of linesOf(el, 'd')) {
+      for (const text of line.texts) {
+        const layout = text.layout as unknown as {
+          coverage?: (...args: unknown[]) => unknown;
+          lines: { runs: { run?: Record<string, unknown> }[] }[];
+        };
+        const was = layout.coverage;
+        if (was) {
+          layout.coverage = (...args: unknown[]) => {
+            read += 1;
+            return was.apply(layout, args);
+          };
+        }
+        // runs as an engine hands them back that names no glyphs
+        for (const r of layout.lines[text.layoutLine].runs) {
+          if (r.run) r.run = { ...r.run, glyphs: undefined };
+        }
+      }
+    }
+    const pieces = (await fillsOf(el)).filter(
+      (f) => f.style === parseColor('#ff0000') && f.h <= 2,
     );
-    assert.ok(drawn > 0, 'the drag says it drew the rule cheaper');
-    assert.ok(pieces(await fillsOf(el)).length > 1, 'at rest it is broken');
-    // and once known, a drag draws the gaps it has
-    assert.ok(pieces(await fillsOf(el, undefined, { drag })).length > 1);
+    assert.strictEqual(pieces.length, 1, 'one rule, whole');
+    assert.strictEqual(read, 0, 'no coverage read');
   },
 );
 

@@ -463,9 +463,6 @@ function drawOnKept(
 export interface DragPaint {
   /** Whether the drag is drawn cheaper. */
   readonly cheap: boolean;
-  /** Whether the width is moving: false once the drag rests, which is
-   *  drawn as at rest though the window's edge is still held. */
-  readonly moving?: boolean;
   /** Whether a background layer, its tile `width` by `height` now, was
    *  another size at a frame of the drag before: one whose size moves
    *  with it. Asked at every frame, so that it knows. */
@@ -16896,17 +16893,7 @@ function paintLinePart(
 
   // an underline goes under the glyphs, a line through over them (CSS 2.1
   // Appendix E): a descender crosses its own underline
-  paintRules(
-    ctx,
-    box,
-    visible,
-    dx,
-    dy,
-    options.scale ?? 1,
-    'under',
-    skip,
-    options.drag,
-  );
+  paintRules(ctx, box, visible, dx, dy, options.scale ?? 1, 'under', skip);
   paintHighlightRules(ctx, visible, options, dx, dy, 'under', skip);
 
   if (CLIPPED_TEXT.has(box)) {
@@ -17729,9 +17716,6 @@ function paintRules(
   rules: 'under' | 'over',
   /** What of the lines another part of them paints (`LinePart`). */
   skip?: ReadonlySet<unknown>,
-  /** The window's edge being dragged, under which no layout's coverage is
-   *  read (`inkGapsOf`). */
-  drag?: DragPaint | null,
 ): void {
   // whose each rule is and how far in it is drawn, where any element has
   // said (`text-decoration-inset`): nothing is asked of a page that has not
@@ -17761,7 +17745,7 @@ function paintRules(
         rules === 'under'
           ? (top, thickness, first, last) =>
               skipsInk(textBoxIn(text, first.start, last.end) ?? paragraph)
-                ? inkGapsOf(text.layout, natural, top + drop, thickness, drag)
+                ? inkGapsOf(natural, top + drop, thickness)
                 : null
           : undefined;
       for (const whole of [natural, trailOf(text, natural)]) {
@@ -17816,20 +17800,6 @@ function textBoxIn(text: LineText, from: number, to: number): Box | null {
   return null;
 }
 
-/** A text layout's coverage (`layout.coverage`), a byte a pixel, `pad`
- *  pixels round the layout's box. Structural: an engine may have none. */
-interface CoveredLayout {
-  coverage?(options: { pad: number }): {
-    width: number;
-    height: number;
-    data: Uint8Array;
-  } | null;
-}
-
-/** How far round a layout its coverage is asked for: what a glyph draws
- *  past the layout's box, an italic's overhang or a descender. */
-const INK_PAD = 4;
-
 /** How far an underline stays from the ink it leaves out, as a multiple of
  *  its thickness, and the most it is in pixels. */
 const INK_CLEARANCE = 1;
@@ -17839,59 +17809,32 @@ const INK_CLEARANCE_MAX = 13;
  *  for the line's life, so a repaint asks the engine nothing again. */
 const INK_GAPS = new WeakMap<object, Map<string, readonly number[] | null>>();
 
-/** The last layout whose coverage was read, and what it came to: a
- *  paragraph's lines ask for it in turn, and its raster is a byte a pixel
- *  of all of it, which nothing keeps past what the next asks. */
-let coverageRead: {
-  layout: object;
-  raster: ReturnType<NonNullable<CoveredLayout['coverage']>>;
-} | null = null;
-
 /**
- * The stretches across a layout an underline `thickness` thick whose top is
- * `top` down it leaves out for the glyphs it would cross, on one of its
- * lines, in the layout's coordinates, a start and an end each; null where
- * nothing is crossed, or the engine has nothing to read, which draws the
- * rule unbroken. Kept by line and band (`INK_GAPS`), so a repaint asks
- * nothing; and worked out from each glyph's own ink across the band where
- * the runs carry their glyphs (`lineGaps`), which a new layout of known text
- * costs lookups. Only a layout whose runs carry none has its coverage read
- * whole (`coverageGaps`).
+ * The stretches across a line of a layout an underline `thickness` thick
+ * whose top is `top` down it leaves out for the glyphs it would cross, in
+ * the layout's coordinates, a start and an end each; null where nothing is
+ * crossed, or the line's runs carry no glyphs to work it out from, which
+ * draws the rule unbroken. Kept by line and band (`INK_GAPS`), so a repaint
+ * asks nothing, and worked out from each glyph's own ink across the band
+ * (`lineGaps`), which a new layout of known text costs lookups. A layout
+ * read whole, which an engine whose runs carry no glyphs would need, is
+ * some 0.75 ms a paragraph of links at every new width: such a line's rule
+ * is drawn unbroken, as it was.
  */
 function inkGapsOf(
-  layout: object,
   line: InkLine,
   top: number,
   thickness: number,
-  /** While the window's edge is dragged, no layout's coverage is read: each
-   *  step lays the text out at a new width, and an engine whose runs carry
-   *  no glyphs would read it again, some 0.75 ms a paragraph of links. The
-   *  rule is drawn unbroken, and the paint once the drag rests draws its
-   *  gaps (`DragPaint.drawn`). The glyphs' path costs lookups, and draws
-   *  them at every step. */
-  drag?: DragPaint | null,
 ): readonly number[] | null {
   let kept = INK_GAPS.get(line);
   const key = `${top} ${thickness}`;
   const known = kept?.get(key);
   if (known !== undefined) return known;
-  const fromGlyphs = INK_FROM_GLYPHS.on
-    ? lineGaps(line, top, thickness)
-    : undefined;
-  if (fromGlyphs === undefined && drag?.moving) {
-    drag.drawn();
-    return null;
-  }
   if (!kept) INK_GAPS.set(line, (kept = new Map()));
-  const gaps = fromGlyphs ?? coverageGaps(layout, top, thickness);
+  const gaps = lineGaps(line, top, thickness) ?? null;
   kept.set(key, gaps);
   return gaps;
 }
-
-/** Whether a line's gaps are worked out from its glyphs where its runs
- *  carry them; off, a test has ntk take the path an engine with none
- *  does (`coverageGaps`). */
-export const INK_FROM_GLYPHS = { on: true };
 
 /** A line as `lineGaps` reads it: each run's glyphs where its engine hands
  *  them over, as ntk's does, with the face that outlines them. */
@@ -17929,8 +17872,8 @@ function glyphRunOf(run: unknown): GlyphRun | null {
  * outline (`glyphInk`), placed where the engine draws the glyph — the run's
  * place, its pen moved by each advance and the glyph by its offsets, as
  * ntk's `draw` and `coverage` place them — widened by the clearance and
- * joined where they meet. Undefined where a run carries no glyphs: the
- * engine's coverage is read instead.
+ * joined where they meet. Undefined where a run carries no glyphs, as
+ * CoreText's and DirectWrite's carry none: the rule is drawn unbroken.
  */
 function lineGaps(
   line: InkLine,
@@ -18043,55 +17986,6 @@ function glyphInk(
   const ink = joined(spans) ?? [];
   kept.set(key, ink);
   return ink;
-}
-
-/**
- * The gaps across a layout at a band from its coverage, for an engine whose
- * runs carry no glyphs (CoreText's, DirectWrite's): the whole layout read,
- * which the last one read is kept for, as a paragraph's lines ask in turn.
- */
-function coverageGaps(
-  layout: object,
-  top: number,
-  thickness: number,
-): readonly number[] | null {
-  if (coverageRead?.layout !== layout) {
-    coverageRead = {
-      layout,
-      raster: (layout as CoveredLayout).coverage?.({ pad: INK_PAD }) ?? null,
-    };
-  }
-  const raster = coverageRead.raster;
-  return raster ? gapsAcross(raster, top, thickness) : null;
-}
-
-/** The columns of a coverage raster with ink in the rows from `top` down
- *  `thickness`, widened by the clearance and joined where they meet. */
-function gapsAcross(
-  raster: { width: number; height: number; data: Uint8Array },
-  top: number,
-  thickness: number,
-): readonly number[] | null {
-  const { width, height, data } = raster;
-  // the rows the rule is drawn on, which it is drawn rounded to
-  const y0 = Math.max(0, Math.round(top) + INK_PAD);
-  const y1 = Math.min(height, Math.round(top) + thickness + INK_PAD);
-  if (y1 <= y0) return null;
-  const clear = Math.min(INK_CLEARANCE * thickness, INK_CLEARANCE_MAX);
-  const gaps: number[] = [];
-  for (let x = 0; x < width; x += 1) {
-    let ink = false;
-    for (let y = y0; y < y1 && !ink; y += 1) ink = data[y * width + x] > 0;
-    if (!ink) continue;
-    const from = x - INK_PAD - clear;
-    const to = x + 1 - INK_PAD + clear;
-    if (gaps.length && from <= gaps[gaps.length - 1]) {
-      gaps[gaps.length - 1] = to;
-    } else {
-      gaps.push(from, to);
-    }
-  }
-  return gaps.length ? gaps : null;
 }
 
 /** Whether a text is at its line's start, and at its end, by where in the
