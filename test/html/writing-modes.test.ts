@@ -464,6 +464,43 @@ test('a horizontal block in a vertical flow is a frame of its own, which turns b
   assert.strictEqual(short.height, 10, 'one line, across the page');
 });
 
+test("an inline-block's and an inline-table's baseline in a vertical-lr line are where the flow is put back to", async () => {
+  // A `vertical-lr` flow is laid out as `vertical-rl` and put back across
+  // (`reflectFrame`), the line moved whole and the lines inside an atomic
+  // on it put back across the atomic: the line was lined up with the
+  // atomic's other line, its first where its last was meant and its last
+  // where its first was (WPT css-writing-modes/inline-block-alignment-003,
+  // 005, 007 and inline-table-alignment-003, 005)
+  const { node } = await render(
+    '<style>body{margin:0}div{writing-mode:vertical-lr;font:20px/1 sans-serif}' +
+      '.b{display:block}</style>' +
+      '<div>A<span style="display:inline-block;font-size:40px">' +
+      '<span class="b" id="bf">F</span><span class="b" id="bl">L</span></span>' +
+      '<span id="bo">O</span></div>' +
+      '<div>A<span style="display:inline-table;font-size:40px">' +
+      '<span style="display:table-row" id="tf">F</span>' +
+      '<span style="display:table-row" id="tl">L</span></span>' +
+      '<span id="to">O</span></div>',
+  );
+  const el = view(node);
+  const middle = (id: string) => {
+    const r = rectOf(el, id);
+    return r.x + r.width / 2;
+  };
+  // the inline-block's last line, which is at its right
+  assert.ok(middle('bf') < middle('bl'), 'its lines left to right');
+  assert.ok(
+    Math.abs(middle('bo') - middle('bl')) < 1,
+    `on its last line: ${middle('bo')} by ${middle('bl')}`,
+  );
+  // the inline-table's first row, which is at its left
+  assert.ok(middle('tf') < middle('tl'), 'its rows left to right');
+  assert.ok(
+    Math.abs(middle('to') - middle('tf')) < 1,
+    `on its first row: ${middle('to')} by ${middle('tf')}`,
+  );
+});
+
 test('a horizontal block in a vertical-lr flow is a frame of its own too, and holds its lines', async () => {
   // the flow is put back across after it is laid out (`reflectFrame`),
   // which moves the horizontal block whole and nothing in its own frame
@@ -1681,6 +1718,41 @@ test('a horizontal cell in a vertical table lays its content out across the page
   const r = rectOf(el, 's');
   // as wide and as tall as it says, at the right of its 40px cell
   assert.deepStrictEqual([r.x, r.width, r.height], [30, 10, 5]);
+});
+
+test("vertical-align moves a horizontal cell's content down a vertical table, along its block axis", async () => {
+  // a horizontal cell in a vertical table turns back the table's frame,
+  // and its block axis runs down the page whichever way the table's frame
+  // is turned
+  const table = (mode: string) =>
+    `<table style="writing-mode:${mode}"><tr>` +
+    ['top', 'middle', 'bottom']
+      .map(
+        (align) =>
+          `<td id="${mode}-${align}-cell" style="vertical-align:${align}">` +
+          `<div id="${mode}-${align}" ` +
+          'style="width:20px;height:10px"></div></td>',
+      )
+      .join('') +
+    '</tr></table>';
+  const { node } = await render(
+    '<style>body{margin:0}table{border-spacing:0}' +
+      'td{padding:0;writing-mode:horizontal-tb;width:30px;height:50px}' +
+      '</style>' +
+      table('vertical-rl') +
+      table('sideways-lr'),
+  );
+  const el = view(node);
+  // where down the cell, which is all of what this says
+  const down = (id: string) => {
+    const r = rectOf(el, id);
+    return [r.y - rectOf(el, `${id}-cell`).y, r.height];
+  };
+  for (const mode of ['vertical-rl', 'sideways-lr']) {
+    assert.deepStrictEqual(down(`${mode}-top`), [0, 10], mode);
+    assert.deepStrictEqual(down(`${mode}-middle`), [20, 10], mode);
+    assert.deepStrictEqual(down(`${mode}-bottom`), [40, 10], mode);
+  }
 });
 
 test('an edge on half a pixel across a vertical-rl frame is drawn on the column the page draws it on', async () => {
