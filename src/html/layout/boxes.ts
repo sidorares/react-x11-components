@@ -4631,6 +4631,8 @@ class Builder {
       box.style.writingMode !== 'horizontal-tb' &&
       (kind === 'table-cell' ||
         kind === 'table-caption' ||
+        // and a table, whose frame is the table (`makeFrame`)
+        kind === 'table' ||
         (kind === 'block' && !style.grid) ||
         // and a grid, or grid lanes, whose frame is the grid (`makeFrame`),
         // but for a subgrid, whose tracks would be its parent's across
