@@ -2157,7 +2157,7 @@ function layoutDocumentPass(
     // box positioned in one is laid out after that: what it holds is put
     // back across its own content box once it is
     if (putBackAcross(box)) {
-      reflectFrame(box, box.contentHeight, translate, moveLine);
+      reflectFrame(box, box.contentHeight, translate, moveLine, establishesBFC);
     }
     if (strip) {
       stripReach.reach(
@@ -4990,7 +4990,9 @@ function layoutFramed(box: Box, frame: Box, ctx: LayoutContext): void {
     // the same lines on the page
     moveTo(frame, box.contentX, box.contentY + box.contentHeight);
   } else moveTo(frame, box.contentX + room, box.contentY);
-  if (reflects(mode)) reflectFrame(frame, room, translate, moveLine);
+  if (reflects(mode)) {
+    reflectFrame(frame, room, translate, moveLine, establishesBFC);
+  }
   // top-layer siblings left on the root outside the frame (`makeFrame`):
   // a `::view-transition` is against the viewport in the page's axes
   for (const child of box.children) {
@@ -5169,6 +5171,14 @@ function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
   if (frame.intrinsicMaxContent < 0) {
     frame.intrinsicMaxContent = measureIntrinsicWidth(frame, ctx, Infinity);
   }
+  // a table's own width, which is no less than its narrowest (CSS 2.1
+  // 17.5.2), where it has one
+  if (frame.kind === 'table') {
+    const own = tableFrameWidth(frame, ctx, available);
+    if (own !== null) {
+      return clampHeight(box, own + box.verticalExtra) - box.verticalExtra;
+    }
+  }
   let size = frame.intrinsicMaxContent;
   if (size > available) {
     if (frame.intrinsicMinContent < 0) {
@@ -5182,6 +5192,35 @@ function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
   }
   // within its own `min-height` and `max-height`
   return clampHeight(box, size + box.verticalExtra) - box.verticalExtra;
+}
+
+/** The border-box width a vertical table's frame is laid out at where the
+ *  table has a width of its own (`makeFrame`): that width, within its own
+ *  limits, and no less than its narrowest; null where it is `auto`. */
+function tableFrameWidth(
+  frame: Box,
+  ctx: LayoutContext,
+  available: number,
+): number | null {
+  const style = frame.style;
+  if (style.width === AUTO || cyclicWidth(style, available)) return null;
+  resolveEdges(frame, available);
+  const specified = Math.max(0, resolve(style.width, available, 0));
+  const borderBox =
+    style.boxSizing === 'border-box'
+      ? Math.max(specified, frame.horizontalExtra)
+      : specified + frame.horizontalExtra;
+  if (frame.intrinsicMinContent < 0) {
+    frame.intrinsicMinContent = measureIntrinsicWidth(
+      frame,
+      ctx,
+      MIN_CONTENT_PROBE,
+    );
+  }
+  return Math.max(
+    clampWidth(frame, borderBox, available, ctx),
+    frame.intrinsicMinContent,
+  );
 }
 
 /** The content height of the nearest scroll container above a box, where
