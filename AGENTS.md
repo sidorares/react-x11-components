@@ -7747,6 +7747,11 @@ run in its steps, in the order written (`ColourFilter.steps`): a shadow
 is cast from what the functions before it made, and the ones after run
 over it, so its matrices and its blur no longer say what it does. **Anything new a filter draws past
 the box joins `filterOutsets`**, or it is cut at the box's ink.
+**The box's own `clip`, `clip-path` and mask cut what the filter made**
+(`drawFiltered`, CSS Masking 1's filter, clip, mask, opacity): the group
+it runs over is painted without them (`paintFilterGroup`), over the ink
+the path has not cut (`FILTERED_INK`), and its own overflow clip stays in
+the group. Cut first, a `drop-shadow()` reached past them.
 **A read is made stale, never dropped** (`stale`, through
 `_dropSprites`): a page whose animations build the document every frame
 — ekazinich.com's — dropped the read at each build, and those frames drew
