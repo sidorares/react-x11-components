@@ -187,6 +187,16 @@ export const GEOMETRY_OF: Readonly<Record<string, ReadonlySet<string>>> = {
   d: new Set(['path']),
 };
 
+/** A geometry attribute's value as a keyframe starts from it: a plain
+ *  number is user units there, as `SvgView` reads the attribute, and
+ *  anything else is read as the property's (`shapeValue`). Null for a
+ *  property no geometry. */
+export function attributeGeometry(prop: string, value: string): string | null {
+  if (!GEOMETRY_OF[prop]) return null;
+  const v = value.trim();
+  return NUMBER.test(v) ? String(Number(v)) : null;
+}
+
 /** Whether a rule with this declaration is one to keep for drawings. */
 export function isShapeProp(prop: string): boolean {
   return PROPS[prop] !== undefined;
@@ -435,11 +445,10 @@ export function shapeValue(
       // the drawing has; `auto` where the property takes it
       const v = value.toLowerCase();
       if (v === 'auto') return INITIAL[prop] === 'auto' ? v : null;
-      // a number is user units, as an attribute's is, which an animation
-      // under it reads through here
-      const px = NUMBER.test(value)
-        ? Number(value)
-        : lengthIn(value, ctx.units);
+      // a number is no length but 0 (CSS Values 4, 6.1), as Chrome has it:
+      // an attribute's is read apart from this (`attributeGeometry`)
+      if (v === '0') return v;
+      const px = NUMBER.test(value) ? null : lengthIn(value, ctx.units);
       if (px !== null) {
         const sized =
           prop !== 'x' && prop !== 'y' && prop !== 'cx' && prop !== 'cy';

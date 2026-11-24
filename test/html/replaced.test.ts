@@ -2245,6 +2245,12 @@ metric(
       ],
       [svg('<path class="d" d="M0 0H10V10H0Z"/>'), 35, '#00aa00', 'd'],
       [
+        svg('<circle class="n" cx="5" cy="5" r="5"/>'),
+        1,
+        '#00aa00',
+        'a number is no length: the attribute stands',
+      ],
+      [
         svg('<rect class="p" height="10"/>'),
         15,
         '#00aa00',
@@ -2255,7 +2261,7 @@ metric(
     const { result } = await renderWithBytes(
       '<style>body{margin:0} svg{display:block;fill:#00aa00}' +
         '.w{width:30px;height:10px} .x{x:20px} .c{cx:25px;r:5px}' +
-        '.d{d:path("M30 0H40V10H30Z")} .p{width:50%}</style>' +
+        '.d{d:path("M30 0H40V10H30Z")} .p{width:50%} .n{r:1}</style>' +
         rows.map(([markup]) => markup).join(''),
       {},
     );

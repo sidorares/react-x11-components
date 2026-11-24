@@ -33,7 +33,12 @@ import type { Animations } from './animation.js';
 import { blend } from './color.js';
 import { interpolateTransforms } from './interpolate.js';
 import type { KeyframesRule } from './parse.js';
-import { isShapeProp, shapeInitial, shapeValue } from './shapes.js';
+import {
+  attributeGeometry,
+  isShapeProp,
+  shapeInitial,
+  shapeValue,
+} from './shapes.js';
 import type { ShapeContext } from './shapes.js';
 import { IDENTITY, multiply, parseTransform } from './transform.js';
 import type { Matrix, TransformFunction } from './transform.js';
@@ -203,7 +208,10 @@ export class ShapeAnimations {
       const mine = own?.[prop];
       if (mine !== undefined && mine !== 'inherit') return mine;
       const attr = el.attribs[prop];
-      const read = attr === undefined ? null : shapeValue(prop, attr, ctx);
+      const read =
+        attr === undefined
+          ? null
+          : (attributeGeometry(prop, attr) ?? shapeValue(prop, attr, ctx));
       return read ?? shapeInitial(prop) ?? '';
     };
     for (let i = 0; i < animations.names.length; i += 1) {
