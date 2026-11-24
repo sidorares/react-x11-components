@@ -208,6 +208,31 @@ metric(
 );
 
 metric(
+  "text-align: match-parent reads the parent's start and end in the parent's direction",
+  async () => {
+    // CSS Text 3, 7.1: an inherited `start` or `end` is the side it is in
+    // the parent's direction, for `text-align` and `text-align-last` alike.
+    // `match-parent` was not read, and each child took its own direction's
+    // start (WPT text-align-match-parent-01, -05); the root has no parent,
+    // and keeps `start` in its own direction (-root-rtl)
+    const { node } = await render(
+      '<style>body{margin:0}div{width:200px}p{margin:0}</style>' +
+        '<div style="text-align:start" dir="rtl">' +
+        '<p id="a" dir="ltr" style="text-align:match-parent">a</p></div>' +
+        '<div style="text-align:end" dir="ltr">' +
+        '<p id="b" dir="rtl" style="text-align:match-parent">b</p></div>' +
+        '<div style="text-align-last:start" dir="rtl">' +
+        '<p id="c" dir="ltr" style="text-align-last:match-parent">c</p></div>',
+    );
+    const el = view(node);
+    for (const id of ['a', 'b', 'c']) {
+      const [, to] = extentOf(linesOf(el, id)[0].texts[0]);
+      assert.ok(to > 199.5, `#${id} at the right: ${to}`);
+    }
+  },
+);
+
+metric(
   'a justified line keeps its breaks where a spaced space is wider',
   async () => {
     // an engine measures a space that is a spaced run of its own wider
