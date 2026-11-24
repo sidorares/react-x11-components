@@ -1726,7 +1726,7 @@ test("a vertical-rl root element stands against the viewport's right, as wide as
   // its background was positioned and sized from the viewport's left
   const root = async (style: string) => {
     const { node, result } = await render(
-      `<html id="root" style="writing-mode:vertical-rl;${style}"><body ` +
+      `<html id="root" style="${style}"><body ` +
         'style="margin:0"><div style="width:50px;height:20px"></div>' +
         '</body></html>',
       400,
@@ -1736,8 +1736,22 @@ test("a vertical-rl root element stands against the viewport's right, as wide as
     await result.unmount();
     return [rect.x, rect.width];
   };
-  assert.deepStrictEqual(await root(''), [350, 50], 'as wide as its content');
-  assert.deepStrictEqual(await root('width:100px'), [300, 100], 'its own');
+  // and a `sideways-rl` one, whose blocks run right to left as well
+  for (const mode of ['vertical-rl', 'sideways-rl']) {
+    const wm = `writing-mode:${mode};`;
+    assert.deepStrictEqual(await root(wm), [350, 50], `${mode}: its content`);
+    assert.deepStrictEqual(
+      await root(`${wm}width:100px`),
+      [300, 100],
+      `${mode}: its own`,
+    );
+  }
+  // a `vertical-lr` one fills the line, whose start is the viewport's
+  assert.deepStrictEqual(
+    await root('writing-mode:vertical-lr'),
+    [0, 400],
+    'vertical-lr: the line',
+  );
 });
 
 test('an edge on half a pixel across a vertical-rl frame is drawn on the column the page draws it on', async () => {
