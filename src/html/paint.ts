@@ -16972,6 +16972,7 @@ function paintLinePart(
           below: LINE_INK.get(lines)?.below ?? 0,
           late: [],
           deferred: new Set(),
+          block: box,
         }
       : null;
   for (let i = 0; i < visible.length; i += 1) {
@@ -17009,7 +17010,6 @@ function paintLinePart(
     }
     paintSelection(ctx, line, options, skip);
   }
-
   if (SHADOWED_TEXT.has(box)) paintTextShadows(ctx, visible, options, skip);
   paintHighlightShadows(ctx, visible, options, skip);
 
@@ -17349,6 +17349,11 @@ interface Interleave {
   /** The boxes a fragment of which was put off: what they hold is put off
    *  with them, and painted over them. */
   deferred: Set<Box>;
+  /** The block whose lines these are, and whether they draw anything under
+   *  their text for all of them at once (`drawsUnderText`), asked as a
+   *  fragment is first to be put off. */
+  block: Box;
+  underText?: boolean;
 }
 
 /** A fragment put off until the text before it is drawn: where it starts
@@ -17395,6 +17400,24 @@ function coversEarlier(
     if (before.y + before.height + below <= y1) break;
     for (const text of before.texts) {
       if (textMeets(text, x1, y1, x2, y2)) return true;
+    }
+  }
+  return false;
+}
+
+/** Whether a block's lines draw anything under their text for all of them
+ *  at once (`paintLinePart`): a text shadow, or an underline. */
+function drawsUnderText(box: Box, visible: readonly LineBox[]): boolean {
+  if (SHADOWED_TEXT.has(box)) return true;
+  for (const line of visible) {
+    for (const text of line.texts) {
+      const natural = text.layout.lines[text.layoutLine];
+      if (!natural) continue;
+      for (const run of natural.runs) {
+        if ((run.span as { underline?: unknown } | undefined)?.underline) {
+          return true;
+        }
+      }
     }
   }
   return false;
@@ -19272,16 +19295,25 @@ function paintInlineFragment(
         if (interleave.deferred.has(up)) within = true;
       }
       if (
-        within ||
-        coversEarlier(
-          interleave,
-          line,
-          at,
-          fragment.x - (out?.left ?? 0),
-          fragment.y - (out?.top ?? 0),
-          fragment.x + fragment.width + (out?.right ?? 0),
-          fragment.y + fragment.height + (out?.bottom ?? 0),
-        )
+        (within ||
+          coversEarlier(
+            interleave,
+            line,
+            at,
+            fragment.x - (out?.left ?? 0),
+            fragment.y - (out?.top ?? 0),
+            fragment.x + fragment.width + (out?.right ?? 0),
+            fragment.y + fragment.height + (out?.bottom ?? 0),
+          )) &&
+        // A fragment put off would be painted over what is drawn under the
+        // text for all of the lines at once — the text's shadows and its
+        // underlines, its own among them — which its own text has over it.
+        // Where there are any it is painted in its turn, and what reaches
+        // up over a line before is drawn again over its text (`Bleed`).
+        !(interleave.underText ??= drawsUnderText(
+          interleave.block,
+          interleave.visible,
+        ))
       ) {
         interleave.deferred.add(box);
         interleave.late.push({
