@@ -84,6 +84,7 @@ import {
   densityOf,
   firstLineParent,
   inherit,
+  masked,
   urlOf,
   verticalMode,
 } from '../css/style.js';
@@ -7672,14 +7673,16 @@ export function isOffset(style: ComputedStyle): boolean {
 /** Whether an inline box's text is laid out apart from the text around it,
  *  and painted at its own turn among the layers (`paintsApart`): one an
  *  inset moves or a `z-index` places, one a view transition may capture by
- *  a name, whose image is it alone (CSS View Transitions 1, 7.4), and one a
- *  `clip-path` cuts, under its clip (CSS Masking 1, 5). */
+ *  a name, whose image is it alone (CSS View Transitions 1, 7.4), one a
+ *  `clip-path` cuts, under its clip (CSS Masking 1, 5), and one a mask cuts,
+ *  laid down in its fragments (7). */
 export function laidApart(style: ComputedStyle): boolean {
   return (
     isOffset(style) ||
     (typeof style.zIndex === 'number' && isRelative(style)) ||
     style.viewTransitionName !== 'none' ||
-    style.clipPath !== null
+    style.clipPath !== null ||
+    masked(style)
   );
 }
 
