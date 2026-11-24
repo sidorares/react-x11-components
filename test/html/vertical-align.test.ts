@@ -225,7 +225,9 @@ metric(
   'a box whose padding reaches up over the line before is drawn over its text',
   async () => {
     // CSS 2.1 Appendix E paints a block a line at a time, backgrounds first:
-    // the second line's padding covers the first line's text
+    // the second line's padding covers the first line's text, and its own
+    // text is over it. The first line's text is drawn before the padding
+    // and the second's after (`drawInterleaved`)
     const { node } = await render(
       '<style>body{margin:0}</style>' +
         '<p style="margin:0;font-size:16px;line-height:20px">first line<br>' +
@@ -234,18 +236,12 @@ metric(
     const ops: PaintOp[] = [];
     await fillsOf(view(node), ops);
     const text = ops.findIndex((op) => op.op === 'text');
-    const again = ops.findIndex(
-      (op, i) => i > text && op.op === 'fill' && op.style === '#00ff00',
+    const fill = ops.findIndex(
+      (op) => op.op === 'fill' && op.style === '#00ff00',
     );
-    assert.ok(text >= 0 && again > text, 'filled again after the text');
-    const clip = ops
-      .slice(text, again)
-      .reverse()
-      .find((op): op is Extract<PaintOp, { op: 'clip' }> => op.op === 'clip');
-    assert.ok(
-      clip && clip.y + clip.h <= 21,
-      `only above its own line: ${JSON.stringify(clip)}`,
-    );
+    const after = ops.findIndex((op, i) => i > fill && op.op === 'text');
+    assert.ok(text >= 0 && fill > text, 'the padding after the first line');
+    assert.ok(after > fill, 'and the second line over it');
   },
 );
 

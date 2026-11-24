@@ -17283,8 +17283,9 @@ function coversEarlier(
     const left = text.drawX + natural.x;
     for (const run of natural.runs) {
       if (i === at.t && run.start >= at.c) continue;
-      const from = left + run.x;
-      if (run.width > 0 && from < x2 && from + run.width > x1) return true;
+      if (inkBefore(run, left, i === at.t ? at.c : Infinity, x1, x2)) {
+        return true;
+      }
     }
   }
   const { visible, index, below } = interleave;
@@ -17297,6 +17298,56 @@ function coversEarlier(
   }
   return false;
 }
+
+/**
+ * Whether a run draws anything across `x1` to `x2` before the code unit
+ * `before` of its layout's text: glyph by glyph, white space and the
+ * no-break space an inline box's edge is laid out as (`spacerRun`) drawing
+ * nothing — a box's padding, or its shadow, is over its edge's and the
+ * space before it wherever it has any. A run with no glyphs to read is
+ * taken whole.
+ */
+function inkBefore(
+  run: LaidOutRun,
+  left: number,
+  before: number,
+  x1: number,
+  x2: number,
+): boolean {
+  const from = left + run.x;
+  if (!(run.width > 0) || from >= x2 || from + run.width <= x1) return false;
+  const glyphs = (run.run as { glyphs?: readonly NtkGlyph[] } | undefined)
+    ?.glyphs;
+  if (!glyphs) return true;
+  // the glyphs are in visual order, and a right-to-left run's last is its
+  // first in the text (`cutRun`)
+  const rtl = run.run!.direction === 'rtl';
+  let unit = rtl ? run.end : run.start;
+  let x = from;
+  for (const g of glyphs) {
+    let units = 0;
+    for (const cp of g.codePoints) units += cp > 0xffff ? 2 : 1;
+    if (rtl) unit -= units;
+    const at = unit;
+    if (!rtl) unit += units;
+    const end = x + g.ax;
+    if (
+      at < before &&
+      x < x2 &&
+      end > x1 &&
+      g.codePoints.some((cp) => !INKLESS.has(cp))
+    ) {
+      return true;
+    }
+    x = end;
+  }
+  return false;
+}
+
+/** The characters that draw nothing (`inkBefore`). */
+const INKLESS = new Set([
+  0x09, 0x0a, 0x0c, 0x0d, 0x20, 0xa0, 0x2028, 0x200b, 0x200c, 0x200d, 0xfeff,
+]);
 
 /**
  * The text of a part of a block's lines with the fragments put off
