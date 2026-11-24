@@ -156,6 +156,9 @@ const PROPS: Record<string, boolean> = {
   'clip-path': false,
   'stop-color': false,
   'stop-opacity': false,
+  // what a `<mask>` is composited by, where a mask layer's `mask-mode`
+  // leaves it to the mask (CSS Masking 1, 7.3.1)
+  'mask-type': false,
 };
 
 /** Whether a rule with this declaration is one to keep for drawings. */
@@ -202,6 +205,7 @@ const INITIAL: Record<string, string> = {
   'clip-path': 'none',
   'stop-color': '#000000',
   'stop-opacity': '1',
+  'mask-type': 'luminance',
   'font-size': 'medium',
   'font-style': 'normal',
   'font-weight': '400',
@@ -235,6 +239,7 @@ export const SHAPE_TAGS: ReadonlySet<string> = new Set([
   'image',
   'stop',
   'clippath',
+  'mask',
 ]);
 
 /** What a shape's values are read against: the drawing's own `color` and
@@ -378,6 +383,10 @@ export function shapeValue(
     }
     case 'stroke-linejoin':
       return LINE_JOINS[value.toLowerCase()] ?? null;
+    case 'mask-type': {
+      const v = value.toLowerCase();
+      return v === 'alpha' || v === 'luminance' ? v : null;
+    }
     case 'fill-rule':
     case 'clip-rule': {
       const v = value.toLowerCase();

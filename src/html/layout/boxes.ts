@@ -1039,6 +1039,10 @@ export const columned = { any: false };
  *  (`Cascade.shapeStyles`), null where they give none. */
 export type ShapeStyler = (box: Box) => ShapeStyles | null;
 
+/** A `<mask>`'s `mask-type` as the document's rules give it, which
+ *  `maskDrawing` composites it by; null where they give it none. */
+export type MaskTyper = (mask: Element) => 'alpha' | 'luminance' | null;
+
 /** What `BoxTree.shapeStyler` answered for each drawing's box it has been
  *  asked of, which are the ones painted: a box restyled where it is has
  *  its answer put here again (`HtmlViewNode._hoverInPlace`). */
@@ -1437,6 +1441,9 @@ export interface BoxTree {
    *  `<use>` finds the icon a sprite has for it; and what the rules matched
    *  in each copy a `<use>` makes. Null where `shapeStyler` is. */
   shapeCopies: ShapeCopies | null;
+  /** A `<mask>`'s `mask-type` from the rules (`MaskTyper`), worked out
+   *  from its drawing's `Cascade.shapeStyles` as a mask layer is drawn. */
+  maskType: MaskTyper | null;
   /** What a `rem` and a `vw` in a drawing's geometry are of, as the
    *  document has them when it is painted (`Cascade.drawingUnits`). */
   drawingUnits: () => DrawingUnits;
@@ -4110,6 +4117,7 @@ class Builder {
     | 'highlightStyler'
     | 'shapeStyler'
     | 'shapeCopies'
+    | 'maskType'
     | 'drawingUnits'
   > {
     const cascade = this._options.cascade;
@@ -4120,6 +4128,7 @@ class Builder {
       highlightStyler: cascade.hasHighlights ? this._highlightStyler() : null,
       shapeStyler: this._shapeStyler(copies),
       shapeCopies: copies,
+      maskType: this._maskTyper(copies),
       drawingUnits: () => cascade.drawingUnits(),
     };
   }
@@ -4180,6 +4189,7 @@ class Builder {
       highlightStyler: cascade.hasHighlights ? this._highlightStyler() : null,
       shapeStyler: this._shapeStyler(copies),
       shapeCopies: copies,
+      maskType: this._maskTyper(copies),
       drawingUnits: () => cascade.drawingUnits(),
       nestedOutOfLine: this._nestedOutOfLine,
       movedInline: this._movedInline,
@@ -4263,6 +4273,33 @@ class Builder {
         SHAPE_STYLES.set(box, shapes);
       }
       return shapes;
+    };
+  }
+
+  /** `BoxTree.maskType`, over this build's cascade: what the rules give
+   *  the outermost `<svg>` around a mask, kept by that element. */
+  private _maskTyper(copies: ShapeCopies): MaskTyper {
+    const cascade = this._options.cascade;
+    const styles = this._styles;
+    const kept = new WeakMap<Element, ShapeStyles | null>();
+    return (mask) => {
+      let root: Element | null = null;
+      for (
+        let at = mask.parent as Element | null;
+        at && at.type === 'tag';
+        at = at.parent as Element | null
+      ) {
+        if (tagOf(at) === 'svg') root = at;
+      }
+      const own = root && styles.get(root);
+      if (!root || !own) return null;
+      let shapes = kept.get(root);
+      if (shapes === undefined) {
+        shapes = cascade.shapeStyles(root, own.style, copies);
+        kept.set(root, shapes);
+      }
+      const type = shapes?.of.get(mask)?.['mask-type'];
+      return type === 'alpha' || type === 'luminance' ? type : null;
     };
   }
 
