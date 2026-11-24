@@ -41,7 +41,7 @@ function App() {
           lon,
           heading: 20,
           pitch: Number(process.env.MAP3D_PITCH ?? 55),
-          range: 700,
+          range: Number(process.env.MAP3D_RANGE ?? 700),
         }}
         onFrame={(gl: any, { width, height }, st) => {
           // MAP3D_SHOT=file.png writes the first complete frame and exits

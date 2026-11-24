@@ -230,8 +230,18 @@ export class Tileset<T> {
     const { forward, right, up } = o.axes;
     const far = o.far ?? 3e7;
     const k = o.height / (2 * Math.tan((o.orbit.fov * Math.PI) / 360));
-    const visit = (n: TileNode): { draw: string[]; ready: boolean } => {
-      const none = { draw: [], ready: true };
+    // A node is `covered` when what it contributes shows something over its whole area: its own tile, or its
+    // children's, each of which is covered in turn. A node is replaced by its children as soon as every one of
+    // them is covered, however coarse — not when the whole subtree below is in, which on a view with a horizon
+    // is hundreds of tiles and never.
+    let missing = 0;
+    const want = (uri: string): boolean => {
+      const ok = this._want(uri);
+      if (!ok) missing++;
+      return ok;
+    };
+    const visit = (n: TileNode): { draw: string[]; covered: boolean } => {
+      const none = { draw: [], covered: true };
       out.visited++;
       if (out.visited > maxNodes) return none;
       const box = n.boundingVolume.box;
@@ -255,38 +265,33 @@ export class Tileset<T> {
       const sse = (n.geometricError * k) / dist;
       const uri = contentOf(n);
       const glb = uri && !isJson(uri) ? uri : undefined;
-      const refine = sse > maxError;
-      if (!refine) {
-        if (glb) {
-          const ok = this._want(glb);
-          return { draw: ok ? [glb] : [], ready: ok };
-        }
-        // a node with no content of its own: its children stand in for it
-      }
+      const own = (): { draw: string[]; covered: boolean } => {
+        const ok = want(glb!);
+        return { draw: ok ? [glb!] : [], covered: ok };
+      };
+      if (sse <= maxError && glb) return own();
       const kids = this._children(n);
       if (!kids) {
-        // the external tileset is on its way; whatever this node holds stays up until then
-        if (glb && this._tiles.has(glb)) return { draw: [glb], ready: false };
-        return { draw: [], ready: false };
+        missing++;
+        return glb && this._tiles.has(glb)
+          ? { draw: [glb], covered: true }
+          : { draw: [], covered: false };
       }
-      if (!kids.length) {
-        if (glb) {
-          const ok = this._want(glb);
-          return { draw: ok ? [glb] : [], ready: ok };
-        }
-        return none;
-      }
+      if (!kids.length) return glb ? own() : none;
       const parts = kids.map(visit);
-      if (parts.every((p) => p.ready))
-        return { draw: parts.flatMap((p) => p.draw), ready: true };
-      // some child is not here yet: hold this node's own tile, which they would replace, in front. It is asked
-      // for after the children, and the queue takes the newest first, so the coarse tile lands before the fine.
-      if (glb && this._want(glb)) return { draw: [glb], ready: false };
-      return { draw: parts.flatMap((p) => p.draw), ready: false };
+      if (parts.every((p) => p.covered))
+        return { draw: parts.flatMap((p) => p.draw), covered: true };
+      // a child has nothing to show yet: this node's own tile stands in. It is asked for after the children, and
+      // the queue takes the newest first, so the coarse tile lands before the fine.
+      if (glb && want(glb)) return { draw: [glb], covered: true };
+      return { draw: parts.flatMap((p) => p.draw), covered: false };
     };
+    // what the last frame asked for and has not started is stale: the queue holds this frame's wants alone
+    for (const u of this._queue) this._state.delete(u);
+    this._queue = [];
     const r = visit(this._root);
     out.draw = r.draw.filter((u) => this._tiles.has(u));
-    out.complete = r.ready;
+    out.complete = missing === 0;
     this._evict(new Set(out.draw));
     return out;
   }

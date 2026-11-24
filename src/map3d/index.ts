@@ -82,6 +82,8 @@ export interface Map3DProps {
   style?: ReactX11Elements['box']['style'];
 }
 
+/** farthest the wheel goes: the whole globe in view, and then some */
+const MAX_RANGE = 6e7;
 declare const performance: { now(): number };
 type GL = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -473,7 +475,7 @@ class Driver {
       const o = this.orbit;
       o.range = Math.max(
         20,
-        Math.min(2e6, o.range * Math.exp((ev.deltaY ?? 0) * 0.002)),
+        Math.min(MAX_RANGE, o.range * Math.exp((ev.deltaY ?? 0) * 0.002)),
       );
       ev.preventDefault?.();
       this._changed();

@@ -52,8 +52,10 @@ Drag turns and tilts, shift-drag (or right-drag) slides the target, the wheel mo
 - **A tile is the unit of everything.** One buffer pair and one texture per tile, uploaded in the frame that first
   draws it and let go of when the cache evicts it (600 tiles, least recently drawn first). No atlas: a program
   samples one texture at a time here.
-- **Refinement waits for the whole of it.** A node is replaced by its children only when every child is loaded; until
-  then the node's own, coarser tile stays up, so a view never has a hole in it while it sharpens.
+- **A node is replaced as soon as each child has something to show.** Not when the whole subtree below is in: on
+  a view with a horizon that is hundreds of tiles, and the globe-sized root would stay on screen until all of them
+  arrived. Until a child has a tile, the parent's coarser one stays up, so there are never holes. Each frame asks
+  for what the camera wants now and drops what it wanted before, coarsest first.
 - **Vertices are float64 until the last step.** Earth-centred metres are millions; positions are turned into a local
   frame (east, up, north) at the camera's start point in double precision and only then stored as float32. Move the
   camera far from where it started (tens of kilometres) and precision degrades; mount a new `<Map3D>` there.
