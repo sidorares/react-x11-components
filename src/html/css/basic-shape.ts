@@ -22,7 +22,8 @@ import {
 import type { ShapeFunction } from './shape-function.js';
 
 /** A circle's or an ellipse's radius: a length, or a side it reaches. */
-type Radius = Len | 'closest-side' | 'farthest-side';
+export type Radius =
+  Len | 'closest-side' | 'farthest-side' | 'closest-corner' | 'farthest-corner';
 
 export type BasicShape =
   | { kind: 'circle'; r: Radius; at: readonly [Len, Len] }
@@ -97,7 +98,12 @@ export function parseBasicShape(
       const read: Radius[] = [];
       for (const part of radii) {
         const word = part.toLowerCase();
-        if (word === 'closest-side' || word === 'farthest-side') {
+        if (
+          word === 'closest-side' ||
+          word === 'farthest-side' ||
+          word === 'closest-corner' ||
+          word === 'farthest-corner'
+        ) {
           read.push(word);
           continue;
         }
@@ -288,11 +294,20 @@ export function shapeEllipse(
       ? near
       : r === 'farthest-side'
         ? far
-        : resolve(r, base);
+        : r === 'closest-corner'
+          ? nearCorner
+          : r === 'farthest-corner'
+            ? farCorner
+            : resolve(r, base);
   const nearX = Math.min(Math.abs(cx), Math.abs(w - cx));
   const farX = Math.max(Math.abs(cx), Math.abs(w - cx));
   const nearY = Math.min(Math.abs(cy), Math.abs(h - cy));
   const farY = Math.max(Math.abs(cy), Math.abs(h - cy));
+  // a corner's distance is the same for either radius of an ellipse (CSS
+  // Shapes 1, 3.1.1): from the centre to the nearest or farthest corner of
+  // the box
+  const nearCorner = Math.hypot(nearX, nearY);
+  const farCorner = Math.hypot(farX, farY);
   let rx: number;
   let ry: number;
   if (shape.kind === 'circle') {
