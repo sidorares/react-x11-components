@@ -1681,6 +1681,25 @@ test('what overflows a flex item is cut into the columns it reaches, and makes n
   assert.strictEqual(piecesAt(el, 'f', 'm').length, 2);
 });
 
+test('what overflows a flex item in a flex box that fits its column goes on into the next column', async () => {
+  // flex-item-content-overflow-001a: the flex box fits its column and is
+  // taken whole for the breaks; its item's content runs 60px past the
+  // column's foot. The columns stopped at the first, every group being in
+  // it, and the content ran down past the multicol
+  const { node } = await render(
+    COLS +
+      '<div class="m" id="m"><div style="display:flex;height:40px;' +
+      'width:25px"><div style="width:25px"><div id="o" style="height:160px">' +
+      '</div></div></div></div>',
+    200,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(piecesAt(el, 'o', 'm'), [
+    [0, 0, 25, 100],
+    [25, 0, 25, 60],
+  ]);
+});
+
 test('a grid breaks between its rows', async () => {
   // grid-item-fragmentation: the second row does not fit after the first
   const { node } = await render(

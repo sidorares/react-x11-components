@@ -129,6 +129,46 @@ test("the document's language follows a meta a stream brings and one an applicat
   assert.strictEqual(color('a'), '#0000ff', 'and the language it was given');
 });
 
+test("a document's language is its response's Content-Language, where nothing in it says", async () => {
+  // HTML 3.2.6.2: after a `lang` and the pragma-set default language, the
+  // language the response came in says; a header that lists two says none
+  const sheet =
+    '<style>:lang(fr) { color: #00ff00 } :lang(de) { color: #0000ff }</style>';
+  const doc = (source: string, headers: [string, string][]) =>
+    h(
+      'box',
+      { style: { width: 300 } },
+      h(Html, { source, headers, 'data-testname': 'doc' }),
+    );
+  const color = (id: string): string =>
+    (
+      boxOf(view(screen.getByTestName('doc') as DrawnNode), id) as LaidBox & {
+        style: { color: string };
+      }
+    ).style.color;
+  const source = sheet + '<p id="a">a</p><div lang="de"><p id="b">b</p></div>';
+  const result = await renderX11(doc(source, [['Content-Language', 'fr']]), {
+    backend: 'mock',
+  });
+  assert.strictEqual(color('a'), '#00ff00', "the response's");
+  assert.strictEqual(color('b'), '#0000ff', "an element's own wins");
+  await act(() =>
+    result.rerender(doc(source, [['content-language', 'de, fr']])),
+  );
+  assert.ok(
+    !['#00ff00', '#0000ff'].includes(color('a')),
+    'two languages are none',
+  );
+  await act(() =>
+    result.rerender(
+      doc('<meta http-equiv="content-language" content="de">' + source, [
+        ['Content-Language', 'fr'],
+      ]),
+    ),
+  );
+  assert.strictEqual(color('a'), '#0000ff', "a meta's comes first");
+});
+
 test("a meta inside a <template> does not set the document's language", async () => {
   // the last pragma would win, but a <template>'s content is no part of
   // the document
@@ -314,6 +354,29 @@ test('@import is collected rather than followed', () => {
   const sheet = parseStylesheet('@import url("theme.css"); p { color: red }');
   assert.deepStrictEqual(sheet.imports, ['theme.css']);
   assert.strictEqual(sheet.rules.length, 1);
+});
+
+test("an @import's URL is read with its escapes, to the end of its url()", () => {
+  // cascade-import-001: a data: sheet that imports another has a `\(` and a
+  // `\)` in its url(), which the URL cut at
+  const sheet = parseStylesheet(
+    '@import url(data:text/css,@import%20url\\(a.css\\);) (min-width: 500px); ' +
+      '@import "b\\.css"; @import url( c.css ); p { color: red }',
+  );
+  assert.deepStrictEqual(sheet.imports, [
+    'data:text/css,@import%20url(a.css);',
+    'b.css',
+    'c.css',
+  ]);
+  assert.deepStrictEqual(
+    sheet.importConditions.map((c) => c === null),
+    [false, true, true],
+  );
+  // a bare word is no URL, and a bad url() imports nothing
+  const bad = parseStylesheet('@import d.css; @import url(e f.css); p {}');
+  assert.deepStrictEqual(bad.imports, []);
+  // the end of the sheet closes a string it leaves open
+  assert.deepStrictEqual(parseStylesheet('@import "g.css').imports, ['g.css']);
 });
 
 test('a broken rule does not eat the rest of the sheet', () => {

@@ -11987,7 +11987,8 @@ export function matchesLang(el: Element, code: string | null): boolean {
  * An element's language: the `lang` or `xml:lang` of the nearest element
  * from it up that says one, or with none saying, the document's, as its
  * `<meta http-equiv="content-language">` sets it — searched from the
- * document, where a fragment's `<meta>` is a sibling of what it covers.
+ * document, where a fragment's `<meta>` is a sibling of what it covers —
+ * or else as the response it came in says (`setResponseLanguage`).
  * '' where none does, or the nearest says ''.
  */
 export function languageOf(el: Element): string {
@@ -12005,7 +12006,38 @@ export function languageOf(el: Element): string {
           ? (parent as Element)
           : null;
   }
-  return pragmaLanguage(root.parent ?? root);
+  const top = root.parent ?? root;
+  return pragmaLanguage(top) || (RESPONSE_LANGUAGE.get(top) ?? '');
+}
+
+/** Each document's language as the response it came in says it, by its
+ *  `Content-Language` (`setResponseLanguage`). */
+const RESPONSE_LANGUAGE = new WeakMap<object, string>();
+
+/**
+ * The language a document's response says it is in, its
+ * `Content-Language` header, which HTML has as the language of an element
+ * nothing else gives one: after a `lang`, an `xml:lang` and the
+ * pragma-set default language (HTML 3.2.6.2), and as `pragmaLanguage`
+ * reads a `<meta>`'s, so a header that names more than one language names
+ * none. Kept by the document node, the parent of its root element.
+ * Whether that moved the document's language.
+ */
+export function setResponseLanguage(
+  doc: object,
+  headers: readonly (readonly [string, string])[] | undefined,
+): boolean {
+  const value = headers?.find(
+    ([name]) => name.trim().toLowerCase() === 'content-language',
+  )?.[1];
+  const lang =
+    value === undefined || value.includes(',')
+      ? ''
+      : value.trim().split(/[\t\n\f\r ]/)[0];
+  const before = RESPONSE_LANGUAGE.get(doc) ?? '';
+  if (lang) RESPONSE_LANGUAGE.set(doc, lang);
+  else RESPONSE_LANGUAGE.delete(doc);
+  return lang !== before;
 }
 
 /**

@@ -634,7 +634,10 @@ export interface HtmlProps {
    * sent (`allow-forms`), a link that opens a window (`allow-popups`), a
    * download (`allow-downloads`), `autofocus` (`allow-scripts`) — and makes
    * what it loads a document of no origin's (`allow-same-origin`). Where its
-   * scripts run, `scripts.headers` says the same, and is read first.
+   * scripts run, `scripts.headers` says the same, and is read first. And a
+   * `Content-Language`, the document's language where no `lang` and no
+   * `<meta http-equiv="content-language">` says one (HTML 3.2.6.2), which
+   * `:lang()` matches by.
    */
   headers?: [string, string][];
   /**
@@ -1561,6 +1564,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     complete: !partial,
     stylesheet,
     charset,
+    headers: props.headers,
     baseUrl,
     look,
     selectionColor,
