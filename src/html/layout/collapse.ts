@@ -217,6 +217,7 @@ export function collapseTable(table: Box): CollapsedTable {
   const at = (r: number, c: number): Cell | null =>
     r < 0 || r >= R || c < 0 || c >= C ? null : owner[r * C + c];
 
+  const rtl = table.style.direction === 'rtl';
   // A table whose rows run left to right is laid out in its frame as
   // `vertical-rl`'s and put back across (`reflectTable`): its first row is
   // at the frame's top and its turned styles have the page's left at the
@@ -281,18 +282,31 @@ export function collapseTable(table: Box): CollapsedTable {
       const right = at(r, line);
       if (left && left === right) continue;
       candidates.length = 0;
+      // of two alike the one at the inline start wins (17.6.2.1): the one
+      // on the left, or on the right where the table runs right to left,
+      // which is offered first
+      const startsRight = rtl;
+      if (startsRight && right && right.column === line) {
+        offer(right.box, 'Left', Origin.Cell);
+      }
       if (left && left.column + left.colSpan === line) {
         offer(left.box, 'Right', Origin.Cell);
       }
-      if (right && right.column === line) {
+      if (!startsRight && right && right.column === line) {
         offer(right.box, 'Left', Origin.Cell);
       }
+      if (startsRight && line < C) offer(column[line], 'Left', Origin.Column);
       if (line > 0) offer(column[line - 1], 'Right', Origin.Column);
-      if (line < C) offer(column[line], 'Left', Origin.Column);
+      if (!startsRight && line < C) offer(column[line], 'Left', Origin.Column);
+      const groupAfter =
+        line < C && (line === 0 || group[line - 1] !== group[line]);
+      if (startsRight && groupAfter) {
+        offer(group[line], 'Left', Origin.ColumnGroup);
+      }
       if (line > 0 && (line === C || group[line - 1] !== group[line])) {
         offer(group[line - 1], 'Right', Origin.ColumnGroup);
       }
-      if (line < C && (line === 0 || group[line - 1] !== group[line])) {
+      if (!startsRight && groupAfter) {
         offer(group[line], 'Left', Origin.ColumnGroup);
       }
       if (line === 0 || line === C) {
