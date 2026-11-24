@@ -16101,6 +16101,13 @@ function drawSvg(
   options: PaintOptions,
 ): void {
   const scale = options.scale ?? 1;
+  const filter = svg.rootFilter(w, h, scale, scheme);
+  if (
+    filter &&
+    drawFilteredSvg(ctx, svg, x, y, w, h, scheme, options, filter)
+  ) {
+    return;
+  }
   if (
     !options.matrix &&
     options.drawingKept &&
@@ -16123,6 +16130,75 @@ function drawSvg(
     }
   }
   svg.drawImage(ctx, x, y, w, h, scale, scheme, surfaceMaker(options));
+}
+
+/**
+ * An SVG image whose root has a `filter`, drawn through it: where the
+ * context runs a filter itself, through its `filter`; elsewhere the image
+ * is drawn on a surface, read back once for its size, and the read run
+ * through the filter's matrices and blur (`FilterStore`), drawn from then
+ * on — nothing until the read lands, a paint later, as a filtered box is
+ * (`filteredFor`). True where it is drawn so, or is to draw nothing yet;
+ * false where the filter is none this can run, and it is drawn as any.
+ */
+function drawFilteredSvg(
+  ctx: PaintContext,
+  svg: SvgDrawing,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  scheme: 'light' | 'dark',
+  options: PaintOptions,
+  list: readonly FilterFunction[],
+): boolean {
+  const colour = colourOf(list);
+  if (!runsOverPixels(colour) || colour!.steps) return false;
+  const scale = options.scale ?? 1;
+  const draw = (on: unknown, at: number, top: number) =>
+    svg.drawImage(
+      on as Parameters<SvgDrawing['drawImage']>[0],
+      at,
+      top,
+      w,
+      h,
+      scale,
+      scheme,
+      surfaceMaker(options),
+    );
+  const native = ctx as PaintContext & { filter?: string };
+  if ('filter' in native) {
+    const was = native.filter;
+    native.filter = colour!.css;
+    if (native.filter === colour!.css) {
+      draw(ctx, x, y);
+      native.filter = was;
+      return true;
+    }
+    native.filter = was;
+  }
+  const store = options.filters;
+  const box = painting;
+  if (!store || !box || !options.surface || !ctx.drawImage) return false;
+  const width = Math.ceil(w);
+  const height = Math.ceil(h);
+  if (width * height > RASTER_LIMIT) return false;
+  let n = DRAWINGS.get(svg);
+  if (n === undefined) DRAWINGS.set(svg, (n = ++drawings));
+  // by what the raster is drawn from, as `drawingKept`'s key, and what the
+  // filter makes of it
+  const slot = `${n}|${w}x${h}|${scale}|${scheme}`;
+  const kept = store.at(svg, slot, box, width, height, slot);
+  if (!kept.fresh && !kept.reading) {
+    const surface = options.surface(width, height);
+    if (!surface) return false;
+    const on = surface.getContext('2d');
+    draw(on, 0, 0);
+    if (!store.read(kept, surface, on)) return false;
+  }
+  const out = store.filtered(kept, colour!.matrices, colour!.key, colour!.blur);
+  if (out) drawImageAt(ctx, out, x, y);
+  return true;
 }
 
 /**
