@@ -30,6 +30,7 @@ import type { Stylesheet } from './css/parse.js';
 import { isUse, quotedFamilies, urlIds, useHref } from './css/shapes.js';
 import type { DrawingUnits, ShapeStyle, ShapeStyles } from './css/shapes.js';
 import type { RootLook } from './css/style.js';
+import type { FilterFunction } from './css/filter.js';
 import { parseMath } from './css/calc.js';
 import { LIGHT_DARK, lightDark } from './css/color.js';
 import {
@@ -548,6 +549,9 @@ export class SvgDrawing {
   /** Whether an image with none has a `var()` to read all the same
    *  (`drawingVars`); null until it is first drawn. */
   private _vars: boolean | null = null;
+  /** Whether the root's `style` names a filter, which an image with no
+   *  sheets of its own is styled for (`_ownPaint`). */
+  private _rootFiltered: boolean | null = null;
   /** A cascade over them for each colour scheme and scale the image is
    *  drawn at, and what each gave it: by the viewport it was asked at where
    *  a sheet reads the viewport, and under one key where none does. */
@@ -1030,6 +1034,21 @@ export class SvgDrawing {
     );
   }
 
+  /**
+   * The `filter` an image's root has (Filter Effects 1, 5: it applies to
+   * an SVG image's root as to any element), drawn `w` by `h` device
+   * pixels: what it is drawn through (`drawSvg`). Null for none.
+   */
+  rootFilter(
+    w: number,
+    h: number,
+    scale: number,
+    scheme: 'light' | 'dark' = 'light',
+  ): FilterFunction[] | null {
+    if (this._failed || !(w > 0 && h > 0)) return null;
+    return this._ownPaint(w, h, scale, scheme)?.filter ?? null;
+  }
+
   /** What an image's own style sheets give it, drawn `w` by `h` device
    *  pixels, or null where it has none. */
   private _ownPaint(
@@ -1046,7 +1065,9 @@ export class SvgDrawing {
       this._vars ??= drawingVars(root, (id) =>
         elementById(documentOf(root), id),
       );
-      if (!this._vars) return null;
+      // nor where its root's own style names no filter
+      this._rootFiltered ??= /filter/i.test(root.attribs.style ?? '');
+      if (!this._vars && !this._rootFiltered) return null;
     }
     const made = `${scheme}|${scale}`;
     let entry = this._cascades.get(made);
@@ -1093,6 +1114,7 @@ export class SvgDrawing {
         fill: ink(style.fill),
         stroke: ink(style.stroke),
         shapes: cascade.shapeStyles(root, style),
+        filter: style.filter,
       };
     } catch {
       // a sheet this cannot read leaves the image as its attributes draw it
@@ -1341,6 +1363,9 @@ interface ImagePaint {
   fill: string | null;
   stroke: string | null;
   shapes: ShapeStyles | null;
+  /** The root's `filter`, which the image is drawn through
+   *  (`SvgDrawing.rootFilter`). */
+  filter: FilterFunction[] | null;
 }
 
 /**
