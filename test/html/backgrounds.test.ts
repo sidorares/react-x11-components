@@ -546,6 +546,22 @@ test('a gradient mixes the colours of its stops as written, outside sRGB as much
   assert.deepStrictEqual(parseRgb(g.stops![0][1]), [255, 0, 0]);
 });
 
+test("a gradient's mixed stops keep a hundredth of a level", async () => {
+  // a stop rounded to a whole level came a level apart from the same
+  // transition drawn through other stops (WPT's
+  // gradient-longer-hue-hsl-002): the context lerps at more than 8 bits
+  const { node } = await render(
+    '<style>body{margin:0}div{width:100px;height:10px}</style>' +
+      '<div style="background-image:linear-gradient(to right in hsl,#ff0000,#00ff00)"></div>',
+  );
+  const [g] = (await fillsOf(view(node)))
+    .map((f) => f.style as { line?: number[]; stops?: [number, string][] })
+    .filter((f) => f && f.line);
+  // the first step is a 64th of 120deg along, 1.875deg: green at
+  // 255 * 1.875 / 60
+  assert.deepStrictEqual(parseRgb(g.stops![1][1]), [255, 7.97, 0]);
+});
+
 test('a gradient mixed in another space is drawn within a level or two of the mix all along it', async () => {
   // Drawn as straight runs in sRGB between colours mixed in lch, a
   // transition that leaves sRGB bends where it is clipped, and a run across
