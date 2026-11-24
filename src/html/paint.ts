@@ -146,6 +146,7 @@ import {
   ownScroll,
   scrollBarsOf,
   thumbRect,
+  wheelScrolls,
 } from './layout/scroll.js';
 import {
   FRAME_ROOTS,
@@ -681,6 +682,12 @@ const LINE_INK = new WeakMap<
  */
 const UNTRANSFORMED = new WeakMap<Box, Rect>();
 
+/** The ink of a filtered box cut to a `clip-path`, before the path cuts
+ *  it: what the filter runs over (`filteredFor`), since the path cuts what
+ *  the filter made (`drawFiltered`), and a path that moves leaves what it
+ *  made as it was. In the box's own coordinates, as `UNTRANSFORMED`'s. */
+const FILTERED_INK = new WeakMap<Box, Rect>();
+
 /** The bounds of what a box painted through a matrix draws, in its own
  *  coordinates: asked of a box `placedMatrix` answers for, whose entry the
  *  last `computePaintBounds` wrote. */
@@ -1115,6 +1122,9 @@ function boundsOf(
   // none where it leaves nothing — though the scrollable overflow is what
   // it was, as a browser has it, which is why a page that hides a box with
   // one makes it a pixel square as well
+  if (own && box.style.clipPath && box.style.filter && x1 !== Infinity) {
+    FILTERED_INK.set(box, { x: x1, y: y1, width: x2 - x1, height: y2 - y1 });
+  } else if (own) FILTERED_INK.delete(box);
   if (own && box.style.clipPath) {
     const { rect } = clipPathOf(box, DOCUMENT);
     x1 = Math.max(x1, rect.x);
@@ -1638,10 +1648,17 @@ export function paintDocument(
     foreign: tree.foreign ?? null,
     backdrop,
   };
-  paintBox(ctx, tree.root, painted);
-  // the scroll containers' bars over everything, but in a backdrop, which
-  // is the page under a box
-  if (!options.backdrop) paintScrollBars(ctx, tree, options);
+  // the scroll containers' bars where each is in the paint order, but in a
+  // backdrop, which is the page under a box
+  const outer = bars;
+  bars = options.backdrop ? null : arrangeBars(tree, options);
+  try {
+    paintBox(ctx, tree.root, painted);
+    // and any whose place the paint did not reach
+    if (!options.backdrop) paintScrollBars(ctx, tree, options);
+  } finally {
+    bars = outer;
+  }
   // and the top layer over all of that, a box at a time, each a stacking
   // context of its own that nothing around it clips, fades or moves (CSS
   // Position 4, 3.3), with the bars in it over it
@@ -1696,10 +1713,18 @@ export function paintCapture(
     backdrop,
     captureTop: box,
   };
-  paintBox(ctx, box, painted);
-  // the bars of the scroll containers in it, over it, as the document's
-  // are over the document
-  paintScrollBars(ctx, tree, painted, box);
+  // its bars over it, at the end, whatever places a document paint it may
+  // be painted in has for them (`arrangeBars`)
+  const outer = bars;
+  bars = null;
+  try {
+    paintBox(ctx, box, painted);
+    // the bars of the scroll containers in it, over it, as the document's
+    // are over the document
+    paintScrollBars(ctx, tree, painted, box);
+  } finally {
+    bars = outer;
+  }
   ctx.restore();
   for (const made of backdrop.made.values()) made?.surface.destroy?.();
   backdrop.canvas?.surface.destroy?.();
@@ -1889,8 +1914,9 @@ const FILTERED_CANVAS = new WeakMap<
   { canvas: CanvasBackground; tree: BoxTree }
 >();
 
-/** What a filter runs over (`filteredFor`): the box as it paints, on the
- *  canvas where it is the root element's (`FILTERED_CANVAS`). */
+/** What a filter runs over (`filteredFor`): the box and what it holds
+ *  (`paintFilterGroup`), on the canvas where it is the root element's
+ *  (`FILTERED_CANVAS`). */
 function paintGroupOf(
   ctx: PaintContext,
   box: Box,
@@ -1898,7 +1924,7 @@ function paintGroupOf(
 ): void {
   const under = FILTERED_CANVAS.get(box);
   if (under) paintCanvas(ctx, under.canvas, under.tree, options);
-  paintUnfaded(ctx, box, options);
+  paintFilterGroup(ctx, box, options);
 }
 
 /** A box's child element of that name, or one inside the anonymous boxes
@@ -3741,10 +3767,61 @@ function paintFiltered(
   if (!runsOverPixels(colour)) return false;
   const kept = filteredFor(ctx, box, options, through, colour!);
   if (kept === null) return false;
-  if (kept) {
-    drawThrough(ctx, kept.surface, through, kept.x, kept.y, opacity, blend);
-  }
+  if (kept) drawFiltered(ctx, box, options, through, kept, opacity, blend);
   return true;
+}
+
+/** What a filter runs over: the box and what it holds, with its own
+ *  `clip`, `clip-path` and mask left for after it (`drawFiltered`). */
+function paintFilterGroup(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  paintContent(ctx, box, pathClips(box) ? underPath(options) : options);
+}
+
+/**
+ * A filtered box's output drawn, and then cut to its `clip` and its
+ * `clip-path` and masked, which come after the filter (CSS Masking 1, 1.1:
+ * filter, clipping, masking, opacity): a `drop-shadow()` reaches past the
+ * box, and a clip of the box made before the filter let it out. Its own
+ * overflow clip is of what it holds, and is in the group the filter runs
+ * over.
+ */
+function drawFiltered(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  through: Matrix | null,
+  kept: Kept,
+  opacity: number,
+  blend: string | null,
+): void {
+  const clips = (box.outOfFlow && box.style.clip !== null) || pathClips(box);
+  const mask = masked(box.style);
+  if (!clips && !mask) {
+    drawThrough(ctx, kept.surface, through, kept.x, kept.y, opacity, blend);
+    return;
+  }
+  ctx.save();
+  if (blend !== null) ctx.globalCompositeOperation = blend;
+  if (through) ctx.transform!(...through);
+  if (opacity < 1 && typeof ctx.globalAlpha === 'number') {
+    ctx.globalAlpha *= opacity;
+  }
+  const output = (on: PaintContext, at: PaintOptions): void => {
+    const pushed = pushOwnClips(on, box, at);
+    if (pushed < 0) return;
+    on.drawImage!(
+      kept.surface,
+      kept.x + at.originX - options.originX,
+      kept.y + at.originY - options.originY,
+    );
+    for (let i = 0; i < pushed; i += 1) on.restore();
+  };
+  if (!mask || !paintMasked(ctx, box, options, output)) output(ctx, options);
+  ctx.restore();
 }
 
 /**
@@ -3766,14 +3843,16 @@ function filteredFor(
   if (box.kind === 'inline') return null;
   // a shadow in `currentColor` is in the box's colour
   const steps = colour.steps && resolvedSteps(colour.steps, box.style.color);
-  let own = through
-    ? ownBounds(box)
-    : {
-        x: box.boundsX,
-        y: box.boundsY,
-        width: box.boundsWidth,
-        height: box.boundsHeight,
-      };
+  let own =
+    FILTERED_INK.get(box) ??
+    (through
+      ? ownBounds(box)
+      : {
+          x: box.boundsX,
+          y: box.boundsY,
+          width: box.boundsWidth,
+          height: box.boundsHeight,
+        });
   const under = FILTERED_CANVAS.get(box);
   const area = under && !through ? canvasExtent(under.tree, options) : null;
   if (area) {
@@ -5237,6 +5316,10 @@ function paintMasked(
   ctx: PaintContext,
   box: Box,
   options: PaintOptions,
+  /** What is masked, on the content surface, in its options: the box cut
+   *  to its clips, or a filter's output (`drawFiltered`). */
+  masks: (on: PaintContext, at: PaintOptions) => void = (on, at) =>
+    paintClipped(on, box, at),
 ): boolean {
   return paintMaskedAs(
     ctx,
@@ -5249,7 +5332,7 @@ function paintMasked(
       width: box.width,
       height: frameHeight(box),
     },
-    (on, at) => paintClipped(on, box, at),
+    masks,
   );
 }
 
@@ -5478,6 +5561,10 @@ function paintContent(
     paintMarker(ctx, box.marker, options, box.style.colorScheme);
   }
   paintFlow(ctx, box, options, table ? GRID : ALL_PARTS);
+  // the bars of the scroll containers in its flow that no layer of its
+  // holds, over the flow (`arrangeBars`)
+  const inFlow = bars?.flow.get(box);
+  if (inFlow) paintBarsAt(ctx, inFlow, options);
 
   // `z-index: auto` and 0 in document order, then the positive ones
   const stacked = STACKED.get(box);
@@ -5491,6 +5578,144 @@ function paintContent(
   // fragment at a time, on its lines
   if (box.style.outlineStyle !== 'none' && box.kind !== 'inline') {
     paintBoxOutline(ctx, box, options);
+  }
+}
+
+/**
+ * Where in the paint order each scroll container's bars go (CSS Overflow 3,
+ * as Chrome draws them): over what the container scrolls, and under
+ * whatever is painted after it that it does not hold. That is after the
+ * last of the layers of its stacking context that are the container or in
+ * it, a positioned box it holds among them; or, where none is, after the
+ * flow of that context, which it is painted in. A container in a frame of
+ * a writing mode or in the top layer is left to the pass at the end
+ * (`paintScrollBars`), as one whose place the paint does not reach is.
+ */
+interface BarsOrder {
+  /** By layer, the containers whose bars go straight after it. */
+  after: Map<Box, Box[]>;
+  /** By stacking context, the containers whose bars go after its flow. */
+  flow: Map<Box, Box[]>;
+  /** The containers whose bars have been painted in this paint. */
+  painted: Set<Box>;
+}
+
+/** The bars' places in the paint under way (`arrangeBars`), or null. */
+let bars: BarsOrder | null = null;
+
+function arrangeBars(tree: BoxTree, options: PaintOptions): BarsOrder | null {
+  let order: BarsOrder | null = null;
+  const damage = options.damage;
+  const inDamage = (x: number, y: number, width: number, height: number) =>
+    !damage ||
+    (x < damage.x + damage.width &&
+      damage.x < x + width &&
+      y < damage.y + damage.height &&
+      damage.y < y + height);
+  // the walk `paintScrollBars` makes, through the boxes whose ink meets the
+  // damage, where the viewport has a box fixed to it; what a container's
+  // bars are is asked as they are painted, and only then
+  const stack: [Box, number, number, boolean][] = [
+    [tree.root, options.originX, options.originY, false],
+  ];
+  while (stack.length) {
+    const entry = stack.pop()!;
+    const box = entry[0];
+    let [, ox, oy, fixed] = entry;
+    if (!fixed && options.viewport && fixedToViewport(box)) {
+      ox = options.viewport.x;
+      oy = options.viewport.y;
+      fixed = true;
+    }
+    if (box.boundsY === Infinity) continue;
+    if (framed.any && FRAME_ROOTS.has(box)) continue;
+    if (
+      !inDamage(
+        box.boundsX + ox,
+        box.boundsY + oy,
+        box.boundsWidth,
+        box.boundsHeight,
+      )
+    ) {
+      continue;
+    }
+    // a container that may show a bar, as `scrollBarsOf` asks first: not
+    // an `overflow: hidden` one, of which a page has many
+    if (
+      (wheelScrolls(box, 'x') || wheelScrolls(box, 'y')) &&
+      isScroller(box) &&
+      box.style.visibility === 'visible' &&
+      inDamage(box.x + ox, box.y + oy, box.width, box.height)
+    ) {
+      const place = barsPlace(box, tree.root);
+      if (place) {
+        order ??= { after: new Map(), flow: new Map(), painted: new Set() };
+        const map = place.after ? order.after : order.flow;
+        const key = place.after ?? place.flow!;
+        const list = map.get(key);
+        if (list) list.push(box);
+        else map.set(key, [box]);
+      }
+    }
+    for (let i = box.children.length - 1; i >= 0; i -= 1) {
+      const child = box.children[i];
+      if (child.kind === 'text' || child.kind === 'break') continue;
+      if (child.topLayer) continue;
+      if (options.captured?.has(child)) continue;
+      stack.push([child, ox, oy, fixed]);
+    }
+  }
+  return order;
+}
+
+/** The layer a container's bars go after, or the stacking context whose
+ *  flow they go after (`arrangeBars`). */
+function barsPlace(
+  scroller: Box,
+  root: Box,
+): { after?: Box; flow?: Box } | null {
+  // the stacking context it is painted in
+  let context: Box | null = null;
+  for (let at = scroller.parent; at; at = at.parent) {
+    if (at.topLayer) return null;
+    if (at === root || stacksLayers(at)) {
+      context = at;
+      break;
+    }
+  }
+  if (!context) return null;
+  const layers = [
+    ...(NEGATIVE.get(context) ?? []),
+    ...(STACKED.get(context) ?? []),
+  ];
+  let last: Box | null = null;
+  for (const layer of layers) {
+    for (let at: Box | null = layer; at && at !== context; at = at.parent) {
+      if (at === scroller) {
+        last = layer;
+        break;
+      }
+    }
+  }
+  return last ? { after: last } : { flow: context };
+}
+
+/** Paint the bars of containers whose place in the paint order this is. */
+function paintBarsAt(
+  ctx: PaintContext,
+  scrollers: readonly Box[],
+  options: PaintOptions,
+): void {
+  if (!bars || !ctx.save || !ctx.restore || !ctx.beginPath || !ctx.rect) {
+    return;
+  }
+  if (!ctx.clip) return;
+  const scale = options.scale ?? 1;
+  for (const scroller of scrollers) {
+    if (bars.painted.has(scroller)) continue;
+    bars.painted.add(scroller);
+    const at = atViewport(scroller, options);
+    paintBarsOf(ctx, scroller, at.originX, at.originY, scale, at);
   }
 }
 
@@ -5554,6 +5779,7 @@ function paintScrollBars(
     if (
       isScroller(box) &&
       box.style.visibility === 'visible' &&
+      !bars?.painted.has(box) &&
       (turned || inDamage(box.x + ox, box.y + oy, box.width, box.height))
     ) {
       paintBarsOf(ctx, box, ox, oy, scale, options);
@@ -11269,6 +11495,18 @@ export function clipsFor(box: Box, context: Box): Box[] {
  * parent painted it, it was. A clip of no area leaves none of it to paint.
  */
 function paintStacked(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  paintStackedBox(ctx, box, options);
+  // the bars of the scroll containers this layer is the last of, over it
+  // and what it holds (`arrangeBars`)
+  const after = bars?.after.get(box);
+  if (after) paintBarsAt(ctx, after, options);
+}
+
+function paintStackedBox(
   ctx: PaintContext,
   box: Box,
   options: PaintOptions,
