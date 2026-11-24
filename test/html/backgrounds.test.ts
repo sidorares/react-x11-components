@@ -523,6 +523,29 @@ test("a gradient's colours mix in the space it names, or oklab for a colour no l
   );
 });
 
+test('a gradient mixes the colours of its stops as written, outside sRGB as much as in it', async () => {
+  // CSS Images 4, 3.5.2: the transition is mixed from the colours, and
+  // only what it comes to is clipped. Mixed from the stops clipped to
+  // sRGB, a linear red of 2 came to the middle of red and black, where it
+  // is red, and lch() stops a hue apart came round the hue another way
+  // (WPT's css-images/gradient/gradient-*-hue-lch and its kin)
+  const { node } = await render(
+    '<style>body{margin:0}div{width:100px;height:10px}</style>' +
+      '<div style="background-image:linear-gradient(to right in srgb-linear,color(srgb-linear 2 0 0),color(srgb-linear 0 0 0))"></div>',
+  );
+  const [g] = (await fillsOf(view(node)))
+    .map((f) => f.style as { line?: number[]; stops?: [number, string][] })
+    .filter((f) => f && f.line);
+  const middle = g.stops!.reduce((best, s) =>
+    Math.abs(s[0] - 0.5) < Math.abs(best[0] - 0.5) ? s : best,
+  );
+  // linear 1 at the middle is #ff0000, where mixed from 1 and 0 it is 0.5,
+  // #bc0000
+  assert.deepStrictEqual(parseRgb(middle[1]), [255, 0, 0]);
+  // and the stops themselves are drawn clipped
+  assert.deepStrictEqual(parseRgb(g.stops![0][1]), [255, 0, 0]);
+});
+
 test('a gradient mixed in another space is drawn within a level or two of the mix all along it', async () => {
   // Drawn as straight runs in sRGB between colours mixed in lch, a
   // transition that leaves sRGB bends where it is clipped, and a run across

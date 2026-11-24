@@ -1660,6 +1660,27 @@ test('the items of a flex row are each cut where the columns end', async () => {
   ]);
 });
 
+test('what overflows a flex item is cut into the columns it reaches, and makes no break', async () => {
+  // single-line-row-flex-fragmentation-002: an item 10px tall whose content
+  // runs 190px past it, in a flex box of a height of its own. The content
+  // went no further than the item's column, and ran down past its foot
+  const { node } = await render(
+    COLS +
+      '<div class="m" id="m"><div style="display:flex;height:200px;' +
+      'width:25px" id="f"><div style="height:10px;width:25px">' +
+      '<div style="height:10px"></div><div id="o" style="height:190px">' +
+      '</div></div></div></div>',
+    200,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(piecesAt(el, 'o', 'm'), [
+    [0, 10, 25, 90],
+    [25, 0, 25, 100],
+  ]);
+  // the flex box is cut where its own height has it, as before
+  assert.strictEqual(piecesAt(el, 'f', 'm').length, 2);
+});
+
 test('a grid breaks between its rows', async () => {
   // grid-item-fragmentation: the second row does not fit after the first
   const { node } = await render(
