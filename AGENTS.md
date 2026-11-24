@@ -8854,7 +8854,9 @@ things are load-bearing.
   alone, quadratic in its lines as that loop is, and why a block's margins
   in it are turned from the other side (`REFLECTED_MARGINS`). A block no
   layout has laid out since it was put back is left as it is
-  (`layoutSerial`).
+  (`layoutSerial`). A float is put back across its formatting context
+  (`floatsPutBack`), as the lines that went round it are: moved with its
+  block alone, it stood at the frame's other end, over them.
 - **A frame is laid out with what holds it, or moved whole with it.** All a
   frame holds is a blocker (`noteBlockers`), so no block in one is kept
   alone: its heights run across the page, and in `vertical-lr` its lines are

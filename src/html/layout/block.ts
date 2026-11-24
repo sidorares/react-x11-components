@@ -2157,7 +2157,7 @@ function layoutDocumentPass(
     // box positioned in one is laid out after that: what it holds is put
     // back across its own content box once it is
     if (putBackAcross(box)) {
-      reflectFrame(box, box.contentHeight, translate, moveLine);
+      reflectFrame(box, box.contentHeight, translate, moveLine, establishesBFC);
     }
     if (strip) {
       stripReach.reach(
@@ -4990,7 +4990,9 @@ function layoutFramed(box: Box, frame: Box, ctx: LayoutContext): void {
     // the same lines on the page
     moveTo(frame, box.contentX, box.contentY + box.contentHeight);
   } else moveTo(frame, box.contentX + room, box.contentY);
-  if (reflects(mode)) reflectFrame(frame, room, translate, moveLine);
+  if (reflects(mode)) {
+    reflectFrame(frame, room, translate, moveLine, establishesBFC);
+  }
   // top-layer siblings left on the root outside the frame (`makeFrame`):
   // a `::view-transition` is against the viewport in the page's axes
   for (const child of box.children) {
