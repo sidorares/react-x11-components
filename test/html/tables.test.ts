@@ -9,6 +9,7 @@ import {
   boxOf,
   clipsAround,
   fillsOf,
+  findById,
   linesOf,
   metric,
   render,
@@ -343,6 +344,33 @@ metric('a column group draws its borders where they collapse', async () => {
     'along both of its columns',
   );
 });
+
+metric(
+  'a vertical-lr table collapses the borders of rows side by side across the page',
+  async () => {
+    // its first row is at its left, and the line between it and the second
+    // carries the first's right border and the second's left one, equal,
+    // which the first wins as the one nearer the table's block start (CSS
+    // 2.1 17.6.2.1): it is laid out as vertical-rl's and put back across,
+    // and the line had taken the borders on the rows' other sides
+    const { node } = await render(
+      '<style>body{margin:0}td{padding:0;width:20px;height:20px}</style>' +
+        '<table style="writing-mode:vertical-lr;border-collapse:collapse">' +
+        '<tr><td id="a" style="border-right:10px solid #00ff00"></td></tr>' +
+        '<tr><td id="b" style="border-left:10px solid #ff0000"></td></tr>' +
+        '</table>',
+    );
+    const el = view(node);
+    const fills = await fillsOf(el);
+    const of = (color: string) =>
+      fills.filter((f) => f.style === parseColor(color));
+    assert.strictEqual(of('#ff0000').length, 0, 'the second row loses');
+    const green = of('#00ff00');
+    assert.strictEqual(green.length, 1, 'one segment');
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    assert.ok(rect('a').x < rect('b').x, 'the first row at the left');
+  },
+);
 
 metric(
   "a cell's box fills its row, and its content is aligned in it",

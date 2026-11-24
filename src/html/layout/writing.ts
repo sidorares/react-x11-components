@@ -849,6 +849,14 @@ function reflectTable(
   for (const [box, y] of placed) {
     if (y !== box.y) move(box, 0, y - box.y);
   }
+  // and its collapsed borders' row lines, which are drawn from where the
+  // table layout put them, from its corner
+  const lines = table.collapsed?.flipped ? table.collapsed.lineY : null;
+  if (lines) {
+    for (let i = 0; i < lines.length; i += 1) {
+      lines[i] = across(top + lines[i], 0) - top;
+    }
+  }
   table.captionTop = captionBottom;
   table.captionBottom = captionTop;
 }

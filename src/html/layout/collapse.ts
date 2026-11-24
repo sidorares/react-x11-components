@@ -18,6 +18,7 @@ import { inkColor } from '../css/values.js';
 import type { Box } from './boxes.js';
 import { tableGrid } from './grid.js';
 import type { Cell } from './grid.js';
+import { putBackAcross } from './writing.js';
 
 /** The border drawn along one segment of the grid. */
 export interface CollapsedBorder {
@@ -54,6 +55,9 @@ export interface CollapsedTable {
    *  layout, empty until it runs. */
   lineX: number[];
   lineY: number[];
+  /** Whether the rows' sides were taken the other way round, for a table
+   *  put back across (`reflectTable`), whose row lines go with its rows. */
+  flipped: boolean;
 }
 
 /**
@@ -78,6 +82,23 @@ export function collapseEdges(box: Box): void {
     box.padBottom = 0;
     box.padLeft = 0;
   }
+}
+
+/** The side of a box's turned style a row line meets in a table put back
+ *  across (`collapseTable`). */
+const ACROSS: Partial<Record<Side, Side>> = { Top: 'Bottom', Bottom: 'Top' };
+
+/** Whether a table is in a multicol container's columns. */
+function inColumns(table: Box): boolean {
+  for (let at: Box | null = table.parent; at; at = at.parent) {
+    if (at.style.columns) return true;
+  }
+  return false;
+}
+
+/** Edges with their top and bottom changed places. */
+function flipped(edges: Edges): Edges {
+  return { ...edges, top: edges.bottom, bottom: edges.top };
 }
 
 function tableOf(cell: Box): Box | null {
@@ -196,9 +217,26 @@ export function collapseTable(table: Box): CollapsedTable {
   const at = (r: number, c: number): Cell | null =>
     r < 0 || r >= R || c < 0 || c >= C ? null : owner[r * C + c];
 
+  // A table whose rows run left to right is laid out in its frame as
+  // `vertical-rl`'s and put back across (`reflectTable`): its first row is
+  // at the frame's top and its turned styles have the page's left at the
+  // frame's bottom, so the side a row line meets of each box is the other
+  // one, and the halves a box keeps above and below change places
+  const mode = table.style.writingMode;
+  // — but in columns, whose pieces are moved after the rows are put back,
+  // where the lines are left where the layout put them
+  const flip =
+    (mode === 'vertical-lr' || mode === 'sideways-lr') &&
+    putBackAcross(table) &&
+    !inColumns(table);
   const candidates: Candidate[] = [];
   const offer = (box: Box | null, side: Side, origin: Origin): void => {
-    if (box) candidates.push({ style: box.style, side, origin });
+    if (!box) return;
+    candidates.push({
+      style: box.style,
+      side: flip ? (ACROSS[side] ?? side) : side,
+      origin,
+    });
   };
 
   // along each row line: the cell above and the cell below, their rows and
@@ -285,7 +323,7 @@ export function collapseTable(table: Box): CollapsedTable {
       edges.left = Math.max(edges.left, left / 2);
       edges.right = Math.max(edges.right, right / 2);
     }
-    cellEdges.set(cell.box, edges);
+    cellEdges.set(cell.box, flip ? flipped(edges) : edges);
   }
 
   // The table's own: half the widest of its outer borders along each side
@@ -310,8 +348,9 @@ export function collapseTable(table: Box): CollapsedTable {
     horizontal,
     vertical,
     cells: cellEdges,
-    table: edges,
+    table: flip ? flipped(edges) : edges,
     lineX: [],
     lineY: [],
+    flipped: flip,
   };
 }
