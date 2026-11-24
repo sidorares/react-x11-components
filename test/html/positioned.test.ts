@@ -848,6 +848,36 @@ metric(
   },
 );
 
+test('an over-constrained absolute box in a vertical-lr block keeps its block-start inset', async () => {
+  // its block axis runs left to right, and of `left` and `right` both set
+  // with a width the block end's gives way (CSS Position 3, 4.1), as
+  // `bottom` does across: a vertical-lr frame is put back across before
+  // the box is placed, and the frame's top, which had held, is the page's
+  // right
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="position:relative;width:320px;height:320px;' +
+      'writing-mode:vertical-lr">' +
+      '<span id="lr" style="position:absolute;left:160px;right:160px;' +
+      'width:80px;height:20px"></span>' +
+      '<span id="rtl" dir="rtl" style="position:absolute;left:160px;' +
+      'right:160px;width:80px;height:20px"></span></div>' +
+      '<div style="position:relative;width:320px;height:320px;' +
+      'writing-mode:vertical-rl">' +
+      '<span id="rl" style="position:absolute;left:160px;right:160px;' +
+      'width:80px;height:20px"></span></div>',
+  );
+  const el = view(node);
+  const x = (id: string) => {
+    const r = el.elementRect(findById(el.document, id)!)!;
+    return r.x;
+  };
+  assert.strictEqual(x('lr'), 160, '`left` holds in vertical-lr');
+  assert.strictEqual(x('rtl'), 160, 'whatever the direction');
+  // and `right` in vertical-rl, whose block starts at the right
+  assert.strictEqual(x('rl'), 80, '`right` holds in vertical-rl');
+});
+
 metric('clip shows the part of an absolute box it names', async () => {
   const { node } = await render(
     '<div id="a" style="position:absolute;top:0;left:0;width:40px;' +

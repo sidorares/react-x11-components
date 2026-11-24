@@ -1643,6 +1643,9 @@ function renderControl(
         ...order,
         // its caret is the field's text colour, as a text input's is
         ...(rect.bare && { caretColor: rect.bare.color }),
+        // no thumb where the page hides its bars: core's prop, which its
+        // declarations leave out
+        ...(rect.noScrollbar && ({ scrollbar: false } as object)),
         style: [
           field,
           FIELD_BOX,

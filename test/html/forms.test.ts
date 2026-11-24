@@ -837,6 +837,45 @@ test("a field is the page's to draw once it sets its border or background, to an
 });
 
 metric(
+  'a text area whose overflow-y is hidden, or whose scrollbar-width is none, draws no thumb',
+  async () => {
+    // core's <textarea> draws a thumb wherever its text is taller than it
+    // is, and was drawn one under `overflow: hidden`, which a page writes
+    // to hide it (WPT css-text's trailing-space-and-text-alignment-rtl-*)
+    const lines = Array.from({ length: 12 }, (_, i) => `line ${i}`).join('\n');
+    const { result, node } = await render(
+      '<style>body{margin:0;background:#ffffff}' +
+        ' textarea{display:block;margin:0 0 10px;border:0;padding:0;' +
+        'background:#ffffff;color:#ffffff;width:120px;height:40px;resize:none}' +
+        '</style>' +
+        `<textarea id="shown">${lines}</textarea>` +
+        `<textarea id="hidden" style="overflow-y:hidden">${lines}</textarea>` +
+        `<textarea id="clip" style="overflow:clip">${lines}</textarea>` +
+        `<textarea id="none" style="scrollbar-width:none">${lines}</textarea>`,
+    );
+    await act();
+    const el = view(node);
+    const at = (node as unknown as { abs: { x: number; y: number } }).abs;
+    const inked = async (id: string) => {
+      const box = boxOf(el, id);
+      const px = await pixelsIn(result.ctx, {
+        x: at.x + box.x,
+        y: at.y + box.y,
+        width: Math.round(box.width),
+        height: Math.round(box.height),
+      });
+      let n = 0;
+      for (let i = 0; i < px.length; i += 4) if (px[i] < 240) n += 1;
+      return n;
+    };
+    assert.ok((await inked('shown')) > 0, 'a thumb where nothing hides it');
+    for (const id of ['hidden', 'clip', 'none']) {
+      assert.strictEqual(await inked(id), 0, `no thumb in #${id}`);
+    }
+  },
+);
+
+metric(
   "a styled field's text is filled with its -webkit-text-fill-color, and its caret keeps its color",
   async () => {
     // react-simple-code-editor lays a <textarea> over the <pre> it
