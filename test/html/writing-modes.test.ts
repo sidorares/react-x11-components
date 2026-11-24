@@ -1389,6 +1389,30 @@ metric(
   },
 );
 
+test("a clip-path in a vertical flow is the page's shape, turned with the frame", async () => {
+  // a box 100px across and 40px down the page, clipped to its left half:
+  // the shape is the page's, measured in the box as the page has it, and
+  // the frame it is laid out in is turned a quarter (WPT's
+  // css-shapes/shape-outside-polygon-024)
+  for (const mode of ['vertical-rl', 'sideways-lr', 'vertical-lr']) {
+    const { result, node } = await render(
+      `<style>body{margin:0}.v{writing-mode:${mode}}` +
+        '.c{inline-size:40px;block-size:100px;background:#00ff00;' +
+        'clip-path:polygon(0 0, 50% 0, 50% 100%, 0 100%)}</style>' +
+        '<div class="v"><div class="c"></div></div>',
+    );
+    await act();
+    const { abs } = view(node) as unknown as DrawnNode;
+    const green = async (x: number, y: number) =>
+      (await pixelAt(result.ctx, abs.x + x, abs.y + y))[1] === 255 &&
+      (await pixelAt(result.ctx, abs.x + x, abs.y + y))[0] === 0;
+    for (const y of [5, 35]) {
+      assert.ok(await green(10, y), `${mode}: the left half, at 10, ${y}`);
+      assert.ok(!(await green(90, y)), `${mode}: not the right, at 90, ${y}`);
+    }
+  }
+});
+
 test('a frame turned up stands where its root ends, to the fraction', async () => {
   // a frame turned up — `sideways-lr`, or a horizontal block turned back in
   // a vertical flow — was placed on a whole pixel down the page, which set
@@ -1514,6 +1538,42 @@ test('a vertical line lines up what is on it in another font by its central base
     Math.abs(middle('table') - big) < 0.5,
     `table at ${middle('table')}, big at ${big}`,
   );
+});
+
+test('a table in a vertical writing mode runs its rows across the page and its columns down it', async () => {
+  // CSS Writing Modes 4, 7.3: a table's rows stack along its block axis and
+  // its columns along its inline axis, which in a vertical writing mode run
+  // across the page and down it: its frame is the table, as a vertical
+  // grid's is its grid. Its caption is on its block-start side and its
+  // spacing is across its columns first, both in its own axes
+  const table = (mode: string) =>
+    `<table style="writing-mode:${mode};border-spacing:2px 0">` +
+    `<caption id="${mode}-cap" style="block-size:10px;padding:0">` +
+    '</caption><tr>' +
+    `<td id="${mode}-a" style="block-size:40px;inline-size:20px"></td>` +
+    `<td id="${mode}-b" style="inline-size:30px"></td></tr>` +
+    `<tr><td id="${mode}-c" style="block-size:50px"></td></tr></table>`;
+  const { node } = await render(
+    '<style>body{margin:0}td{padding:0}</style>' +
+      table('vertical-rl') +
+      table('vertical-lr'),
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const r = rectOf(el, id);
+    return [r.x, r.y, r.width, r.height];
+  };
+  // the caption and the first row at its right in vertical-rl, its
+  // columns 2px apart down the page
+  assert.deepStrictEqual(at('vertical-rl-cap'), [90, 0, 10, 56]);
+  assert.deepStrictEqual(at('vertical-rl-a'), [50, 2, 40, 20]);
+  assert.deepStrictEqual(at('vertical-rl-b'), [50, 24, 40, 30]);
+  assert.deepStrictEqual(at('vertical-rl-c'), [0, 2, 50, 20]);
+  // and at its left in vertical-lr
+  assert.deepStrictEqual(at('vertical-lr-cap'), [0, 56, 10, 56]);
+  assert.deepStrictEqual(at('vertical-lr-a'), [10, 58, 40, 20]);
+  assert.deepStrictEqual(at('vertical-lr-b'), [10, 80, 40, 30]);
+  assert.deepStrictEqual(at('vertical-lr-c'), [50, 58, 50, 20]);
 });
 
 test('an edge on half a pixel across a vertical-rl frame is drawn on the column the page draws it on', async () => {

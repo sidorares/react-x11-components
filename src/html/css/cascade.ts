@@ -12809,6 +12809,7 @@ const SVG_CSS_HINTS = new Set([
   'unicode-bidi',
   'pointer-events',
   'writing-mode',
+  'clip-path',
 ]);
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
 

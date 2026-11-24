@@ -216,6 +216,41 @@ metric(
   },
 );
 
+metric(
+  'in a vertical flow the area is laid down on the page and turned',
+  async () => {
+    // WPT's shape-outside-border-box-border-radius-005 and -011: the
+    // radius is a corner of the page's, which the frame the lines are laid
+    // out in has turned a quarter
+    const at = async (mode: string, radius: string): Promise<number[]> => {
+      const { node } = await render(
+        `<style>body{margin:0}.c{writing-mode:${mode};inline-size:200px;` +
+          'line-height:0}.s{float:left;shape-outside:border-box;' +
+          `${radius};block-size:40px;inline-size:40px;padding:20px;` +
+          'border:20px solid green;margin:20px}.b{display:inline-block;' +
+          'inline-size:60px}.l{display:inline-block;inline-size:200px;' +
+          'block-size:20px}</style><main class="c"><div class="s"></div>' +
+          '<div class="l"></div> <div class="b" style="block-size:24px"></div> ' +
+          '<div class="b" style="block-size:36px"></div> ' +
+          '<div class="b" style="block-size:36px"></div> ' +
+          '<div class="b" style="block-size:24px"></div> <div class="l"></div></main>',
+        300,
+      );
+      // across the frame is along the lines, from the first box's start
+      const xs = blocksOf(node).map((b) => b.x);
+      return xs.map((x) => x - xs[0]);
+    };
+    assert.deepEqual(
+      await at('vertical-rl', 'border-bottom-right-radius:50%'),
+      [0, 128, 140, 140, 140, 0],
+    );
+    assert.deepEqual(
+      await at('sideways-lr', 'border-top-right-radius:60px 40px'),
+      [0, 140, 140, 140, 132, 0],
+    );
+  },
+);
+
 metric('and so it is from the right, read right to left', async () => {
   const { node } = await render(
     '<style>body{margin:0}.c{width:200px;line-height:0;direction:rtl}' +

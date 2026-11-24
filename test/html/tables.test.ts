@@ -655,6 +655,42 @@ metric("a column's background is painted under its cells", async () => {
   );
 });
 
+metric(
+  "a column's writing mode does not apply, and its background is painted",
+  async () => {
+    // CSS Writing Modes 4, 2.1: `writing-mode` applies to no column or
+    // column group, which a vertical one made the root of a flow of its
+    // own: the group's columns went into its frame, where the table found
+    // none of them, and their backgrounds were drawn nowhere (WPT's
+    // table-progression-htb-002)
+    const { node } = await render(
+      '<table style="border-spacing:0">' +
+        '<colgroup style="writing-mode:vertical-rl">' +
+        '<col style="background:#ff0000">' +
+        '<col style="writing-mode:vertical-lr;background:#0000ff">' +
+        '</colgroup>' +
+        '<tr><td id="a">a</td><td id="b">b</td></tr></table>',
+    );
+    const el = view(node);
+    const fills = await fillsOf(el);
+    const at = (color: string) =>
+      fills
+        .filter((f) => f.style === parseColor(color))
+        .map((f) => [f.x, f.y, f.w, f.h]);
+    const rect = (id: string) => {
+      const box = boxOf(el, id);
+      return [
+        Math.round(box.x),
+        Math.round(box.y),
+        Math.round(box.x + box.width) - Math.round(box.x),
+        Math.round(box.y + box.height) - Math.round(box.y),
+      ];
+    };
+    assert.deepStrictEqual(at('#ff0000'), [rect('a')], 'the column under a');
+    assert.deepStrictEqual(at('#0000ff'), [rect('b')], 'the second under b');
+  },
+);
+
 metric('a row spans its columns, not the spacing round them', async () => {
   // CSS 2.1 17.5.1: in the separated borders model a row's edges are its
   // cells', and a group's are its rows' — the spacing is the table's

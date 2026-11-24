@@ -28,6 +28,7 @@
 import type { Box, LineBox, TextLayoutLike } from './boxes.js';
 import type { BoxShadow, ComputedStyle, WritingMode } from '../css/style.js';
 import { copyStyle, INLINE_BEFORE_ABSOLUTE } from '../css/style.js';
+import { AUTO } from '../css/values.js';
 import type { TransformFunction } from '../css/transform.js';
 import { mapAnchorCalls } from '../css/anchor.js';
 import type {
@@ -183,6 +184,19 @@ export function makeFrame(
     root.textBoxTrim = 'none';
     box.style = root;
   }
+  // A table's rows and columns are its frame's as a grid's tracks are (CSS
+  // Writing Modes 4, 7.3; CSS 2.1 17.2): the frame is the table, laid out
+  // in the frame's axes with all of its own style turned into them — its
+  // edges, its sizes, its spacing — so that its rows run down the frame,
+  // across the page; and the root is a bare block around it, which keeps
+  // only what places it in the page's flow.
+  const table = !back && box.kind === 'table';
+  let frameOwn = style;
+  if (table) {
+    frameOwn = tableFrameStyle(box.style, mode, style);
+    box.style = tableRootStyle(box.style, frameStyle);
+    box.kind = 'block';
+  }
   const grid = box.kind === 'flex';
   if (grid) {
     const own = box.style;
@@ -200,9 +214,9 @@ export function makeFrame(
     box.kind = 'block';
   }
   const frame = new (box.constructor as typeof Box)(
-    grid ? 'flex' : 'block',
+    table ? 'table' : grid ? 'flex' : 'block',
     null,
-    style,
+    frameOwn,
   );
   // a list item's marker goes beside its first line, which is the frame's
   // and turned with it: none is drawn for it yet
@@ -248,6 +262,60 @@ export function makeFrame(
   FRAMES.set(box, frame);
   FRAME_ROOTS.set(frame, box);
   return frame;
+}
+
+/** A vertical table's frame's style: the table's own turned into the
+ *  frame's axes, with the turn of `frame`, and none of what places it in
+ *  the page's flow, which its root keeps (`tableRootStyle`). */
+function tableFrameStyle(
+  own: ComputedStyle,
+  mode: WritingMode,
+  frame: ComputedStyle,
+): ComputedStyle {
+  const out = framedStyle(own, mode);
+  out.display = 'table';
+  out.transform = frame.transform;
+  out.transformOrigin = frame.transformOrigin;
+  out.translate = null;
+  out.rotate = null;
+  out.scale = null;
+  out.position = 'static';
+  out.float = 'none';
+  out.clear = 'none';
+  out.zIndex = 'auto';
+  out.verticalAlign = 'baseline';
+  for (const side of FRAME_SIDES) {
+    (out as unknown as Record<string, unknown>)[`margin${side}`] = 0;
+    (out as unknown as Record<string, unknown>)[side.toLowerCase()] = AUTO;
+  }
+  return out;
+}
+
+/** A vertical table's root: a block, inline where the table is, with what
+ *  places the table in the page's flow and nothing it draws. */
+function tableRootStyle(
+  own: ComputedStyle,
+  anonymous: ComputedStyle,
+): ComputedStyle {
+  const out = copyStyle(anonymous);
+  out.display = own.display === 'inline-table' ? 'inline-block' : 'block';
+  out.position = own.position;
+  out.float = own.float;
+  out.clear = own.clear;
+  out.zIndex = own.zIndex;
+  out.verticalAlign = own.verticalAlign;
+  out.transform = own.transform;
+  out.transformOrigin = own.transformOrigin;
+  out.translate = own.translate;
+  out.rotate = own.rotate;
+  out.scale = own.scale;
+  const from = own as unknown as Record<string, unknown>;
+  const to = out as unknown as Record<string, unknown>;
+  for (const side of FRAME_SIDES) {
+    to[`margin${side}`] = from[`margin${side}`];
+    to[side.toLowerCase()] = from[side.toLowerCase()];
+  }
+  return out;
 }
 
 /** What makes a box a flex container, which a vertical flex box's frame
@@ -320,6 +388,11 @@ const ANTICLOCKWISE_SIDES: readonly Side[] = ['Left', 'Top', 'Right', 'Bottom'];
 const REFLECTED_MARGINS: readonly Side[] = ['Left', 'Bottom', 'Right', 'Top'];
 const FRAME_SIDES: readonly Side[] = ['Top', 'Right', 'Bottom', 'Left'];
 
+/** The style each turned one was made from (`framedStyle`): what a float's
+ *  `shape-outside` is laid down from, on the page, before it is turned into
+ *  the frame (`float-shape.ts`). */
+export const UNFRAMED = new WeakMap<ComputedStyle, ComputedStyle>();
+
 /**
  * A style as the frame of a writing mode lays it out: its physical sides
  * each handed to the side of the frame that is drawn there, its widths to
@@ -332,6 +405,7 @@ export function framedStyle(
   mode: WritingMode,
 ): ComputedStyle {
   const out = copyStyle(style);
+  UNFRAMED.set(out, style);
   // what was inline-level before it was made absolute still is: its
   // static position is on its line (`staticPositions`), which a mark kept
   // by the style it was made with says
@@ -373,8 +447,13 @@ export function framedStyle(
   out.containIntrinsicHeight = style.containIntrinsicWidth;
   out.overflowX = style.overflowY;
   out.overflowY = style.overflowX;
-  out.borderSpacing = style.borderSpacingY;
-  out.borderSpacingY = style.borderSpacing;
+  // a table's spacing is across its columns and then down its rows, in its
+  // own writing mode, whatever the page's (all three engines take it so):
+  // a vertical one's is in the frame's axes already
+  if (style.writingMode === 'horizontal-tb') {
+    out.borderSpacing = style.borderSpacingY;
+    out.borderSpacingY = style.borderSpacing;
+  }
   if (style.aspectRatio) {
     out.aspectRatio = {
       ...style.aspectRatio,
@@ -672,6 +751,14 @@ export function reflectFrame(
       box === frame ||
       box.style.writingMode === 'vertical-lr' ||
       box.style.writingMode === 'sideways-lr';
+    if (
+      box.kind === 'table' &&
+      leftToRight &&
+      REFLECTED.get(box) !== box.layoutSerial
+    ) {
+      REFLECTED.set(box, box.layoutSerial);
+      reflectTable(box, move);
+    }
     if (container && leftToRight && REFLECTED.get(box) !== box.layoutSerial) {
       REFLECTED.set(box, box.layoutSerial);
       const top = box.contentY;
@@ -715,6 +802,55 @@ export function reflectFrame(
       }
     }
   }
+}
+
+/**
+ * A table in a flow that runs left to right, laid out as `vertical-rl`'s
+ * (`reflectFrame`): its captions put back across the whole of it, so that
+ * a caption on its block-start side is at the page's left, the table box
+ * between them, and its row groups, rows and cells across its content box
+ * each where the other order of rows has it — a cell on its own, since one
+ * that spans rows starts at the other end of them. The table's own edges
+ * stay on the sides they were laid out on, which are the page's.
+ */
+function reflectTable(
+  table: Box,
+  move: (box: Box, dx: number, dy: number) => void,
+): void {
+  const top = table.y;
+  const height = table.height;
+  const captionTop = table.captionTop;
+  const captionBottom = table.captionBottom;
+  // the table box's content box, which the captions put at another place
+  // as they change ends
+  const to =
+    top + height - captionBottom - table.borderBottom - table.padBottom;
+  const start = top + captionBottom + table.borderTop + table.padTop;
+  const across = (y: number, h: number): number => start + to - y - h;
+  const placed: [Box, number][] = [];
+  for (const child of table.children) {
+    if (child.kind === 'table-caption') {
+      placed.push([child, top + top + height - child.y - child.height]);
+    } else if (child.kind === 'table-row-group') {
+      placed.push([child, across(child.y, child.height)]);
+      for (const row of child.children) {
+        if (row.kind !== 'table-row') continue;
+        placed.push([row, across(row.y, row.height)]);
+        for (const cell of row.children) {
+          if (cell.kind === 'table-cell') {
+            placed.push([cell, across(cell.y, cell.height)]);
+          }
+        }
+      }
+    }
+  }
+  // parents first, and `move` takes a box and all it holds, so what is
+  // left of a box's move is from where its parent's left it
+  for (const [box, y] of placed) {
+    if (y !== box.y) move(box, 0, y - box.y);
+  }
+  table.captionTop = captionBottom;
+  table.captionBottom = captionTop;
 }
 
 /** The writing mode of the frame a box is laid out in (`makeFrame`), or
@@ -865,6 +1001,53 @@ export function frameRectOf(
         width: rect.height,
         height: rect.width,
       };
+}
+
+/** Where a point of a framed box's margin box, `p` across and `q` down it
+ *  as the page has it, is in the frame's axes, from the margin box's top
+ *  left: `w` and `h` the margin box's size on the page. A `vertical-lr`
+ *  frame is laid out as `vertical-rl`'s and put back across, so what its
+ *  lines go around is the page's mirrored (`reflectFrame`). */
+export function intoFrame(
+  p: number,
+  q: number,
+  w: number,
+  h: number,
+  mode: WritingMode,
+): [number, number] {
+  if (turnsUp(mode)) return [h - q, p];
+  return reflects(mode) ? [q, p] : [q, w - p];
+}
+
+/** A framed box's borders, paddings and margins as the page has them, its
+ *  top first: `pageSides` and `pageMargins` of the frame's. */
+export function pageEdgesOf(
+  box: Box,
+  mode: WritingMode,
+): {
+  border: [number, number, number, number];
+  pad: [number, number, number, number];
+  margin: [number, number, number, number];
+} {
+  return {
+    border: pageSides(
+      [box.borderTop, box.borderRight, box.borderBottom, box.borderLeft],
+      mode,
+    ),
+    pad: pageSides(
+      [
+        box.padTop ?? 0,
+        box.padRight ?? 0,
+        box.padBottom ?? 0,
+        box.padLeft ?? 0,
+      ],
+      mode,
+    ),
+    margin: pageMargins(
+      [box.marginTop, box.marginRight, box.marginBottom, box.marginLeft],
+      mode,
+    ),
+  };
 }
 
 /** The four values of a framed box's sides, the frame's top first, as the

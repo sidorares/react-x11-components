@@ -4625,12 +4625,20 @@ class Builder {
       box.style = this._principalStyleOf(el, style, key, inFlex);
     }
     into.append(box);
+    // a column's writing mode does not apply to it (CSS Writing Modes 4,
+    // 2.1), and it lays nothing out: it is the root of no flow
+    const column =
+      style.display === 'table-column' ||
+      style.display === 'table-column-group';
     // a block container in a vertical writing mode in a horizontal one:
     // the root of an orthogonal flow (CSS Writing Modes 4, 7.3)
     if (
+      !column &&
       box.style.writingMode !== 'horizontal-tb' &&
       (kind === 'table-cell' ||
         kind === 'table-caption' ||
+        // and a table, whose frame is the table (`makeFrame`)
+        kind === 'table' ||
         (kind === 'block' && !style.grid) ||
         // and a grid, or grid lanes, whose frame is the grid (`makeFrame`),
         // but for a subgrid, whose tracks would be its parent's across
@@ -4642,6 +4650,7 @@ class Builder {
     ) {
       this._orthogonal.push(box);
     } else if (
+      !column &&
       style.writingMode === 'horizontal-tb' &&
       ((kind === 'block' && !style.grid) ||
         (kind === 'flex' && style.grid && !subgridsIn(style, into)) ||
