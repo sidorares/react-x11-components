@@ -147,8 +147,11 @@ import {
   frameOf,
   frameTurn,
   framed,
+  pageSides,
+  pageMargins,
   quarterTurnsOf,
   turnsUp,
+  UNFRAMED,
   uprightCells,
 } from './layout/writing.js';
 import {
@@ -8588,6 +8591,8 @@ const DOCUMENT: ClipSpace = { originX: 0, originY: 0, scale: 1, damage: null };
  * nothing to show.
  */
 function clipPathOf(box: Box, options: ClipSpace): PathClip {
+  const turned = framed.any ? framedClipPath(box, options) : null;
+  if (turned) return turned;
   const path = box.style.clipPath!;
   // the box it is measured in, in from the border box — or out from it
   const within = path.box;
@@ -8674,6 +8679,121 @@ function clipPathOf(box: Box, options: ClipSpace): PathClip {
     radii = cornersFor(path.radii, path.radiiY, width, height, rect.w, rect.h);
   }
   return { rect, radii, polygons: null, rule: 'nonzero' };
+}
+
+/**
+ * A `clip-path` of a box in a vertical flow's frame: its shape is the
+ * page's, so it is laid down on a stand-in for the box with the page's
+ * sides and the style the box's was turned from, and turned into the frame
+ * the box is drawn through. Null for a box in no frame turned a quarter.
+ */
+function framedClipPath(box: Box, options: ClipSpace): PathClip | null {
+  const frame = frameOf(box);
+  if (!frame || quarterTurnsOf(box) % 2 === 0) return null;
+  const style = UNFRAMED.get(box.style);
+  if (!style?.clipPath) return null;
+  const up = turnsUp(frameTurn(frame));
+  const mode = up ? 'sideways-lr' : 'vertical-rl';
+  const sides = (t: number, r: number, b: number, l: number) =>
+    pageSides([t, r, b, l], mode);
+  const border = sides(
+    box.borderTop,
+    box.borderRight,
+    box.borderBottom,
+    box.borderLeft,
+  );
+  const pad = sides(box.padTop, box.padRight, box.padBottom, box.padLeft);
+  const margin = pageMargins(
+    [box.marginTop, box.marginRight, box.marginBottom, box.marginLeft],
+    frameTurn(frame),
+  );
+  // the border box on the page, from its top left
+  const w = frameHeight(box);
+  const h = box.width;
+  const page = {
+    style,
+    x: 0,
+    y: 0,
+    width: w,
+    height: h,
+    captionTop: 0,
+    captionBottom: 0,
+    borderTop: border[0],
+    borderRight: border[1],
+    borderBottom: border[2],
+    borderLeft: border[3],
+    padTop: pad[0],
+    padRight: pad[1],
+    padBottom: pad[2],
+    padLeft: pad[3],
+    marginTop: margin[0],
+    marginRight: margin[1],
+    marginBottom: margin[2],
+    marginLeft: margin[3],
+  } as unknown as Box;
+  const laid = clipPathOf(page, DOCUMENT);
+  const x0 = box.x + options.originX;
+  const y0 = frameY(box) + options.originY;
+  // a point of the page's border box where the frame has it
+  const at = (p: number, q: number): [number, number] =>
+    up ? [x0 + h - q, y0 + p] : [x0 + q, y0 + w - p];
+  if (laid.polygons) {
+    const polygons = laid.polygons.map((poly) => {
+      const out: number[] = [];
+      for (let i = 0; i + 1 < poly.length; i += 2) {
+        out.push(...at(poly[i], poly[i + 1]));
+      }
+      return out;
+    });
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const poly of polygons) {
+      for (let i = 0; i + 1 < poly.length; i += 2) {
+        minX = Math.min(minX, poly[i]);
+        maxX = Math.max(maxX, poly[i]);
+        minY = Math.min(minY, poly[i + 1]);
+        maxY = Math.max(maxY, poly[i + 1]);
+      }
+    }
+    const x = Math.floor(minX);
+    const y = Math.floor(minY);
+    const rect =
+      laid.rect.w > 0 && laid.rect.h > 0 && polygons.length
+        ? { x, y, w: Math.ceil(maxX) - x, h: Math.ceil(maxY) - y }
+        : { x, y, w: 0, h: 0 };
+    return { rect, radii: null, polygons, rule: laid.rule };
+  }
+  const r = laid.rect;
+  const [ax, ay] = at(r.x, r.y);
+  const [bx, by] = at(r.x + r.w, r.y + r.h);
+  const left = Math.round(Math.min(ax, bx));
+  const top = Math.round(Math.min(ay, by));
+  const rect = {
+    x: left,
+    y: top,
+    w: Math.round(Math.max(ax, bx)) - left,
+    h: Math.round(Math.max(ay, by)) - top,
+  };
+  let radii: Corners | null = null;
+  if (laid.radii) {
+    // each of the frame's corners is the page's one a quarter round, its
+    // radius across the page's down
+    const c = laid.radii;
+    const shift = up ? 3 : 1;
+    const of = <T>(list: readonly T[], i: number): T => list[(i + shift) % 4];
+    radii = {
+      x: [0, 1, 2, 3].map((i) => of(c.y, i)) as Corners['x'],
+      y: [0, 1, 2, 3].map((i) => of(c.x, i)) as Corners['y'],
+    };
+    if (c.shape) {
+      radii.shape = [0, 1, 2, 3].map((i) =>
+        of(c.shape!, i),
+      ) as unknown as CornerShapes;
+    }
+  }
+  return { rect, radii, polygons: null, rule: laid.rule };
 }
 
 /** What a `clip-path` cuts to, in window coordinates (`clipPathOf`). */
