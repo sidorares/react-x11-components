@@ -367,6 +367,29 @@ test("an inline box's background is painted over the text before it that it reac
   assert.strictEqual(hung.red, 0, 'and over the line before it hangs over');
 });
 
+test('a box over nothing before it keeps its place under the box it holds and the text', async () => {
+  // CSS2 linebox/inline-formatting-context-002: a black inline box with
+  // nothing drawn before it holds a white one pushed in by a margin. Taken
+  // for one over the text before it, by an empty text at the line's start,
+  // the black box was put off past all the text and over the white box
+  const ops: PaintOp[] = [];
+  const { node } = await render(
+    '<style>div { display: inline; background: #000000 }' +
+      ' div div { background: #ffffff; margin-left: 100px }</style>' +
+      '<div>\n <div>Filler Text</div>\n</div>',
+  );
+  await fillsOf(view(node), ops);
+  const at = (color: string) =>
+    ops.findIndex((o) => o.op === 'fill' && o.style === parseColor(color));
+  // the text the line ends with, "Filler Text"
+  const text = ops.map((o) => o.op).lastIndexOf('text');
+  assert.ok(
+    at('#000000') >= 0 && at('#ffffff') > at('#000000'),
+    'white over black',
+  );
+  assert.ok(text > at('#ffffff'), 'and the text over both');
+});
+
 test('on a layout that cannot be drawn in pieces, a background over the text before it is painted as before', async (t) => {
   if (!FONTS) return t.skip('no font files for the in-process server');
   // CoreText's layouts on macOS, as any engine's but ntk's, cannot be cut
