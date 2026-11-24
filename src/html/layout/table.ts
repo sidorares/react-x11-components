@@ -32,11 +32,13 @@ import {
   moveTo,
   resolveEdges,
   setAsideOf,
+  translate,
   wholeAgain,
 } from './block.js';
 import type { LayoutContext } from './block.js';
 import { firstBaselineIn } from './inline.js';
 import { tableGrid } from './grid.js';
+import { FRAMES, framed } from './writing.js';
 import type { Cell, TableGrid } from './grid.js';
 
 /**
@@ -105,6 +107,17 @@ export function layoutTable(
   const height = placeRows(table, grid, columns, natural, cut, !ctx.probing);
   if (cut < grid.rows.length) setRowsAside(table, grid, cut, height, ctx);
   return height;
+}
+
+/** Move an orthogonal cell's frame across the cell, towards the end of its
+ *  block axis — the left in `vertical-rl` and `sideways-rl`, the right in
+ *  the two that run left to right — by `share` of the room it leaves. */
+function alignAcross(cell: Box, frame: Box, share: number): void {
+  const slack = Math.max(0, cell.contentWidth - frame.height) * share;
+  if (!slack) return;
+  const mode = cell.style.writingMode;
+  const leftToRight = mode === 'vertical-lr' || mode === 'sideways-lr';
+  translate(frame, leftToRight ? slack : -slack, 0);
 }
 
 /** What a table's last layout that was not a probe made of its rows: their
@@ -642,6 +655,14 @@ function placeRows(
     moveContent(cell.box, offset);
     cell.box.x = boxX;
     cell.box.width = width;
+    // a cell in a vertical writing mode in a horizontal table is the root
+    // of a flow of its own, whose block axis runs across the page, and
+    // that is the axis `vertical-align` moves its content along too (CSS
+    // Writing Modes 4, 7.5): its `top` is its block start
+    const frame = framed.any ? FRAMES.get(cell.box) : undefined;
+    if (frame && (va === 'middle' || va === 'bottom')) {
+      alignAcross(cell.box, frame, va === 'middle' ? 0.5 : 1);
+    }
     if (clip) {
       cell.box.height = height;
       clipCell(cell.box);

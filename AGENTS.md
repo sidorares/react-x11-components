@@ -2342,7 +2342,12 @@ included, so **anything new `SvgView` calls on a context joins
 `recordFills`**, as a method that draws nothing where it is no fill
 (`DRAWN_AS_NOTHING`): a property it does not know answers undefined, which
 `SvgView` reads as a context without it, and a method it does not know
-throws.
+throws. **In a vertical flow the area is laid down on the page and turned
+into the frame** (`framedShape`, `intoFrame`): the shape, the corners and
+the image are the page's, so they are read from the style the box's was
+turned from (`UNFRAMED`) on a stand-in with the page's sides, and a
+`vertical-lr` frame's area is the page's mirrored, as its lines are put
+back across after.
 
 **A line of a paragraph that may read right to left is laid out from a start
 of the rest** (`startOf` in `layout/inline.ts`, `layout/settled.ts`). An
@@ -8854,7 +8859,9 @@ things are load-bearing.
   alone, quadratic in its lines as that loop is, and why a block's margins
   in it are turned from the other side (`REFLECTED_MARGINS`). A block no
   layout has laid out since it was put back is left as it is
-  (`layoutSerial`).
+  (`layoutSerial`). A float is put back across its formatting context
+  (`floatsPutBack`), as the lines that went round it are: moved with its
+  block alone, it stood at the frame's other end, over them.
 - **A frame is laid out with what holds it, or moved whole with it.** All a
   frame holds is a blocker (`noteBlockers`), so no block in one is kept
   alone: its heights run across the page, and in `vertical-lr` its lines are
