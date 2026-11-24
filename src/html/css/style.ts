@@ -7050,19 +7050,16 @@ export function masked(style: ComputedStyle): boolean {
 }
 
 /**
- * One layer's `mask-image`: a url, a gradient — or none, for an image
- * function this does not draw, or a `url(#id)`, which names an SVG
- * `<mask>` element in the document rather than an image to fetch (7.2):
- * drawn with no mask rather than as the transparent layer a mask that
- * cannot be had is, since this draws no `<mask>`. Undefined where it is no
- * image at all.
+ * One layer's `mask-image`: a url — a `url(#id)` among them, which names an
+ * SVG `<mask>` element in the document rather than an image to fetch (CSS
+ * Masking 1, 7.1), and is never asked for — a gradient, or none, for an
+ * image function this does not draw. Undefined where it is no image at all.
  */
 function maskImageOf(
   text: string,
   ctx: UnitContext,
 ): BackgroundImage | undefined {
-  const image = backgroundImageOf(text, ctx);
-  return typeof image === 'string' && image[0] === '#' ? null : image;
+  return backgroundImageOf(text, ctx);
 }
 
 /** A `<geometry-box>` as an HTML element has it (CSS Masking 1, 7.5): the

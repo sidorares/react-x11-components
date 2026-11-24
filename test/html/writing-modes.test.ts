@@ -1389,6 +1389,34 @@ metric(
   },
 );
 
+test('a float in a vertical-lr flow is put back across with the lines beside it', async () => {
+  // a vertical-lr frame is laid out as vertical-rl's and put back across;
+  // a float was moved with the block it is in and no further, so it stood
+  // where the frame's other end is, over the lines that went round it
+  // (WPT's css-writing-modes/margin-collapse-vlr-011)
+  for (const wrap of [false, true]) {
+    const { node } = await render(
+      '<style>body{margin:0}.c{writing-mode:vertical-lr;inline-size:200px;' +
+        'line-height:0}#f{float:left;block-size:40px;inline-size:40px;' +
+        'margin:20px}.b{display:inline-block;inline-size:60px;' +
+        'block-size:20px}</style><main class="c">' +
+        (wrap ? '<div>' : '') +
+        '<div id="f"></div><span class="b" id="b"></span>' +
+        '<span class="b"></span><span class="b"></span>' +
+        (wrap ? '</div>' : '') +
+        '</main>',
+    );
+    const el = view(node);
+    const at = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    // the float at the block start, the page's left, past its margin; the
+    // first line at the left too, beside it down the page
+    assert.equal(at('f').x, 20, `wrapped: ${wrap}`);
+    assert.equal(at('f').y, 20, `wrapped: ${wrap}`);
+    assert.equal(at('b').x, 0, `wrapped: ${wrap}`);
+    assert.equal(at('b').y, 80, `wrapped: ${wrap}`);
+  }
+});
+
 test("a clip-path in a vertical flow is the page's shape, turned with the frame", async () => {
   // a box 100px across and 40px down the page, clipped to its left half:
   // the shape is the page's, measured in the box as the page has it, and
@@ -1511,6 +1539,34 @@ test('a flex box in a vertical writing mode lays its row out down the page', asy
   };
   assert.deepStrictEqual(rect('a'), [70, 0, 30, 40]);
   assert.deepStrictEqual(rect('b'), [80, 40, 20, 160]);
+});
+
+test("vertical-align moves a vertical cell's content across a horizontal table, along its block axis", async () => {
+  // CSS Writing Modes 4, 7.5: a cell's `top` and `bottom` are its block
+  // start and end, which in a vertical cell are its right and its left
+  // (`vertical-rl`) or its left and its right (`vertical-lr`)
+  const cell = (id: string, mode: string, align: string) =>
+    `<td style="writing-mode:${mode};vertical-align:${align}">` +
+    `<div id="${id}" style="inline-size:10px;block-size:20px"></div></td>`;
+  const { node } = await render(
+    '<style>body{margin:0}table{border-spacing:0}' +
+      'td{padding:0;width:100px;height:50px}</style><table><tr>' +
+      cell('lr-bottom', 'vertical-lr', 'bottom') +
+      cell('rl-middle', 'vertical-rl', 'middle') +
+      cell('rl-bottom', 'vertical-rl', 'bottom') +
+      cell('rl-top', 'vertical-rl', 'top') +
+      '</tr></table>',
+  );
+  const el = view(node);
+  // where across the cell, which is all of what this says
+  const at = (id: string) => {
+    const r = rectOf(el, id);
+    return [r.x, r.width];
+  };
+  assert.deepStrictEqual(at('lr-bottom'), [80, 20]);
+  assert.deepStrictEqual(at('rl-middle'), [140, 20]);
+  assert.deepStrictEqual(at('rl-bottom'), [200, 20]);
+  assert.deepStrictEqual(at('rl-top'), [380, 20]);
 });
 
 test('a table in a vertical writing mode runs its rows across the page and its columns down it', async () => {

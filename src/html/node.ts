@@ -3388,7 +3388,8 @@ export class HtmlViewNode extends Node {
       // and each mask layer's, which is an image as a background's is
       for (const image of box.style.mask.images) {
         const url = urlOf(image);
-        if (url !== null) {
+        // a `url(#id)` is a `<mask>` in the document, and fetches nothing
+        if (url !== null && url[0] !== '#') {
           this._resources.request({ url, kind: 'image', element }, true);
         }
       }
