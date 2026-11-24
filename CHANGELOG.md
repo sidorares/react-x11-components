@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.48.2](https://github.com/sidorares/react-x11-components/compare/v0.48.1...v0.48.2) (2026-11-24)
+
+
+### Bug Fixes
+
+* **html:** a circle() or an ellipse() takes closest-corner and farthest-corner for its radii ([#1924](https://github.com/sidorares/react-x11-components/issues/1924)) ([6e4226a](https://github.com/sidorares/react-x11-components/commit/6e4226ae15876948a72b2ed8c88c681cbebf1ac8))
+* **html:** a clip-path circle() or ellipse() is set by the context as its curves are, not as chords of our own ([#1918](https://github.com/sidorares/react-x11-components/issues/1918)) ([eea096b](https://github.com/sidorares/react-x11-components/commit/eea096b326cc96baf284d63dd8e5b7f80cb2879f))
+* **html:** a float in a vertical-lr flow is put back across its formatting context with the lines beside it ([#1925](https://github.com/sidorares/react-x11-components/issues/1925)) ([7cbd0e7](https://github.com/sidorares/react-x11-components/commit/7cbd0e7ab2666f612efa706c15d10d69f96e0287))
+* **html:** a horizontal cell in a vertical table turns back its table's frame ([#1931](https://github.com/sidorares/react-x11-components/issues/1931)) ([ec9b582](https://github.com/sidorares/react-x11-components/commit/ec9b582ed586e9ef26c7ba4029086283bb63c128))
+* **html:** a mask layer of mask-mode luminance is its image's luminance times its alpha ([#1927](https://github.com/sidorares/react-x11-components/issues/1927)) ([4f49539](https://github.com/sidorares/react-x11-components/commit/4f49539e8832a9f7eef660848aaa804f5a3d946b))
+* **html:** a mask-image url(#id) is the SVG &lt;mask&gt; it names in the document ([#1928](https://github.com/sidorares/react-x11-components/issues/1928)) ([ac320a7](https://github.com/sidorares/react-x11-components/commit/ac320a7ee4185bcfa5ab95d58dfd9bb904e61030))
+* **html:** a polygon clip on a box in a vertical flow is placed on the pixels the box is drawn on ([#1936](https://github.com/sidorares/react-x11-components/issues/1936)) ([bb4d830](https://github.com/sidorares/react-x11-components/commit/bb4d830cbf5268ba11afd9091c87cd94b597e413))
+* **html:** a vertical flow's frame is drawn on a surface in its own axes whether or not it holds text ([#1930](https://github.com/sidorares/react-x11-components/issues/1930)) ([d607542](https://github.com/sidorares/react-x11-components/commit/d607542cfbe976203098a0f045e9675aa4f93846))
+* **html:** a vertical line lines up what is on it in another font by its central baseline ([#1929](https://github.com/sidorares/react-x11-components/issues/1929)) ([2fa27d3](https://github.com/sidorares/react-x11-components/commit/2fa27d3ea7c5315b39d7fb007f684cfa7781a16e))
+* **html:** a vertical-lr table's collapsed borders meet between the rows side by side on the page ([#1932](https://github.com/sidorares/react-x11-components/issues/1932)) ([e72ceb2](https://github.com/sidorares/react-x11-components/commit/e72ceb29b45e3861758801b5df6b9f6f915610d6))
+* **html:** of two equal collapsed borders along a column line, the one at the table's inline start wins ([#1933](https://github.com/sidorares/react-x11-components/issues/1933)) ([7be4cba](https://github.com/sidorares/react-x11-components/commit/7be4cbaca9dd23c5e1246fac8eff5ca4371fe8d9))
+* **html:** vertical-align moves a vertical cell's content along its block axis, across the page ([#1926](https://github.com/sidorares/react-x11-components/issues/1926)) ([d8baedf](https://github.com/sidorares/react-x11-components/commit/d8baedfb8d4111db1277025a0ed7a8d0c36766c1))
+
 ## [0.48.1](https://github.com/sidorares/react-x11-components/compare/v0.48.0...v0.48.1) (2026-11-24)
 
 
