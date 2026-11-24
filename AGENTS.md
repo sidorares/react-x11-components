@@ -8804,7 +8804,11 @@ applying (2.1): `uprightItems` is handed the block's. And the frame lays its lin
 baseline, where a vertical line's is the central one unless its text is set
 sideways, so an atomic with no baseline of its own is raised to sit by its
 middle (`atomicRaise`, `ownBaseline`): on its edge, a 50px image made a
-line the strut's descent wider, which the root's width now shows. Six
+line the strut's descent wider, which the root's width now shows. An
+inline box, and an atomic with a baseline of its own, in another font is
+raised by how far apart the two fonts' central baselines are
+(`centralLift`, `offCentre`), so a 30px span in a 60px line shares its
+middle. Six
 things are load-bearing.
 
 - **A box in a frame has its style turned** (`framedStyle`): its physical
