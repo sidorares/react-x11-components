@@ -451,6 +451,22 @@ test('a filtered image is drawn through the colour functions, and so is a filter
   });
 });
 
+test("the root element's filter runs over the canvas", async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // the body's background is the canvas's (CSS 2.1, 14.2), and the root's
+  // filter is drawn over it, as Chrome and Firefox draw it: painted outside
+  // the root's group, the canvas stayed white (WPT's filter-effects/
+  // hidpi-invert-filter-background)
+  const { result } = await renderWithBytes(
+    '<html style="filter: invert(1)"><body style="margin:0;height:100px;' +
+      'background:#ffff00"><div style="height:20px;background:#ff0000">' +
+      '</div></body></html>',
+    {},
+  );
+  await waitForPixel(result.ctx, 10, 10, '#00ffff', { message: 'the box' });
+  await waitForPixel(result.ctx, 10, 60, '#0000ff', { message: 'the canvas' });
+});
+
 test("an SVG image is drawn through its root's filter", async (t) => {
   if (!FONTS) return t.skip('no font files for the in-process server');
   // Filter Effects 1, 5: a filter applies to the root of an SVG image as to
