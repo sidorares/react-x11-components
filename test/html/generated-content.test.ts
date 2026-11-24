@@ -812,6 +812,33 @@ metric(
 );
 
 metric(
+  "an outside marker hangs off its item's border box, whatever its padding, border or indent",
+  async () => {
+    // as Chrome places it: what sets the content in moves the content and
+    // not the marker (WPT's CSS2 text-indent-applies-to-003, whose
+    // reference pads the content in where the test indents it)
+    const { node } = await render(
+      '<style>ul{margin:0;padding:0 40px}li{margin:0}</style><ul>' +
+        '<li id="a">x</li><li id="b" style="padding-left:30px">x</li>' +
+        '<li id="c" style="border-left:20px solid">x</li>' +
+        '<li id="d" style="text-indent:25px">x</li></ul>' +
+        '<ul dir="rtl"><li id="e">x</li>' +
+        '<li id="f" style="padding-right:30px">x</li></ul>',
+    );
+    const el = view(node);
+    type Marked = LaidBox & { marker: { x: number } | null };
+    const x = (id: string) => (boxOf(el, id) as Marked).marker!.x;
+    for (const id of ['b', 'c', 'd']) {
+      assert.ok(Math.abs(x(id) - x('a')) < 0.5, `${id}: ${x(id)} by ${x('a')}`);
+    }
+    assert.ok(x('a') < boxOf(el, 'a').x, 'outside its border box');
+    assert.ok(Math.abs(x('f') - x('e')) < 0.5, `rtl: ${x('f')} by ${x('e')}`);
+    const e = boxOf(el, 'e');
+    assert.ok(x('e') >= e.x + e.width, 'past its right in rtl');
+  },
+);
+
+metric(
   'a relatively positioned ::before moves, in a document where nothing else does',
   async () => {
     // the pass that moves relative boxes runs only where the build found

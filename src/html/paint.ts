@@ -683,6 +683,12 @@ const LINE_INK = new WeakMap<
  */
 const UNTRANSFORMED = new WeakMap<Box, Rect>();
 
+/** The ink of a filtered box cut to a `clip-path`, before the path cuts
+ *  it: what the filter runs over (`filteredFor`), since the path cuts what
+ *  the filter made (`drawFiltered`), and a path that moves leaves what it
+ *  made as it was. In the box's own coordinates, as `UNTRANSFORMED`'s. */
+const FILTERED_INK = new WeakMap<Box, Rect>();
+
 /** The bounds of what a box painted through a matrix draws, in its own
  *  coordinates: asked of a box `placedMatrix` answers for, whose entry the
  *  last `computePaintBounds` wrote. */
@@ -1117,6 +1123,9 @@ function boundsOf(
   // none where it leaves nothing — though the scrollable overflow is what
   // it was, as a browser has it, which is why a page that hides a box with
   // one makes it a pixel square as well
+  if (own && box.style.clipPath && box.style.filter && x1 !== Infinity) {
+    FILTERED_INK.set(box, { x: x1, y: y1, width: x2 - x1, height: y2 - y1 });
+  } else if (own) FILTERED_INK.delete(box);
   if (own && box.style.clipPath) {
     const { rect } = clipPathOf(box, DOCUMENT);
     x1 = Math.max(x1, rect.x);
@@ -3720,10 +3729,61 @@ function paintFiltered(
   if (!runsOverPixels(colour)) return false;
   const kept = filteredFor(ctx, box, options, through, colour!);
   if (kept === null) return false;
-  if (kept) {
-    drawThrough(ctx, kept.surface, through, kept.x, kept.y, opacity, blend);
-  }
+  if (kept) drawFiltered(ctx, box, options, through, kept, opacity, blend);
   return true;
+}
+
+/** What a filter runs over: the box and what it holds, with its own
+ *  `clip`, `clip-path` and mask left for after it (`drawFiltered`). */
+function paintFilterGroup(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  paintContent(ctx, box, pathClips(box) ? underPath(options) : options);
+}
+
+/**
+ * A filtered box's output drawn, and then cut to its `clip` and its
+ * `clip-path` and masked, which come after the filter (CSS Masking 1, 1.1:
+ * filter, clipping, masking, opacity): a `drop-shadow()` reaches past the
+ * box, and a clip of the box made before the filter let it out. Its own
+ * overflow clip is of what it holds, and is in the group the filter runs
+ * over.
+ */
+function drawFiltered(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  through: Matrix | null,
+  kept: Kept,
+  opacity: number,
+  blend: string | null,
+): void {
+  const clips = (box.outOfFlow && box.style.clip !== null) || pathClips(box);
+  const mask = masked(box.style);
+  if (!clips && !mask) {
+    drawThrough(ctx, kept.surface, through, kept.x, kept.y, opacity, blend);
+    return;
+  }
+  ctx.save();
+  if (blend !== null) ctx.globalCompositeOperation = blend;
+  if (through) ctx.transform!(...through);
+  if (opacity < 1 && typeof ctx.globalAlpha === 'number') {
+    ctx.globalAlpha *= opacity;
+  }
+  const output = (on: PaintContext, at: PaintOptions): void => {
+    const pushed = pushOwnClips(on, box, at);
+    if (pushed < 0) return;
+    on.drawImage!(
+      kept.surface,
+      kept.x + at.originX - options.originX,
+      kept.y + at.originY - options.originY,
+    );
+    for (let i = 0; i < pushed; i += 1) on.restore();
+  };
+  if (!mask || !paintMasked(ctx, box, options, output)) output(ctx, options);
+  ctx.restore();
 }
 
 /**
@@ -3745,14 +3805,16 @@ function filteredFor(
   if (box.kind === 'inline') return null;
   // a shadow in `currentColor` is in the box's colour
   const steps = colour.steps && resolvedSteps(colour.steps, box.style.color);
-  const own = through
-    ? ownBounds(box)
-    : {
-        x: box.boundsX,
-        y: box.boundsY,
-        width: box.boundsWidth,
-        height: box.boundsHeight,
-      };
+  const own =
+    FILTERED_INK.get(box) ??
+    (through
+      ? ownBounds(box)
+      : {
+          x: box.boundsX,
+          y: box.boundsY,
+          width: box.boundsWidth,
+          height: box.boundsHeight,
+        });
   const left = own.x + options.originX;
   const top = own.y + options.originY;
   const x0 = Math.floor(left);
@@ -3784,7 +3846,7 @@ function filteredFor(
     if (!kept.fresh) {
       const group = store.group(kept, fx, fy);
       if (!group) return null;
-      paintUnfaded(
+      paintFilterGroup(
         group.ctx as PaintContext,
         box,
         through
@@ -3810,7 +3872,7 @@ function filteredFor(
     const surface = options.surface(w, h);
     if (!surface) return null;
     const on = surface.getContext('2d') as PaintContext;
-    paintUnfaded(
+    paintFilterGroup(
       on,
       box,
       through
@@ -5203,6 +5265,10 @@ function paintMasked(
   ctx: PaintContext,
   box: Box,
   options: PaintOptions,
+  /** What is masked, on the content surface, in its options: the box cut
+   *  to its clips, or a filter's output (`drawFiltered`). */
+  masks: (on: PaintContext, at: PaintOptions) => void = (on, at) =>
+    paintClipped(on, box, at),
 ): boolean {
   return paintMaskedAs(
     ctx,
@@ -5215,7 +5281,7 @@ function paintMasked(
       width: box.width,
       height: frameHeight(box),
     },
-    (on, at) => paintClipped(on, box, at),
+    masks,
   );
 }
 

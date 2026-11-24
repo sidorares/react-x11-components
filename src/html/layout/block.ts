@@ -5932,8 +5932,8 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
     // at the start of the line, which is its right in a right-to-left item
     marker.x =
       style.direction === 'rtl'
-        ? box.contentX + box.contentWidth + gap
-        : box.contentX - gap - marker.image.width;
+        ? box.x + box.width + gap
+        : box.x - gap - marker.image.width;
     return;
   }
   // in its own style where a `::marker` rule gives it one — the colour and
@@ -5985,12 +5985,16 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   marker.y = first
     ? first.y + first.baseline - (own ? own.baseline : style.fontSize)
     : box.contentY;
+  // an outside one off the item's border box, at its start, whatever
+  // padding, border or `text-indent` the content is set in by, as Chrome
+  // places it (WPT's CSS2 text-indent-applies-to-003, whose reference sets
+  // the content in by a padding where the test indents it)
   marker.x =
     style.listStylePosition === 'inside'
       ? box.contentX
       : style.direction === 'rtl'
-        ? box.contentX + box.contentWidth + gap
-        : box.contentX - gap - layout.width;
+        ? box.x + box.width + gap
+        : box.x - gap - layout.width;
 }
 
 /**
