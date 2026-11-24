@@ -3043,6 +3043,44 @@ metric(
 );
 
 metric(
+  'a drag of the window draws an underline whole where its gaps are not known, and the rest draws them',
+  async () => {
+    // reading a layout's coverage costs some 0.75 ms a paragraph of links,
+    // and a step of a drag lays the text out again: the drag draws the rule
+    // unbroken and says so, and a paint at rest leaves the glyphs out. The
+    // text is below the window, which has painted none of it
+    const { node } = await render(
+      '<style>body{margin:0;font:20px serif}' +
+        'div{text-decoration:underline;color:#ff0000}</style>' +
+        '<p style="height:2000px"></p><div>gypsy</div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    let drawn = 0;
+    const drag = {
+      cheap: false,
+      moving: true,
+      moved: () => false,
+      paused: () => false,
+      drawn: () => {
+        drawn += 1;
+      },
+    };
+    const pieces = (fills: Awaited<ReturnType<typeof fillsOf>>) =>
+      fills.filter((f) => f.style === parseColor('#ff0000') && f.h <= 2);
+    assert.strictEqual(
+      pieces(await fillsOf(el, undefined, { drag })).length,
+      1,
+    );
+    assert.ok(drawn > 0, 'the drag says it drew the rule cheaper');
+    assert.ok(pieces(await fillsOf(el)).length > 1, 'at rest it is broken');
+    // and once known, a drag draws the gaps it has
+    assert.ok(pieces(await fillsOf(el, undefined, { drag })).length > 1);
+  },
+);
+
+metric(
   'a clamp cuts a layout its last line shares with lines it drops',
   async () => {
     // a float beside the first lines sets the paragraph a line at a time, and

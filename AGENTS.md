@@ -4366,7 +4366,12 @@ engine that answers null draws the rule unbroken, as before. Three things
 are load-bearing. **What it leaves out is kept by layout and band**
 (`INK_GAPS`), so a repaint asks the engine nothing: reading the coverage is
 some 0.75 ms a paragraph of links on ntk, paid once a layout, and a layout
-at another width pays it again. **The value is the text's own**, read from
+at another width pays it again. So **a drag reads none**: while the width
+moves (`DragPaint.moving`) a rule whose gaps are not known is drawn
+unbroken, and says so (`drawn`), and the settle draws the page at rest
+whenever anything was drawn cheaper, not only a drag that fell behind
+(`_drawAtRest`). Only a window that says it is being resized
+(`liveResizing`) gets this: X11's says nothing of a drag. **The value is the text's own**, read from
 the text box under the stretch's runs (`textBoxIn`) — the decorated
 element's or a `::marker`'s — and not the block's: a `<u>` with
 `text-decoration-skip-ink: none` keeps its rule whole. And **a rule's pieces
