@@ -9962,6 +9962,7 @@ export class Cascade {
       rem: rootStyle.fontSize * rootZoom,
       remRead: this._remRead,
       initial: this.initial,
+      rootElement: this._isRoot(el),
       uaSets: this._uaSets,
       reverted: roll ? () => this._reverted(roll) : undefined,
       revertedLayer: roll ? () => this._revertedLayer(roll) : undefined,

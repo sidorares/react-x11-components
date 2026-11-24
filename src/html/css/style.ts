@@ -4980,6 +4980,14 @@ export function applyDeclaration(
         style.alignBlocks = initial ? null : parent.alignBlocks;
         return;
       }
+      // the parent's, its `start` or `end` read in the parent's direction
+      // and computed to the side that is there (CSS Text 3, 7.1)
+      if (v === 'match-parent') {
+        style.textAlign = sideInParent(parent.textAlign, parent, ctx);
+        style.alignBlocks = parent.alignBlocks;
+        style.tableTextAlignSet = true;
+        return;
+      }
       // every line justified, the last as well (CSS Text 3, 7.1)
       if (v === 'justify-all') {
         style.textAlign = 'justify';
@@ -5012,7 +5020,7 @@ export function applyDeclaration(
       ) {
         style.textAlignLast = v;
       } else if (v === 'match-parent') {
-        style.textAlignLast = parent.textAlignLast;
+        style.textAlignLast = sideInParent(parent.textAlignLast, parent, ctx);
       }
       return;
     }
@@ -12920,4 +12928,20 @@ function parseTouchAction(value: string): '' | 'x' | 'y' | 'xy' | null {
     else return null;
   }
   return x && y ? 'xy' : x ? 'x' : y ? 'y' : null;
+}
+
+/** An alignment as `match-parent` takes it from a parent (CSS Text 3, 7.1):
+ *  `start` and `end` as the side they are in the parent's direction. The
+ *  root has no parent, and keeps them, to be read in its own direction, as
+ *  the browsers have it (WPT text-align-match-parent-root-rtl). */
+function sideInParent<T extends string>(
+  value: T,
+  parent: ComputedStyle,
+  ctx: UnitContext,
+): T | 'left' | 'right' {
+  if (ctx.rootElement) return value;
+  const rtl = parent.direction === 'rtl';
+  if (value === 'start') return rtl ? 'right' : 'left';
+  if (value === 'end') return rtl ? 'left' : 'right';
+  return value;
 }
