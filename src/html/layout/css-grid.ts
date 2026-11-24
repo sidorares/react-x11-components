@@ -133,6 +133,9 @@ export interface Item {
   /** And across its column, for one aligned by its first baseline there
    *  (`alignColumnBaselines`), which the column is sized with. */
   shimX?: number;
+  /** Whether `shimX` is from its column's end: one whose lines stack the
+   *  other way from the column's (`alignColumnBaselines`). */
+  shimXEnd?: boolean;
 }
 
 /** Whether a grid lanes container's lanes are rows, its stacking axis the
@@ -401,7 +404,22 @@ export function alignColumnBaselines(
       const forward = turnsUp(turn) || reflects(turn);
       against = rtl ? forward : !forward;
     }
-    const offset = rtl ? start - at : at - start;
+    // one whose lines stack the other way takes part in its column's last
+    // baselines (CSS Box Alignment 3, 9.1): measured from its end, and with
+    // none to meet, at its end, last baseline's fallback. At the start, a
+    // `vertical-lr` box in a right-to-left grid stood beside a `vertical-rl`
+    // one it shares no baseline with (WPT's grid-justify-baseline-001)
+    const end = rtl
+      ? child.x - child.marginLeft
+      : child.x + child.width + child.marginRight;
+    const offset = against
+      ? rtl
+        ? at - end
+        : end - at
+      : rtl
+        ? start - at
+        : at - start;
+    item.shimXEnd = against;
     const key = `${columnOf(item)} ${against}`;
     const list = groups.get(key);
     if (list) list.push({ item, offset });
@@ -593,7 +611,10 @@ export function layoutGrid(
       );
     }
   };
-  for (const item of items) item.shimX = undefined;
+  for (const item of items) {
+    item.shimX = undefined;
+    item.shimXEnd = undefined;
+  }
   layOut(0, cut);
   // the items aligned by their baselines across each column, moved along it
   // to meet the furthest of theirs, and the columns sized again with them
@@ -879,8 +900,10 @@ export function layoutGrid(
       // a subgrid is stretched across its area, whatever aligns it
     } else if (atStart || atEnd) {
       dx = (area - outerWidth) * (atStart && atEnd ? 0.5 : atStart ? 1 : 0);
-    } else if (item.shimX !== undefined) dx = item.shimX;
-    else if (justify === 'center' || justify === 'flex-end') {
+    } else if (item.shimX !== undefined) {
+      dx = item.shimXEnd ? area - outerWidth - item.shimX : item.shimX;
+      safeX = !item.shimXEnd;
+    } else if (justify === 'center' || justify === 'flex-end') {
       dx = (area - outerWidth) / (justify === 'center' ? 2 : 1);
       safeX = keptIn(justifyText);
     }
