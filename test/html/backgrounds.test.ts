@@ -16,7 +16,7 @@ import {
   waitFor,
 } from 'react-x11/test';
 import { parseColor } from '../../src/html/css/values.js';
-import { blend } from '../../src/html/css/color.js';
+import { blend, mixIn } from '../../src/html/css/color.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { SvgDrawing } from '../../src/html/svg.js';
 import {
@@ -590,6 +590,34 @@ test("a gradient's mixed stops keep a hundredth of a level", async () => {
   // the first step is a 64th of 120deg along, 1.875deg: green at
   // 255 * 1.875 / 60
   assert.deepStrictEqual(parseRgb(g.stops![1][1]), [255, 7.97, 0]);
+});
+
+test('a gradient mixed in another space is drawn within a level or two of the mix all along it', async () => {
+  // Drawn as straight runs in sRGB between colours mixed in lch, a
+  // transition that leaves sRGB bends where it is clipped, and a run across
+  // the bend was tens of levels off (WPT's gradient-decreasing-hue-lch)
+  const { node } = await render(
+    '<style>body{margin:0}div{width:200px;height:10px}</style>' +
+      '<div style="background-image:linear-gradient(to right in lch decreasing hue,#ff00ff,#00ff00)"></div>',
+  );
+  const [g] = (await fillsOf(view(node)))
+    .map((f) => f.style as { line?: number[]; stops?: [number, string][] })
+    .filter((f) => f && f.line);
+  const stops = g.stops!.map(([at, c]) => [at, parseRgb(c)] as const);
+  let worst = 0;
+  for (let i = 0; i <= 1000; i += 1) {
+    const t = i / 1000;
+    let j = 1;
+    while (j < stops.length - 1 && stops[j][0] < t) j += 1;
+    const [t0, c0] = stops[j - 1];
+    const [t1, c1] = stops[j];
+    const f = t1 > t0 ? (t - t0) / (t1 - t0) : 0;
+    const want = parseRgb(mixIn('#ff00ff', '#00ff00', t, 'lch', 'decreasing')!);
+    for (let k = 0; k < 3; k += 1) {
+      worst = Math.max(worst, Math.abs(c0[k] + (c1[k] - c0[k]) * f - want[k]));
+    }
+  }
+  assert.ok(worst <= 2, `${worst.toFixed(1)} levels from the mix`);
 });
 
 /** A colour's channels, 0 to 255, from a hex or an rgb()/rgba() string. */

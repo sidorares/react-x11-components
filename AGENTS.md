@@ -7805,7 +7805,11 @@ transition, their positions kept as a percentage and a length so no box is
 needed. Every way a gradient is drawn then draws ordinary sRGB stops, so
 **anything new that reads a gradient's stops reads them as many**, and a
 gradient in sRGB with no hints keeps the stops it was written with, which is
-what keeps the common case as cheap as it was. Stop colours are sRGB strings
+what keeps the common case as cheap as it was. A run is halved where the
+steps either side of it say the mix bends, as far as each run's colours are
+within a level of the mix (`bent`, `offRun`), at most `MIX_STOPS_MOST` stops
+a gradient: a mix clipped to sRGB bends sharply, and a run straight across
+the bend was tens of levels off. Stop colours are sRGB strings
 clipped as they are read, so a transition outside the gamut is drawn through
 the clipped colours; keeping them unclipped is the follow-up.
 
