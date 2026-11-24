@@ -520,6 +520,7 @@ import {
   selectionRows,
   stackLayers,
   stacksLayers,
+  brokenZIndex,
   topLayerBoxes,
 } from './paint.js';
 import type {
@@ -21125,6 +21126,8 @@ function deepestAt(
    *  is behind it, or the transition's pseudo-element over it. */
   skip: ReadonlySet<Box> | null = null,
 ): Element | null {
+  // what `stacksLayers` and `layerOf` ask, as a paint of the tree has it
+  brokenZIndex.any = tree.positionedInline;
   const box = tree.root;
   let found: Element | null = box.el;
   let foundKey: readonly number[] = [];

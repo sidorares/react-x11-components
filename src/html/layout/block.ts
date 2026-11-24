@@ -278,6 +278,7 @@ import {
   fixedToViewport,
   forgetLayers,
   OUT_OF_FLOW_REACH,
+  brokenZIndex,
   stackAfterLayout,
 } from '../paint.js';
 
@@ -1982,6 +1983,9 @@ function layoutDocumentPass(
   const marks = layerMarks.moved;
   // whether any box's layout asks whether it holds a frame
   framed.any = tree.vertical;
+  // and whether the layers gathered after it ask for a broken block's
+  // inline box (`brokenZIndex`)
+  brokenZIndex.any = tree.positionedInline;
   const cuts =
     (until !== undefined || above !== undefined) && !LAID_WHOLE.has(tree);
   if (cuts && !OUT_OF_FLOW.has(tree)) escapes(tree);
@@ -2384,6 +2388,7 @@ export function layoutApart(
   }
   const marks = layerMarks.moved;
   framed.any = false;
+  brokenZIndex.any = tree.positionedInline;
   const ctx: LayoutContext = {
     fonts,
     shapeImages: shapeImagesOf(tree),

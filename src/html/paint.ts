@@ -1581,6 +1581,7 @@ export function paintDocument(
   if (!canFill(ctx)) return;
   // whether any box's paint asks whether it is a vertical flow's
   framed.any = tree.vertical;
+  brokenZIndex.any = tree.positionedInline;
   ctx.save();
   const canvas = canvasBackground(tree);
   const scheme = rootScheme(tree);
@@ -1666,6 +1667,7 @@ export function paintCapture(
 ): void {
   if (!canFill(ctx)) return;
   framed.any = tree.vertical;
+  brokenZIndex.any = tree.positionedInline;
   ctx.save();
   const backdrop: BackdropPaint = {
     tree,
@@ -3338,6 +3340,7 @@ export function paintLiftedBox(
 ): void {
   if (!canFill(ctx)) return;
   framed.any = tree.vertical;
+  brokenZIndex.any = tree.positionedInline;
   // where the document draws it: at the viewport, for one fixed to it or in
   // one that is (`atViewport`)
   const viewport = options.viewport;
@@ -3382,6 +3385,7 @@ export function paintCover(
 ): void {
   if (!canFill(ctx)) return;
   framed.any = tree.vertical;
+  brokenZIndex.any = tree.positionedInline;
   const inner: PaintOptions = {
     ...options,
     damage: null,
@@ -11127,6 +11131,14 @@ export function stacksLayers(box: Box): boolean {
 }
 
 /**
+ * Whether the tree being painted may hold a block broken around a
+ * positioned inline box (`BoxTree.positionedInline`), set as a paint of a
+ * tree begins, as `framed.any` is: where it may not, `brokenZ` asks no map,
+ * since `layered` and `layerOf` ask it of every box at every paint.
+ */
+export const brokenZIndex = { any: false };
+
+/**
  * The `z-index` of the positioned inline box a block was broken around by
  * (CSS 2.1 9.2.1.1), where that box has one: the block is the box's as its
  * pieces are, and is painted at the box's place among its stacking
@@ -11135,6 +11147,7 @@ export function stacksLayers(box: Box): boolean {
  * block.
  */
 function brokenZ(box: Box): number | null {
+  if (!brokenZIndex.any) return null;
   const head = BROKEN_BY.get(box);
   if (!head) return null;
   const style = head.style;
