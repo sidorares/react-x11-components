@@ -40,6 +40,7 @@ import {
   copyStyle,
   holdsItems,
   INLINE_BEFORE_ABSOLUTE,
+  masked,
   scrolls,
 } from '../css/style.js';
 import { inkColor, isTransparent, parseColor, resolve } from '../css/values.js';
@@ -6848,8 +6849,10 @@ export function inlineDecoration(
     box.borderTop + box.borderRight + box.borderBottom + box.borderLeft > 0 ||
     s.outlineStyle !== 'none' ||
     s.boxShadow !== null ||
-    // a clip-path is measured in its first fragment (`inlineClipPath`)
-    s.clipPath !== null;
+    // a clip-path is measured in its first fragment (`inlineClipPath`), and
+    // a mask is laid down in its fragments (`maskAreas`)
+    s.clipPath !== null ||
+    masked(s);
   return !decorated ? null : fonts ? faceExtent(fonts, s) : NO_EXTENT;
 }
 
