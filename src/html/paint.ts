@@ -16633,6 +16633,7 @@ function paintLinePart(
           index: 0,
           below: LINE_INK.get(lines)?.below ?? 0,
           late: [],
+          deferred: new Set(),
         }
       : null;
   for (let i = 0; i < visible.length; i += 1) {
@@ -17007,6 +17008,9 @@ interface Interleave {
   /** How far a line's glyphs reach above and below it (`LINE_INK`). */
   below: number;
   late: LateFragment[];
+  /** The boxes a fragment of which was put off: what they hold is put off
+   *  with them, and painted over them. */
+  deferred: Set<Box>;
 }
 
 /** A fragment put off until the text before it is drawn: where it starts
@@ -17015,6 +17019,8 @@ interface LateFragment {
   line: number;
   t: number;
   c: number;
+  /** How deep its box is, so a box is painted before what it holds. */
+  depth: number;
   paint: () => void;
 }
 
@@ -17034,13 +17040,14 @@ function coversEarlier(
   for (let i = 0; i < texts.length && i <= at.t; i += 1) {
     const text = texts[i];
     if (!textMeets(text, x1, y1, x2, y2)) continue;
-    if (i < at.t) return true;
+    // what it has drawn of its runs before the fragment starts: a text of
+    // nothing, an empty line's, meets it at a point and draws nothing
     const natural = text.layout.lines[text.layoutLine];
     const left = text.drawX + natural.x;
     for (const run of natural.runs) {
-      if (run.start >= at.c) continue;
+      if (i === at.t && run.start >= at.c) continue;
       const from = left + run.x;
-      if (from < x2 && from + run.width > x1) return true;
+      if (run.width > 0 && from < x2 && from + run.width > x1) return true;
     }
   }
   const { visible, index, below } = interleave;
@@ -17068,7 +17075,9 @@ function drawInterleaved(
   dx: number,
   dy: number,
 ): void {
-  late.sort((a, b) => a.line - b.line || a.t - b.t || a.c - b.c);
+  late.sort(
+    (a, b) => a.line - b.line || a.t - b.t || a.c - b.c || a.depth - b.depth,
+  );
   let next = 0;
   for (let li = 0; li < visible.length; li += 1) {
     const texts = visible[li].texts;
@@ -18647,7 +18656,12 @@ function paintInlineFragment(
     if (interleave) {
       const at = f.at ?? { t: 0, c: -1 };
       const out = shadows ? shadowOutsets(shadows) : null;
+      let within = false;
+      for (let up = box.parent; up?.kind === 'inline'; up = up.parent) {
+        if (interleave.deferred.has(up)) within = true;
+      }
       if (
+        within ||
         coversEarlier(
           interleave,
           line,
@@ -18658,10 +18672,12 @@ function paintInlineFragment(
           fragment.y + fragment.height + (out?.bottom ?? 0),
         )
       ) {
+        interleave.deferred.add(box);
         interleave.late.push({
           line: interleave.index,
           t: at.t,
           c: at.c,
+          depth: depthOf(box),
           paint: draw,
         });
         return;
