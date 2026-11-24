@@ -8764,21 +8764,20 @@ function framedClipRect(
   const frame = frameOf(box);
   if (!frame || quarterTurnsOf(box) % 2 === 0) return null;
   const up = turnsUp(frameTurn(frame));
-  // the border box on the page: across it the frame's down, and down it
-  // the frame's across
-  const w = frameHeight(box);
-  const h = box.width;
-  const left = clip.left ?? 0;
-  const top = clip.top ?? 0;
-  const right = clip.right ?? w;
-  const bottom = clip.bottom ?? h;
+  // the border box on the pixels its background is drawn on, as
+  // `framedClipPath` places a polygon: from its rounded corner, across it
+  // the frame's down and down it the frame's across
   const x0 = box.x + options.originX;
   const y0 = frameY(box) + options.originY;
+  const left = Math.round(x0);
+  const top = Math.round(y0);
+  const across = Math.round(x0 + box.width) - left;
+  const down = Math.round(y0 + frameHeight(box)) - top;
   // a point of the page's border box where the frame has it
-  const at = (p: number, q: number): [number, number] =>
-    up ? [x0 + h - q, y0 + p] : [x0 + q, y0 + w - p];
-  const [ax, ay] = at(left, top);
-  const [bx, by] = at(right, bottom);
+  const on = (p: number, q: number): [number, number] =>
+    up ? [left + across - q, top + p] : [left + q, top + down - p];
+  const [ax, ay] = on(clip.left ?? 0, clip.top ?? 0);
+  const [bx, by] = on(clip.right ?? down, clip.bottom ?? across);
   const x = Math.round(Math.min(ax, bx));
   const y = Math.round(Math.min(ay, by));
   return {
