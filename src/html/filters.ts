@@ -27,7 +27,7 @@
 // build makes every box again, and what was read for an element is what is
 // drawn for it until a read under its new boxes arrives.
 
-import { applyMatrices, blurPixels, runSteps } from './css/filter.js';
+import { applyMatrices, blurPixels, runSteps, stepsKey } from './css/filter.js';
 import type { ColourMatrix, FilterStep } from './css/filter.js';
 import { newSurface } from './surfaces.js';
 import type { SurfaceLike } from './surfaces.js';
@@ -92,6 +92,12 @@ export interface Filtered {
   /** Surfaces a shadow's steps drew on a frame ago, kept to be drawn on
    *  again rather than made, which costs more than the drawing. */
   pool?: PooledSurface[];
+  /** The shadows a box casts, drawn once on a surface of their own, and
+   *  what they were made for: kept while only the colours inside the box
+   *  change (`stale`'s `colours`), since a shadow is cast from the
+   *  alpha. */
+  under?: PooledSurface | null;
+  underFor?: string | null;
   /** Where a context runs the filter itself (`through`): the box's group,
    *  painted unfiltered as it draws under `key` while `fresh`, kept to be
    *  filtered again as the filter changes, and bumped as it is painted. */
@@ -518,71 +524,156 @@ export class FilterStore {
     let from: SurfaceLike = kept.group!;
     let last: Made | null = null;
     let took = true;
-    for (const step of steps) {
-      const to = fresh();
-      if (!to || typeof to.ctx.drawImage !== 'function') {
-        took = false;
-        break;
+    const shrink = (blur: number): number =>
+      blur >= 32 ? 8 : blur >= SHADOW_SHRINK_FROM ? 4 : blur >= 3 ? 2 : 1;
+    // shadows alone: each is cast from what is under it and the group,
+    // which is the group over the shadows before it, and all of it is
+    // the group over the shadows, last first. So no surface the size of the
+    // box is drawn on to be drawn from again: each shadow is made on a
+    // small copy, and the box's own is drawn once, over them
+    if (steps.every((step) => step.kind === 'shadow')) {
+      const layers: { soft: Made; x: number; y: number }[] = [];
+      // the shadows made for this silhouette, where only colours moved
+      // since: the box is drawn over them, and nothing is cast
+      const underKey = `${stepsKey(steps)} ${width}x${height} ${kept.rawX},${kept.rawY}`;
+      const reuse = !!kept.under && kept.underFor === underKey;
+      for (const step of reuse ? [] : steps) {
+        if (step.kind !== 'shadow') break;
+        const f = shrink(step.blur);
+        const sw = Math.max(1, Math.ceil(width / f));
+        const sh = Math.max(1, Math.ceil(height / f));
+        const src = take(sw, sh);
+        const soft = take(sw, sh);
+        if (
+          !src ||
+          !soft ||
+          typeof src.ctx.drawImage !== 'function' ||
+          typeof src.ctx.fillRect !== 'function'
+        ) {
+          took = false;
+          break;
+        }
+        const a = src.ctx as Filtering;
+        a.save();
+        for (let j = layers.length - 1; j >= 0; j -= 1) {
+          a.drawImage(
+            layers[j].soft.surface,
+            layers[j].x / f,
+            layers[j].y / f,
+            sw,
+            sh,
+          );
+        }
+        if (f === 1) a.drawImage(from, 0, 0);
+        else a.drawImage(from, 0, 0, sw, sh);
+        a.globalCompositeOperation = 'source-in';
+        a.fillStyle = step.color;
+        a.fillRect(0, 0, sw, sh);
+        a.restore();
+        took = runs(
+          soft.ctx,
+          step.blur > 0 ? `blur(${step.blur / f}px)` : 'none',
+        );
+        if (!took) break;
+        (soft.ctx as Filtering).drawImage(src.surface, 0, 0);
+        soft.ctx.filter = 'none';
+        layers.push({ soft, x: step.x, y: step.y });
       }
-      const ctx = to.ctx as Filtering;
-      ctx.save();
-      try {
-        if (step.kind === 'colour') {
-          took = runs(ctx, step.css || 'none');
-          if (took) ctx.drawImage(from, 0, 0);
-        } else {
-          // a wide blur is smooth, so it is made on a copy a fraction of the
-          // size and drawn up: its cost is its pixels, and a window's
-          // shadow is most of a large surface
-          const f =
-            step.blur >= 32
-              ? 8
-              : step.blur >= SHADOW_SHRINK_FROM
-                ? 4
-                : step.blur >= 3
-                  ? 2
-                  : 1;
-          const sw = Math.max(1, Math.ceil(width / f));
-          const sh = Math.max(1, Math.ceil(height / f));
-          const cast = take(sw, sh);
-          if (!cast || typeof cast.ctx.fillRect !== 'function') {
-            took = false;
-          } else {
-            const tint = cast.ctx as Filtering;
-            tint.save();
-            if (f === 1) tint.drawImage(from, 0, 0);
-            else tint.drawImage(from, 0, 0, sw, sh);
-            tint.globalCompositeOperation = 'source-in';
-            tint.fillStyle = step.color;
-            tint.fillRect(0, 0, sw, sh);
-            tint.restore();
-            if (f === 1) {
-              took = runs(ctx, step.blur > 0 ? `blur(${step.blur}px)` : 'none');
-              if (took) ctx.drawImage(cast.surface, step.x, step.y);
-            } else {
-              // the blur on the small copy, then up to the size it was
-              const soft = take(sw, sh);
-              took = !!soft && runs(soft.ctx, `blur(${step.blur / f}px)`);
-              if (took) {
-                soft!.ctx.drawImage!(cast.surface, 0, 0);
-                soft!.ctx.filter = 'none';
-                ctx.filter = 'none';
-                ctx.drawImage(soft!.surface, step.x, step.y, width, height);
-              }
+      if (took) {
+        const to = fresh();
+        if (!to || typeof to.ctx.drawImage !== 'function') took = false;
+        else {
+          const ctx = to.ctx as Filtering;
+          if (!reuse) {
+            for (const one of kept.under ? [kept.under] : []) {
+              (one.ctx as { destroy?(): void }).destroy?.();
+              one.surface.destroy?.();
             }
-            if (took) {
-              ctx.filter = 'none';
-              ctx.drawImage(from, 0, 0);
+            kept.under = null;
+            kept.underFor = null;
+            const surface = this.make(width, height);
+            const uctx = surface?.getContext('2d') as Partial<Filtering>;
+            if (surface && typeof uctx.drawImage === 'function') {
+              for (let j = layers.length - 1; j >= 0; j -= 1) {
+                uctx.drawImage(
+                  layers[j].soft.surface,
+                  layers[j].x,
+                  layers[j].y,
+                  width,
+                  height,
+                );
+              }
+              kept.under = { surface, ctx: uctx, width, height };
+              kept.underFor = underKey;
             }
           }
+          if (kept.under) ctx.drawImage(kept.under.surface, 0, 0);
+          ctx.drawImage(from, 0, 0);
+          last = to;
         }
-      } finally {
-        ctx.restore();
       }
-      if (!took) break;
-      from = to.surface;
-      last = to;
-    }
+    } else
+      for (const step of steps) {
+        const to = fresh();
+        if (!to || typeof to.ctx.drawImage !== 'function') {
+          took = false;
+          break;
+        }
+        const ctx = to.ctx as Filtering;
+        ctx.save();
+        try {
+          if (step.kind === 'colour') {
+            took = runs(ctx, step.css || 'none');
+            if (took) ctx.drawImage(from, 0, 0);
+          } else {
+            // a wide blur is smooth, so it is made on a copy a fraction of the
+            // size and drawn up: its cost is its pixels, and a window's
+            // shadow is most of a large surface
+            const f = shrink(step.blur);
+            const sw = Math.max(1, Math.ceil(width / f));
+            const sh = Math.max(1, Math.ceil(height / f));
+            const cast = take(sw, sh);
+            if (!cast || typeof cast.ctx.fillRect !== 'function') {
+              took = false;
+            } else {
+              const tint = cast.ctx as Filtering;
+              tint.save();
+              if (f === 1) tint.drawImage(from, 0, 0);
+              else tint.drawImage(from, 0, 0, sw, sh);
+              tint.globalCompositeOperation = 'source-in';
+              tint.fillStyle = step.color;
+              tint.fillRect(0, 0, sw, sh);
+              tint.restore();
+              if (f === 1) {
+                took = runs(
+                  ctx,
+                  step.blur > 0 ? `blur(${step.blur}px)` : 'none',
+                );
+                if (took) ctx.drawImage(cast.surface, step.x, step.y);
+              } else {
+                // the blur on the small copy, then up to the size it was
+                const soft = take(sw, sh);
+                took = !!soft && runs(soft.ctx, `blur(${step.blur / f}px)`);
+                if (took) {
+                  soft!.ctx.drawImage!(cast.surface, 0, 0);
+                  soft!.ctx.filter = 'none';
+                  ctx.filter = 'none';
+                  ctx.drawImage(soft!.surface, step.x, step.y, width, height);
+                }
+              }
+              if (took) {
+                ctx.filter = 'none';
+                ctx.drawImage(from, 0, 0);
+              }
+            }
+          }
+        } finally {
+          ctx.restore();
+        }
+        if (!took) break;
+        from = to.surface;
+        last = to;
+      }
     // what was drawn on goes back to be drawn on again, but for what the
     // box now draws from; a context is the caller's to destroy
     const destroy = (one: Made) => {
@@ -675,9 +766,9 @@ export class FilterStore {
   /** Whether what was read for an element, or its pseudo-element, is no
    *  longer what its box draws: the next paint asks for another read, and
    *  is drawn from this one until it arrives. */
-  stale(owner: object, pseudo: string): void {
+  stale(owner: object, pseudo: string, coloursOnly = false): void {
     const hit = this.kept.get(owner)?.get(pseudo);
-    if (hit) this._stale(hit);
+    if (hit) this._stale(hit, coloursOnly);
   }
 
   /** `stale` for every element. */
@@ -698,9 +789,10 @@ export class FilterStore {
     this.pixels = 0;
   }
 
-  private _stale(hit: Filtered): void {
+  private _stale(hit: Filtered, coloursOnly = false): void {
     hit.fresh = false;
     hit.gen += 1;
+    if (!coloursOnly) hit.underFor = null;
   }
 
   private _drop(hit: Filtered): void {
@@ -709,11 +801,15 @@ export class FilterStore {
     hit.dropped = true;
     dropOut(hit);
     dropGroup(hit);
-    for (const one of hit.pool ?? []) {
+    for (const one of [
+      ...(hit.pool ?? []),
+      ...(hit.under ? [hit.under] : []),
+    ]) {
       (one.ctx as { destroy?(): void }).destroy?.();
       one.surface.destroy?.();
     }
     hit.pool = [];
+    hit.under = null;
   }
 
   /** Give up the least recently drawn past the budget, but `keep`. */

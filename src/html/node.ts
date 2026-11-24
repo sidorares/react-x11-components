@@ -11916,13 +11916,13 @@ export class HtmlViewNode extends Node {
    * itself where `self` (`paintSprite`): what it draws is not what they
    * hold.
    */
-  private _dropSprites(box: Box, self: boolean): void {
+  private _dropSprites(box: Box, self: boolean, coloursOnly = false): void {
     const sprites = this._sprites?.size ? this._sprites : null;
     const filtered = this._filtered?.size ? this._filtered : null;
     if (!sprites && !filtered) return;
     for (let at = self ? box : box.parent; at; at = at.parent) {
       sprites?.drop(at);
-      filtered?.stale(at.el ?? at, at.pseudo ?? '');
+      filtered?.stale(at.el ?? at, at.pseudo ?? '', coloursOnly);
     }
   }
 
@@ -17296,12 +17296,19 @@ export class HtmlViewNode extends Node {
    * it is, and the surfaces kept for the boxes around it, which hold it as
    * it was, given up.
    */
-  canvasChanged(element: Element): void {
+  private readonly _alphaSeen = new WeakMap<Element, number>();
+  canvasChanged(element: Element, alphaVersion?: number): void {
     const tree = this._tree;
     if (!tree) return;
     const box = this._firstBoxesOf(tree).get(element);
     if (!box || box.replaced !== 'frame') return;
-    this._dropSprites(box, true);
+    // what a filter casts a shadow from is the alpha: a picture drawn on
+    // with its alpha as it was leaves the shadows around it as they were
+    const alpha = alphaVersion;
+    const coloursOnly =
+      alpha !== undefined && this._alphaSeen.get(element) === alpha;
+    if (alpha !== undefined) this._alphaSeen.set(element, alpha);
+    this._dropSprites(box, true, coloursOnly);
     const ink = this._inkOf(box);
     if (ink) this._repaintInk([ink]);
   }

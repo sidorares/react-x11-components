@@ -2218,6 +2218,14 @@ export function installRaster(
       const r255 = src[0] * alpha * 255;
       const g255 = src[1] * alpha * 255;
       const b255 = src[2] * alpha * 255;
+      // the colour as the bytes a store makes of it, as one word
+      const one = new Uint8ClampedArray(4);
+      one[0] = r255;
+      one[1] = g255;
+      one[2] = b255;
+      one[3] = 255;
+      const packed = words(one)?.[0] ?? 0;
+      const t32 = words(one) ? words(data) : null;
       const rlo = shape!.lo;
       const rhi = shape!.hi;
       for (let py = y0; py < y1; py += 1) {
@@ -2239,6 +2247,10 @@ export function installRaster(
           const k = clip ? clip[cut + px] : 1;
           if (k <= 0) continue;
           if (k >= 1 && c >= 1 && full >= 1) {
+            if (t32) {
+              t32[o >> 2] = packed;
+              continue;
+            }
             data[o] = r255;
             data[o + 1] = g255;
             data[o + 2] = b255;
@@ -2273,6 +2285,15 @@ export function installRaster(
     return [x0, y0, x1, y1];
   };
 
+  /** Whether a word is its pixel's bytes in order, alpha last: where the
+   *  platform is little-endian. */
+  const LITTLE = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+  /** A bitmap's bytes as words, where they can be. */
+  const words = (data: Uint8ClampedArray): Uint32Array | null =>
+    LITTLE && data.byteOffset % 4 === 0 && data.length % 4 === 0
+      ? new Uint32Array(data.buffer, data.byteOffset, data.length >> 2)
+      : null;
+
   /** An image's rectangle composited over a bitmap's at a whole pixel and
    *  its own size, source-over: `image`'s commonest case, as `blend` would
    *  have it, pixel for pixel. */
@@ -2297,19 +2318,28 @@ export function installRaster(
     const out = target.data;
     const src = source.data;
     const px = new Float64Array(4);
+    // a pixel as one word where the bytes are aligned, so that the commonest
+    // pixel, one nothing shows through, is a word read and a word written
+    const o32 = words(out);
+    const s32 = words(src);
+    const opaque = a === 1;
     for (let y = y0; y < y1; y += 1) {
-      for (let x = x0; x < x1; x += 1) {
-        const i = ((y - dy + sy) * source.width + (x - dx + sx)) * 4;
-        const sa = src[i + 3];
+      let i = ((y - dy + sy) * source.width + (x0 - dx + sx)) * 4;
+      let o = (y * target.width + x0) * 4;
+      let ci = y * target.width + x0;
+      for (let x = x0; x < x1; x += 1, i += 4, o += 4, ci += 1) {
+        const sa = s32 ? s32[i >> 2] >>> 24 : src[i + 3];
         if (!sa) continue;
-        const o = (y * target.width + x) * 4;
-        const kc = clip ? clip[y * target.width + x] : 1;
+        const kc = clip ? clip[ci] : 1;
         if (kc <= 0) continue;
-        if (sa === 255 && a === 1 && kc >= 1) {
-          out[o] = src[i];
-          out[o + 1] = src[i + 1];
-          out[o + 2] = src[i + 2];
-          out[o + 3] = 255;
+        if (sa === 255 && opaque && kc >= 1) {
+          if (s32 && o32) o32[o >> 2] = s32[i >> 2];
+          else {
+            out[o] = src[i];
+            out[o + 1] = src[i + 1];
+            out[o + 2] = src[i + 2];
+            out[o + 3] = 255;
+          }
           continue;
         }
         const k = sa / 255;

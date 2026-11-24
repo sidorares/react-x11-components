@@ -871,7 +871,7 @@ export interface HtmlHandle {
    */
   scrollState(element: Element): ElementScroll | null;
   /** A `<canvas>`'s picture changed (`canvasImage`): repaint it. */
-  canvasChanged(element: Element): void;
+  canvasChanged(element: Element, alphaVersion?: number): void;
   /**
    * Tell a `<video>`'s player what a script asked of it: `paused` for
    * `play()` and `pause()`, `muted`, `volume`, `playbackRate`, and
@@ -1936,8 +1936,8 @@ export function makeHtmlHandle(
       nodeRef.current?.movedPoint(node, offset, granularity, back) ?? null,
     scrollState: (element: Element) =>
       nodeRef.current?.scrollStateOf(element) ?? null,
-    canvasChanged: (element: Element) =>
-      nodeRef.current?.canvasChanged(element),
+    canvasChanged: (element: Element, alphaVersion?: number) =>
+      nodeRef.current?.canvasChanged(element, alphaVersion),
     setMediaState: (element: Element, state: MediaState) =>
       nodeRef.current?.setMediaState(element, state),
     setScriptAnimation: (

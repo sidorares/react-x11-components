@@ -398,6 +398,9 @@ const cssColorStraight = (
   }
 ).cssColorStraight;
 
+let alphaEpoch = 0;
+const nextAlphaVersion = (): number => (alphaEpoch += 1);
+
 /** A `<canvas>`'s pixels as the page's script drew them (`canvasPut`):
  *  straight RGBA, and a count of the changes, which a view that draws them
  *  re-renders on. */
@@ -406,6 +409,10 @@ export interface CanvasPixels {
   height: number;
   data: Uint8ClampedArray;
   version: number;
+  /** Moves to a number no other change has had when the alpha channel of
+   *  what a page drew changes, and stays where the colours alone do:
+   *  what a filter casts a shadow from is the alpha. */
+  alphaVersion?: number;
 }
 
 /** A request a page's `fetch` makes, and what it came to. */
@@ -3517,6 +3524,12 @@ export class DomHost {
     return this._contexts.opaque(element);
   }
 
+  /** The alpha number of a canvas's pixels as they are, read as nothing
+   *  else is: no frame is asked for. */
+  canvasAlpha(element: Element): number | undefined {
+    return this._s.canvases.get(element)?.alphaVersion;
+  }
+
   /** Be told when a canvas's pixels change; answers the way to stop. */
   onCanvas(listener: (canvas: Element) => void): () => void {
     this._s.canvasListeners.add(listener);
@@ -6176,13 +6189,22 @@ export class DomHost {
           this._s.canvases.set(canvas, pixels);
         }
         const rows = Buffer.from(text(c), 'base64');
+        let alphaMoved = pixels.alphaVersion === undefined;
         for (let row = 0; row < h && y + row < height; row += 1) {
           const line = rows.subarray(row * w * 4, (row + 1) * w * 4);
-          pixels.data.set(
-            line.subarray(0, Math.max(0, Math.min(w, width - x)) * 4),
-            ((y + row) * width + x) * 4,
-          );
+          const into = ((y + row) * width + x) * 4;
+          const n = Math.max(0, Math.min(w, width - x));
+          if (!alphaMoved) {
+            for (let i = 3; i < n * 4; i += 4) {
+              if (line[i] !== pixels.data[into + i]) {
+                alphaMoved = true;
+                break;
+              }
+            }
+          }
+          pixels.data.set(line.subarray(0, n * 4), into);
         }
+        if (alphaMoved) pixels.alphaVersion = nextAlphaVersion();
         pixels.version += 1;
         for (const listener of [...this._s.canvasListeners]) listener(canvas);
         return null;
