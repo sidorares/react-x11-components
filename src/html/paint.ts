@@ -14770,15 +14770,23 @@ function paintCollapsedBorders(
     for (let line = 0; line <= C; line += 1) {
       const border = vertical[r * (C + 1) + line];
       if (!border) continue;
-      const start = Math.max(h(r, line - 1), h(r, line));
-      const end = Math.max(h(r + 1, line - 1), h(r + 1, line));
-      const y = from(oy, lineY[r], start);
+      let start = Math.max(h(r, line - 1), h(r, line));
+      let end = Math.max(h(r + 1, line - 1), h(r + 1, line));
+      let top = lineY[r];
+      let bottom = lineY[r + 1];
+      // a table put back across has its row lines the other way up
+      // (`reflectTable`)
+      if (bottom < top) {
+        [top, bottom] = [bottom, top];
+        [start, end] = [end, start];
+      }
+      const y = from(oy, top, start);
       segments.push({
         border,
         x: from(ox, lineX[line], border.width),
         y,
         w: border.width,
-        h: from(oy, lineY[r + 1], end) + end - y,
+        h: from(oy, bottom, end) + end - y,
         horizontal: false,
         row: r,
         column: line,
