@@ -345,6 +345,25 @@ metric('a column group draws its borders where they collapse', async () => {
 });
 
 metric(
+  'of two equal collapsed borders a right-to-left table draws the one at its right',
+  async () => {
+    // between two of the same kind the one further to the inline start
+    // wins (CSS 2.1 17.6.2.1), which in a right-to-left table is the right
+    const { node } = await render(
+      '<style>td{padding:0;width:20px;height:20px}</style>' +
+        '<table dir="rtl" style="border-collapse:collapse"><tr>' +
+        '<td style="border-left:10px solid #00ff00"></td>' +
+        '<td style="border-right:10px solid #ff0000"></td></tr></table>',
+    );
+    const fills = await fillsOf(view(node));
+    const of = (color: string) =>
+      fills.filter((f) => f.style === parseColor(color)).length;
+    assert.strictEqual(of('#ff0000'), 0, 'the left one loses');
+    assert.strictEqual(of('#00ff00'), 1, 'and the right one is drawn');
+  },
+);
+
+metric(
   "a cell's box fills its row, and its content is aligned in it",
   async () => {
     // `vertical-align: middle` moved the whole cell down, so the row showed
