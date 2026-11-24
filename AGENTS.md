@@ -8744,10 +8744,17 @@ navbar, and every Docusaurus page repainted its whole pane at each notch
 of the wheel. **The scroll keys are `<Html>`'s root's**, since clicking a
 document focuses it and core runs `defaultKeyDown` on the focused node
 alone: `scrollForKey` chains from the focused link or the last press out
-to the pane. And **the bars are a pass of their own at the end of
-`paintDocument`** (`paintScrollBars`): a container that is no stacking
+to the pane. And **a container's bars are painted at its place in the
+paint order** (`arrangeBars`): after the last of its stacking context's
+layers that it holds, or after that context's flow where it holds none,
+so the positioned boxes it holds are under them and what is painted after
+it is over them, as Chrome draws them. A container that is no stacking
 context is painted in its context's flow passes, and nothing of its own
-paints after what it scrolls. A press on one is the node's
+paints after what it scrolls, which is why the place is worked out before
+the paint and not taken from it. One in a frame of a writing mode, in the
+top layer, or whose place the paint did not reach is painted in the pass
+at the end of `paintDocument` (`paintScrollBars`), over everything, as all
+of them were. A press on one is the node's
 (`defaultMouseDown`), and `<Html>`'s capture handlers keep it from the
 links and the page (`scrollBarAt`). `isScroller` is true of a box that
 is `overflow: hidden`, which shows no bar, and `scrollStateOf` is a walk
