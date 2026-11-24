@@ -800,7 +800,7 @@ function groupsOf(units: Unit[]): Group[] {
     }
     unit.group = group;
   }
-  if (!sliced.length) return groups;
+  if (!sliced.length) return endBelow(units, groups);
   // and what a break may fall anywhere in, in what of the strip the rest
   // leaves: beside an item of a flex row it is cut where the item is not,
   // as the items of a row are each broken on their own account (CSS
@@ -841,13 +841,23 @@ function groupsOf(units: Unit[]): Group[] {
       unit.group.forced = Math.min(unit.group.forced ?? Infinity, unit.forced);
     }
     if (unit.avoid && unit.group.top >= unit.top - EPS) unit.group.avoid = true;
-    unit.ends =
-      unit.below !== undefined
-        ? groupAt(groups, unit.below, true)
-        : (pieces[pieces.length - 1] ?? groupAt(groups, unit.bottom, true));
+    unit.ends = pieces[pieces.length - 1] ?? groupAt(groups, unit.bottom, true);
   }
   // what has no height before what starts where it is, as it was gathered
   groups.sort((a, b) => a.top - b.top || a.bottom - b.bottom);
+  // and what overflows a box that ends it sooner for the breaks ends where
+  // it reaches, among all the groups: it makes no break, and is cut into
+  // the columns that reach it, as a browser carries an item's overflow on
+  // into the next column (WPT's css-break/flexbox/*-fragmentation-002).
+  // Asked while the groups beside it were still being made, it found only
+  // those before it, and stayed in its first column, past its foot
+  return endBelow(units, groups);
+}
+
+function endBelow(units: Unit[], groups: Group[]): Group[] {
+  for (const unit of units) {
+    if (unit.below !== undefined) unit.ends = groupAt(groups, unit.below, true);
+  }
   return groups;
 }
 

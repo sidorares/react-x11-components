@@ -146,6 +146,7 @@ import {
   ownScroll,
   scrollBarsOf,
   thumbRect,
+  wheelScrolls,
 } from './layout/scroll.js';
 import {
   FRAME_ROOTS,
@@ -1627,10 +1628,17 @@ export function paintDocument(
     foreign: tree.foreign ?? null,
     backdrop,
   };
-  paintBox(ctx, tree.root, painted);
-  // the scroll containers' bars over everything, but in a backdrop, which
-  // is the page under a box
-  if (!options.backdrop) paintScrollBars(ctx, tree, options);
+  // the scroll containers' bars where each is in the paint order, but in a
+  // backdrop, which is the page under a box
+  const outer = bars;
+  bars = options.backdrop ? null : arrangeBars(tree, options);
+  try {
+    paintBox(ctx, tree.root, painted);
+    // and any whose place the paint did not reach
+    if (!options.backdrop) paintScrollBars(ctx, tree, options);
+  } finally {
+    bars = outer;
+  }
   // and the top layer over all of that, a box at a time, each a stacking
   // context of its own that nothing around it clips, fades or moves (CSS
   // Position 4, 3.3), with the bars in it over it
@@ -1685,10 +1693,18 @@ export function paintCapture(
     backdrop,
     captureTop: box,
   };
-  paintBox(ctx, box, painted);
-  // the bars of the scroll containers in it, over it, as the document's
-  // are over the document
-  paintScrollBars(ctx, tree, painted, box);
+  // its bars over it, at the end, whatever places a document paint it may
+  // be painted in has for them (`arrangeBars`)
+  const outer = bars;
+  bars = null;
+  try {
+    paintBox(ctx, box, painted);
+    // the bars of the scroll containers in it, over it, as the document's
+    // are over the document
+    paintScrollBars(ctx, tree, painted, box);
+  } finally {
+    bars = outer;
+  }
   ctx.restore();
   for (const made of backdrop.made.values()) made?.surface.destroy?.();
   backdrop.canvas?.surface.destroy?.();
@@ -5427,6 +5443,10 @@ function paintContent(
     paintMarker(ctx, box.marker, options, box.style.colorScheme);
   }
   paintFlow(ctx, box, options, table ? GRID : ALL_PARTS);
+  // the bars of the scroll containers in its flow that no layer of its
+  // holds, over the flow (`arrangeBars`)
+  const inFlow = bars?.flow.get(box);
+  if (inFlow) paintBarsAt(ctx, inFlow, options);
 
   // `z-index: auto` and 0 in document order, then the positive ones
   const stacked = STACKED.get(box);
@@ -5440,6 +5460,144 @@ function paintContent(
   // fragment at a time, on its lines
   if (box.style.outlineStyle !== 'none' && box.kind !== 'inline') {
     paintBoxOutline(ctx, box, options);
+  }
+}
+
+/**
+ * Where in the paint order each scroll container's bars go (CSS Overflow 3,
+ * as Chrome draws them): over what the container scrolls, and under
+ * whatever is painted after it that it does not hold. That is after the
+ * last of the layers of its stacking context that are the container or in
+ * it, a positioned box it holds among them; or, where none is, after the
+ * flow of that context, which it is painted in. A container in a frame of
+ * a writing mode or in the top layer is left to the pass at the end
+ * (`paintScrollBars`), as one whose place the paint does not reach is.
+ */
+interface BarsOrder {
+  /** By layer, the containers whose bars go straight after it. */
+  after: Map<Box, Box[]>;
+  /** By stacking context, the containers whose bars go after its flow. */
+  flow: Map<Box, Box[]>;
+  /** The containers whose bars have been painted in this paint. */
+  painted: Set<Box>;
+}
+
+/** The bars' places in the paint under way (`arrangeBars`), or null. */
+let bars: BarsOrder | null = null;
+
+function arrangeBars(tree: BoxTree, options: PaintOptions): BarsOrder | null {
+  let order: BarsOrder | null = null;
+  const damage = options.damage;
+  const inDamage = (x: number, y: number, width: number, height: number) =>
+    !damage ||
+    (x < damage.x + damage.width &&
+      damage.x < x + width &&
+      y < damage.y + damage.height &&
+      damage.y < y + height);
+  // the walk `paintScrollBars` makes, through the boxes whose ink meets the
+  // damage, where the viewport has a box fixed to it; what a container's
+  // bars are is asked as they are painted, and only then
+  const stack: [Box, number, number, boolean][] = [
+    [tree.root, options.originX, options.originY, false],
+  ];
+  while (stack.length) {
+    const entry = stack.pop()!;
+    const box = entry[0];
+    let [, ox, oy, fixed] = entry;
+    if (!fixed && options.viewport && fixedToViewport(box)) {
+      ox = options.viewport.x;
+      oy = options.viewport.y;
+      fixed = true;
+    }
+    if (box.boundsY === Infinity) continue;
+    if (framed.any && FRAME_ROOTS.has(box)) continue;
+    if (
+      !inDamage(
+        box.boundsX + ox,
+        box.boundsY + oy,
+        box.boundsWidth,
+        box.boundsHeight,
+      )
+    ) {
+      continue;
+    }
+    // a container that may show a bar, as `scrollBarsOf` asks first: not
+    // an `overflow: hidden` one, of which a page has many
+    if (
+      (wheelScrolls(box, 'x') || wheelScrolls(box, 'y')) &&
+      isScroller(box) &&
+      box.style.visibility === 'visible' &&
+      inDamage(box.x + ox, box.y + oy, box.width, box.height)
+    ) {
+      const place = barsPlace(box, tree.root);
+      if (place) {
+        order ??= { after: new Map(), flow: new Map(), painted: new Set() };
+        const map = place.after ? order.after : order.flow;
+        const key = place.after ?? place.flow!;
+        const list = map.get(key);
+        if (list) list.push(box);
+        else map.set(key, [box]);
+      }
+    }
+    for (let i = box.children.length - 1; i >= 0; i -= 1) {
+      const child = box.children[i];
+      if (child.kind === 'text' || child.kind === 'break') continue;
+      if (child.topLayer) continue;
+      if (options.captured?.has(child)) continue;
+      stack.push([child, ox, oy, fixed]);
+    }
+  }
+  return order;
+}
+
+/** The layer a container's bars go after, or the stacking context whose
+ *  flow they go after (`arrangeBars`). */
+function barsPlace(
+  scroller: Box,
+  root: Box,
+): { after?: Box; flow?: Box } | null {
+  // the stacking context it is painted in
+  let context: Box | null = null;
+  for (let at = scroller.parent; at; at = at.parent) {
+    if (at.topLayer) return null;
+    if (at === root || stacksLayers(at)) {
+      context = at;
+      break;
+    }
+  }
+  if (!context) return null;
+  const layers = [
+    ...(NEGATIVE.get(context) ?? []),
+    ...(STACKED.get(context) ?? []),
+  ];
+  let last: Box | null = null;
+  for (const layer of layers) {
+    for (let at: Box | null = layer; at && at !== context; at = at.parent) {
+      if (at === scroller) {
+        last = layer;
+        break;
+      }
+    }
+  }
+  return last ? { after: last } : { flow: context };
+}
+
+/** Paint the bars of containers whose place in the paint order this is. */
+function paintBarsAt(
+  ctx: PaintContext,
+  scrollers: readonly Box[],
+  options: PaintOptions,
+): void {
+  if (!bars || !ctx.save || !ctx.restore || !ctx.beginPath || !ctx.rect) {
+    return;
+  }
+  if (!ctx.clip) return;
+  const scale = options.scale ?? 1;
+  for (const scroller of scrollers) {
+    if (bars.painted.has(scroller)) continue;
+    bars.painted.add(scroller);
+    const at = atViewport(scroller, options);
+    paintBarsOf(ctx, scroller, at.originX, at.originY, scale, at);
   }
 }
 
@@ -5503,6 +5661,7 @@ function paintScrollBars(
     if (
       isScroller(box) &&
       box.style.visibility === 'visible' &&
+      !bars?.painted.has(box) &&
       (turned || inDamage(box.x + ox, box.y + oy, box.width, box.height))
     ) {
       paintBarsOf(ctx, box, ox, oy, scale, options);
@@ -11222,6 +11381,18 @@ function paintStacked(
   box: Box,
   options: PaintOptions,
 ): void {
+  paintStackedBox(ctx, box, options);
+  // the bars of the scroll containers this layer is the last of, over it
+  // and what it holds (`arrangeBars`)
+  const after = bars?.after.get(box);
+  if (after) paintBarsAt(ctx, after, options);
+}
+
+function paintStackedBox(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
   options = atViewport(box, options);
   // a box past a clamp point has no ink of its own, and the group of what
   // escapes it says itself what it meets (`escapeGroup`)
@@ -16101,6 +16272,13 @@ function drawSvg(
   options: PaintOptions,
 ): void {
   const scale = options.scale ?? 1;
+  const filter = svg.rootFilter(w, h, scale, scheme);
+  if (
+    filter &&
+    drawFilteredSvg(ctx, svg, x, y, w, h, scheme, options, filter)
+  ) {
+    return;
+  }
   if (
     !options.matrix &&
     options.drawingKept &&
@@ -16123,6 +16301,75 @@ function drawSvg(
     }
   }
   svg.drawImage(ctx, x, y, w, h, scale, scheme, surfaceMaker(options));
+}
+
+/**
+ * An SVG image whose root has a `filter`, drawn through it: where the
+ * context runs a filter itself, through its `filter`; elsewhere the image
+ * is drawn on a surface, read back once for its size, and the read run
+ * through the filter's matrices and blur (`FilterStore`), drawn from then
+ * on — nothing until the read lands, a paint later, as a filtered box is
+ * (`filteredFor`). True where it is drawn so, or is to draw nothing yet;
+ * false where the filter is none this can run, and it is drawn as any.
+ */
+function drawFilteredSvg(
+  ctx: PaintContext,
+  svg: SvgDrawing,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  scheme: 'light' | 'dark',
+  options: PaintOptions,
+  list: readonly FilterFunction[],
+): boolean {
+  const colour = colourOf(list);
+  if (!runsOverPixels(colour) || colour!.steps) return false;
+  const scale = options.scale ?? 1;
+  const draw = (on: unknown, at: number, top: number) =>
+    svg.drawImage(
+      on as Parameters<SvgDrawing['drawImage']>[0],
+      at,
+      top,
+      w,
+      h,
+      scale,
+      scheme,
+      surfaceMaker(options),
+    );
+  const native = ctx as PaintContext & { filter?: string };
+  if ('filter' in native) {
+    const was = native.filter;
+    native.filter = colour!.css;
+    if (native.filter === colour!.css) {
+      draw(ctx, x, y);
+      native.filter = was;
+      return true;
+    }
+    native.filter = was;
+  }
+  const store = options.filters;
+  const box = painting;
+  if (!store || !box || !options.surface || !ctx.drawImage) return false;
+  const width = Math.ceil(w);
+  const height = Math.ceil(h);
+  if (width * height > RASTER_LIMIT) return false;
+  let n = DRAWINGS.get(svg);
+  if (n === undefined) DRAWINGS.set(svg, (n = ++drawings));
+  // by what the raster is drawn from, as `drawingKept`'s key, and what the
+  // filter makes of it
+  const slot = `${n}|${w}x${h}|${scale}|${scheme}`;
+  const kept = store.at(svg, slot, box, width, height, slot);
+  if (!kept.fresh && !kept.reading) {
+    const surface = options.surface(width, height);
+    if (!surface) return false;
+    const on = surface.getContext('2d');
+    draw(on, 0, 0);
+    if (!store.read(kept, surface, on)) return false;
+  }
+  const out = store.filtered(kept, colour!.matrices, colour!.key, colour!.blur);
+  if (out) drawImageAt(ctx, out, x, y);
+  return true;
 }
 
 /**
