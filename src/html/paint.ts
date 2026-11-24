@@ -78,6 +78,7 @@ import type {
   ImageRepeat,
   LinearGradient,
   MaskComposite,
+  MaskMode,
   RadialGradient,
   ConicGradient,
   RepeatMode,
@@ -147,8 +148,11 @@ import {
   frameOf,
   frameTurn,
   framed,
+  pageSides,
+  pageMargins,
   quarterTurnsOf,
   turnsUp,
+  UNFRAMED,
   uprightCells,
 } from './layout/writing.js';
 import {
@@ -216,6 +220,7 @@ import { tableGrid } from './layout/grid.js';
 import type { Cell } from './layout/grid.js';
 import {
   SvgDrawing,
+  maskDrawing,
   atDensity,
   concreteSize,
   inlineDrawing,
@@ -4750,6 +4755,16 @@ function underPath(options: PaintOptions): PaintOptions {
 
 const MASK_LAYERS = new WeakMap<ComputedStyle, ComputedStyle[]>();
 
+/** Each mask layer's `mask-mode`. */
+const LAYER_MODES = new WeakMap<ComputedStyle, MaskMode>();
+
+/** The drawings made of a `<mask>` for the boxes it masks, by size and
+ *  mode, as of a tree generation (`maskDrawing`). */
+const MASK_DRAWINGS = new WeakMap<
+  Element,
+  { generation: number; drawings: Map<string, SvgDrawing> }
+>();
+
 /** The mask layers whose `mask-mode` is `luminance`: what they are
  *  composited with is their luminance times their alpha (CSS Masking 1,
  *  7.3), which is the alpha of a layer made white where the layer has its
@@ -4815,19 +4830,57 @@ function luminanceImage(image: unknown): unknown {
   return out;
 }
 
-/** The options a mask layer is painted with: a luminance layer's images
- *  handed over as their luminance. */
+/**
+ * The options a mask layer is painted with: one whose image is a
+ * `url(#id)` is the `<mask>` it names in the document, drawn over the box
+ * (CSS Masking 1, 7.1), and a transparent layer where it names none, as
+ * an image that cannot be had is (7.2); and a luminance layer's images
+ * handed over as their luminance. A `url(#id)` layer's drawing is the
+ * `<mask>` composited by the layer's mode already, so is not made one again.
+ */
 function maskLayerOptions(
+  box: Box,
   layer: ComputedStyle,
   options: PaintOptions,
 ): PaintOptions {
+  const url = urlOf(layer.backgroundImage);
   const images = options.backgroundImageFor;
-  if (!LUMINANCE_LAYERS.has(layer) || !images) return options;
+  if (url === null || url[0] !== '#') {
+    if (!LUMINANCE_LAYERS.has(layer) || !images) return options;
+    return {
+      ...options,
+      backgroundImageFor: (asked, at) => {
+        const loaded = images(asked, at);
+        return loaded && { ...loaded, image: luminanceImage(loaded.image) };
+      },
+    };
+  }
   return {
     ...options,
-    backgroundImageFor: (url, box) => {
-      const loaded = images(url, box);
-      return loaded && { ...loaded, image: luminanceImage(loaded.image) };
+    backgroundImageFor: (asked, at) => {
+      if (asked !== url) return images?.(asked, at) ?? null;
+      const mask = documentIds(box)?.get(decodeURIComponent(url.slice(1)));
+      if (!mask || mask.name.toLowerCase() !== 'mask') return null;
+      // in the box's CSS pixels, its border box's
+      const unit = (options.scale ?? 1) * box.style.effectiveZoom;
+      const width = box.width / unit;
+      const height = frameHeight(box) / unit;
+      if (!(width > 0 && height > 0)) return null;
+      const mode = LAYER_MODES.get(layer);
+      const type = mode === 'alpha' || mode === 'luminance' ? mode : null;
+      const generation = treeGeneration();
+      let kept = MASK_DRAWINGS.get(mask);
+      if (!kept || kept.generation !== generation) {
+        kept = { generation, drawings: new Map() };
+        MASK_DRAWINGS.set(mask, kept);
+      }
+      const key = `${width} ${height} ${type}`;
+      let image = kept.drawings.get(key);
+      if (!image) {
+        image = maskDrawing(mask, documentIds(box)!, width, height, type);
+        kept.drawings.set(key, image);
+      }
+      return { image, width, height, ratio: width / height };
     },
   };
 }
@@ -4855,6 +4908,7 @@ function maskLayersOf(style: ComputedStyle): ComputedStyle[] {
     layer.backgroundImages = null;
     layer.backgroundImage = urlImageOf(image);
     layer.backgroundGradient = gradientOf(image);
+    LAYER_MODES.set(layer, nth(mask.modes, i));
     // `match-source` is `alpha` for anything but a `<mask>` (7.3)
     if (nth(mask.modes, i) === 'luminance') {
       LUMINANCE_LAYERS.add(layer);
@@ -5076,7 +5130,8 @@ function paintMasked(
   const drawable = layers.some((layer) => {
     if (layer.backgroundGradient) return true;
     const url = urlOf(layer.backgroundImage);
-    return url !== null && !!options.backgroundImageFor?.(url, painting);
+    const images = maskLayerOptions(box, layer, options).backgroundImageFor;
+    return url !== null && !!images?.(url, painting);
   });
   if (!drawable) return true;
   if (!options.surface || !ctx.drawImage) return false;
@@ -5106,7 +5161,7 @@ function paintMasked(
       const op = composites[i % composites.length];
       // the bottom layer has nothing below it to composite with (7.8)
       if (op === 'add' || i === layers.length - 1) {
-        const lon = maskLayerOptions(layers[i], on);
+        const lon = maskLayerOptions(box, layers[i], on);
         paintLayer(mctx, box, lon, layers[i], frameImages(mctx, box, lon));
         continue;
       }
@@ -5114,7 +5169,7 @@ function paintMasked(
       if (!one) return false;
       try {
         const octx = one.getContext('2d') as PaintContext;
-        const lon = maskLayerOptions(layers[i], on);
+        const lon = maskLayerOptions(box, layers[i], on);
         paintLayer(octx, box, lon, layers[i], frameImages(octx, box, lon));
         compositeMask(mctx, one, op);
       } finally {
@@ -8682,6 +8737,8 @@ const DOCUMENT: ClipSpace = { originX: 0, originY: 0, scale: 1, damage: null };
  * nothing to show.
  */
 function clipPathOf(box: Box, options: ClipSpace): PathClip {
+  const turned = framed.any ? framedClipPath(box, options) : null;
+  if (turned) return turned;
   const path = box.style.clipPath!;
   // the box it is measured in, in from the border box — or out from it
   const within = path.box;
@@ -8768,6 +8825,121 @@ function clipPathOf(box: Box, options: ClipSpace): PathClip {
     radii = cornersFor(path.radii, path.radiiY, width, height, rect.w, rect.h);
   }
   return { rect, radii, polygons: null, rule: 'nonzero' };
+}
+
+/**
+ * A `clip-path` of a box in a vertical flow's frame: its shape is the
+ * page's, so it is laid down on a stand-in for the box with the page's
+ * sides and the style the box's was turned from, and turned into the frame
+ * the box is drawn through. Null for a box in no frame turned a quarter.
+ */
+function framedClipPath(box: Box, options: ClipSpace): PathClip | null {
+  const frame = frameOf(box);
+  if (!frame || quarterTurnsOf(box) % 2 === 0) return null;
+  const style = UNFRAMED.get(box.style);
+  if (!style?.clipPath) return null;
+  const up = turnsUp(frameTurn(frame));
+  const mode = up ? 'sideways-lr' : 'vertical-rl';
+  const sides = (t: number, r: number, b: number, l: number) =>
+    pageSides([t, r, b, l], mode);
+  const border = sides(
+    box.borderTop,
+    box.borderRight,
+    box.borderBottom,
+    box.borderLeft,
+  );
+  const pad = sides(box.padTop, box.padRight, box.padBottom, box.padLeft);
+  const margin = pageMargins(
+    [box.marginTop, box.marginRight, box.marginBottom, box.marginLeft],
+    frameTurn(frame),
+  );
+  // the border box on the page, from its top left
+  const w = frameHeight(box);
+  const h = box.width;
+  const page = {
+    style,
+    x: 0,
+    y: 0,
+    width: w,
+    height: h,
+    captionTop: 0,
+    captionBottom: 0,
+    borderTop: border[0],
+    borderRight: border[1],
+    borderBottom: border[2],
+    borderLeft: border[3],
+    padTop: pad[0],
+    padRight: pad[1],
+    padBottom: pad[2],
+    padLeft: pad[3],
+    marginTop: margin[0],
+    marginRight: margin[1],
+    marginBottom: margin[2],
+    marginLeft: margin[3],
+  } as unknown as Box;
+  const laid = clipPathOf(page, DOCUMENT);
+  const x0 = box.x + options.originX;
+  const y0 = frameY(box) + options.originY;
+  // a point of the page's border box where the frame has it
+  const at = (p: number, q: number): [number, number] =>
+    up ? [x0 + h - q, y0 + p] : [x0 + q, y0 + w - p];
+  if (laid.polygons) {
+    const polygons = laid.polygons.map((poly) => {
+      const out: number[] = [];
+      for (let i = 0; i + 1 < poly.length; i += 2) {
+        out.push(...at(poly[i], poly[i + 1]));
+      }
+      return out;
+    });
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const poly of polygons) {
+      for (let i = 0; i + 1 < poly.length; i += 2) {
+        minX = Math.min(minX, poly[i]);
+        maxX = Math.max(maxX, poly[i]);
+        minY = Math.min(minY, poly[i + 1]);
+        maxY = Math.max(maxY, poly[i + 1]);
+      }
+    }
+    const x = Math.floor(minX);
+    const y = Math.floor(minY);
+    const rect =
+      laid.rect.w > 0 && laid.rect.h > 0 && polygons.length
+        ? { x, y, w: Math.ceil(maxX) - x, h: Math.ceil(maxY) - y }
+        : { x, y, w: 0, h: 0 };
+    return { rect, radii: null, polygons, rule: laid.rule };
+  }
+  const r = laid.rect;
+  const [ax, ay] = at(r.x, r.y);
+  const [bx, by] = at(r.x + r.w, r.y + r.h);
+  const left = Math.round(Math.min(ax, bx));
+  const top = Math.round(Math.min(ay, by));
+  const rect = {
+    x: left,
+    y: top,
+    w: Math.round(Math.max(ax, bx)) - left,
+    h: Math.round(Math.max(ay, by)) - top,
+  };
+  let radii: Corners | null = null;
+  if (laid.radii) {
+    // each of the frame's corners is the page's one a quarter round, its
+    // radius across the page's down
+    const c = laid.radii;
+    const shift = up ? 3 : 1;
+    const of = <T>(list: readonly T[], i: number): T => list[(i + shift) % 4];
+    radii = {
+      x: [0, 1, 2, 3].map((i) => of(c.y, i)) as Corners['x'],
+      y: [0, 1, 2, 3].map((i) => of(c.x, i)) as Corners['y'],
+    };
+    if (c.shape) {
+      radii.shape = [0, 1, 2, 3].map((i) =>
+        of(c.shape!, i),
+      ) as unknown as CornerShapes;
+    }
+  }
+  return { rect, radii, polygons: null, rule: laid.rule };
 }
 
 /** What a `clip-path` cuts to, in window coordinates (`clipPathOf`). */
@@ -8886,20 +9058,9 @@ const CLIP_IDS = new WeakMap<
   { generation: number; ids: Map<string, Element> }
 >();
 
-/**
- * What a `<clipPath>` a `url(#id)` names clips to, laid down for a box `w`
- * by `h` (CSS Masking 1, 6): the union of its shapes — a path, a rectangle,
- * a circle, an ellipse, a polygon — in CSS pixels from the box's corner, or
- * in fractions of it under `clipPathUnits="objectBoundingBox"`, each filled
- * by its own `clip-rule`, the first one's taken for all. Null for an id
- * that names no `<clipPath>`.
- */
-function clipSourceOf(
-  box: Box,
-  url: { id: string; scale: number },
-  w: number,
-  h: number,
-): { polys: number[][]; rule: FillRule } | null {
+/** The elements of the document a box is in, by id, as of a tree
+ *  generation; null for a box of no element. */
+function documentIds(box: Box): Map<string, Element> | null {
   let node: { parent?: unknown } | null =
     box.el ?? GENERATED_FROM.get(box) ?? null;
   if (!node) return null;
@@ -8921,7 +9082,26 @@ function clipSourceOf(
     kept = { generation, ids };
     CLIP_IDS.set(node, kept);
   }
-  const source = kept.ids.get(url.id);
+  return kept.ids;
+}
+
+/**
+ * What a `<clipPath>` a `url(#id)` names clips to, laid down for a box `w`
+ * by `h` (CSS Masking 1, 6): the union of its shapes — a path, a rectangle,
+ * a circle, an ellipse, a polygon — in CSS pixels from the box's corner, or
+ * in fractions of it under `clipPathUnits="objectBoundingBox"`, each filled
+ * by its own `clip-rule`, the first one's taken for all. Null for an id
+ * that names no `<clipPath>`.
+ */
+function clipSourceOf(
+  box: Box,
+  url: { id: string; scale: number },
+  w: number,
+  h: number,
+): { polys: number[][]; rule: FillRule } | null {
+  const ids = documentIds(box);
+  if (!ids) return null;
+  const source = ids.get(url.id);
   if (!source || source.name.toLowerCase() !== 'clippath') return null;
   const units = source.attribs.clippathunits ?? source.attribs.clipPathUnits;
   const bounding = units === 'objectBoundingBox';

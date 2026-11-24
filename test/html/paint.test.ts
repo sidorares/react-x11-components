@@ -1450,9 +1450,42 @@ metric(
     await expectPixel(ctx, 15, 90, '#ffffff', {
       message: "the pseudo-element's mask",
     });
-    await expectPixel(ctx, 35, 110, '#ff0000', {
-      message:
-        'an SVG <mask> named by a fragment is not drawn, nor is its want',
+    await expectPixel(ctx, 35, 110, '#ffffff', {
+      message: 'a url(#id) that names no <mask> is a transparent layer',
+    });
+  },
+);
+
+metric(
+  'a mask-image url(#id) is the <mask> it names in the document',
+  async () => {
+    // CSS Masking 1, 7.1: the mask's content drawn over the box, in its
+    // units, by its mask-type or the layer's mask-mode. It was no layer at
+    // all, and the box was drawn whole (WPT mask-image-url-local-mask,
+    // mask-composite-1c, mask-opacity-1d)
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0;background:#ffffff}div{width:40px;height:20px;' +
+        'background:#ff0000}#u{mask-image:url(#user)}' +
+        '#b{mask-image:url(#box)}#a{mask-image:url(#box);mask-mode:alpha}' +
+        '</style><div id="u"></div><div id="b"></div><div id="a"></div>' +
+        `<svg ${SVG_NS} width="0" height="0">` +
+        '<mask id="user"><rect width="10" height="20" fill="#ffffff"/></mask>' +
+        '<mask id="box" maskContentUnits="objectBoundingBox">' +
+        '<rect width="0.5" height="1" fill="#ffffff"/>' +
+        '<rect x="0.5" width="0.5" height="1" fill="#000000"/></mask></svg>',
+      {},
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 5, 10, '#ff0000', { message: 'in its rect' });
+    await expectPixel(ctx, 15, 10, '#ffffff', { message: 'past it' });
+    await expectPixel(ctx, 15, 30, '#ff0000', {
+      message: "in a fraction of the box's",
+    });
+    await expectPixel(ctx, 35, 30, '#ffffff', {
+      message: 'black, by its luminance',
+    });
+    await expectPixel(ctx, 35, 50, '#ff0000', {
+      message: 'black and opaque, by the alpha the layer asks for',
     });
   },
 );
@@ -1498,6 +1531,37 @@ metric(
     await expectPixel(ctx, 15, 70, '#ff0000', {
       message: 'black and opaque, as alpha',
     });
+  },
+);
+
+metric(
+  'a url(#id) mask under mask-mode luminance is that mask with mask-type luminance',
+  async () => {
+    // The layer's mode is the `<mask>`'s type (CSS Masking 1, 7.3): an
+    // alpha mask of grey under `luminance` is the grey's luminance, half,
+    // where under its own type it would show the box whole
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0;background:#ffffff}div{width:40px;height:20px;' +
+        'background:#ff0000}#l{mask-image:url(#alpha);mask-mode:luminance}' +
+        '#m{mask-image:url(#lum)}</style><div id="l"></div><div id="m"></div>' +
+        `<svg ${SVG_NS} width="0" height="0">` +
+        '<mask id="alpha" mask-type="alpha"><rect width="40" height="20" fill="#808080"/></mask>' +
+        '<mask id="lum" mask-type="luminance"><rect width="40" height="20" fill="#808080"/></mask>' +
+        '</svg>',
+      {},
+    );
+    await act();
+    const [a, b] = [
+      await pixelsIn(result.ctx, { x: 0, y: 0, width: 40, height: 20 }),
+      await pixelsIn(result.ctx, { x: 0, y: 20, width: 40, height: 20 }),
+    ];
+    let most = 0;
+    for (let i = 0; i < a.length; i++)
+      most = Math.max(most, Math.abs(a[i] - b[i]));
+    assert.strictEqual(most, 0);
+    // and half there
+    const [r, g] = a;
+    assert.ok(r === 255 && g > 100 && g < 160, `half there: ${r},${g}`);
   },
 );
 
