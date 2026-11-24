@@ -804,7 +804,9 @@ export function layoutGridLanes(
         ? Math.max(0, area - crossOuter) * (crossEnd ? 0.5 : 1)
         : 0;
     } else if (!rows && item.shimX !== undefined) {
-      across = Math.max(0, item.shimX);
+      across = item.shimXEnd
+        ? area - crossOuter - item.shimX
+        : Math.max(0, item.shimX);
     } else {
       const flow = flowAlign(textAcross, trackReverse);
       const kind = flow ?? selfAcross;
