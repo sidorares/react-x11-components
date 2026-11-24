@@ -508,7 +508,7 @@ export function layoutGrid(
   /** Whether an item may be wider for its rows, in a row this layout has laid
    *  out, since a kept one's is of the width before. */
   const takingHeight = (item: Item): boolean =>
-    item.row < cut && takesHeight(item.box);
+    item.row < cut && (takesHeight(item.box) || orthogonalAuto(item.box));
   const measure = (item: Item): void => {
     if (item.max >= 0) return;
     const extra = item.before + item.after;
@@ -759,8 +759,10 @@ export function layoutGrid(
       const child = item.box;
       const base = child.percentHeightBase;
       child.percentHeightBase = spanBefore(item);
-      if (heightGiven(child) === null) child.percentHeightBase = base;
-      else {
+      const given = heightGiven(child);
+      if (given === null || laidAsGiven(child, given, ctx)) {
+        child.percentHeightBase = base;
+      } else {
         again.push({ item, base, serial: child.layoutSerial });
         item.min = -1;
         item.max = -1;
@@ -2735,6 +2737,35 @@ export function rowItem(
       );
     },
   };
+}
+
+/**
+ * Whether an item is an orthogonal flow's root with no height of its own,
+ * whose width is its frame's block size at the height its rows give it
+ * (`frameInlineSize`): the grid's columns are sized again for it once the
+ * rows are. Asked of the grid's own items alone, and not through
+ * `takesHeight`, which every grid around it asks of what it holds: there,
+ * a dozen grids around one item laid it out three times as often.
+ */
+function orthogonalAuto(box: Box): boolean {
+  return framed.any && box.style.height === AUTO && FRAMES.has(box);
+}
+
+/**
+ * Whether an orthogonal item comes to what it was laid out as at the height
+ * its rows give it: its lines are all on one line at either, its frame laid
+ * out at its widest and the height no less, so no line of it moves. Most
+ * such items are laid out in rows their own widest sized.
+ */
+function laidAsGiven(box: Box, given: number, ctx: LayoutContext): boolean {
+  if (takesHeight(box) || !orthogonalAuto(box)) return false;
+  const frame = FRAMES.get(box)!;
+  const range = orthogonalRange(box, ctx);
+  if (!range) return false;
+  const widest = range.most - box.verticalExtra;
+  return (
+    frame.width >= widest - 0.01 && given - box.verticalExtra >= widest - 0.01
+  );
 }
 
 /**

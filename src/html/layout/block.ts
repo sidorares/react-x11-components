@@ -6590,9 +6590,6 @@ export function percentOwn(box: Box): boolean {
  */
 export function takesHeight(box: Box): boolean {
   const style = box.style;
-  // an orthogonal flow's root, whose width is its block size at the height
-  // it is laid out at (`frameInlineSize`)
-  if (framed.any && style.height === AUTO && FRAMES.has(box)) return true;
   if (
     (typeof style.width !== 'number' ||
       style.minWidthKeyword !== null ||
