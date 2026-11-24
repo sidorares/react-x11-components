@@ -5202,6 +5202,16 @@ function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
   if (frame.intrinsicMaxContent < 0) {
     frame.intrinsicMaxContent = measureIntrinsicWidth(frame, ctx, Infinity);
   }
+  // and its narrowest, for a grid item, whose rows ask for both
+  // (`orthogonalRange`) after the frame is laid out, which a measure then
+  // would undo
+  if (frame.intrinsicMinContent < 0 && box.parent?.style.grid) {
+    frame.intrinsicMinContent = measureIntrinsicWidth(
+      frame,
+      ctx,
+      MIN_CONTENT_PROBE,
+    );
+  }
   // a table's own width, which is no less than its narrowest (CSS 2.1
   // 17.5.2), where it has one
   if (frame.kind === 'table') {

@@ -2708,7 +2708,7 @@ export function rowItem(
   // an item whose lines run down the rows gives them its inline sizes, its
   // narrowest and its widest, where its height is at the one it was laid
   // out at (CSS Writing Modes 4, 7.3; CSS Grid 1, 6.6)
-  const range = ctx ? orthogonalRange(box, ctx) : null;
+  const range = ctx ? orthogonalRange(box) : null;
   const least = range ? () => range.least + margins : outer;
   return {
     start: item.row,
@@ -2760,7 +2760,7 @@ function orthogonalAuto(box: Box): boolean {
 function laidAsGiven(box: Box, given: number, ctx: LayoutContext): boolean {
   if (takesHeight(box) || !orthogonalAuto(box)) return false;
   const frame = FRAMES.get(box)!;
-  const range = orthogonalRange(box, ctx);
+  const range = orthogonalRange(box);
   if (!range) return false;
   const widest = range.most - box.verticalExtra;
   return (
@@ -2778,22 +2778,16 @@ function laidAsGiven(box: Box, given: number, ctx: LayoutContext): boolean {
  * to need its whole line. Null for any other box, and for one with a
  * height of its own, which its layout already has.
  */
-export function orthogonalRange(
-  box: Box,
-  ctx: LayoutContext,
-): { least: number; most: number } | null {
-  if (!framed.any) return null;
-  const frame = FRAMES.get(box);
-  if (!frame || box.style.height !== AUTO) return null;
-  if (frame.intrinsicMinContent < 0) {
-    frame.intrinsicMinContent = measureIntrinsicWidth(
-      frame,
-      ctx,
-      MIN_CONTENT_PROBE,
-    );
-  }
-  if (frame.intrinsicMaxContent < 0) {
-    frame.intrinsicMaxContent = measureIntrinsicWidth(frame, ctx, Infinity);
+export function orthogonalRange(box: Box): {
+  least: number;
+  most: number;
+} | null {
+  if (!orthogonalAuto(box)) return null;
+  // measured before its frame was laid out (`frameInlineSize`): measured
+  // here, after, the frame would be left laid out at a probe's width
+  const frame = FRAMES.get(box)!;
+  if (frame.intrinsicMinContent < 0 || frame.intrinsicMaxContent < 0) {
+    return null;
   }
   const extra = box.verticalExtra;
   return {
