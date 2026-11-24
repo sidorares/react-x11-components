@@ -31,6 +31,16 @@ import {
   stopOffsets,
 } from '../paint.js';
 import type { Corners } from '../paint.js';
+import {
+  framed,
+  frameOf,
+  frameTurn,
+  intoFrame,
+  pageEdgesOf,
+  quarterTurnsOf,
+  UNFRAMED,
+} from './writing.js';
+import type { WritingMode } from '../css/style.js';
 
 export interface FloatShape {
   /** The area's horizontal extent over `top` to `bottom`, from the margin
@@ -55,8 +65,8 @@ const FINE = 0.002;
 /**
  * A float's area where `shape-outside` gives it one, or null where it keeps
  * its margin box: no shape, a shape nothing can be laid down for, or one
- * this layout does not read (an image whose pixels are not in, a flow that
- * is not horizontal). `containingWidth` is what `shape-margin`'s percentage
+ * this layout does not read (an image whose pixels are not in, a frame
+ * turned a half). `containingWidth` is what `shape-margin`'s percentage
  * is of; `images` hands over an image's pixels by its URL.
  */
 export function floatShapeOf(
@@ -67,7 +77,16 @@ export function floatShapeOf(
   const style = box.style;
   const shape = style.shapeOutside;
   if (!shape) return null;
-  if (style.writingMode && style.writingMode !== 'horizontal-tb') return null;
+  // in a vertical flow's frame the area is laid down on the page, where its
+  // shape, its corners and its image are, and turned into the frame
+  const frame = framed.any ? frameOf(box) : null;
+  const turns = frame ? quarterTurnsOf(box) : 0;
+  const mode = turns % 2 ? frameTurn(frame!) : null;
+  if (
+    mode === null &&
+    (turns || (style.writingMode && style.writingMode !== 'horizontal-tb'))
+  )
+    return null;
   const margin = Math.max(0, resolve(style.shapeMargin, containingWidth));
   const width = box.width + box.marginLeft + box.marginRight;
   const height = box.height + box.marginTop + box.marginBottom;
@@ -94,7 +113,9 @@ export function floatShapeOf(
   ].join();
   const kept = KEPT.get(box);
   if (kept && kept.style === style && kept.key === key) return kept.shape;
-  const made = makeShape(box, shape, images ?? null, margin, width, height);
+  const made = mode
+    ? framedShape(box, mode, images ?? null, margin, width, height)
+    : makeShape(box, shape, images ?? null, margin, width, height);
   KEPT.set(box, { style, key, shape: made });
   return made;
 }
@@ -124,6 +145,63 @@ function makeShape(
   }
   if (!polys) return null;
   return new PolygonArea(polys, margin, width, height);
+}
+
+/** A framed float's area: laid down on a stand-in for its box as the page
+ *  has it, with the style it was turned from, and each point turned into
+ *  the frame (`intoFrame`). */
+function framedShape(
+  box: Box,
+  mode: WritingMode,
+  images: ShapeImageSource | null,
+  margin: number,
+  width: number,
+  height: number,
+): FloatShape | null {
+  const style = UNFRAMED.get(box.style);
+  const shape = style?.shapeOutside;
+  if (!style || !shape) return null;
+  const { border, pad, margin: m } = pageEdgesOf(box, mode);
+  const page = {
+    style,
+    width: box.height,
+    height: box.width,
+    borderTop: border[0],
+    borderRight: border[1],
+    borderBottom: border[2],
+    borderLeft: border[3],
+    padTop: pad[0],
+    padRight: pad[1],
+    padBottom: pad[2],
+    padLeft: pad[3],
+    marginTop: m[0],
+    marginRight: m[1],
+    marginBottom: m[2],
+    marginLeft: m[3],
+  } as unknown as Box;
+  const polys =
+    typeof shape === 'string'
+      ? style.shapeImage
+        ? imagePolygons(
+            page,
+            style.shapeImage,
+            style.shapeImageThreshold,
+            images,
+          )
+        : null
+      : shapeAreaPolygons(page, shape);
+  if (!polys) return null;
+  // the margin box's size on the page
+  const w = height;
+  const h = width;
+  const turned = polys.map((poly) => {
+    const out: number[] = [];
+    for (let i = 0; i + 1 < poly.length; i += 2) {
+      out.push(...intoFrame(poly[i], poly[i + 1], w, h, mode));
+    }
+    return out;
+  });
+  return new PolygonArea(turned, margin, width, height);
 }
 
 /** Where a reference box is, from the margin box's top left. */
