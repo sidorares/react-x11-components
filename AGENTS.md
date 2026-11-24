@@ -8555,7 +8555,11 @@ is the case to build next, and it needs the strip's offsets by flow and
 not by column alone. **What overflows a flex container or an item takes no
 part in where the columns break** (`clipped`, `below`): a box of a height
 of its own holds what follows it to that height, and content past it
-grouped with what follows would push it a column on. **A flex box its
+grouped with what follows would push it a column on. It is still cut into
+the columns it reaches, as a browser carries an item's overflow on: where
+it ends is found among all the groups once they are made (`endBelow`),
+and asked while they were still being made it found only those before it,
+and ran down past its column's foot. **A flex box its
 items size has no room to cut below them** (`sizedByItems`): that is their
 margins and its padding, which a break drops. And **forced breaks are read
 from the passive record** (`forces`, `style.passive['break-before']`): a
