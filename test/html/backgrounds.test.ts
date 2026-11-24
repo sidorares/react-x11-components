@@ -523,6 +523,36 @@ test("a gradient's colours mix in the space it names, or oklab for a colour no l
   );
 });
 
+test('a gradient mixes in a predefined space whose name has a digit in it', async () => {
+  // `in display-p3`, `in rec2020`, `in xyz-d50`: the method was cut from
+  // the first argument at its first digit, and what was left of it was no
+  // direction, so the gradient was dropped (WPT's css-images/gradient/
+  // display-p3-linear-gradient)
+  const spaces = [
+    'display-p3',
+    'display-p3-linear',
+    'rec2020',
+    'a98-rgb',
+    'xyz-d50',
+  ];
+  const { node } = await render(
+    '<style>body{margin:0}div{width:100px;height:4px}</style>' +
+      spaces
+        .map(
+          (space) =>
+            `<div style="background-image:linear-gradient(to right in ${space},#ff0000,#00ff00)"></div>`,
+        )
+        .join(''),
+  );
+  const gradients = (await fillsOf(view(node)))
+    .map((f) => f.style as { line?: number[]; stops?: [number, string][] })
+    .filter((g) => g && g.line);
+  assert.strictEqual(gradients.length, spaces.length);
+  for (const [i, g] of gradients.entries()) {
+    assert.ok(g.stops!.length > 2, `${spaces[i]}: mixed in its space`);
+  }
+});
+
 test('a gradient mixes the colours of its stops as written, outside sRGB as much as in it', async () => {
   // CSS Images 4, 3.5.2: the transition is mixed from the colours, and
   // only what it comes to is clipped. Mixed from the stops clipped to
@@ -544,6 +574,22 @@ test('a gradient mixes the colours of its stops as written, outside sRGB as much
   assert.deepStrictEqual(parseRgb(middle[1]), [255, 0, 0]);
   // and the stops themselves are drawn clipped
   assert.deepStrictEqual(parseRgb(g.stops![0][1]), [255, 0, 0]);
+});
+
+test("a gradient's mixed stops keep a hundredth of a level", async () => {
+  // a stop rounded to a whole level came a level apart from the same
+  // transition drawn through other stops (WPT's
+  // gradient-longer-hue-hsl-002): the context lerps at more than 8 bits
+  const { node } = await render(
+    '<style>body{margin:0}div{width:100px;height:10px}</style>' +
+      '<div style="background-image:linear-gradient(to right in hsl,#ff0000,#00ff00)"></div>',
+  );
+  const [g] = (await fillsOf(view(node)))
+    .map((f) => f.style as { line?: number[]; stops?: [number, string][] })
+    .filter((f) => f && f.line);
+  // the first step is a 64th of 120deg along, 1.875deg: green at
+  // 255 * 1.875 / 60
+  assert.deepStrictEqual(parseRgb(g.stops![1][1]), [255, 7.97, 0]);
 });
 
 /** A colour's channels, 0 to 255, from a hex or an rgb()/rgba() string. */
