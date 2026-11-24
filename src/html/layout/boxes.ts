@@ -4653,6 +4653,9 @@ class Builder {
       !column &&
       style.writingMode === 'horizontal-tb' &&
       ((kind === 'block' && !style.grid) ||
+        // and a cell, whose content is laid out across the page as a
+        // horizontal block's is (CSS Writing Modes 4, 7.3)
+        kind === 'table-cell' ||
         (kind === 'flex' && style.grid && !subgridsIn(style, into)) ||
         (kind === 'flex' && !style.grid)) &&
       holdsTurnBack(flowModeAround(into), style, into) &&

@@ -1605,6 +1605,23 @@ test('a table in a vertical writing mode runs its rows across the page and its c
   assert.deepStrictEqual(at('vertical-lr-c'), [50, 58, 50, 20]);
 });
 
+test('a horizontal cell in a vertical table lays its content out across the page', async () => {
+  // CSS Writing Modes 4, 7.3: a cell whose writing mode is horizontal in a
+  // vertical table is an orthogonal flow, whose frame turns back what the
+  // table's turned, as a horizontal block's in a vertical flow does
+  const { node } = await render(
+    '<style>body{margin:0}table{writing-mode:vertical-rl;border-spacing:0}' +
+      'td{padding:0;writing-mode:horizontal-tb;width:40px;height:20px;' +
+      'text-align:right}</style><table><tr><td>' +
+      '<span id="s" style="display:inline-block;width:10px;height:5px">' +
+      '</span></td></tr></table>',
+  );
+  const el = view(node);
+  const r = rectOf(el, 's');
+  // as wide and as tall as it says, at the right of its 40px cell
+  assert.deepStrictEqual([r.x, r.width, r.height], [30, 10, 5]);
+});
+
 test('an edge on half a pixel across a vertical-rl frame is drawn on the column the page draws it on', async () => {
   // the frame's turn runs its block axis backwards across the page, so a
   // half it rounds up the page rounds down, and the box came out a column
