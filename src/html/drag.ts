@@ -53,6 +53,8 @@ const NAMED_TYPES = ['text/plain', 'text/html', 'text/uri-list'];
 /** The drag this process is carrying, whichever `<Html>` it started in. */
 let active: HtmlDragData | null = null;
 
+const DRAG_ACTIONS = ['copy', 'move', 'link'];
+
 /** What marks a drag as a document's, to `dropAccept`. */
 const OWN_TYPE = 'application/x-react-x11-html-drag';
 
@@ -347,12 +349,17 @@ export function useDocumentDrag(options: DocumentDragOptions): {
     },
   };
 
+  const accepts = React.useRef(
+    (types: string[]) =>
+      types.includes(OWN_TYPE) || latest.current.onDropFiles !== undefined,
+  );
   const rootProps: Record<string, unknown> = {
     draggable: true,
     dragData: DRAG_DATA,
-    dragActions: ['copy', 'move', 'link'],
-    dropAccept: (types: string[]) =>
-      types.includes(OWN_TYPE) || latest.current.onDropFiles !== undefined,
+    // the same array and function at every render: core repaints an element
+    // whose prop is not the one it had, and these never change
+    dragActions: DRAG_ACTIONS,
+    dropAccept: accepts.current,
     onDragStart: (ev: CoreDragEvent) => {
       const { pressed, pressPoint, view, baseUrl, embedded, onDomEvent } =
         latest.current;

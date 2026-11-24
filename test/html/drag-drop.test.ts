@@ -3,6 +3,7 @@
 // handed in as a host hands them.
 import assert from 'node:assert/strict';
 import { afterEach, test as nodeTest } from 'node:test';
+import * as React from 'react';
 import { act, cleanup, fireEvent, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 
@@ -404,4 +405,46 @@ test('a refusal in a drag hands the page what is its own', async () => {
   </script>`);
   assert.equal(await shown.until('wrong'), 'TypeError true undefined');
   assert.equal(await shown.until('twice'), 'NotSupportedError undefined');
+});
+
+test('an <Html> rendered again with the props it had is not repainted whole', async () => {
+  // core repaints an element whose prop is not the one it had, and the
+  // document's drag props were new at every render: a page whose scripts
+  // made its parent render each frame was repainted in full each time
+  let bump!: () => void;
+  const scripts = { log: () => {} };
+  function Doc() {
+    const [n, set] = React.useState(0);
+    bump = () => set(n + 1);
+    return h(
+      'box',
+      { style: { width: 200, height: 100 } },
+      h(Html, {
+        source: '<!doctype html><p>text</p>',
+        partial: false,
+        scripts,
+        'data-testname': 'again',
+      }),
+    );
+  }
+  await renderX11(h(Doc), { backend: 'mock' });
+  for (let i = 0; i < 3; i += 1) {
+    await act(() => new Promise((r) => setTimeout(r, 5)));
+  }
+  const node = screen.getByTestName('again') as DrawnNode;
+  const win = node.root as unknown as {
+    invalidate(...args: unknown[]): unknown;
+  };
+  const was = win.invalidate;
+  const claimed: string[] = [];
+  win.invalidate = function (this: unknown, layout, damage, ...rest) {
+    const d = damage as { kind?: string } | null;
+    if (d && d.kind) claimed.push(d.kind);
+    return was.call(this, layout, damage, ...rest);
+  };
+  for (let i = 0; i < 3; i += 1) {
+    await act(async () => bump());
+  }
+  win.invalidate = was;
+  assert.deepEqual(claimed, []);
 });
