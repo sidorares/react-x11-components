@@ -1234,10 +1234,22 @@ function planGrid(
   const areas = style.gridAreas;
   const template = sub?.cols
     ? inherited(sub.cols)
-    : trackList(style.gridColumns, contentWidth, colGap);
+    : trackList(
+        style.gridColumns,
+        contentWidth,
+        colGap,
+        undefined,
+        leastAlong(box, false),
+      );
   const rowList = sub?.rows
     ? inherited(sub.rows)
-    : trackList(style.gridRows, definite, rowGap);
+    : trackList(
+        style.gridRows,
+        definite,
+        rowGap,
+        undefined,
+        leastAlong(box, true),
+      );
   const explicitCols = sub?.cols
     ? sub.cols.lines.tracks
     : Math.max(template.tracks.length, areas?.columns ?? 0);
@@ -1884,6 +1896,9 @@ export function trackList(
    *  worked it out: grid lanes, whose repetitions may be sized by their
    *  content (CSS Grid 3, 3.1.1). */
   repetitions?: number,
+  /** Where `width` is no size, the least the axis may come to: a
+   *  `repeat()` is counted to fill that (`leastAlong`). */
+  least = 0,
 ): {
   tracks: GridTrack[];
   names: string[][];
@@ -1911,6 +1926,10 @@ export function trackList(
   if (repetitions === undefined && Number.isFinite(width) && each > 0) {
     const room = width - others - gap * outer.length;
     count = Math.max(1, Math.floor((room + gap) / (each + gap * unit.length)));
+  } else if (repetitions === undefined && least > 0 && each > 0) {
+    // with no size and a least one, as few as fill that (7.2.3.2)
+    const room = least - others - gap * outer.length;
+    count = Math.max(1, Math.ceil((room + gap) / (each + gap * unit.length)));
   }
   // the repetitions' lines where they meet carry the names of both sides
   const tracks: GridTrack[] = [];
@@ -2755,6 +2774,23 @@ export function leastWidthInside(box: Box): number {
   if (typeof minWidth !== 'number') return 0;
   const edges = boxSizing === 'border-box' ? box.horizontalExtra : 0;
   return Math.max(0, minWidth - edges);
+}
+
+/**
+ * The least a grid's content box may come to along an axis, which a
+ * `repeat()` with no size to count against is counted to fill (CSS Grid 1,
+ * 7.2.3.2): its own `min-width` or `min-height`, or the other's through its
+ * `aspect-ratio` (CSS Sizing 4, 5.1), whichever is more. A square
+ * `min-height: 60px` of 50px columns had one, where it has two.
+ */
+export function leastAlong(box: Box, rows: boolean): number {
+  const own = rows ? leastHeight(box) : leastWidthInside(box);
+  const ratio = box.style.aspectRatio?.ratio;
+  if (!ratio || !(ratio > 0)) return own;
+  const across = rows
+    ? leastWidthInside(box) / ratio
+    : leastHeight(box) * ratio;
+  return Math.max(own, Number.isFinite(across) ? across : 0);
 }
 
 /** A grid's least content height where it has no height of its own: its

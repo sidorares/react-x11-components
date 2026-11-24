@@ -8575,7 +8575,11 @@ grouped with what follows would push it a column on. It is still cut into
 the columns it reaches, as a browser carries an item's overflow on: where
 it ends is found among all the groups once they are made (`endBelow`),
 and asked while they were still being made it found only those before it,
-and ran down past its column's foot. **A flex box its
+and ran down past its column's foot. A box that goes whole for the
+breaks has its overflow cut into the columns after it as an out-of-flow
+box's is (`place`, `cutIntoColumns`), and one that fits its first column no
+longer ends the layout there; what an `overflow: clip` box holds stays in
+the column that box ends in (`stays`). **A flex box its
 items size has no room to cut below them** (`sizedByItems`): that is their
 margins and its padding, which a break drops. And **forced breaks are read
 from the passive record** (`forces`, `style.passive['break-before']`): a
