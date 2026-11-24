@@ -2222,6 +2222,12 @@ metric(
       `<svg width="40" height="10">${inside}</svg>`;
     const rows: [string, number, string, string][] = [
       [svg('<rect class="w"/>'), 25, '#00aa00', 'a rect sized by a rule'],
+      [
+        svg('<g class="chart"><rect class="bar" height="10"/></g>'),
+        25,
+        '#00aa00',
+        'by a rule that names an ancestor',
+      ],
       [svg('<rect class="w"/>'), 35, '#ffffff', 'and no wider'],
       [
         svg('<rect class="w" width="40"/>'),
@@ -2261,7 +2267,7 @@ metric(
     const { result } = await renderWithBytes(
       '<style>body{margin:0} svg{display:block;fill:#00aa00}' +
         '.w{width:30px;height:10px} .x{x:20px} .c{cx:25px;r:5px}' +
-        '.d{d:path("M30 0H40V10H30Z")} .p{width:50%} .n{r:1}</style>' +
+        '.d{d:path("M30 0H40V10H30Z")} .p{width:50%} .chart .bar{width:30px} .n{r:1}</style>' +
         rows.map(([markup]) => markup).join(''),
       {},
     );
