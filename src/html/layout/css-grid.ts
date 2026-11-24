@@ -764,6 +764,12 @@ export function layoutGrid(
         again.push({ item, base, serial: child.layoutSerial });
         item.min = -1;
         item.max = -1;
+        // an orthogonal flow's root is as wide as its frame comes to at the
+        // height it is given, which what it measured before was not at
+        if (framed.any && FRAMES.has(child)) {
+          child.intrinsicMinContent = -1;
+          child.intrinsicMaxContent = -1;
+        }
       }
     }
     const before = widths;

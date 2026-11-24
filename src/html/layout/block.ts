@@ -5142,6 +5142,15 @@ const SIZED_FROM = new WeakMap<Box, { serial: number; inline: number }>();
 function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
   const own = percentBaseInside(box);
   if (Number.isFinite(own)) return own;
+  // a height a grid's sized rows, or a flex row of a height, stretch it
+  // down, which is as good as one of its own (CSS Sizing 4, 5.1): a row
+  // `fit-content()` sized from its narrowest is what it wraps to fit
+  if (box.style.height === AUTO && box.parent && !box.outOfFlow) {
+    const given = heightGiven(box);
+    if (given !== null && Number.isFinite(given)) {
+      return Math.max(0, given - box.verticalExtra);
+    }
+  }
   // the initial containing block's, which is the viewport's height, read
   // as a percentage height on the root reads it (`readsViewportHeight`)
   let base = box.percentHeightBase;
@@ -6581,6 +6590,9 @@ export function percentOwn(box: Box): boolean {
  */
 export function takesHeight(box: Box): boolean {
   const style = box.style;
+  // an orthogonal flow's root, whose width is its block size at the height
+  // it is laid out at (`frameInlineSize`)
+  if (framed.any && style.height === AUTO && FRAMES.has(box)) return true;
   if (
     (typeof style.width !== 'number' ||
       style.minWidthKeyword !== null ||
