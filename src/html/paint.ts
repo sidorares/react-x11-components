@@ -3648,6 +3648,9 @@ function paintSprite(
 
 /** A surface kept for a box, with where its corner is. */
 interface Kept {
+  /** Shadows alone, to be drawn under the box, which is then painted as it
+   *  is (`paintFiltered`), not a group the filter ran over. */
+  direct?: boolean;
   surface: Offscreen;
   x: number;
   y: number;
@@ -3782,9 +3785,21 @@ function paintFiltered(
 ): boolean {
   const colour = colourOf(box.style.filter!);
   if (!runsOverPixels(colour)) return false;
-  const kept = filteredFor(ctx, box, options, through, colour!);
+  const kept = filteredFor(
+    ctx,
+    box,
+    options,
+    through,
+    colour!,
+    opacity === 1 && blend === null && !through,
+  );
   if (kept === null) return false;
-  if (kept) drawFiltered(ctx, box, options, through, kept, opacity, blend);
+  if (kept?.direct) {
+    drawThrough(ctx, kept.surface, null, kept.x, kept.y, 1, null);
+    paintFilterGroup(ctx, box, options);
+  } else if (kept) {
+    drawFiltered(ctx, box, options, through, kept, opacity, blend);
+  }
   return true;
 }
 
@@ -3842,6 +3857,25 @@ function drawFiltered(
 }
 
 /**
+ * How many boxes a subtree has, or 0 where something in it blends with, or
+ * filters, what is behind it, or it is more than `most` boxes: what a group
+ * isolates and drawing the boxes straight onto the window does not.
+ */
+function plainSubtree(box: Box, most: number): number {
+  let left = most;
+  const walk = (b: Box): boolean => {
+    left -= 1;
+    if (left < 0) return false;
+    if (b.style.mixBlendMode !== 'normal' || b.style.backdropFilter !== null) {
+      return false;
+    }
+    for (const child of b.children) if (!walk(child)) return false;
+    return true;
+  };
+  return walk(box) ? most - left : 0;
+}
+
+/**
  * The surface a filtered box is drawn from (`paintFiltered`): the newest
  * pixels read for its element, run through the matrices it has now, and a
  * read asked for where those were not read under the key it draws under
@@ -3854,6 +3888,9 @@ function filteredFor(
   options: PaintOptions,
   through: Placed | null,
   colour: ColourFilter,
+  /** Whether the box may be drawn over its shadows as it is: not faded,
+   *  blended or moved through a matrix. */
+  plain = false,
 ): Kept | null | undefined {
   const store = options.filters;
   if (!store || !options.surface || !ctx.drawImage) return null;
@@ -3908,6 +3945,32 @@ function filteredFor(
     key += ` ${options.viewport?.x ?? 0} ${options.viewport?.y ?? 0}`;
   }
   const kept = store.at(box.el ?? box, box.pseudo ?? '', box, w, h, key);
+  // shadows alone, kept for this silhouette, under a box that holds nothing
+  // and is cut by nothing: the shadows and then the box, drawn where they
+  // go, which is the group over the shadows drawn there, and costs the
+  // group, the surface it is composed on and the one it is drawn from
+  if (
+    plain &&
+    steps &&
+    plainSubtree(box, 24) > 0 &&
+    steps.every((step) => step.kind === 'shadow') &&
+    !(box.outOfFlow && box.style.clip !== null) &&
+    !pathClips(box) &&
+    !masked(box.style) &&
+    'filter' in ctx
+  ) {
+    const under = store.shadowsUnder(kept, stepsKey(steps), fx, fy);
+    if (under) {
+      return {
+        direct: true,
+        surface: under,
+        x: left - kept.rawX,
+        y: top - kept.rawY,
+        width: w,
+        height: h,
+      };
+    }
+  }
   // a context that runs a filter itself — react-x11's native ones, canvas's
   // `filter` — is handed the group this paint makes, and nothing lags
   if (!store.unfiltered && 'filter' in ctx) {

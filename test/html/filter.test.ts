@@ -27,6 +27,7 @@ import {
   filterOutsets,
   interpolateFilters,
   runSteps,
+  stepsKey,
 } from '../../src/html/css/filter.js';
 import { addField, interpolateField } from '../../src/html/css/interpolate.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
@@ -746,6 +747,69 @@ test('a wide shadow is made on a smaller copy and drawn up, and what it was made
   const before = made;
   assert.ok(store.through(kept, 'two', steps));
   assert.ok(made <= before + 1, 'at most one more, for the one in use');
+});
+
+test('shadows kept for a silhouette are drawn straight under the box, until it changes or something around it is made again', () => {
+  const surface = () => {
+    const ctx: Record<string, unknown> = {
+      globalCompositeOperation: 'source-over',
+      filter: 'none',
+      save() {},
+      restore() {},
+      clearRect() {},
+      fillRect() {},
+      drawImage() {},
+    };
+    return { getContext: () => ctx, destroy() {} };
+  };
+  const store = new FilterStore(null, () => {}, undefined, surface);
+  const steps = colourFilter([
+    { fn: 'drop-shadow', x: 2, y: 3, blur: 8, color: '#ff0000' },
+  ])!.steps!;
+  const key = stepsKey(steps);
+  const owner = {};
+  const kept = store.at(owner, '', {}, 30, 20, 'k');
+  assert.strictEqual(store.shadowsUnder(kept, key, 0, 0), null, 'none yet');
+  assert.ok(store.group(kept));
+  assert.ok(store.through(kept, key, steps));
+  assert.ok(kept.under);
+  assert.strictEqual(
+    store.shadowsUnder(kept, key, 0, 0),
+    kept.under!.surface,
+    'kept for it',
+  );
+  assert.strictEqual(
+    store.shadowsUnder(kept, key, 0.5, 0),
+    null,
+    'not where its corner falls elsewhere',
+  );
+  assert.strictEqual(store.shadowsUnder(kept, 'other', 0, 0), null);
+  store.stale(owner, '', true);
+  assert.ok(store.shadowsUnder(kept, key, 0, 0), 'colours moved: still kept');
+  store.stale(owner, '', false);
+  assert.strictEqual(store.shadowsUnder(kept, key, 0, 0), null, 'moved');
+});
+
+test('a build of subtrees makes stale the filtered boxes it reached, and those around them, and no others', () => {
+  const surface = () => ({
+    getContext: () => ({ save() {}, restore() {}, clearRect() {} }),
+    destroy() {},
+  });
+  const store = new FilterStore(null, () => {}, undefined, surface);
+  const root = { parent: null };
+  const card = { parent: root };
+  const inner = { parent: card };
+  const side = { parent: root };
+  const hits = [root, card, inner, side].map((el) =>
+    store.at(el, '', {}, 10, 10, 'k'),
+  );
+  for (const hit of hits) hit.fresh = true;
+  store.staleAmong(new Set([inner]));
+  assert.deepStrictEqual(
+    hits.map((h) => h.fresh),
+    [false, false, false, true],
+    'the element, what holds it, and not what is beside it',
+  );
 });
 
 test('blur() draws the box past where it is by three deviations, its ink reaching as far, at any scale', async (t) => {

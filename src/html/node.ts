@@ -5287,7 +5287,12 @@ export class HtmlViewNode extends Node {
     // whether the last layout asked the document's least width, which core's
     // content floors do (`question` below)
     let question = false;
+    /** Whether the boxes were built apart in this pass, from the subtrees a
+     *  change reached, and the width the document was laid out at before. */
+    let builtApart = false;
+    let wasLaidAt = -2;
     for (let pass = 0; ; pass += 1) {
+      builtApart = false;
       if (this._stale >= Stale.Boxes || !this._tree) {
         const look = this._deviceLook();
         // A build a pointer move asked for styles the elements the move
@@ -5384,6 +5389,7 @@ export class HtmlViewNode extends Node {
           if (kept) timeline?.endOutside(tree.styles);
           return tree;
         };
+        this._lastMade = null;
         this._tree = build(true);
         // A build of some subtrees during a drag leaves what a restyle in
         // place owed what the drag set aside owed, and its tree stops where
@@ -5418,7 +5424,15 @@ export class HtmlViewNode extends Node {
         // a frame's build keeps them, for `_rebuildFrame` to move to the new
         // boxes or give up (`_carrySprites`)
         if (this._carryingFrom === null) this._sprites?.clear();
-        this._filtered?.staleAll();
+        // a filtered box the subtrees built apart did not reach draws what
+        // it drew: only those are drawn again
+        if (apart && this._lastMade) {
+          builtApart = true;
+          wasLaidAt = this._laidOutWidth;
+          this._filtered?.staleAmong(this._lastMade);
+        } else {
+          this._filtered?.staleAll();
+        }
         this._warmFaces(this._tree);
         this._textPoints = null;
         this._pointsAreUnits = null;
@@ -5564,7 +5578,9 @@ export class HtmlViewNode extends Node {
           this._sprites?.relaid((box, shape) =>
             shapesEqual(shape, layoutShape(box as Box)),
           );
-          this._filtered?.staleAll();
+          if (!(builtApart && wasLaidAt === target && !viewportMoved)) {
+            this._filtered?.staleAll();
+          }
         }
         this._documentWidth = result.width;
         this._documentHeight = result.height;
@@ -14578,6 +14594,8 @@ export class HtmlViewNode extends Node {
    * root in a shadow tree, or one holding one, is no root (`inLightTree`,
    * `holdsShadow`): a flat tree's order is not the document's there.
    */
+  /** The elements the last build apart made boxes for. */
+  private _lastMade: ReadonlySet<Element> | null = null;
   private _subtreeBuild(
     seeds: ReadonlySet<Element>,
     options: BuildOptions,
@@ -14636,6 +14654,11 @@ export class HtmlViewNode extends Node {
     // what the boxes around each new one measured of the old, for their
     // lives, is measured again
     for (const box of built.made) forgetSizes(box);
+    {
+      const els = new Set<Element>();
+      for (const box of built.made) if (box.el) els.add(box.el);
+      this._lastMade = els;
+    }
     // and each element's first box is the new tree's: its old where it was
     // kept, its new where it was built (`_firstBoxesOf`) — the index the
     // build was found with, which belongs to the tree it replaces
