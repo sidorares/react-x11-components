@@ -1127,6 +1127,44 @@ test("a box's clip, clip-path and mask cut what its filter made, after it", asyn
   }
 });
 
+test('a box both filtered and blended blends what its filter made', async (t: TestContext) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // CSS Compositing 1, 3.2: the group is blended, after its filter. The
+  // filtered box was drawn unblended (WPT's filter-effects/
+  // filter-with-mix-blend-mode): a grey square where a screen of it over
+  // green is lighter green
+  const result = await drawn(
+    '<div style="background:#008000;padding:10px">' +
+      '<div style="width:40px;height:20px;background:#ff0000;' +
+      'filter:grayscale();mix-blend-mode:screen"></div>' +
+      '<div style="width:40px;height:20px;background:#ff0000;' +
+      'filter:grayscale();transform:rotate(180deg);' +
+      'mix-blend-mode:screen"></div></div>',
+  );
+  const ctx = result.ctx;
+  // grey 54 screened over green 128: 54 + 128 - 54 * 128 / 255
+  await waitForPixel(ctx, 20, 20, '#369b36', { message: 'blended' });
+  await expectPixel(ctx, 20, 40, '#369b36', {
+    message: 'and through a matrix',
+  });
+});
+
+test('a filtered box is cut by its clip-path before it is blended', async (t: TestContext) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // Filter, then clip, then blend: the shadow is cut away, and what is
+  // left is screened over the ground, never a surface on the way
+  const result = await drawn(
+    '<div style="background:#008000;padding:10px;width:120px">' +
+      '<div style="width:40px;height:20px;background:#ff0000;' +
+      'filter:drop-shadow(40px 0 0 #0000ff);clip-path:inset(0);' +
+      'mix-blend-mode:screen"></div></div>',
+  );
+  const ctx = result.ctx;
+  // red 255 screened over green 128: #ff8000
+  await waitForPixel(ctx, 30, 20, '#ff8000', { message: 'blended' });
+  await expectPixel(ctx, 70, 20, '#008000', { message: 'the shadow cut' });
+});
+
 test('no backdrop is made where the box hides it, or no surface runs the filter', async () => {
   const { node } = await render(
     GLASS.replace('rgba(255, 255, 255, 0.5)', '#ffffff'),

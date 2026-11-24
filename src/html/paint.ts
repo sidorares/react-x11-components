@@ -2400,9 +2400,18 @@ function paintOwnBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   // what it has on its lines, ahead of what a group of its holds: that is
   // faded as it is drawn, in its colours (`inlineFade`, `paintsApart`)
   if (box.kind === 'inline') paintApart(ctx, box, options);
+  // a box both filtered and blended blends what its filter made (CSS
+  // Compositing 1, 3.2: blending is of the group, after the filter)
   if (
     box.style.filter !== null &&
-    paintFiltered(ctx, box, options, null, opacity)
+    paintFiltered(
+      ctx,
+      box,
+      options,
+      null,
+      opacity,
+      TRANSITION_IMAGES.has(box) ? null : blendOf(ctx, box),
+    )
   ) {
     return;
   }
@@ -2777,7 +2786,14 @@ function paintThroughInside(
   // comes before the transform)
   if (
     box.style.filter !== null &&
-    paintFiltered(ctx, box, inside, through, opacityOf(box))
+    paintFiltered(
+      ctx,
+      box,
+      inside,
+      through,
+      opacityOf(box),
+      TRANSITION_IMAGES.has(box) ? null : blendOf(ctx, box),
+    )
   ) {
     return;
   }
@@ -3690,12 +3706,13 @@ function paintFiltered(
   options: PaintOptions,
   through: Matrix | null,
   opacity: number,
+  blend: string | null = null,
 ): boolean {
   const colour = colourOf(box.style.filter!);
   if (!runsOverPixels(colour)) return false;
   const kept = filteredFor(ctx, box, options, through, colour!);
   if (kept === null) return false;
-  if (kept) drawFiltered(ctx, box, options, through, kept, opacity);
+  if (kept) drawFiltered(ctx, box, options, through, kept, opacity, blend);
   return true;
 }
 
@@ -3724,14 +3741,16 @@ function drawFiltered(
   through: Matrix | null,
   kept: Kept,
   opacity: number,
+  blend: string | null,
 ): void {
   const clips = (box.outOfFlow && box.style.clip !== null) || pathClips(box);
   const mask = masked(box.style);
   if (!clips && !mask) {
-    drawThrough(ctx, kept.surface, through, kept.x, kept.y, opacity);
+    drawThrough(ctx, kept.surface, through, kept.x, kept.y, opacity, blend);
     return;
   }
   ctx.save();
+  if (blend !== null) ctx.globalCompositeOperation = blend;
   if (through) ctx.transform!(...through);
   if (opacity < 1 && typeof ctx.globalAlpha === 'number') {
     ctx.globalAlpha *= opacity;
@@ -8869,6 +8888,8 @@ function clipOf(
   options: ClipSpace,
 ): { x: number; y: number; w: number; h: number } {
   const clip = box.style.clip!;
+  const turned = framed.any ? framedClipRect(box, clip, options) : null;
+  if (turned) return turned;
   const left = clip.left ?? 0;
   const top = clip.top ?? 0;
   const right = clip.right ?? box.width;
@@ -8880,6 +8901,45 @@ function clipOf(
     y,
     w: Math.round(box.x + options.originX + right) - x,
     h: Math.round(box.y + options.originY + bottom) - y,
+  };
+}
+
+/**
+ * A box's `clip` where the box is laid out in a frame turned a quarter
+ * (`makeFrame`): its edges are measured from the top left of its border box
+ * on the page (CSS 2.1 11.1.2), as `framedClipPath` has a shape, so the
+ * rectangle is laid out there and turned into the frame. Null where the
+ * box's axes are the page's.
+ */
+function framedClipRect(
+  box: Box,
+  clip: NonNullable<Box['style']['clip']>,
+  options: ClipSpace,
+): { x: number; y: number; w: number; h: number } | null {
+  const frame = frameOf(box);
+  if (!frame || quarterTurnsOf(box) % 2 === 0) return null;
+  const up = turnsUp(frameTurn(frame));
+  // the border box on the pixels its background is drawn on, as
+  // `framedClipPath` places a polygon: from its rounded corner, across it
+  // the frame's down and down it the frame's across
+  const x0 = box.x + options.originX;
+  const y0 = frameY(box) + options.originY;
+  const left = Math.round(x0);
+  const top = Math.round(y0);
+  const across = Math.round(x0 + box.width) - left;
+  const down = Math.round(y0 + frameHeight(box)) - top;
+  // a point of the page's border box where the frame has it
+  const on = (p: number, q: number): [number, number] =>
+    up ? [left + across - q, top + p] : [left + q, top + down - p];
+  const [ax, ay] = on(clip.left ?? 0, clip.top ?? 0);
+  const [bx, by] = on(clip.right ?? down, clip.bottom ?? across);
+  const x = Math.round(Math.min(ax, bx));
+  const y = Math.round(Math.min(ay, by));
+  return {
+    x,
+    y,
+    w: Math.round(Math.max(ax, bx)) - x,
+    h: Math.round(Math.max(ay, by)) - y,
   };
 }
 

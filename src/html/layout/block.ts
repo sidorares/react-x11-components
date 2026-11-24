@@ -11494,7 +11494,12 @@ function positionedIn(
         box.marginBottom = rest - box.marginTop;
       }
     }
-    y = cbY + top + box.marginTop;
+    // over-constrained, the inset at the containing block's block end gives
+    // way (CSS Position 3, 4.1): `bottom` in the frame, but in a frame put
+    // back across, where the frame's top is the block end, `top`
+    y = reversedDown
+      ? cbY + cbHeight - bottom - box.height - box.marginBottom
+      : cbY + top + box.marginTop;
   } else {
     y =
       top !== null

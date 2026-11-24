@@ -848,6 +848,36 @@ metric(
   },
 );
 
+test('an over-constrained absolute box in a vertical-lr block keeps its block-start inset', async () => {
+  // its block axis runs left to right, and of `left` and `right` both set
+  // with a width the block end's gives way (CSS Position 3, 4.1), as
+  // `bottom` does across: a vertical-lr frame is put back across before
+  // the box is placed, and the frame's top, which had held, is the page's
+  // right
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="position:relative;width:320px;height:320px;' +
+      'writing-mode:vertical-lr">' +
+      '<span id="lr" style="position:absolute;left:160px;right:160px;' +
+      'width:80px;height:20px"></span>' +
+      '<span id="rtl" dir="rtl" style="position:absolute;left:160px;' +
+      'right:160px;width:80px;height:20px"></span></div>' +
+      '<div style="position:relative;width:320px;height:320px;' +
+      'writing-mode:vertical-rl">' +
+      '<span id="rl" style="position:absolute;left:160px;right:160px;' +
+      'width:80px;height:20px"></span></div>',
+  );
+  const el = view(node);
+  const x = (id: string) => {
+    const r = el.elementRect(findById(el.document, id)!)!;
+    return r.x;
+  };
+  assert.strictEqual(x('lr'), 160, '`left` holds in vertical-lr');
+  assert.strictEqual(x('rtl'), 160, 'whatever the direction');
+  // and `right` in vertical-rl, whose block starts at the right
+  assert.strictEqual(x('rl'), 80, '`right` holds in vertical-rl');
+});
+
 metric('clip shows the part of an absolute box it names', async () => {
   const { node } = await render(
     '<div id="a" style="position:absolute;top:0;left:0;width:40px;' +
@@ -870,6 +900,39 @@ metric('clip shows the part of an absolute box it names', async () => {
     'an empty clip shows nothing',
   );
 });
+
+metric(
+  'clip in a vertical flow names the part of the box on the page',
+  async () => {
+    // its edges are measured from the border box's top left on the page
+    // (CSS 2.1 11.1.2), whatever the writing mode: in a vertical flow's
+    // frame they were the frame's, turned, and cut the wrong quarter
+    for (const mode of ['vertical-rl', 'vertical-lr', 'sideways-lr']) {
+      const { node, result } = await render(
+        '<style>body{margin:0;background:#ffffff}</style>' +
+          `<div style="writing-mode:${mode};width:100px;height:100px">` +
+          '<div style="position:absolute;top:0;left:0;width:40px;height:40px;' +
+          'background:#ff0000;clip:rect(0, 20px, 20px, 0)"></div></div>',
+      );
+      const el = view(node);
+      const { abs } = el as unknown as { abs: { x: number; y: number } };
+      for (const [x, y, shown] of [
+        [5, 5, true],
+        [30, 5, false],
+        [5, 30, false],
+        [30, 30, false],
+      ] as const) {
+        const [r, g] = await pixelAt(result.ctx, abs.x + x, abs.y + y);
+        assert.strictEqual(
+          r > 200 && g < 100,
+          shown,
+          `${mode}: drawn at ${x},${y}`,
+        );
+      }
+      await result.unmount();
+    }
+  },
+);
 
 metric(
   'what a clip cuts away is not under the pointer, and what paint draws past it is',
