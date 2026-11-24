@@ -48,6 +48,7 @@ import type {
 } from '../../src/html/index.js';
 import { HtmlViewNode } from '../../src/html/node.js';
 import { checkVersions } from './versions.js';
+import { fuzzyOf } from './fuzzy.js';
 
 const h = React.createElement;
 
@@ -155,39 +156,6 @@ function referencesOf(
     }
   }
   return out;
-}
-
-/** `<meta name=fuzzy content="maxDifference=a-b;totalPixels=c-d">`, the
- *  upper bounds of both; with a reference named, only for that one. */
-function fuzzyOf(
-  source: string,
-  refName: string,
-): { maxDifference: number; totalPixels: number } {
-  let allowed = { maxDifference: 0, totalPixels: 0 };
-  for (const tag of source.match(
-    /<(?:[\w.-]+:)?meta\b[^>]*name\s*=\s*["']fuzzy["'][^>]*>/gi,
-  ) ?? []) {
-    const content = /\bcontent\s*=\s*["']([^"']*)["']/i.exec(tag)?.[1];
-    if (!content) continue;
-    let spec = content;
-    const named = /^([^:;=]+):(.*)$/.exec(content);
-    if (named && !/=/.test(named[1])) {
-      if (!refName.endsWith(named[1].trim())) continue;
-      spec = named[2];
-    }
-    const parts = spec.split(';').map((p) => p.trim());
-    const upper = (s: string | undefined) => {
-      const m = /(\d+)\s*(?:-\s*(\d+))?\s*$/.exec(s ?? '');
-      return m ? Number(m[2] ?? m[1]) : 0;
-    };
-    const byName = (name: string, index: number) =>
-      parts.find((p) => p.startsWith(name + '=')) ?? parts[index];
-    allowed = {
-      maxDifference: upper(byName('maxDifference', 0)?.replace(/^.*=/, '')),
-      totalPixels: upper(byName('totalPixels', 1)?.replace(/^.*=/, '')),
-    };
-  }
-  return allowed;
 }
 
 /** A path of the checkout, and one there is a file at, or null: the
@@ -339,6 +307,22 @@ function servedCharset(file: string): string | undefined {
   if (!existsSync(headers)) return undefined;
   const type = /^content-type:(.*)$/im.exec(readFileSync(headers, 'utf8'));
   return type ? /charset=["']?([^;"'\s]+)/i.exec(type[1])?.[1] : undefined;
+}
+
+/** The headers a file's `.headers` has WPT's server send it with, as
+ *  `<Html headers>` takes a response's: a document's `Content-Language`
+ *  among them, which is its language where nothing in it says one. */
+function servedHeaders(file: string): [string, string][] | undefined {
+  const headers = `${file}.headers`;
+  if (!existsSync(headers)) return undefined;
+  const out: [string, string][] = [];
+  for (const line of readFileSync(headers, 'utf8').split(/\r?\n/)) {
+    const colon = line.indexOf(':');
+    if (colon > 0) {
+      out.push([line.slice(0, colon).trim(), line.slice(colon + 1).trim()]);
+    }
+  }
+  return out;
 }
 
 /** The extensions WPT's server sends as something other than CSS, of the
@@ -515,6 +499,7 @@ function tree(path: string): React.ReactElement {
         source: page.text,
         contentType: servedType(path),
         charset: page.charset,
+        headers: path === BLANK ? undefined : servedHeaders(path),
         partial: false,
         selectable: false,
         fontSize: 16,

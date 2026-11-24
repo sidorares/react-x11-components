@@ -6786,7 +6786,18 @@ than CSS is worked out in the drawing's copy** (`geometryLength`,
 `px` — it read `x2="2.5em"` as 2.5 and a `rem` as 16 — in user units,
 which are CSS pixels unzoomed, since a zoom is the scale the drawing is
 drawn at; a rule's lengths are read at the drawing's zoom and come to the
-same (`DrawingUnits`). An SVG _image_ is the same
+same (`DrawingUnits`). **The geometry properties are written as the
+attributes they stand for** (`placeBy`): `x`, `width`, `cx`, `r`, `d` and
+their kin, each only on the elements `GEOMETRY_OF` names, over the
+attribute, which is their presentation hint. A percentage among them is
+left for the copy's lengths, so a drawing a rule gives one is copied
+with its viewport (`placesByPercent`). A `<foreignObject>`'s place is
+its attribute's, since its HTML is laid out from that. **A rule that gives a
+drawing nothing but geometry is filed apart** (`_geometry`, made the first
+time a drawing asks), and asked only of the elements a geometry property
+applies to (`GEOMETRY_TAGS`), matched whole: a framework's `width` and
+`height` rules are thousands, and in `_shapes` every element of every
+drawing would be asked them and `live` would look for all they name. An SVG _image_ is the same
 cascade over a document of its own: `SvgDrawing.drawImage` builds a
 `Cascade` over the image's `<style>` sheets alone, one per colour scheme,
 tells it the image's `<svg>` is `:root` (the cascade's own `:root` is
@@ -7736,6 +7747,11 @@ run in its steps, in the order written (`ColourFilter.steps`): a shadow
 is cast from what the functions before it made, and the ones after run
 over it, so its matrices and its blur no longer say what it does. **Anything new a filter draws past
 the box joins `filterOutsets`**, or it is cut at the box's ink.
+**The box's own `clip`, `clip-path` and mask cut what the filter made**
+(`drawFiltered`, CSS Masking 1's filter, clip, mask, opacity): the group
+it runs over is painted without them (`paintFilterGroup`), over the ink
+the path has not cut (`FILTERED_INK`), and its own overflow clip stays in
+the group. Cut first, a `drop-shadow()` reached past them.
 **A read is made stale, never dropped** (`stale`, through
 `_dropSprites`): a page whose animations build the document every frame
 — ekazinich.com's — dropped the read at each build, and those frames drew
@@ -8555,7 +8571,15 @@ is the case to build next, and it needs the strip's offsets by flow and
 not by column alone. **What overflows a flex container or an item takes no
 part in where the columns break** (`clipped`, `below`): a box of a height
 of its own holds what follows it to that height, and content past it
-grouped with what follows would push it a column on. **A flex box its
+grouped with what follows would push it a column on. It is still cut into
+the columns it reaches, as a browser carries an item's overflow on: where
+it ends is found among all the groups once they are made (`endBelow`),
+and asked while they were still being made it found only those before it,
+and ran down past its column's foot. A box that goes whole for the
+breaks has its overflow cut into the columns after it as an out-of-flow
+box's is (`place`, `cutIntoColumns`), and one that fits its first column no
+longer ends the layout there; what an `overflow: clip` box holds stays in
+the column that box ends in (`stays`). **A flex box its
 items size has no room to cut below them** (`sizedByItems`): that is their
 margins and its padding, which a break drops. And **forced breaks are read
 from the passive record** (`forces`, `style.passive['break-before']`): a
@@ -8744,10 +8768,17 @@ navbar, and every Docusaurus page repainted its whole pane at each notch
 of the wheel. **The scroll keys are `<Html>`'s root's**, since clicking a
 document focuses it and core runs `defaultKeyDown` on the focused node
 alone: `scrollForKey` chains from the focused link or the last press out
-to the pane. And **the bars are a pass of their own at the end of
-`paintDocument`** (`paintScrollBars`): a container that is no stacking
+to the pane. And **a container's bars are painted at its place in the
+paint order** (`arrangeBars`): after the last of its stacking context's
+layers that it holds, or after that context's flow where it holds none,
+so the positioned boxes it holds are under them and what is painted after
+it is over them, as Chrome draws them. A container that is no stacking
 context is painted in its context's flow passes, and nothing of its own
-paints after what it scrolls. A press on one is the node's
+paints after what it scrolls, which is why the place is worked out before
+the paint and not taken from it. One in a frame of a writing mode, in the
+top layer, or whose place the paint did not reach is painted in the pass
+at the end of `paintDocument` (`paintScrollBars`), over everything, as all
+of them were. A press on one is the node's
 (`defaultMouseDown`), and `<Html>`'s capture handlers keep it from the
 links and the page (`scrollBarAt`). `isScroller` is true of a box that
 is `overflow: hidden`, which shows no bar, and `scrollStateOf` is a walk

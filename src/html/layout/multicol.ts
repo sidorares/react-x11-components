@@ -121,6 +121,9 @@ interface Unit {
    *  what overflows a flex item, or a flex container of a height of its
    *  own, takes no part in where the columns break (`gather`). */
   below?: number;
+  /** Whether what runs past `below`'s box is held there by an `overflow:
+   *  clip` box, and is cut into no column after it (`cutIntoColumns`). */
+  stays?: true;
   /** Whether a forced break comes before it (CSS Fragmentation 3, 3.1),
    *  and where the column after it starts: above the margin it keeps. */
   forced?: number;
@@ -357,9 +360,10 @@ function avoids(value: string | undefined): boolean {
 }
 
 /** Make a unit end, for the breaks, no lower than a box it is in. */
-function clipped(unit: Unit, clip: number): Unit {
+function clipped(unit: Unit, clip: number, stay = Infinity): Unit {
   if (unit.bottom > clip + EPS) {
     unit.below = unit.bottom;
+    if (stay <= clip + EPS) unit.stays = true;
     unit.bottom = Math.max(clip, Math.min(unit.top, clip));
     unit.top = Math.min(unit.top, clip);
     unit.size = unit.bottom - unit.top;
@@ -458,6 +462,9 @@ function gather(
   into: Gathered,
   /** How far down what is gathered may reach, for the breaks. */
   clip = Infinity,
+  /** Where a box around it that clips its overflow ends: what runs past it
+   *  stays where it is, clipped, and is cut into no column after. */
+  stay = Infinity,
 ): [Unit, Unit] | null {
   let first: Unit | null = null;
   let last: Unit | null = null;
@@ -479,6 +486,7 @@ function gather(
   // of its own (CSS Overflow 3, 3; WPT's css-break/overflow-clip-005)
   if (!box.style.columns && box.style.overflowY === 'clip') {
     clip = Math.min(clip, box.y + box.height);
+    stay = Math.min(stay, box.y + box.height);
   }
   // a flex container's items, and a grid's, stand side by side down the
   // strip: its first is the one that starts highest, its last the one that
@@ -514,7 +522,7 @@ function gather(
         end: 0,
         group: NO_GROUP,
       };
-      into.units.push(clipped(made(unit), clip));
+      into.units.push(clipped(made(unit), clip, stay));
       into.lines.set(line, unit);
       first ??= unit;
       last = unit;
@@ -602,7 +610,7 @@ function gather(
         end: 0,
         group: NO_GROUP,
       };
-      into.units.push(clipped(made(unit), clip));
+      into.units.push(clipped(made(unit), clip, stay));
       into.boxes.set(child, unit);
       // a box with nothing in it whose height is its border box's has its
       // cloned edges in that height, which its pieces share out: no room
@@ -624,7 +632,7 @@ function gather(
     }
     const outside = into.beside;
     into.beside ||= beside;
-    const span = gather(child, into, clip);
+    const span = gather(child, into, clip, stay);
     into.beside = outside;
     // a box `break-inside: avoid` cannot keep whole starts a column, where
     // nothing comes before it in it, and is broken where it must be (CSS
@@ -649,7 +657,7 @@ function gather(
         end: 0,
         group: NO_GROUP,
       };
-      into.units.push(clipped(made(unit), clip));
+      into.units.push(clipped(made(unit), clip, stay));
       into.boxes.set(child, unit);
       // a box with nothing in it whose height is its border box's has its
       // cloned edges in that height, which its pieces share out: no room
@@ -679,7 +687,7 @@ function gather(
     // its items by their margins and its own padding: a break drops those
     const bottom = child.y + child.height;
     if (bottom > span[1].bottom + EPS && !sizedByItems(child)) {
-      span[1] = clipped(space(span[1].bottom, bottom, null, into), clip);
+      span[1] = clipped(space(span[1].bottom, bottom, null, into), clip, stay);
       if (!beside && !into.beside) {
         (into.rooms ??= new Map()).set(span[1], child);
       }
@@ -800,7 +808,7 @@ function groupsOf(units: Unit[]): Group[] {
     }
     unit.group = group;
   }
-  if (!sliced.length) return groups;
+  if (!sliced.length) return endBelow(units, groups);
   // and what a break may fall anywhere in, in what of the strip the rest
   // leaves: beside an item of a flex row it is cut where the item is not,
   // as the items of a row are each broken on their own account (CSS
@@ -841,13 +849,23 @@ function groupsOf(units: Unit[]): Group[] {
       unit.group.forced = Math.min(unit.group.forced ?? Infinity, unit.forced);
     }
     if (unit.avoid && unit.group.top >= unit.top - EPS) unit.group.avoid = true;
-    unit.ends =
-      unit.below !== undefined
-        ? groupAt(groups, unit.below, true)
-        : (pieces[pieces.length - 1] ?? groupAt(groups, unit.bottom, true));
+    unit.ends = pieces[pieces.length - 1] ?? groupAt(groups, unit.bottom, true);
   }
   // what has no height before what starts where it is, as it was gathered
   groups.sort((a, b) => a.top - b.top || a.bottom - b.bottom);
+  // and what overflows a box that ends it sooner for the breaks ends where
+  // it reaches, among all the groups: it makes no break, and is cut into
+  // the columns that reach it, as a browser carries an item's overflow on
+  // into the next column (WPT's css-break/flexbox/*-fragmentation-002).
+  // Asked while the groups beside it were still being made, it found only
+  // those before it, and stayed in its first column, past its foot
+  return endBelow(units, groups);
+}
+
+function endBelow(units: Unit[], groups: Group[]): Group[] {
+  for (const unit of units) {
+    if (unit.below !== undefined) unit.ends = groupAt(groups, unit.below, true);
+  }
   return groups;
 }
 
@@ -1636,11 +1654,20 @@ export function layoutColumns(
   const answer = rowOf ? reach : height;
   // all in one column where it started, and nothing to move — but a float
   // that is cut where the column ends, which may reach past it
+  // — and nothing that overflows a box ending it sooner for the breaks
+  // runs on past the first column, which is cut into the columns after
+  // (`place`)
   if (
     from === top &&
     topOf(0) === top &&
     !gathered.loose.size &&
-    (!groups.length || done.starts.length === 1)
+    (!groups.length || done.starts.length === 1) &&
+    !gathered.units.some(
+      (unit) =>
+        unit.below !== undefined &&
+        !unit.stays &&
+        unit.below > top + heightOf(0) + EPS,
+    )
   ) {
     return answer;
   }
@@ -2570,8 +2597,31 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
   const first = span ? span[0].group.column : 0;
   const last = span ? (span[1].ends ?? span[1].group).last : to.tops.length - 1;
   if (span && first === last && !gathered.loose.has(box)) {
-    shift(box, first, to);
-    return;
+    // a box that goes whole for the breaks, and overflows a box that ends
+    // it sooner for them (`clipped`) past the room of its column: what runs
+    // on is cut into the columns after it, as an out-of-flow box's is
+    // (`cutIntoColumns`). Moved whole, a flex item's overflow ran down past
+    // the foot of the multicol (WPT's css-break/flexbox/
+    // flex-item-content-overflow-001a)
+    const below = span[1].below;
+    if (
+      span[0] === span[1] &&
+      below !== undefined &&
+      !span[1].stays &&
+      below > to.room(first) + EPS &&
+      !to.holds?.size
+    ) {
+      cutIntoColumns(box, to.geometry, (b, dx, dy) =>
+        moveTo(b, b.x + dx, b.y + dy),
+      );
+      return;
+    }
+    // and one whose content runs on past its column has what it holds
+    // placed a box at a time, so that such a box in it is reached
+    if (!(span[0] !== span[1] && flowReach(box) > to.room(first) + EPS)) {
+      shift(box, first, to);
+      return;
+    }
   }
   const was = { x: box.x, y: box.y, width: box.width, height: box.height };
   // A box whose height is not what it holds came to — one of its own, or
