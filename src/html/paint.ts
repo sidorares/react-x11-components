@@ -5168,6 +5168,43 @@ function paintMasked(
   box: Box,
   options: PaintOptions,
 ): boolean {
+  return paintMaskedAs(
+    ctx,
+    box,
+    options,
+    [{ box, clip: null }],
+    {
+      x: box.x,
+      y: frameY(box),
+      width: box.width,
+      height: frameHeight(box),
+    },
+    (on, at) => paintClipped(on, box, at),
+  );
+}
+
+/** Where a mask's layers are laid down: a box whose geometry places them,
+ *  cut to a rectangle of the document's where it is one piece of more. */
+interface MaskArea {
+  box: Box;
+  clip: Rect | null;
+}
+
+/**
+ * A box painted on a surface and cut by its mask (`paintMasked`): the mask
+ * layers laid down in each of `areas`, in the box they name, and `paint`
+ * the content, all within `bounds`, in the document's coordinates. False
+ * where there is no surface to draw on, or no `destination-in` to draw
+ * with, and the caller paints the box unmasked.
+ */
+function paintMaskedAs(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  areas: readonly MaskArea[],
+  bounds: Rect,
+  paint: (on: PaintContext, options: PaintOptions) => void,
+): boolean {
   const layers = maskLayersOf(box.style);
   const drawable = layers.some((layer) => {
     if (layer.backgroundGradient) return true;
@@ -5177,10 +5214,10 @@ function paintMasked(
   });
   if (!drawable) return true;
   if (!options.surface || !ctx.drawImage) return false;
-  let x0 = Math.floor(box.x + options.originX);
-  let y0 = Math.floor(frameY(box) + options.originY);
-  let x1 = Math.ceil(box.x + box.width + options.originX);
-  let y1 = Math.ceil(frameY(box) + frameHeight(box) + options.originY);
+  let x0 = Math.floor(bounds.x + options.originX);
+  let y0 = Math.floor(bounds.y + options.originY);
+  let x1 = Math.ceil(bounds.x + bounds.width + options.originX);
+  let y1 = Math.ceil(bounds.y + bounds.height + options.originY);
   const damage = options.damage;
   if (damage) {
     x0 = Math.max(x0, Math.floor(damage.x));
@@ -5198,27 +5235,48 @@ function paintMasked(
     const cctx = content.getContext('2d') as PaintContext;
     const mctx = mask.getContext('2d') as PaintContext;
     const on = onSurface(options, x0, y0, w, h);
+    // a layer in each area, cut to it where it is a piece
+    const lay = (to: PaintContext, layer: ComputedStyle): void => {
+      for (const area of areas) {
+        const lon = maskLayerOptions(area.box, layer, on);
+        const cut = area.clip;
+        if (cut) {
+          // on the pixels the fragment's text is drawn from, as a box's
+          // edges are
+          const left = Math.round(cut.x + on.originX);
+          const top = Math.round(cut.y + on.originY);
+          to.save();
+          to.beginPath?.();
+          to.rect?.(
+            left,
+            top,
+            Math.round(cut.x + cut.width + on.originX) - left,
+            Math.round(cut.y + cut.height + on.originY) - top,
+          );
+          to.clip?.();
+        }
+        paintLayer(to, area.box, lon, layer, frameImages(to, area.box, lon));
+        if (cut) to.restore();
+      }
+    };
     const composites = box.style.mask.composites;
     for (let i = layers.length - 1; i >= 0; i -= 1) {
       const op = composites[i % composites.length];
       // the bottom layer has nothing below it to composite with (7.8)
       if (op === 'add' || i === layers.length - 1) {
-        const lon = maskLayerOptions(box, layers[i], on);
-        paintLayer(mctx, box, lon, layers[i], frameImages(mctx, box, lon));
+        lay(mctx, layers[i]);
         continue;
       }
       const one = options.surface(w, h);
       if (!one) return false;
       try {
-        const octx = one.getContext('2d') as PaintContext;
-        const lon = maskLayerOptions(box, layers[i], on);
-        paintLayer(octx, box, lon, layers[i], frameImages(octx, box, lon));
+        lay(one.getContext('2d') as PaintContext, layers[i]);
         compositeMask(mctx, one, op);
       } finally {
         one.destroy?.();
       }
     }
-    paintClipped(cctx, box, on);
+    paint(cctx, on);
     cctx.globalCompositeOperation = 'destination-in';
     if (cctx.globalCompositeOperation !== 'destination-in') return false;
     cctx.drawImage!(mask, 0, 0);
@@ -8745,6 +8803,8 @@ function clipOf(
   options: ClipSpace,
 ): { x: number; y: number; w: number; h: number } {
   const clip = box.style.clip!;
+  const turned = framed.any ? framedClipRect(box, clip, options) : null;
+  if (turned) return turned;
   const left = clip.left ?? 0;
   const top = clip.top ?? 0;
   const right = clip.right ?? box.width;
@@ -8756,6 +8816,45 @@ function clipOf(
     y,
     w: Math.round(box.x + options.originX + right) - x,
     h: Math.round(box.y + options.originY + bottom) - y,
+  };
+}
+
+/**
+ * A box's `clip` where the box is laid out in a frame turned a quarter
+ * (`makeFrame`): its edges are measured from the top left of its border box
+ * on the page (CSS 2.1 11.1.2), as `framedClipPath` has a shape, so the
+ * rectangle is laid out there and turned into the frame. Null where the
+ * box's axes are the page's.
+ */
+function framedClipRect(
+  box: Box,
+  clip: NonNullable<Box['style']['clip']>,
+  options: ClipSpace,
+): { x: number; y: number; w: number; h: number } | null {
+  const frame = frameOf(box);
+  if (!frame || quarterTurnsOf(box) % 2 === 0) return null;
+  const up = turnsUp(frameTurn(frame));
+  // the border box on the pixels its background is drawn on, as
+  // `framedClipPath` places a polygon: from its rounded corner, across it
+  // the frame's down and down it the frame's across
+  const x0 = box.x + options.originX;
+  const y0 = frameY(box) + options.originY;
+  const left = Math.round(x0);
+  const top = Math.round(y0);
+  const across = Math.round(x0 + box.width) - left;
+  const down = Math.round(y0 + frameHeight(box)) - top;
+  // a point of the page's border box where the frame has it
+  const on = (p: number, q: number): [number, number] =>
+    up ? [left + across - q, top + p] : [left + q, top + down - p];
+  const [ax, ay] = on(clip.left ?? 0, clip.top ?? 0);
+  const [bx, by] = on(clip.right ?? down, clip.bottom ?? across);
+  const x = Math.round(Math.min(ax, bx));
+  const y = Math.round(Math.min(ay, by));
+  return {
+    x,
+    y,
+    w: Math.round(Math.max(ax, bx)) - x,
+    h: Math.round(Math.max(ay, by)) - y,
   };
 }
 
@@ -10107,17 +10206,81 @@ function paintApart(ctx: PaintContext, box: Box, options: PaintOptions): void {
   let block = box.parent;
   while (block && block.kind === 'inline') block = block.parent;
   if (!block) return;
-  // under its `clip-path`, measured in its first fragment
-  let pushed = false;
-  if (box.style.clipPath) {
-    const first = firstFragmentBox(box);
-    if (!first) return;
-    const path = clipPathOf(first, options);
-    if (!(path.rect.w > 0 && path.rect.h > 0)) return;
-    pushed = pushPathClip(ctx, path);
+  const content = (on: PaintContext, at: PaintOptions): void => {
+    // under its `clip-path`, measured in its first fragment
+    let pushed = false;
+    if (box.style.clipPath) {
+      const first = firstFragmentBox(box);
+      if (!first) return;
+      const path = clipPathOf(first, at);
+      if (!(path.rect.w > 0 && path.rect.h > 0)) return;
+      pushed = pushPathClip(on, path);
+    }
+    paintLines(on, block, at, box);
+    if (pushed) on.restore();
+  };
+  // and its mask, laid down in its fragments (`maskAreas`)
+  if (masked(box.style)) {
+    const areas = maskAreas(box);
+    if (!areas) return;
+    const bounds = areas.bounds;
+    if (paintMaskedAs(ctx, box, options, areas.areas, bounds, content)) return;
   }
-  paintLines(ctx, block, options, box);
-  if (pushed) ctx.restore();
+  content(ctx, options);
+}
+
+/**
+ * Where an inline box's mask is laid down (CSS Masking 1, 7; CSS
+ * Fragmentation 3, 5.4): each fragment cut out of the box its fragments
+ * make laid end to end, where its `box-decoration-break` slices it, or a
+ * box of its own with all its edges, where it clones them. And the
+ * rectangle around them all, in the document's coordinates. Null for a box
+ * on no line.
+ */
+function maskAreas(box: Box): { areas: MaskArea[]; bounds: Rect } | null {
+  const pieces = fragmentBoxes(box);
+  if (!pieces.length) return null;
+  const clone = box.style.boxDecorationBreak === 'clone';
+  const total = pieces.reduce((sum, piece) => sum + piece.width, 0);
+  const rtl = box.style.direction === 'rtl';
+  let before = 0;
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  const areas: MaskArea[] = [];
+  for (const piece of pieces) {
+    const clip = {
+      x: piece.x,
+      y: piece.y,
+      width: piece.width,
+      height: piece.height,
+    };
+    x0 = Math.min(x0, clip.x);
+    y0 = Math.min(y0, clip.y);
+    x1 = Math.max(x1, clip.x + clip.width);
+    y1 = Math.max(y1, clip.y + clip.height);
+    if (clone) {
+      const whole = Object.create(piece) as Box;
+      whole.borderLeft = box.borderLeft;
+      whole.borderRight = box.borderRight;
+      whole.padLeft = box.padLeft;
+      whole.padRight = box.padRight;
+      areas.push({ box: whole, clip: null });
+      continue;
+    }
+    // the strip the fragments make, this one's part of it where it is
+    const strip = Object.create(piece) as Box;
+    strip.x = rtl ? piece.x - (total - before - piece.width) : piece.x - before;
+    strip.width = total;
+    strip.borderLeft = box.borderLeft;
+    strip.borderRight = box.borderRight;
+    strip.padLeft = box.padLeft;
+    strip.padRight = box.padRight;
+    areas.push({ box: strip, clip });
+    before += piece.width;
+  }
+  return { areas, bounds: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } };
 }
 
 /**
@@ -10129,39 +10292,49 @@ function paintApart(ctx: PaintContext, box: Box, options: PaintOptions): void {
  * shape, where it is. Null for a box on no line.
  */
 function firstFragmentBox(box: Box): Box | null {
+  return fragmentBoxes(box, true)[0] ?? null;
+}
+
+/** Each fragment of an inline box as `firstFragmentBox` makes the first, in
+ *  the order its lines are; only the first where `first` says. */
+function fragmentBoxes(box: Box, first = false): Box[] {
+  const out: Box[] = [];
   const face = box.decoration;
   const lines = linesAround(box);
-  if (!face || !lines) return null;
+  if (!face || !lines) return out;
   const moved = offsetOf(box);
   for (const line of lines) {
-    const f = fragmentsOn(line, false)?.get(box)?.[0];
-    if (!f) continue;
-    const raise = SHIFTED_LINES.has(line)
-      ? (LINE_BOX_RAISES.get(line)?.get(box) ?? BOX_RAISES.get(box) ?? 0)
-      : 0;
-    const baseline = line.y + line.baseline - raise;
-    const top = baseline - face.ascent - box.padTop - box.borderTop;
-    const bottom = baseline + face.descent + box.padBottom + box.borderBottom;
-    const rtl = box.style.direction === 'rtl';
-    const leftEnds = rtl ? f.end : f.start;
-    const rightEnds = rtl ? f.start : f.end;
-    const first = Object.create(box) as Box;
-    first.x = f.left + (moved?.x ?? 0);
-    first.y = top + (moved?.y ?? 0);
-    first.width = f.right - f.left;
-    first.height = bottom - top;
-    // its margins above and below, which no line reads, for `margin-box`,
-    // of its block's width as every margin is
-    let block = box.parent;
-    while (block && block.kind === 'inline') block = block.parent;
-    const across = block?.contentWidth ?? 0;
-    first.marginTop = resolve(box.style.marginTop, across);
-    first.marginBottom = resolve(box.style.marginBottom, across);
-    if (!leftEnds) first.borderLeft = first.padLeft = first.marginLeft = 0;
-    if (!rightEnds) first.borderRight = first.padRight = first.marginRight = 0;
-    return first;
+    for (const f of fragmentsOn(line, false)?.get(box) ?? []) {
+      const raise = SHIFTED_LINES.has(line)
+        ? (LINE_BOX_RAISES.get(line)?.get(box) ?? BOX_RAISES.get(box) ?? 0)
+        : 0;
+      const baseline = line.y + line.baseline - raise;
+      const top = baseline - face.ascent - box.padTop - box.borderTop;
+      const bottom = baseline + face.descent + box.padBottom + box.borderBottom;
+      const rtl = box.style.direction === 'rtl';
+      const leftEnds = rtl ? f.end : f.start;
+      const rightEnds = rtl ? f.start : f.end;
+      const piece = Object.create(box) as Box;
+      piece.x = f.left + (moved?.x ?? 0);
+      piece.y = top + (moved?.y ?? 0);
+      piece.width = f.right - f.left;
+      piece.height = bottom - top;
+      // its margins above and below, which no line reads, for `margin-box`,
+      // of its block's width as every margin is
+      let block = box.parent;
+      while (block && block.kind === 'inline') block = block.parent;
+      const across = block?.contentWidth ?? 0;
+      piece.marginTop = resolve(box.style.marginTop, across);
+      piece.marginBottom = resolve(box.style.marginBottom, across);
+      if (!leftEnds) piece.borderLeft = piece.padLeft = piece.marginLeft = 0;
+      if (!rightEnds) {
+        piece.borderRight = piece.padRight = piece.marginRight = 0;
+      }
+      out.push(piece);
+      if (first) return out;
+    }
   }
-  return null;
+  return out;
 }
 
 /**
