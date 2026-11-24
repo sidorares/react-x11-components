@@ -523,6 +523,36 @@ test("a gradient's colours mix in the space it names, or oklab for a colour no l
   );
 });
 
+test('a gradient mixes in a predefined space whose name has a digit in it', async () => {
+  // `in display-p3`, `in rec2020`, `in xyz-d50`: the method was cut from
+  // the first argument at its first digit, and what was left of it was no
+  // direction, so the gradient was dropped (WPT's css-images/gradient/
+  // display-p3-linear-gradient)
+  const spaces = [
+    'display-p3',
+    'display-p3-linear',
+    'rec2020',
+    'a98-rgb',
+    'xyz-d50',
+  ];
+  const { node } = await render(
+    '<style>body{margin:0}div{width:100px;height:4px}</style>' +
+      spaces
+        .map(
+          (space) =>
+            `<div style="background-image:linear-gradient(to right in ${space},#ff0000,#00ff00)"></div>`,
+        )
+        .join(''),
+  );
+  const gradients = (await fillsOf(view(node)))
+    .map((f) => f.style as { line?: number[]; stops?: [number, string][] })
+    .filter((g) => g && g.line);
+  assert.strictEqual(gradients.length, spaces.length);
+  for (const [i, g] of gradients.entries()) {
+    assert.ok(g.stops!.length > 2, `${spaces[i]}: mixed in its space`);
+  }
+});
+
 /** A colour's channels, 0 to 255, from a hex or an rgb()/rgba() string. */
 function parseRgb(color: string): number[] {
   const hex = /^#([0-9a-f]{6})$/i.exec(color);

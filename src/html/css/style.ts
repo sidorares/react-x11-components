@@ -8098,7 +8098,7 @@ function withoutInterpolation(arg: string): string {
   return arg
     .toLowerCase()
     .replace(
-      /\bin\s+[a-z-]+(?:\s+(?:shorter|longer|increasing|decreasing)\s+hue)?/,
+      /\bin\s+[a-z0-9-]+(?:\s+(?:shorter|longer|increasing|decreasing)\s+hue)?/,
       '',
     )
     .trim();
