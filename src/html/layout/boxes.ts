@@ -1408,6 +1408,11 @@ export interface BoxTree {
   /** Whether any box has a `reading-flow`: where none has, Tab goes in the
    *  document's order and nothing asks the boxes (`inReadingOrder`). */
   readingFlow: boolean;
+  /** Whether any inline box is positioned: where none is, no block was
+   *  broken around one, and the paint asks no block whether it is painted
+   *  in such a box's layer (`brokenZIndex`, paint.ts). A box a restyle in
+   *  place gives a `z-index` stays positioned, so the flag covers it. */
+  positionedInline: boolean;
   /** Whether any box has an `anchor-name`: where none has, no positioned
    *  box looks for an anchor (`layoutPositioned`). */
   anchors: boolean;
@@ -1627,6 +1632,7 @@ interface SubtreeBuild {
     | 'relative'
     | 'tilted'
     | 'readingFlow'
+    | 'positionedInline'
     | 'anchors'
     | 'negative'
     | 'trims'
@@ -2588,6 +2594,7 @@ export function buildSubtrees(
     relative: flag('relative'),
     tilted: flag('tilted'),
     readingFlow: flag('readingFlow'),
+    positionedInline: flag('positionedInline'),
     anchors: flag('anchors'),
     negative: flag('negative'),
     trims: flag('trims'),
@@ -3750,6 +3757,7 @@ class Builder {
    *  with that flow's writing mode. */
   private _turnBack = new Map<Box, ComputedStyle['writingMode']>();
   private _readingFlow = false;
+  private _positionedInline = false;
   private _anchors = false;
   private _trims = false;
   private _negative = false;
@@ -4094,6 +4102,7 @@ class Builder {
         relative: this._relative,
         tilted: this._tilted,
         readingFlow: this._readingFlow,
+        positionedInline: this._positionedInline,
         anchors: this._anchors,
         negative: this._negative,
         trims: this._trims,
@@ -4181,6 +4190,7 @@ class Builder {
       tilted: this._tilted || outOfPlane(rootStyle),
       vertical: this._orthogonal.length > 0,
       readingFlow: this._readingFlow || rootStyle.readingFlow !== 'normal',
+      positionedInline: this._positionedInline,
       anchors: this._anchors || rootStyle.anchorNames !== null,
       negative: this._negative,
       trims: this._trims,
@@ -4547,6 +4557,9 @@ class Builder {
       this._children(el, into, style, inFlex, el, key);
       this._pseudo(el, 'after', style, into);
       return;
+    }
+    if (style.position !== 'static' && style.display === 'inline') {
+      this._positionedInline = true;
     }
     if (isRelative(style)) {
       this._relative = true;
@@ -5318,6 +5331,9 @@ class Builder {
       own.display === 'contents'
         ? contentsStyle(own, this._options.cascade.initial)
         : own;
+    if (style.position !== 'static' && style.display === 'inline') {
+      this._positionedInline = true;
+    }
     if (isRelative(style)) {
       this._relative = true;
       if (style.display === 'inline' && isOffset(style)) {
