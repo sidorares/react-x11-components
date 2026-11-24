@@ -4,6 +4,7 @@ import { afterEach, test } from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert';
 import React from 'react';
+import { PNG } from 'pngjs';
 import {
   act,
   cleanup,
@@ -1452,6 +1453,50 @@ metric(
     await expectPixel(ctx, 35, 110, '#ff0000', {
       message:
         'an SVG <mask> named by a fragment is not drawn, nor is its want',
+    });
+  },
+);
+
+metric(
+  "a mask layer of mask-mode luminance is its image's luminance",
+  async () => {
+    // CSS Masking 1, 7.3: luminance times alpha, where every layer was taken
+    // by its alpha, so a white and a black half both showed the element
+    // (WPT mask-mode-a to d). A gradient's stops, a decoded image's pixels
+    // and an SVG image's drawing are each made so.
+    const halves =
+      `<svg ${SVG_NS} width="20" height="20">` +
+      '<rect width="10" height="20" fill="#ffffff"/>' +
+      '<rect x="10" width="10" height="20" fill="#000000"/></svg>';
+    const png = new PNG({ width: 20, height: 20 });
+    for (let i = 0; i < 400; i++) {
+      const white = i % 20 < 10 ? 255 : 0;
+      png.data.set([white, white, white, 255], i * 4);
+    }
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0;background:#ffffff}div{width:20px;height:20px;' +
+        'background:#ff0000;mask-size:100% 100%;mask-mode:luminance}' +
+        '#g{mask-image:linear-gradient(to right,#ffffff 50%,#000000 50%)}' +
+        '#s{mask-image:url(h.svg)}#p{mask-image:url(h.png)}' +
+        '#a{mask-image:url(h.svg);mask-mode:alpha}</style>' +
+        '<div id="g"></div><div id="s"></div><div id="p"></div>' +
+        '<div id="a"></div>',
+      {
+        'h.svg': svgBytes(halves),
+        'h.png': new Uint8Array(PNG.sync.write(png)),
+      },
+    );
+    const ctx = result.ctx;
+    for (const [i, what] of ['a gradient', 'an SVG', 'a PNG'].entries()) {
+      await expectPixel(ctx, 5, 20 * i + 10, '#ff0000', {
+        message: `${what}'s white half`,
+      });
+      await expectPixel(ctx, 15, 20 * i + 10, '#ffffff', {
+        message: `${what}'s black half`,
+      });
+    }
+    await expectPixel(ctx, 15, 70, '#ff0000', {
+      message: 'black and opaque, as alpha',
     });
   },
 );
