@@ -1449,9 +1449,42 @@ metric(
     await expectPixel(ctx, 15, 90, '#ffffff', {
       message: "the pseudo-element's mask",
     });
-    await expectPixel(ctx, 35, 110, '#ff0000', {
-      message:
-        'an SVG <mask> named by a fragment is not drawn, nor is its want',
+    await expectPixel(ctx, 35, 110, '#ffffff', {
+      message: 'a url(#id) that names no <mask> is a transparent layer',
+    });
+  },
+);
+
+metric(
+  'a mask-image url(#id) is the <mask> it names in the document',
+  async () => {
+    // CSS Masking 1, 7.1: the mask's content drawn over the box, in its
+    // units, by its mask-type or the layer's mask-mode. It was no layer at
+    // all, and the box was drawn whole (WPT mask-image-url-local-mask,
+    // mask-composite-1c, mask-opacity-1d)
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0;background:#ffffff}div{width:40px;height:20px;' +
+        'background:#ff0000}#u{mask-image:url(#user)}' +
+        '#b{mask-image:url(#box)}#a{mask-image:url(#box);mask-mode:alpha}' +
+        '</style><div id="u"></div><div id="b"></div><div id="a"></div>' +
+        `<svg ${SVG_NS} width="0" height="0">` +
+        '<mask id="user"><rect width="10" height="20" fill="#ffffff"/></mask>' +
+        '<mask id="box" maskContentUnits="objectBoundingBox">' +
+        '<rect width="0.5" height="1" fill="#ffffff"/>' +
+        '<rect x="0.5" width="0.5" height="1" fill="#000000"/></mask></svg>',
+      {},
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 5, 10, '#ff0000', { message: 'in its rect' });
+    await expectPixel(ctx, 15, 10, '#ffffff', { message: 'past it' });
+    await expectPixel(ctx, 15, 30, '#ff0000', {
+      message: "in a fraction of the box's",
+    });
+    await expectPixel(ctx, 35, 30, '#ffffff', {
+      message: 'black, by its luminance',
+    });
+    await expectPixel(ctx, 35, 50, '#ff0000', {
+      message: 'black and opaque, by the alpha the layer asks for',
     });
   },
 );
