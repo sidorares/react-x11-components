@@ -367,6 +367,64 @@ test("an inline box's background is painted over the text before it that it reac
   assert.strictEqual(hung.red, 0, 'and over the line before it hangs over');
 });
 
+test('on a layout that cannot be drawn in pieces, a background over the text before it is painted as before', async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // CoreText's layouts on macOS, as any engine's but ntk's, cannot be cut
+  // a line at a time (`onlyOf`), so the interleave leaves them: the
+  // block's backgrounds are painted first and its text drawn whole, once,
+  // as before. Here ntk's layouts are stood in for by copies that are no
+  // ntk layouts.
+  for (const source of [
+    '<div style="font:20px/30px monospace;color:#ff0000">MM<span ' +
+      'style="margin-left:-24px;background:#00ff00">..</span></div>',
+    '<div style="font:40px/4px monospace;width:60px;padding-top:40px">' +
+      'MM <span style="background:#00ff00;padding-top:30px">MM</span></div>',
+  ]) {
+    const { node } = await render(source);
+    const el = view(node);
+    type T = {
+      lines: { texts: { layout: object }[] }[] | null;
+      children: T[];
+    };
+    const copies = new Map<object, object>();
+    const foreign = (b: T): void => {
+      for (const line of b.lines ?? []) {
+        for (const text of line.texts) {
+          let copy = copies.get(text.layout);
+          if (!copy) {
+            copy = Object.assign({}, text.layout);
+            copies.set(text.layout, copy);
+          }
+          text.layout = copy;
+        }
+      }
+      b.children.forEach(foreign);
+    };
+    const tree = (el as unknown as { _tree: { root: T } })._tree;
+    foreign(tree.root);
+    const ops: PaintOp[] = [];
+    await fillsOf(el, ops);
+    const green = ops.findIndex(
+      (o) => o.op === 'fill' && o.style === parseColor('#00ff00'),
+    );
+    const texts = ops.filter((o) => o.op === 'text');
+    assert.ok(green >= 0, "the span's background is painted");
+    assert.strictEqual(texts.length, copies.size, 'each layout drawn once');
+    assert.ok(ops.indexOf(texts[0]) > green, 'after the background, as before');
+    // where ntk's own are drawn in pieces, with the background among them
+    const own: PaintOp[] = [];
+    await fillsOf(view((await render(source)).node), own);
+    const ownGreen = own.findIndex(
+      (o) => o.op === 'fill' && o.style === parseColor('#00ff00'),
+    );
+    assert.ok(
+      own.slice(0, ownGreen).some((o) => o.op === 'text') &&
+        own.slice(ownGreen).some((o) => o.op === 'text'),
+      'text before the background and after it',
+    );
+  }
+});
+
 test('an element at no opacity is not drawn, and at half is drawn faded', async (t) => {
   if (!FONTS) return t.skip('no font files for the in-process server');
   // `opacity` was read and never painted, so the control a page keeps at
