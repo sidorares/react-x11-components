@@ -8851,6 +8851,12 @@ things are load-bearing.
   one's layout to the other. The frame's own draw leaves the upright cells
   out (`drawSideways`): **anything new that draws a frame's text leaves
   them out too**, or they are drawn twice, once on their sides.
+- **A frame is drawn on a surface in its own axes, whatever it holds**
+  (`turnedFrame` in `paintThroughInside`). X RENDER samples a pixel 17
+  across and 15 down, so an edge rasterized through the quarter turn comes
+  out a level or two apart from the same edge rasterized in the frame. A
+  frame of paths alone went through the turn, one with a word on a surface,
+  and the two did not match.
 - **`vertical-lr` is laid out as `vertical-rl` and put back across**
   (`reflectFrame`): its lines and blocks moved, each whole and none
   mirrored, to where they are laid out from the other end, so its glyphs

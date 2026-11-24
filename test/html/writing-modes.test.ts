@@ -1389,6 +1389,40 @@ metric(
   },
 );
 
+test('a frame draws its edges the same whether or not it holds text', async () => {
+  // X RENDER samples a pixel 17 across and 15 down: a frame that holds a
+  // word is drawn on a surface in its own axes and turned, and one of paths
+  // alone was rasterized through the turn, a level or two apart on every
+  // curve (WPT's css-shapes shape-outside-border-box-border-radius-005,
+  // whose reference holds no text)
+  const draw = async (mode: string, text: string) => {
+    const { result, node } = await render(
+      `<style>body{margin:0}.c{writing-mode:${mode};line-height:0}` +
+        '#s{border-bottom-right-radius:50% 30%;block-size:40px;' +
+        'inline-size:40px;padding:20px;border:20px solid #90ee90;' +
+        'margin:20px;background:orange}p{margin:0;color:transparent;' +
+        'font-size:4px}</style><main class="c"><div id="s"></div>' +
+        `<p>${text}</p></main>`,
+    );
+    await act();
+    const el = view(node);
+    const { abs } = el as unknown as DrawnNode;
+    const r = el.elementRect(findById(el.document, 's')!)!;
+    return pixelsIn(result.ctx, {
+      x: abs.x + Math.round(r.x),
+      y: abs.y + Math.round(r.y),
+      width: Math.round(r.width),
+      height: Math.round(r.height),
+    });
+  };
+  for (const mode of ['vertical-rl', 'sideways-lr']) {
+    const plain = await draw(mode, '');
+    const worded = await draw(mode, 'x');
+    assert.ok(plain.length > 0);
+    assert.equal(bytesApart(plain, worded), 0, mode);
+  }
+});
+
 test('a float in a vertical-lr flow is put back across with the lines beside it', async () => {
   // a vertical-lr frame is laid out as vertical-rl's and put back across;
   // a float was moved with the block it is in and no further, so it stood
