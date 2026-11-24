@@ -213,6 +213,8 @@ import {
 } from './vars.js';
 import type { IfEnvironment, Registration } from './vars.js';
 import {
+  GEOMETRY_OF,
+  GEOMETRY_TAGS,
   ROOT_BOX_PROPS,
   SHAPE_TAGS,
   isShapeProp,
@@ -4585,6 +4587,20 @@ export class Cascade {
    *  elements that have boxes; these are asked of the ones in an inline
    *  `<svg>`, which have none (`shapeStyles`). */
   private _shapes = new RuleIndex();
+  /** The rules that give a drawing's elements nothing but geometry
+   *  (`GEOMETRY_OF`): a framework's `width` and `height`, asked only of the
+   *  elements a geometry property applies to (`shapeStyles`), where filed
+   *  with the paint properties every element of every drawing asked them. */
+  private _geometryQueue: [
+    StyleRule,
+    ReturnType<typeof rightmostKey>,
+    number,
+    ((host: Element) => boolean) | null,
+  ][] = [];
+  /** `_geometryQueue` filed, made the first time a drawing asks: a page
+   *  with no inline drawing never files them. */
+  private _geometryIndex: RuleIndex | null = null;
+  private _geometryHover = false;
   private _shapeNeeds: ShapeNeeds | null = null;
   private _adapter!: CssSelectAdapter;
   /** The rules of the indexes by id, for `matchedRules`, made once asked. */
@@ -5343,6 +5359,9 @@ export class Cascade {
     this._transitionRules = before._transitionRules;
     this._starting = before._starting;
     this._shapes = before._shapes;
+    this._geometryQueue = before._geometryQueue;
+    this._geometryIndex = before._geometryIndex;
+    this._geometryHover = before._geometryHover;
     this._filed = before._filed;
     this._restated = before._restated;
     this._mediaOutsideRules = before._mediaOutsideRules;
@@ -5515,6 +5534,12 @@ export class Cascade {
           declaresShape(rule.declarations)
         ) {
           this._shapes.add(rule, key, scope);
+        } else if (
+          rule.order >= 0 &&
+          (key.kind !== 'tag' || GEOMETRY_TAGS.has(key.name)) &&
+          declaresGeometry(rule.declarations)
+        ) {
+          this._queueGeometry(rule, key, scope, null);
         }
       }
       if (noted) continue;
@@ -7155,6 +7180,11 @@ export class Cascade {
         declaresShape(subject.declarations)
       ) {
         this._shapes.add(derived, key, rules.id, test);
+      } else if (
+        (key.kind !== 'tag' || GEOMETRY_TAGS.has(key.name)) &&
+        declaresGeometry(subject.declarations)
+      ) {
+        this._queueGeometry(derived, key, rules.id, test);
       }
     }
     // what its host is asked can test the state too, `:host(:hover) .x`
@@ -9962,6 +9992,7 @@ export class Cascade {
       rem: rootStyle.fontSize * rootZoom,
       remRead: this._remRead,
       initial: this.initial,
+      rootElement: this._isRoot(el),
       uaSets: this._uaSets,
       reverted: roll ? () => this._reverted(roll) : undefined,
       revertedLayer: roll ? () => this._revertedLayer(roll) : undefined,
@@ -10532,13 +10563,40 @@ export class Cascade {
   /** Whether a pointer move can change what a rule gives a shape in a
    *  drawing. */
   get shapesFollowPointer(): boolean {
-    return this._shapes.hoverSensitive;
+    return this._shapes.hoverSensitive || this._geometryHover;
   }
 
   /** Whether a rule gives a shape in a drawing anything: with none, what a
    *  change does outside a drawing's style leaves it as it was. */
   get stylesShapes(): boolean {
-    return this._shapes.size > 0;
+    return this._shapes.size > 0 || this._geometryQueue.length > 0;
+  }
+
+  /** A rule of geometry alone, filed now where the index is made and
+   *  kept for it where it is not (`_geometry`). */
+  private _queueGeometry(
+    rule: StyleRule,
+    key: ReturnType<typeof rightmostKey>,
+    scope: number,
+    host: ((host: Element) => boolean) | null,
+  ): void {
+    this._geometryQueue.push([rule, key, scope, host]);
+    if (rule.selector.includes(':hover') || rule.selector.includes(':active')) {
+      this._geometryHover = true;
+    }
+    this._geometryIndex?.add(rule, key, scope, host);
+  }
+
+  /** The rules of geometry alone, filed (`_geometryQueue`). */
+  private get _geometry(): RuleIndex {
+    let index = this._geometryIndex;
+    if (!index) {
+      index = this._geometryIndex = new RuleIndex();
+      for (const [rule, key, scope, host] of this._geometryQueue) {
+        index.add(rule, key, scope, host);
+      }
+    }
+    return index;
   }
 
   /** What a `rem`, a `vw` and its kin in an inline drawing's geometry are
@@ -10608,7 +10666,8 @@ export class Cascade {
     // properties are: `SvgView` reads the attribute as it is written, and
     // `var(--color-primary)` is no colour it can paint with. So a drawing
     // with one is asked of whether a rule reaches it or not.
-    const vars = !index.size ? drawingVars(root, byId) : true;
+    const geometry = this._geometryQueue.length ? this._geometry : null;
+    const vars = !index.size && !geometry ? drawingVars(root, byId) : true;
     if (!vars) return null;
     // The rules kept by a class or an id are asked of the elements with
     // that name. The rest — `.dark .logo path`, `.menu [aria-hidden]` — are
@@ -10679,6 +10738,13 @@ export class Cascade {
           ? index.universal.length > 0 || index.byTag.has(tag)
           : needs.universal || needs.tags.has(tag);
         const ruled = index.size > 0 && (asked || index.names(el));
+        // and what gives it nothing but geometry, where geometry is its
+        const placed =
+          !!geometry &&
+          GEOMETRY_TAGS.has(tag) &&
+          (geometry.universal.length > 0 ||
+            geometry.byTag.has(tag) ||
+            geometry.names(el));
         // its attributes with a `var()` in them, and whether its `style`
         // has one, where the drawing has any (`drawingVars`)
         const presented = vars ? attributeVars(el) : null;
@@ -10692,7 +10758,7 @@ export class Cascade {
           (presentedMotion(el) !== null ||
             (!!inline && INLINE_MOTION.test(inline)) ||
             clipsToShape(el));
-        if (!ruled && !presented && !inlineVars && !moves) {
+        if (!ruled && !placed && !presented && !inlineVars && !moves) {
           each(el, null);
           continue;
         }
@@ -10704,6 +10770,18 @@ export class Cascade {
             candidates,
             undefined,
             el === root && !inCopy ? liveForRoot : live,
+            inCopy,
+          );
+        }
+        // matched whole: what they name of an ancestor is not among what
+        // `live` looks for, which is the paint rules' alone, kept small
+        if (placed && el !== root) {
+          this._matchInto(
+            geometry!,
+            el,
+            candidates,
+            undefined,
+            undefined,
             inCopy,
           );
         }
@@ -12342,11 +12420,19 @@ function ownCustoms(el: Element): Map<string, string> | null {
   return out;
 }
 
-/** Whether declarations set a property a shape in a drawing has. */
+/** Whether declarations set a property a shape in a drawing has, but for
+ *  geometry alone (`declaresGeometry`). */
 function declaresShape(declarations: readonly Declaration[]): boolean {
   for (const d of declarations) {
+    if (GEOMETRY_OF[d.prop]) continue;
     if (isShapeProp(d.prop) || isShapeMotion(d.prop)) return true;
   }
+  return false;
+}
+
+/** Whether declarations set a geometry property (`GEOMETRY_OF`). */
+function declaresGeometry(declarations: readonly Declaration[]): boolean {
+  for (const d of declarations) if (GEOMETRY_OF[d.prop]) return true;
   return false;
 }
 

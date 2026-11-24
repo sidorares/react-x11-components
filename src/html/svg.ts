@@ -27,9 +27,16 @@ import type { HtmlChange } from './dom.js';
 import { CLIP_PATH, Cascade, drawingVars } from './css/cascade.js';
 import { parseMediaQuery, parseStylesheet } from './css/parse.js';
 import type { Stylesheet } from './css/parse.js';
-import { isUse, quotedFamilies, urlIds, useHref } from './css/shapes.js';
+import {
+  GEOMETRY_OF,
+  isUse,
+  quotedFamilies,
+  urlIds,
+  useHref,
+} from './css/shapes.js';
 import type { DrawingUnits, ShapeStyle, ShapeStyles } from './css/shapes.js';
 import type { RootLook } from './css/style.js';
+import type { FilterFunction } from './css/filter.js';
 import { parseMath } from './css/calc.js';
 import { LIGHT_DARK, lightDark } from './css/color.js';
 import {
@@ -548,6 +555,9 @@ export class SvgDrawing {
   /** Whether an image with none has a `var()` to read all the same
    *  (`drawingVars`); null until it is first drawn. */
   private _vars: boolean | null = null;
+  /** Whether the root's `style` names a filter, which an image with no
+   *  sheets of its own is styled for (`_ownPaint`). */
+  private _rootFiltered: boolean | null = null;
   /** A cascade over them for each colour scheme and scale the image is
    *  drawn at, and what each gave it: by the viewport it was asked at where
    *  a sheet reads the viewport, and under one key where none does. */
@@ -1030,6 +1040,21 @@ export class SvgDrawing {
     );
   }
 
+  /**
+   * The `filter` an image's root has (Filter Effects 1, 5: it applies to
+   * an SVG image's root as to any element), drawn `w` by `h` device
+   * pixels: what it is drawn through (`drawSvg`). Null for none.
+   */
+  rootFilter(
+    w: number,
+    h: number,
+    scale: number,
+    scheme: 'light' | 'dark' = 'light',
+  ): FilterFunction[] | null {
+    if (this._failed || !(w > 0 && h > 0)) return null;
+    return this._ownPaint(w, h, scale, scheme)?.filter ?? null;
+  }
+
   /** What an image's own style sheets give it, drawn `w` by `h` device
    *  pixels, or null where it has none. */
   private _ownPaint(
@@ -1046,7 +1071,9 @@ export class SvgDrawing {
       this._vars ??= drawingVars(root, (id) =>
         elementById(documentOf(root), id),
       );
-      if (!this._vars) return null;
+      // nor where its root's own style names no filter
+      this._rootFiltered ??= /filter/i.test(root.attribs.style ?? '');
+      if (!this._vars && !this._rootFiltered) return null;
     }
     const made = `${scheme}|${scale}`;
     let entry = this._cascades.get(made);
@@ -1093,6 +1120,7 @@ export class SvgDrawing {
         fill: ink(style.fill),
         stroke: ink(style.stroke),
         shapes: cascade.shapeStyles(root, style),
+        filter: style.filter,
       };
     } catch {
       // a sheet this cannot read leaves the image as its attributes draw it
@@ -1129,7 +1157,7 @@ export class SvgDrawing {
       this._outside = refersOutside(root);
       this._colours = coloursToWorkOut(root);
     }
-    const sized = this._lengths || this._uses;
+    const sized = this._lengths || this._uses || placesByPercent(shapes);
     // and, for a drawing with lengths to work out, what they are of
     const viewport = !sized
       ? ''
@@ -1341,6 +1369,9 @@ interface ImagePaint {
   fill: string | null;
   stroke: string | null;
   shapes: ShapeStyles | null;
+  /** The root's `filter`, which the image is drawn through
+   *  (`SvgDrawing.rootFilter`). */
+  filter: FilterFunction[] | null;
 }
 
 /**
@@ -1846,6 +1877,21 @@ function localName(name: string): string {
  *  reads as none; a length in a unit, which it reads as the number before
  *  it (`UNIT_LENGTH`); and a font size it reads otherwise
  *  (`FOREIGN_SIZE`). */
+/** Whether a rule gives an element of the drawing a geometry property
+ *  that is a percentage of its viewport, or a math function, which the
+ *  copy works out as it does an attribute's (`lengthsToWorkOut`). */
+function placesByPercent(shapes: ShapeStyles | null): boolean {
+  if (!shapes) return false;
+  for (const own of shapes.of.values()) {
+    for (const prop in own) {
+      if (!GEOMETRY_OF[prop] || prop === 'd') continue;
+      const value = own[prop];
+      if (value.endsWith('%') || MATH_FUNCTION.test(value)) return true;
+    }
+  }
+  return false;
+}
+
 function lengthsToWorkOut(root: Element): boolean {
   const walk = (el: Element): boolean => {
     for (const child of el.children) {
@@ -2449,7 +2495,10 @@ function copyTree(
     hidden = hiddenIn(own, hidden);
     const attribs = { ...el.attribs };
     if (scheme) workOutColours(attribs, scheme);
-    if (own) restyle(attribs, clipCopied(own));
+    if (own) {
+      restyle(attribs, clipCopied(own));
+      placeBy(attribs, own, localName(el.name), el === root);
+    }
     // its own font size, which an `em` in its lengths is of, written out
     // where `SvgView` would read it otherwise
     const size = fontSizeOf(attribs, inherited, lengths, (px) => {
@@ -2550,6 +2599,8 @@ function restyle(attribs: Record<string, string>, own: ShapeStyle): void {
   for (const prop in own) {
     const value = own[prop];
     if (prop === 'display' || prop === 'visibility') continue;
+    // where it is and how large are its attributes (`placeBy`)
+    if (GEOMETRY_OF[prop]) continue;
     if (value === 'inherit') {
       delete attribs[prop];
       if (style) {
@@ -2569,6 +2620,30 @@ function restyle(attribs: Record<string, string>, own: ShapeStyle): void {
   style = style && added ? `${style};${added}` : style || added;
   if (style) attribs.style = style;
   else delete attribs.style;
+}
+
+/**
+ * The geometry properties a rule gives an element (SVG 2, 6.1), written as
+ * the attributes `SvgView` reads, over the ones the markup has, which are
+ * their presentation hints: each only where it applies (`GEOMETRY_OF`),
+ * and `auto` and `none` as no attribute. A percentage is left to the copy's
+ * lengths to work out, as an attribute's is (`geometryLength`). The root's
+ * place and size are its box's.
+ */
+function placeBy(
+  attribs: Record<string, string>,
+  own: ShapeStyle,
+  tag: string,
+  isRoot: boolean,
+): void {
+  for (const prop in own) {
+    const value = own[prop];
+    if (!GEOMETRY_OF[prop]?.has(tag) || value === 'inherit') continue;
+    if (isRoot && tag === 'svg') continue;
+    if (value === 'auto' || value === 'none') delete attribs[prop];
+    else if (prop === 'd') attribs.d = value.slice(6, -2);
+    else attribs[prop] = value;
+  }
 }
 
 /** The id a `<mask>`'s copy goes by in `maskDrawing`'s drawing: one the

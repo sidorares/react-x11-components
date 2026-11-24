@@ -1433,6 +1433,32 @@ metric(
 );
 
 metric(
+  "a scroll container's bars are over the positioned boxes it holds and under those painted after it",
+  async () => {
+    // at its place in the paint order, after the last of its stacking
+    // context's layers it holds, as Chrome draws them: where the bars were
+    // a pass of their own over the whole document, one showed through a
+    // box laid over its container (WPT's CSS2 max-width-105)
+    const { result } = await renderScrolled(
+      '<style>body{margin:0}.s{overflow:auto;width:100px;height:100px}' +
+        '.tall{height:400px}</style>' +
+        '<div class="s" style="position:relative"><div class="tall"></div>' +
+        '<div style="position:absolute;inset:0;background:#00ff00"></div>' +
+        '</div><div class="s" style="margin-top:20px"><div class="tall">' +
+        '</div></div><div style="position:absolute;left:0;top:120px;' +
+        'width:100px;height:100px;background:#0000ff"></div>',
+      300,
+    );
+    await expectPixel(result.ctx, 95, 10, '#00bf00', {
+      message: 'the thumb over the box it holds',
+    });
+    await expectPixel(result.ctx, 95, 130, '#0000ff', {
+      message: 'and under the box painted after it',
+    });
+  },
+);
+
+metric(
   "a page's rule hides a bar on the axis it names, and the other shows",
   async () => {
     const shown = async (rule: string) => {

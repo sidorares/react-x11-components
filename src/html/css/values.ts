@@ -161,6 +161,9 @@ export interface UnitContext {
   rlh?: () => number;
   /** Every property at its initial value, which `initial` sets one to. */
   initial?: ComputedStyle;
+  /** Whether the element is the root, whose parent style is no element's:
+   *  `match-parent` has no parent's direction to read it in. */
+  rootElement?: boolean;
   /** Whether the user agent's sheet sets a property, a longhand of it or
    *  a shorthand over it: where it does not, `revert` is `unset`. */
   uaSets?: (name: string) => boolean;

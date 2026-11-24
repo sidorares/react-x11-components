@@ -20376,6 +20376,7 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.cursor !== q.cursor ||
       p.textAlign !== q.textAlign ||
       p.direction !== q.direction ||
+      p.noScrollbar !== q.noScrollbar ||
       p.buttonCursor !== q.buttonCursor ||
       p.opacity !== q.opacity ||
       p.placeholderColor !== q.placeholderColor ||

@@ -2073,7 +2073,9 @@ function layoutDocumentPass(
     // (CSS 2.1 10.1), which says which margin an over-constrained width
     // leaves to the room.
     root.width = blockWidth(root, viewportWidth, viewportWidth, ctx);
-    const rtl = (tree.impliedHtml ?? root.style).direction === 'rtl';
+    const rtl =
+      (tree.impliedHtml ?? root.style).direction === 'rtl' ||
+      rootFromRight(root);
     placeBlock(root, 0, 0, viewportWidth, rtl);
   } else {
     root.x = root.marginLeft;
@@ -5092,6 +5094,26 @@ function framedWidth(box: Box, frame: Box, ctx: LayoutContext): number {
 }
 
 /**
+ * Whether a box is the root element of a document whose principal writing
+ * mode runs its blocks right to left, `vertical-rl` or `sideways-rl`, its
+ * own or the `<body>`'s it takes (`principalStyleOf`): the initial
+ * containing block's block axis starts at its right, so the root is placed
+ * against the viewport's right, and its width, its block size, is what it
+ * holds where it is `auto` (CSS Writing Modes 4, 8; CSS 2.1 10.3.3), as
+ * all three engines lay it out. A root that runs left to right still fills
+ * the line (`principal`), whose start is the viewport's.
+ */
+function rootFromRight(box: Box): boolean {
+  const el = box.el;
+  if (el === null || !framed.any) return false;
+  const mode = box.style.writingMode;
+  if (mode !== 'vertical-rl' && mode !== 'sideways-rl') return false;
+  return (
+    isRootElement(el) && (box.parent === null || box.parent.parent === null)
+  );
+}
+
+/**
  * Whether an orthogonal flow's root is the root element or its `<body>`,
  * whose writing mode is the document's principal one, which a browser hands
  * to the initial containing block and lays the root element out in (CSS
@@ -6877,7 +6899,7 @@ function placeBlock(
   containingWidth: number,
   /** Whether the containing block is right-to-left: its parent's, but for
    *  the root box, which has none (`layoutDocument`). */
-  rtl = box.parent?.style.direction === 'rtl',
+  rtl = box.parent?.style.direction === 'rtl' || rootFromRight(box),
 ): void {
   const style = box.style;
   const leftAuto = style.marginLeft === AUTO;
@@ -6945,7 +6967,10 @@ function blockWidth(
     let width =
       keyword && ctx
         ? contentSizedWidth(box, ctx, keyword, room, percentBase)
-        : ctx && framed.any && FRAMES.has(box) && !principal(box)
+        : ctx &&
+            framed.any &&
+            FRAMES.has(box) &&
+            (!principal(box) || rootFromRight(box))
           ? framedWidth(box, FRAMES.get(box)!, ctx)
           : room;
     return clampWidth(
@@ -11499,7 +11524,12 @@ function positionedIn(
         box.marginBottom = rest - box.marginTop;
       }
     }
-    y = cbY + top + box.marginTop;
+    // over-constrained, the inset at the containing block's block end gives
+    // way (CSS Position 3, 4.1): `bottom` in the frame, but in a frame put
+    // back across, where the frame's top is the block end, `top`
+    y = reversedDown
+      ? cbY + cbHeight - bottom - box.height - box.marginBottom
+      : cbY + top + box.marginTop;
   } else {
     y =
       top !== null
