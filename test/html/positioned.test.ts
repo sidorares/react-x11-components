@@ -1242,6 +1242,35 @@ metric(
   },
 );
 
+metric(
+  'a clip-path circle() or ellipse() reaches the closest or the farthest corner',
+  async () => {
+    // CSS Shapes 1, 3.1.1: `closest-corner` and `farthest-corner` are each
+    // radius's distance to that corner of the box. The value was refused,
+    // and the box drawn whole (WPT clip-path-circle-closest-corner,
+    // -farthest-corner and -ellipse-closest-farthest-corner)
+    const { result } = await render(
+      '<style>body{margin:0}div{width:200px;height:100px;background:#00ff00}</style>' +
+        '<div style="clip-path:circle(closest-corner at 50px 40px)"></div>' +
+        '<div style="clip-path:ellipse(farthest-corner closest-corner at 50px 40px)"></div>',
+    );
+    await act();
+    const at = async (x: number, y: number) =>
+      [...(await pixelsIn(result.ctx, { x, y, width: 1, height: 1 }))]
+        .slice(0, 3)
+        .join();
+    const green = '0,255,0';
+    const white = '255,255,255';
+    // the closest corner is the top left, 64 away
+    assert.strictEqual(await at(110, 40), green, 'past the closest side');
+    assert.strictEqual(await at(120, 40), white, 'past the closest corner');
+    // across to the farthest corner, 180 away, and down to the closest,
+    // 64 away
+    assert.strictEqual(await at(195, 140), green, 'across to 180');
+    assert.strictEqual(await at(190, 195), white, 'and around between');
+  },
+);
+
 metric('a polygon is placed on the pixels its box is drawn on', async () => {
   // A box laid out a fraction of a pixel down draws its background from
   // the row it falls nearest; a polygon along its edges is measured from

@@ -14,7 +14,7 @@ import { PASSIVE, passiveValue } from './css/passive-properties.js';
 
 /** The passive properties, in the order a computed style lists them. */
 const PASSIVE_NAMES = Object.keys(PASSIVE);
-import type { BasicShape } from './css/basic-shape.js';
+import type { BasicShape, Radius } from './css/basic-shape.js';
 import type { ObjectViewBox } from './css/object-view-box.js';
 import { pathSegments, pathText } from './css/shape-outside.js';
 import { isAutoInset } from './css/decoration-inset.js';
@@ -928,10 +928,8 @@ function shapeOutsideText(
     const basic = shape.basic;
     const at = (c: readonly [Len, Len]): string[] =>
       shape.atGiven ? ['at', `${L(c[0])} ${L(c[1])}`] : [];
-    const radius = (r: Len | 'closest-side' | 'farthest-side'): string =>
-      r === 'closest-side' || r === 'farthest-side'
-        ? r
-        : L(typeof r === 'number' ? Math.max(0, r) : r);
+    const radius = (r: Radius): string =>
+      typeof r === 'string' ? r : L(typeof r === 'number' ? Math.max(0, r) : r);
     if (basic.kind === 'circle') {
       const r = basic.r === 'closest-side' ? [] : [radius(basic.r)];
       text = `circle(${[...r, ...at(basic.at)].join(' ')})`;
@@ -969,8 +967,7 @@ function objectViewBoxText(view: ObjectViewBox | null, scale: number): string {
 function basicShapeText(basic: BasicShape, scale: number): string | null {
   const L = (v: Len) => len(v, scale);
   const at = (c: Coord) => `${L(c[0])} ${L(c[1])}`;
-  const radius = (r: Len | 'closest-side' | 'farthest-side') =>
-    r === 'closest-side' || r === 'farthest-side' ? r : L(r);
+  const radius = (r: Radius) => (typeof r === 'string' ? r : L(r));
   switch (basic.kind) {
     case 'shape':
       return shapeText(basic.shape, scale);
