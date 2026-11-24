@@ -1091,6 +1091,17 @@ function boundsOf(
           bottom,
           baseline + (natural.descent ?? 0) + (cast?.bottom ?? 0),
         );
+        // and an underline `text-underline-offset` puts past them, which is
+        // ink as the glyphs are: a frame a vertical flow is turned in is
+        // painted on a surface its bounds size, and cut such a rule off
+        for (const run of natural.runs) {
+          const span = run.span;
+          if (!span?.underline || span.underlineOffset === undefined) continue;
+          const at = baseline + span.underlineOffset;
+          const thick = Math.max(2, Math.ceil(span.underlineThickness ?? 0));
+          top = Math.min(top, at);
+          bottom = Math.max(bottom, at + thick);
+        }
       }
       if (top < line.y) {
         y1 = Math.min(y1, top);

@@ -1816,3 +1816,44 @@ test('an edge on half a pixel across a vertical-rl frame is drawn on the column 
   };
   assert.strictEqual(await row(10), await row(40));
 });
+
+metric(
+  'an underline text-underline-offset moves past the text in a vertical frame is drawn',
+  async () => {
+    // a line's ink counted its glyphs and not its underline, and a frame is
+    // painted on a surface its bounds size: a rule 5em from the text was cut
+    // off with nothing drawn (WPT's css-text-decor/
+    // text-underline-offset-vertical-001)
+    const { result, node } = await render(
+      '<style>body{margin:0;font:20px/1 monospace}span{margin-left:5em;' +
+        'writing-mode:vertical-lr;text-decoration:underline;' +
+        'text-decoration-color:#00ff00}</style>' +
+        '<div id="a">left<span>XXXXX</span></div>' +
+        '<div id="b">left<span style="text-underline-offset:5em">XXXXX</span></div>',
+    );
+    await act();
+    const el = view(node);
+    const { abs } = el as unknown as DrawnNode;
+    const green = async (top: number): Promise<number[]> => {
+      const px = await pixelsIn(result.ctx, {
+        x: abs.x,
+        y: abs.y + top,
+        width: 300,
+        height: 60,
+      });
+      const columns = new Set<number>();
+      for (let i = 0; i < px.length; i += 4) {
+        if (px[i] < 60 && px[i + 1] > 200 && px[i + 2] < 60) {
+          columns.add((i / 4) % 300);
+        }
+      }
+      return [...columns].sort((a, b) => a - b);
+    };
+    const near = await green(Math.round(boxOf(el, 'a').y));
+    const far = await green(Math.round(boxOf(el, 'b').y));
+    assert.ok(near.length > 0, 'the rule beside the text');
+    assert.ok(far.length > 0, 'and the one 5em from it');
+    // 5em to the left of where the other is: 100px
+    assert.strictEqual(near[0] - far[0], 99);
+  },
+);
