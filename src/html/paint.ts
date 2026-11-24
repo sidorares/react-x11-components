@@ -8733,6 +8733,8 @@ function clipOf(
   options: ClipSpace,
 ): { x: number; y: number; w: number; h: number } {
   const clip = box.style.clip!;
+  const turned = framed.any ? framedClipRect(box, clip, options) : null;
+  if (turned) return turned;
   const left = clip.left ?? 0;
   const top = clip.top ?? 0;
   const right = clip.right ?? box.width;
@@ -8744,6 +8746,46 @@ function clipOf(
     y,
     w: Math.round(box.x + options.originX + right) - x,
     h: Math.round(box.y + options.originY + bottom) - y,
+  };
+}
+
+/**
+ * A box's `clip` where the box is laid out in a frame turned a quarter
+ * (`makeFrame`): its edges are measured from the top left of its border box
+ * on the page (CSS 2.1 11.1.2), as `framedClipPath` has a shape, so the
+ * rectangle is laid out there and turned into the frame. Null where the
+ * box's axes are the page's.
+ */
+function framedClipRect(
+  box: Box,
+  clip: NonNullable<Box['style']['clip']>,
+  options: ClipSpace,
+): { x: number; y: number; w: number; h: number } | null {
+  const frame = frameOf(box);
+  if (!frame || quarterTurnsOf(box) % 2 === 0) return null;
+  const up = turnsUp(frameTurn(frame));
+  // the border box on the page: across it the frame's down, and down it
+  // the frame's across
+  const w = frameHeight(box);
+  const h = box.width;
+  const left = clip.left ?? 0;
+  const top = clip.top ?? 0;
+  const right = clip.right ?? w;
+  const bottom = clip.bottom ?? h;
+  const x0 = box.x + options.originX;
+  const y0 = frameY(box) + options.originY;
+  // a point of the page's border box where the frame has it
+  const at = (p: number, q: number): [number, number] =>
+    up ? [x0 + h - q, y0 + p] : [x0 + q, y0 + w - p];
+  const [ax, ay] = at(left, top);
+  const [bx, by] = at(right, bottom);
+  const x = Math.round(Math.min(ax, bx));
+  const y = Math.round(Math.min(ay, by));
+  return {
+    x,
+    y,
+    w: Math.round(Math.max(ax, bx)) - x,
+    h: Math.round(Math.max(ay, by)) - y,
   };
 }
 
