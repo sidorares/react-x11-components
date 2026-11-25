@@ -11299,7 +11299,12 @@ export function installDom(
           Math.round(d ? d[0] : (docRect(this)?.[2] ?? 0)),
         );
       }
-      return this.clientWidth;
+      // what it holds reaches past it, as it does for a box that is no
+      // scroll container: a wrapper of no height around a box 32px tall
+      // is 32px of scrollable overflow, and a virtualizer measures its
+      // rows by it (React Aria's `VirtualizerItem`)
+      const box = clientBoxOf(this);
+      return Math.max(this.clientWidth, Math.round(box?.[4] ?? 0));
     }
     get scrollHeight(): number {
       const s = scrollStateOf(this);
@@ -11313,7 +11318,8 @@ export function installDom(
           Math.round(d ? d[1] : (docRect(this)?.[3] ?? 0)),
         );
       }
-      return this.clientHeight;
+      const box = clientBoxOf(this);
+      return Math.max(this.clientHeight, Math.round(box?.[5] ?? 0));
     }
     get scrollTop(): number {
       if (this._viewport()) return pageScrollY(this._ownViewport(true));

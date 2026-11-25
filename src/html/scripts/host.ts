@@ -911,9 +911,16 @@ export interface HandleInternals {
    *  pixels, where it is no scroll container, as `clientWidth` and its
    *  kin read it; null where its box is none or inline
    *  (`HtmlViewNode.clientBoxOf`). */
-  clientBox(
-    element: Element,
-  ): { width: number; height: number; top: number; left: number } | null;
+  clientBox(element: Element): {
+    width: number;
+    height: number;
+    top: number;
+    left: number;
+    /** How far what it holds reaches — its `scrollWidth` and
+     *  `scrollHeight` where it scrolls nothing. */
+    scrollWidth?: number;
+    scrollHeight?: number;
+  } | null;
   /** Whether an element is drawn, as `checkVisibility` asks, faded to
    *  nothing or invisible where `asks` says to look
    *  (`HtmlViewNode.checkVisibility`). */
@@ -7304,7 +7311,9 @@ export class DomHost {
       case 'clientBox': {
         this.flush();
         const r = this._handle.clientBox?.(this._element(a));
-        return r ? `${r.width},${r.height},${r.top},${r.left}` : '';
+        return r
+          ? `${r.width},${r.height},${r.top},${r.left},${r.scrollWidth ?? r.width},${r.scrollHeight ?? r.height}`
+          : '';
       }
       // `checkVisibility`, by whether to ask the opacity and the visibility
       // (`HtmlViewNode.checkVisibility`); a handle without it answers by
