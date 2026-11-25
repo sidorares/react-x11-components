@@ -1072,7 +1072,10 @@ function placeItems(
   /** Where each item is across a column that wraps (`crossLines`). */
   crossed?: ReadonlyMap<Box, Across>,
 ): number {
-  let bottom = 0;
+  // from the content box's top, wherever it is: a box laid out where it
+  // stands is above the origin once its document is scrolled, and counting
+  // from 0 took the distance it is above it for the height of what it holds
+  let bottom = box.contentY;
   // the lines of a row that wraps in reverse are turned round to run up it
   const reverse = row && box.style.flexWrap === 'wrap-reverse';
   // the left edge a column's items aligned by baselines share, where it
