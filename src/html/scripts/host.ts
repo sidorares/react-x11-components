@@ -2628,6 +2628,10 @@ function treeRootOf(node: AnyNode): AnyNode {
   }
 }
 
+/** Attributes whose write to the value they had still means something to a
+ *  control's state. */
+const SAME_VALUE_STATEFUL = new Set(['checked', 'value', 'selected', 'open']);
+
 export class DomHost {
   private _ids = new WeakMap<AnyNode, number>();
   private _nodes = new Map<number, AnyNode>();
@@ -9870,6 +9874,21 @@ export class DomHost {
       while (at.parent) at = at.parent;
       if (!(at instanceof ShadowRoot) || !at.host) break;
       at = at.host;
+    }
+    // An attribute written the value it had changes nothing drawn, and a
+    // page that writes one at every frame (Webflow keeps `--extra--nav-min-
+    // width` on the root's `style`) was a restyle and a layout of the whole
+    // document each time. Its observers still hear it (`_changed`).
+    if (
+      change.type === 'attributes' &&
+      change.oldValue !== null &&
+      change.oldValue !== undefined &&
+      change.attributeName !== undefined &&
+      !SAME_VALUE_STATEFUL.has(change.attributeName) &&
+      (change.target as Element).attribs?.[change.attributeName] ===
+        change.oldValue
+    ) {
+      return;
     }
     // A node in no document — what a script builds before it puts it in —
     // changes nothing drawn, and the change that puts it in is told with

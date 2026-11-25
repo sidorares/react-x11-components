@@ -512,6 +512,10 @@ export interface PaintOptions {
   litReplaced?: ReadonlyMap<Box, readonly string[]>;
   /** A decoded image for an element, when the host has one. */
   imageFor(box: Box): unknown | null;
+  /** An image as a draw whose longest side is `side` device pixels wants
+   *  it: a frame of an animation made no larger than that, where it is
+   *  large, and any other image itself. */
+  reframe?(image: unknown, side: number): unknown;
   /** What a view transition's old or new image draws (`TRANSITION_IMAGES`):
    *  the element it shows, its border box stretched over `w` by `h` at
    *  (`x`, `y`) and what it draws past its border box with it, under the
@@ -16715,6 +16719,8 @@ function drawRaster(
    *  pixelated` has it, rather than smoothed. */
   nearest = false,
 ): void {
+  if (options.reframe && !nearest)
+    image = options.reframe(image, Math.max(w, h));
   const own = image as { width?: unknown; height?: unknown };
   if (nearest && (own.width !== w || own.height !== h)) {
     if (drawNearest(ctx, image, x, y, w, h)) return;

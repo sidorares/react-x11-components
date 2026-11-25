@@ -85,6 +85,7 @@ import {
   pixelsIn,
   rebuilt,
   snapshot,
+  solidPng,
 } from './harness.js';
 import { mulberry32 } from '../mulberry32.js';
 import { animationClock, caretClock, owedClock } from '../../src/html/node.js';
@@ -170,6 +171,8 @@ async function hosted(
     canPlayType?: (type: string) => '' | 'maybe' | 'probably';
     /** What a page's WebGL contexts draw through. */
     webgl?: HtmlWebGL;
+    /** Images answered by their URL, as bytes. */
+    images?: Record<string, Uint8Array>;
     /** Whether `fetch` is a network, which a media element loads from. */
     network?: boolean;
     /** Whether the page may register service workers. */
@@ -284,6 +287,9 @@ async function hosted(
         }
       },
       onResource: ({ url, kind }: ResourceRequest) => {
+        if (kind === 'image' && options.images?.[url]) {
+          return { kind, bytes: options.images[url] };
+        }
         if (kind === 'video') out.videos.push(url);
         if (options.videos && kind === 'video') {
           return {
@@ -6020,6 +6026,62 @@ function fakeGL(answers: Record<string, unknown> = {}) {
   };
   return { webgl, calls, opened, presented };
 }
+
+test('a script that gives a relative box a transform, or writes an attribute the value it has, builds no boxes again', async () => {
+  // Webflow's split text sets a transform on each word, and a page writes
+  // a custom property on the root at every frame: a layout of the whole
+  // document each
+  const doc = await hosted(
+    '<style>#s { position: relative; width: 40px; height: 20px }</style>' +
+      '<div id="s" style="--n: 1"></div><p>after</p>',
+  );
+  await settle(150);
+  const node = doc.view as unknown as {
+    _invalidate(stale: number, ...rest: unknown[]): void;
+  };
+  const built: number[] = [];
+  const original = node._invalidate.bind(node);
+  node._invalidate = (stale, ...rest) => {
+    if (stale >= 2) built.push(stale);
+    original(stale, ...rest);
+  };
+  doc.run(
+    'var s = document.getElementById("s");' +
+      's.style.transform = "translate(0, 30px)";' +
+      's.setAttribute("style", s.getAttribute("style"));',
+  );
+  await settle(150);
+  doc.run('document.getElementById("s").style.transform = "none";');
+  await settle(150);
+  assert.deepEqual(built, [], 'the boxes were built again');
+});
+
+test("a texture made of an <img> is the image's pixels", async () => {
+  const gl = fakeGL({ getError: 0 });
+  const png = solidPng(3, 2, [10, 20, 30]);
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var gl = document.createElement("canvas").getContext("webgl2");' +
+      'var img = new Image();' +
+      'img.onload = function () {' +
+      '  var t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);' +
+      '  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);' +
+      '  gl.getError();' +
+      '  document.getElementById("out").textContent = "up";' +
+      '};' +
+      'img.src = "https://example.test/atlas.png";' +
+      '</script>',
+    { webgl: gl.webgl, images: { 'https://example.test/atlas.png': png } },
+  );
+  await settled(doc, 'out', (t) => t === 'up');
+  const upload = gl.calls.find(([name]) => name === 'texImage2D');
+  assert.ok(upload, 'the image was uploaded');
+  // width, height, then the straight RGBA bytes the image decoded to
+  assert.equal(upload[4], 3);
+  assert.equal(upload[5], 2);
+  const data = upload[9] as [string, string, string];
+  assert.equal(Buffer.from(data[2], 'base64').length, 3 * 2 * 4);
+});
 
 test("a context's calls reach the host's GL as a page made them, at the end of the task", async () => {
   const gl = fakeGL({ getError: 0 });
