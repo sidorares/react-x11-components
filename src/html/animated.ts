@@ -221,6 +221,51 @@ function reduced(
   const h = Math.floor(height / factor);
   const out = new Uint8Array(w * h * 4);
   const lead = Math.max(0, (factor >> 1) - 1);
+  // a pixel a word, where the data is aligned to read them so: the four
+  // channels of two pixels are summed at once, in the two halves of a word
+  // each wide enough for the sum of four bytes
+  const aligned = (data.byteOffset & 3) === 0;
+  if (!aligned) return reducedBytes(data, width, w, h, factor, lead, out);
+  const from = new Uint32Array(data.buffer, data.byteOffset, width * height);
+  const to = new Uint32Array(out.buffer, 0, w * h);
+  const lowMask = 0x00ff00ff;
+  for (let y = 0; y < h; y += 1) {
+    const row0 = (y * factor + lead) * width + lead;
+    const row1 = row0 + width;
+    let o = y * w;
+    for (let x = 0; x < w; x += 1) {
+      const i = x * factor;
+      const a = from[row0 + i];
+      const b = from[row0 + i + 1];
+      const c = from[row1 + i];
+      const d = from[row1 + i + 1];
+      // channels 0 and 2, and 1 and 3, apart: each sum is under 1024
+      const even =
+        (a & lowMask) + (b & lowMask) + (c & lowMask) + (d & lowMask);
+      const odd =
+        ((a >>> 8) & lowMask) +
+        ((b >>> 8) & lowMask) +
+        ((c >>> 8) & lowMask) +
+        ((d >>> 8) & lowMask);
+      // a quarter of each: shifted two, and cut to the byte it stays in
+      to[o] = (((even >>> 2) & lowMask) | (((odd >>> 2) & lowMask) << 8)) >>> 0;
+      o += 1;
+    }
+  }
+  return out;
+}
+
+/** `reduced`, a byte at a time: for data a word cannot be read from, and a
+ *  machine whose words are the other way round. */
+function reducedBytes(
+  data: Uint8Array,
+  width: number,
+  w: number,
+  h: number,
+  factor: number,
+  lead: number,
+  out: Uint8Array,
+): Uint8Array {
   for (let y = 0; y < h; y += 1) {
     const row0 = (y * factor + lead) * width;
     const row1 = row0 + width;
@@ -228,10 +273,10 @@ function reduced(
     for (let x = 0; x < w; x += 1) {
       const a = (row0 + x * factor + lead) * 4;
       const b = (row1 + x * factor + lead) * 4;
-      out[o] = (data[a] + data[a + 4] + data[b] + data[b + 4]) >> 2;
-      out[o + 1] = (data[a + 1] + data[a + 5] + data[b + 1] + data[b + 5]) >> 2;
-      out[o + 2] = (data[a + 2] + data[a + 6] + data[b + 2] + data[b + 6]) >> 2;
-      out[o + 3] = (data[a + 3] + data[a + 7] + data[b + 3] + data[b + 7]) >> 2;
+      for (let k = 0; k < 4; k += 1) {
+        out[o + k] =
+          (data[a + k] + data[a + 4 + k] + data[b + k] + data[b + 4 + k]) >> 2;
+      }
       o += 4;
     }
   }
