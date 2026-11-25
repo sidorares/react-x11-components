@@ -1739,12 +1739,12 @@ export function buildSubtrees(
 ): SubtreesBuilt | null {
   const { roots, tails, hidden, gone } = found;
   const cascade = options.cascade;
-  if (
-    tree.foreign ||
-    tree.firstLine ||
-    cascade.hasFirstLine ||
-    options.transition
-  ) {
+  // A `::first-line` rule somewhere in the sheets is no reason: where the
+  // tree has a first line's style, or a root builds one (`_apart`), the
+  // build gives up, and a page whose framework sheet has one rule of the
+  // kind built the whole document at every change (tailwindcss.com's code
+  // demos, a keystroke at a time).
+  if (tree.foreign || tree.firstLine || options.transition) {
     return null;
   }
   const olds: SubtreeRoot[] = [];
