@@ -1,4 +1,4 @@
-// EXPERIMENTAL, off unless REACT_X11_NATIVE_CANVAS=1 on the Cocoa backend
+// On by default on the Cocoa backend; REACT_X11_NATIVE_CANVAS=0 turns it off
 // (docs/prd-native-canvas.md): a page's 2d canvas drawn on the host's native
 // context. The realm records commands (`scripts/dom.ts`, `rec`), this
 // replays them on a `Surface`, and `<Html>` shows the surface itself, on a
@@ -19,6 +19,7 @@ let nativeApp: unknown = null;
 
 /** `<Html>` tells which app draws, once it paints a canvas. */
 export function setNativeApp(app: unknown): void {
+  if (app !== nativeApp) readable = null;
   // only an app on a native backend has a context that replays a canvas
   // and reads it back at once: the in-process X server's reads are promises
   nativeApp = (app as Any)?.nativeBezels ? app : null;
@@ -28,15 +29,35 @@ function process_env(name: string): boolean {
   return (globalThis as Any).process?.env?.[name] === '1';
 }
 
+let readable: boolean | null = null;
+
+/** Whether the app's 2d context reads its pixels back at once
+ *  (react-x11's `readPixels`): a canvas drawn there that cannot be read
+ *  would lose what a page reads from it, so a core without it keeps every
+ *  canvas in the realm. */
+function canRead(): boolean {
+  if (readable === null) {
+    try {
+      const probe = newSurface(nativeApp, 1, 1) as Any;
+      readable = typeof probe?.getContext('2d')?.readPixels === 'function';
+      probe?.destroy?.();
+    } catch {
+      readable = false;
+    }
+  }
+  return readable;
+}
+
 export function nativeCanvasEnabled(): boolean {
   const process = (globalThis as Any).process;
   const env = process?.env;
   // the Cocoa backend's: where nothing replays a canvas, it would show none
   return (
     nativeApp !== null &&
-    env?.REACT_X11_NATIVE_CANVAS === '1' &&
+    env?.REACT_X11_NATIVE_CANVAS !== '0' &&
     process?.platform === 'darwin' &&
-    (env.REACT_X11_BACKEND ?? 'cocoa') === 'cocoa'
+    (env.REACT_X11_BACKEND ?? 'cocoa') === 'cocoa' &&
+    canRead()
   );
 }
 
@@ -1014,7 +1035,7 @@ export class NativeCanvas {
       if (!warned) {
         warned = true;
         (globalThis as Any).console?.warn(
-          'react-x11-components: REACT_X11_NATIVE_CANVAS needs a react-x11 whose 2d context has readPixels',
+          'react-x11-components: a native canvas needs a react-x11 whose 2d context has readPixels',
         );
       }
       return '';

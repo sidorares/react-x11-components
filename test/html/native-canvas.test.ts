@@ -1,5 +1,5 @@
 // A page's canvas drawn on the host's native context
-// (REACT_X11_NATIVE_CANVAS=1, `src/html/native-canvas.ts`) is recorded by
+// (REACT_X11_NATIVE_CANVAS, `src/html/native-canvas.ts`) is recorded by
 // the realm; what the host's context draws differently from a browser's — a
 // shadow, a pattern, an operator that clears what a draw misses — sends the
 // canvas on in the realm (`nativeBail`). These run with no Cocoa app, where

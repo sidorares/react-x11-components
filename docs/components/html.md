@@ -5323,14 +5323,15 @@ apart from the page's. A frame whose
 `scrolling` is `no`, `off` or `noscroll` shows no scroll bars, whatever its
 document's `overflow` (HTML 15.4.4).
 
-## A page's canvas on the native context (experimental)
+## A page's canvas on the native context
 
-`REACT_X11_NATIVE_CANVAS=1` on the Cocoa backend replays a page's 2d
-canvases on CoreGraphics instead of rasterizing them in the page's realm,
+On the Cocoa backend, with a react-x11 whose context has `readPixels`
+(3.2), a page's 2d canvases are replayed
+on CoreGraphics instead of rasterizing them in the page's realm,
 and where react-x11 can, shows the result on a layer of its own with no
-copy of the pixels. On a page that redraws windows of canvas every frame
+copy of the pixels. `REACT_X11_NATIVE_CANVAS=0` turns it off. On a page that redraws windows of canvas every frame
 (wland) the page's own frame rate went from 1–3 to about 45 and the
-document's repaints of the canvas stop. Off by default: edges are
+document's repaints of the canvas stop. Edges are
 CoreGraphics's, and a canvas that uses a shadow, a pattern or an operator
 that clears what a draw misses goes on in the realm. See
 [the design note](../prd-native-canvas.md).

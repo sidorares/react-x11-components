@@ -1,7 +1,8 @@
 # A page's canvas on the native context (draft)
 
-Status: **experimental, behind `REACT_X11_NATIVE_CANVAS=1` on the Cocoa
-backend, off otherwise.** What shipped is the spike's shape with a
+Status: **on by default on the Cocoa backend** (`REACT_X11_NATIVE_CANVAS=0`
+turns it off); WPT `html/canvas/element` on a native window scores the
+same as the realm's raster (`WPT_NATIVE=1`, `scripts/conformance`). What shipped is the spike's shape with a
 per-canvas fallback: the realm records a canvas's draws, the host replays
 them on a `Surface` (a `LayerSurface` where react-x11 3.1 has one, shown
 on a layer with no copy), and a canvas that draws something the host's
