@@ -17224,6 +17224,49 @@ export function installDom(
     state.rec = null;
     markCanvas(canvas, state, 0, 0, state.width, state.height);
   };
+  const RTL_LETTERS =
+    /[\u0590-\u08ff\u200f\u202b\u202e\ufb1d-\ufdff\ufe70-\ufefc]/;
+  /** Whether a path has a subpath that goes nowhere: it has a segment and
+   *  every point is the one. */
+  const pointlessSubpath = (cmds: number[]): boolean => {
+    let x = 0;
+    let y = 0;
+    let moved = false;
+    let segments = false;
+    for (let i = 0; i <= cmds.length;) {
+      const c = i < cmds.length ? cmds[i] : 0;
+      if (i >= cmds.length || c === 0) {
+        if (segments && !moved) return true;
+        if (i >= cmds.length) return false;
+        x = cmds[i + 1];
+        y = cmds[i + 2];
+        moved = false;
+        segments = false;
+        i += 3;
+        continue;
+      }
+      const size = c === 1 ? 3 : c === 2 ? 5 : c === 3 ? 7 : 1;
+      segments = true;
+      for (let j = 1; j + 1 < size; j += 2) {
+        if (cmds[i + j] !== x || cmds[i + j + 1] !== y) moved = true;
+      }
+      i += size;
+    }
+    return false;
+  };
+  /** Whether the host's context draws a gradient as a browser does: not one
+   *  with no direction, and not one with colours a browser mixes in another
+   *  space. */
+  const nativeStyle = (style: Any): boolean => {
+    const d = RASTER.describe(style) as Any;
+    if (!d) return false;
+    if (d.mixed) return false;
+    if (d.k === 'l' && d.x0 === d.x1 && d.y0 === d.y1) return false;
+    if (d.k === 'r' && d.x0 === d.x1 && d.y0 === d.y1 && d.r0 === d.r1) {
+      return false;
+    }
+    return true;
+  };
   const NATIVE_JS_OPS = new Set([
     'copy',
     'source-in',
@@ -17822,6 +17865,20 @@ export function installDom(
       this._clip = mask;
       return mask;
     }
+    /** Bail where a stroke is one the host's context draws otherwise: a
+     *  miter limit other than the default, and a subpath of no length,
+     *  which a browser draws nothing for and CoreGraphics a dot. */
+    _guardStroke(path: PathData): void {
+      const state = canvasState(this._canvas);
+      if (!state.rec) return;
+      const st = this._state;
+      if (
+        (st.lineJoin === 'miter' && st.miterLimit !== 10) ||
+        pointlessSubpath(path.cmds)
+      ) {
+        nativeBail(this._canvas, state);
+      }
+    }
     /** A draw the host's context makes differently from a browser's: the
      *  canvas goes on in this realm (`nativeBail`) before it is made. */
     _guard(style?: Any): void {
@@ -17838,7 +17895,7 @@ export function installDom(
         NATIVE_JS_OPS.has(st.globalCompositeOperation) ||
         (style !== undefined &&
           typeof style !== 'string' &&
-          !RASTER.describe(style))
+          !nativeStyle(style))
       ) {
         nativeBail(this._canvas, state);
       }
@@ -17848,6 +17905,8 @@ export function installDom(
       if (nstate.rec) {
         const n = [x, y, w, h].map(Number);
         if (n.every(Number.isFinite)) {
+          if (n[2] < 0) [n[0], n[2]] = [n[0] + n[2], -n[2]];
+          if (n[3] < 0) [n[1], n[3]] = [n[1] + n[3], -n[3]];
           nstate.rec.push(['CR', ...n, this._sid(nstate, null)]);
           nativeDirty(this._canvas);
         }
@@ -17888,6 +17947,8 @@ export function installDom(
         const n = [x, y, w, h].map(Number);
         const how = this._drawOf(this._state.fillStyle);
         if (how && n.every(Number.isFinite)) {
+          if (n[2] < 0) [n[0], n[2]] = [n[0] + n[2], -n[2]];
+          if (n[3] < 0) [n[1], n[3]] = [n[1] + n[3], -n[3]];
           nstate.rec.push(['FR', ...n, how.sid]);
           nativeDirty(this._canvas);
         }
@@ -18088,6 +18149,20 @@ export function installDom(
       const x1 = Math.min(x + w, state.width - ox);
       const y1 = Math.min(y + h, state.height - oy);
       if (x1 <= x0 || y1 <= y0) return;
+      // a premultiplied bitmap cannot hold what is put in it and read back
+      if (state.rec) {
+        let opaque = true;
+        for (let row = y0; row < y1 && opaque; row += 1) {
+          const end = (row * image.width + x1) * 4;
+          for (let i = (row * image.width + x0) * 4 + 3; i < end; i += 4) {
+            if (image.data[i] !== 255) {
+              opaque = false;
+              break;
+            }
+          }
+        }
+        if (!opaque) nativeBail(this._canvas, state);
+      }
       if (state.rec) {
         const rw = x1 - x0;
         const rows = new Uint8Array(rw * (y1 - y0) * 4);
@@ -18517,6 +18592,7 @@ export function installDom(
     _strokePath(path: PathData, m: number[] = IDENTITY): void {
       // the pen is the transform's now, whatever transform the path's
       // points were added under
+      this._guardStroke(path);
       const pen = this._strokeStyle();
       this._paint(
         (target, how) => RASTER.stroke(target, path, m, pen, how),
@@ -18535,6 +18611,8 @@ export function installDom(
     clip(a?: Any, b?: Any): void {
       const [path, m, rule] = this._pathArgs(a, b);
       const state = canvasState(this._canvas);
+      // an empty path clips everything, which a context's clip does not
+      if (state.rec && !path.cmds.length) nativeBail(this._canvas, state);
       if (state.rec) {
         nativeIds += 1;
         const cmds = path.cmds.slice();
@@ -18663,8 +18741,26 @@ export function installDom(
       const most = maxWidth === undefined ? Infinity : Number(maxWidth);
       if (!(most > 0)) return;
       const state = this._state;
-      const how = this._drawOf(stroke ? state.strokeStyle : state.fillStyle);
       const chars = str(text).replace(TEXT_SPACES, ' ');
+      {
+        // set otherwise by the host: an outline, a width it is fitted to, a
+        // right-to-left run, and white space at an end or run together
+        const nstate = canvasState(this._canvas);
+        if (
+          nstate.rec &&
+          (stroke ||
+            maxWidth !== undefined ||
+            (state.direction === 'inherit'
+              ? this._textNow()?.direction
+              : state.direction) === 'rtl' ||
+            chars !== chars.trim() ||
+            chars.includes('  ') ||
+            RTL_LETTERS.test(chars))
+        ) {
+          nativeBail(this._canvas, nstate);
+        }
+      }
+      const how = this._drawOf(stroke ? state.strokeStyle : state.fillStyle);
       const [a, b, c, d, e, f] = this._matrix;
       const scale = Math.max(Math.hypot(a, b), Math.hypot(c, d));
       const now = this._textNow();

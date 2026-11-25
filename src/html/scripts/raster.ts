@@ -2933,8 +2933,9 @@ export function installRaster(
       const g = GRADIENTS.get(style as object);
       if (!g) return null;
       const stops = g.stops.map((o: Any) => [o.offset, ...o.rgba]);
+      const mixed = g.stops.some((o: Any) => !o.legacy);
       if (g.kind === 'linear') {
-        return { k: 'l', x0: g.x0, y0: g.y0, x1: g.x1, y1: g.y1, stops };
+        return { k: 'l', x0: g.x0, y0: g.y0, x1: g.x1, y1: g.y1, stops, mixed };
       }
       if (g.kind === 'radial') {
         return {
@@ -2946,6 +2947,7 @@ export function installRaster(
           y1: g.y1,
           r1: g.r1,
           stops,
+          mixed,
         };
       }
       return null;
