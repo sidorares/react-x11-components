@@ -46,6 +46,8 @@ import { progressAt, timingAt, tracksOf } from './css/animation.js';
 import { rgbaOf } from './css/color.js';
 import { animationTree } from './css/cascade.js';
 import type { Cascade } from './css/cascade.js';
+import { colourFilter } from './css/filter.js';
+import type { FilterFunction } from './css/filter.js';
 import { masked, sameValue } from './css/style.js';
 import type { ComputedStyle } from './css/style.js';
 import type { AnimationTimeline, Transit } from './css/timeline.js';
@@ -197,6 +199,10 @@ export interface Lift {
   tracks: Track[];
   /** Every track's: what the part is made from, but for the document. */
   id: string;
+  /** A canvas a layer surface shows (`HtmlViewNode._layeredBoxes`): a
+   *  filter of shadows alone around it is the document's, drawn from its
+   *  silhouette under it, and is no reason to keep it off a layer. */
+  canvas?: boolean;
   /** Whether a track moves it, which a point is hit against where the
    *  layer has it (`HtmlViewNode._followLifted`). */
   moves: boolean;
@@ -405,6 +411,19 @@ export function overLiftOf(host: SpriteHost, box: Box): Lift | null {
   return { el, pseudo, box, tracks: [], id: 'still', moves: false };
 }
 
+/** A canvas's lift: still, and cast shadows by the document. */
+export function canvasLiftOf(host: SpriteHost, box: Box): Lift | null {
+  const lift = overLiftOf(host, box);
+  return lift && { ...lift, id: 'canvas', canvas: true };
+}
+
+/** Whether a filter list is `drop-shadow()`s alone, which the document
+ *  draws from a box's silhouette under it, and nothing over its pixels. */
+function shadowsOnly(list: readonly FilterFunction[]): boolean {
+  const colour = colourFilter(list);
+  return !!colour?.steps && colour.steps.every((s) => s.kind === 'shadow');
+}
+
 /**
  * Whether `box` can be drawn by a layer at all: a box of its own, drawing
  * nothing against the viewport, inside nothing whose group, matrix, clip
@@ -419,6 +438,7 @@ function liftableBox(
   host: SpriteHost,
   box: Box,
   within: Box | null = null,
+  shadowed = false,
 ): boolean {
   if (box.kind === 'inline' || box.kind === 'text' || box.kind === 'break') {
     return false;
@@ -468,7 +488,8 @@ function liftableBox(
     }
     // a box that clips it cuts its layer to a rectangle (`clipFor`), which a
     // path or a mask is not
-    if (style.clipPath || masked(style) || style.filter !== null) {
+    if (style.clipPath || masked(style)) return false;
+    if (style.filter !== null && !(shadowed && shadowsOnly(style.filter))) {
       return false;
     }
     // its own: a pseudo-element's beside the box is no ancestor of it
@@ -852,7 +873,7 @@ export function partOf(
   const tree = host.tree;
   const kept = tree.styles.get(el);
   const within = parent?.lift.box ?? null;
-  if (!kept || !liftableBox(host, box, within)) return null;
+  if (!kept || !liftableBox(host, box, within, lift.canvas)) return null;
   // in a layer that stays where the viewport is, or not, as its parent is
   const atViewport = drawnAtViewport(box);
   if (parent && parent.atViewport !== atViewport) return null;

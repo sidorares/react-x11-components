@@ -17053,7 +17053,26 @@ export function installDom(
      *  thing reaches this realm, which draws an image as nothing
      *  (`drawnPixels`): this is what a page is told of it. */
     tainted?: boolean;
+    /** SPIKE: commands for the host's native context, where there is one. */
+    rec?: Any[][] | null;
+    nid?: number;
+    /** The clips the host was told of, by id: what a canvas that goes on
+     *  in JavaScript (`nativeBail`) is cut by, made again from them. */
+    nclips?: Map<number, { cmds: number[]; m: number[]; rule: string }>;
+    /** SPIKE: the draw states the host has been told of (`_sid`). */
+    sm?: {
+      map: Map<string, number>;
+      next: number;
+      style?: Any;
+      m?: Any;
+      nc?: Any;
+      a?: number;
+      o?: string;
+      id?: number;
+    };
   }
+  let nativeIds = 0;
+  const nativeUploads = new WeakMap<object, number>();
   const canvases = new WeakMap<object, CanvasState>();
   /** The patterns made of what was not origin-clean, which taint what they
    *  are drawn on. */
@@ -17117,6 +17136,7 @@ export function installDom(
    *  shapes on such a canvas and copies them, and a pencil left no mark. */
   const canvasBitmap = (canvas: Any): Any => {
     const state = canvasState(canvas);
+    if (state.rec) nativeSync(canvas, state, 0, 0, state.width, state.height);
     const gl = state.kind === 'webgl' || state.kind === 'webgl2';
     return (gl && WEBGL.pixels(state.context)) || state;
   };
@@ -17140,6 +17160,11 @@ export function installDom(
     state.data = new Uint8ClampedArray(width * height * 4);
     state.tainted = false;
     if (is2d(state.context)) state.context._reset();
+    if (state.rec) {
+      state.rec.push(['X']);
+      nativeDirty(canvas);
+      return;
+    }
     markCanvas(canvas, state, 0, 0, width, height);
   };
   /** Whether a source is the page's to read back once it is drawn: the host
@@ -17176,6 +17201,110 @@ export function installDom(
     canvas instanceof OffscreenCanvas
       ? !!(canvas._placeholder || canvas._route)
       : !placeholders.has(canvas);
+  /** SPIKE: send what a native canvas has recorded. */
+  const flushNative = (canvas: Any, state: CanvasState): void => {
+    if (!state.rec?.length) return;
+    const cmds = state.rec;
+    state.rec = [];
+    call(
+      'nativeRun',
+      `${state.nid},${canvas instanceof OffscreenCanvas ? 0 : idOf(canvas)},${state.width},${state.height}`,
+      JSON.stringify(cmds),
+    );
+  };
+  const nativeDirty = (canvas: Any): void => {
+    dirtyCanvases.add(canvas);
+    if (!canvasFlush) {
+      canvasFlush = true;
+      queueMicrotask(flushCanvases);
+    }
+  };
+  /** SPIKE: the host's pixels, read into the bitmap a page reads. */
+  const nativeSync = (
+    canvas: Any,
+    state: CanvasState,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+  ): void => {
+    flushNative(canvas, state);
+    x = Math.max(0, x);
+    y = Math.max(0, y);
+    w = Math.min(state.width - x, w);
+    h = Math.min(state.height - y, h);
+    if (w <= 0 || h <= 0) return;
+    const text = call('nativeRead', `${state.nid},${x},${y},${w},${h}`);
+    if (typeof text !== 'string' || !text) return;
+    const bytes = bytesOfBase64(text);
+    for (let row = 0; row < h; row += 1) {
+      state.data.set(
+        bytes.subarray(row * w * 4, (row + 1) * w * 4),
+        ((y + row) * state.width + x) * 4,
+      );
+    }
+  };
+  /** What a native canvas cannot do as a browser does — a shadow, a
+   *  pattern, an operator that clears what a draw misses — and the host's
+   *  context does differently: the canvas reads its pixels once and goes on
+   *  in this realm, for good. */
+  const nativeBail = (canvas: Any, state: CanvasState): void => {
+    if (!state.rec) return;
+    nativeSync(canvas, state, 0, 0, state.width, state.height);
+    call('nativeDrop', String(state.nid));
+    state.rec = null;
+    markCanvas(canvas, state, 0, 0, state.width, state.height);
+  };
+  const RTL_LETTERS =
+    /[\u0590-\u08ff\u200f\u202b\u202e\ufb1d-\ufdff\ufe70-\ufefc]/;
+  /** Whether a path has a subpath that goes nowhere: it has a segment and
+   *  every point is the one. */
+  const pointlessSubpath = (cmds: number[]): boolean => {
+    let x = 0;
+    let y = 0;
+    let moved = false;
+    let segments = false;
+    for (let i = 0; i <= cmds.length;) {
+      const c = i < cmds.length ? cmds[i] : 0;
+      if (i >= cmds.length || c === 0) {
+        if (segments && !moved) return true;
+        if (i >= cmds.length) return false;
+        x = cmds[i + 1];
+        y = cmds[i + 2];
+        moved = false;
+        segments = false;
+        i += 3;
+        continue;
+      }
+      const size = c === 1 ? 3 : c === 2 ? 5 : c === 3 ? 7 : 1;
+      segments = true;
+      for (let j = 1; j + 1 < size; j += 2) {
+        if (cmds[i + j] !== x || cmds[i + j + 1] !== y) moved = true;
+      }
+      i += size;
+    }
+    return false;
+  };
+  /** Whether the host's context draws a gradient as a browser does: not one
+   *  with no direction, and not one with colours a browser mixes in another
+   *  space. */
+  const nativeStyle = (style: Any): boolean => {
+    const d = RASTER.describe(style) as Any;
+    if (!d) return false;
+    if (d.mixed) return false;
+    if (d.k === 'l' && d.x0 === d.x1 && d.y0 === d.y1) return false;
+    if (d.k === 'r' && d.x0 === d.x1 && d.y0 === d.y1 && d.r0 === d.r1) {
+      return false;
+    }
+    return true;
+  };
+  const NATIVE_JS_OPS = new Set([
+    'copy',
+    'source-in',
+    'source-out',
+    'destination-in',
+    'destination-atop',
+  ]);
   const markCanvas = (
     canvas: Any,
     state: CanvasState,
@@ -17216,6 +17345,10 @@ export function installDom(
     canvasFlush = false;
     for (const canvas of dirtyCanvases) {
       const state = canvases.get(canvas);
+      if (state?.rec) {
+        flushNative(canvas, state);
+        continue;
+      }
       if (!state?.dirty) continue;
       const [x0, y0, x1, y1] = state.dirty;
       state.dirty = null;
@@ -17618,6 +17751,8 @@ export function installDom(
     /** What the clips there are leave of each pixel, 0 to 1, or null for
      *  none: `save` keeps it, and a clip makes a new one. */
     _clip: Float32Array | null = null;
+    /** SPIKE: the ids of the clips in force, for a native canvas. */
+    _nclip: number[] = [];
     constructor(canvas: Any) {
       this._canvas = canvas;
     }
@@ -17631,6 +17766,7 @@ export function installDom(
       this._dash = [];
       this._path = RASTER.newPath();
       this._clip = null;
+      this._nclip = [];
     }
     getContextAttributes(): Any {
       return {
@@ -17646,6 +17782,7 @@ export function installDom(
         matrix: this._matrix.slice(),
         dash: this._dash.slice(),
         clip: this._clip,
+        nclip: this._nclip,
       });
     }
     restore(): void {
@@ -17655,10 +17792,16 @@ export function installDom(
       this._matrix = was.matrix;
       this._dash = was.dash;
       this._clip = was.clip;
+      this._nclip = was.nclip ?? [];
     }
     reset(): void {
       this._reset();
       const state = canvasState(this._canvas);
+      if (state.rec) {
+        state.rec.push(['X']);
+        nativeDirty(this._canvas);
+        return;
+      }
       state.data.fill(0);
       markCanvas(this._canvas, state, 0, 0, state.width, state.height);
     }
@@ -17731,9 +17874,77 @@ export function installDom(
         Math.min(state.height, Math.round(r[3])),
       ];
     }
+    /** The clip in force as a mask, made from the ids the host was told of
+     *  where the canvas was native and went on here (`nativeBail`). */
+    _clipNow(): Float32Array | null {
+      if (this._clip || !this._nclip.length) return this._clip;
+      const state = canvasState(this._canvas);
+      if (state.rec) return null;
+      let mask: Float32Array | null = null;
+      for (const id of this._nclip) {
+        const k = state.nclips?.get(id);
+        if (!k) continue;
+        mask = RASTER.clipMask(
+          state.width,
+          state.height,
+          { cmds: k.cmds } as PathData,
+          k.m,
+          k.rule,
+          mask,
+        );
+      }
+      this._clip = mask;
+      return mask;
+    }
+    /** Bail where a stroke is one the host's context draws otherwise: a
+     *  miter limit other than the default, and a subpath of no length,
+     *  which a browser draws nothing for and CoreGraphics a dot. */
+    _guardStroke(path: PathData): void {
+      const state = canvasState(this._canvas);
+      if (!state.rec) return;
+      const st = this._state;
+      if (
+        (st.lineJoin === 'miter' && st.miterLimit !== 10) ||
+        pointlessSubpath(path.cmds)
+      ) {
+        nativeBail(this._canvas, state);
+      }
+    }
+    /** A draw the host's context makes differently from a browser's: the
+     *  canvas goes on in this realm (`nativeBail`) before it is made. */
+    _guard(style?: Any): void {
+      const state = canvasState(this._canvas);
+      if (!state.rec) return;
+      const st = this._state;
+      const shadowed =
+        (st.shadowBlur > 0 ||
+          st.shadowOffsetX !== 0 ||
+          st.shadowOffsetY !== 0) &&
+        (colourOf(st.shadowColor)?.[3] ?? 0) > 0;
+      if (
+        shadowed ||
+        NATIVE_JS_OPS.has(st.globalCompositeOperation) ||
+        (style !== undefined &&
+          typeof style !== 'string' &&
+          !nativeStyle(style))
+      ) {
+        nativeBail(this._canvas, state);
+      }
+    }
     clearRect(x: Any, y: Any, w: Any, h: Any): void {
+      const nstate = canvasState(this._canvas);
+      if (nstate.rec) {
+        const n = [x, y, w, h].map(Number);
+        if (n.every(Number.isFinite)) {
+          if (n[2] < 0) [n[0], n[2]] = [n[0] + n[2], -n[2]];
+          if (n[3] < 0) [n[1], n[3]] = [n[1] + n[3], -n[3]];
+          nstate.rec.push(['CR', ...n, this._sid(nstate, null)]);
+          nativeDirty(this._canvas);
+        }
+        return;
+      }
       const r = this._rect(x, y, w, h);
-      if (!r || this._clip) {
+      if (!r || this._clipNow()) {
         // turned, or cut by a clip: what the rectangle covers, cleared
         const path = RASTER.newPath();
         path.rect(Number(x), Number(y), Number(w), Number(h), this._matrix);
@@ -17744,7 +17955,7 @@ export function installDom(
             paint: RASTER.solid([0, 0, 0, 255]),
             alpha: 1,
             op: 'destination-out',
-            clip: this._clip,
+            clip: this._clipNow(),
           },
         );
         return;
@@ -17761,6 +17972,19 @@ export function installDom(
       markCanvas(this._canvas, state, x0, y0, x1, y1);
     }
     fillRect(x: Any, y: Any, w: Any, h: Any): void {
+      this._guard(this._state.fillStyle);
+      const nstate = canvasState(this._canvas);
+      if (nstate.rec) {
+        const n = [x, y, w, h].map(Number);
+        const how = this._drawOf(this._state.fillStyle);
+        if (how && n.every(Number.isFinite)) {
+          if (n[2] < 0) [n[0], n[2]] = [n[0] + n[2], -n[2]];
+          if (n[3] < 0) [n[1], n[3]] = [n[1] + n[3], -n[3]];
+          nstate.rec.push(['FR', ...n, how.sid]);
+          nativeDirty(this._canvas);
+        }
+        return;
+      }
       const style = this._state.fillStyle;
       const rgba = typeof style === 'string' ? colourOf(style) : null;
       const r = this._rect(x, y, w, h);
@@ -17769,7 +17993,7 @@ export function installDom(
       const st = this._state;
       const shadowed =
         st.shadowBlur > 0 || st.shadowOffsetX !== 0 || st.shadowOffsetY !== 0;
-      if (!rgba || !r || this._clip || op !== 'source-over' || shadowed) {
+      if (!rgba || !r || this._clipNow() || op !== 'source-over' || shadowed) {
         // anything but a colour over what is there in a rectangle of
         // pixels is a path: `copy` among them, which clears what the
         // rectangle leaves
@@ -17885,6 +18109,7 @@ export function installDom(
         h = -h;
       }
       const state = canvasState(this._canvas);
+      if (state.rec) nativeSync(this._canvas, state, x, y, w, h);
       const out = new ImageData(w, h);
       const fromX = Math.max(0, x);
       const toX = Math.min(state.width, x + w);
@@ -17955,6 +18180,43 @@ export function installDom(
       const x1 = Math.min(x + w, state.width - ox);
       const y1 = Math.min(y + h, state.height - oy);
       if (x1 <= x0 || y1 <= y0) return;
+      // a premultiplied bitmap cannot hold what is put in it and read back
+      if (state.rec) {
+        let opaque = true;
+        for (let row = y0; row < y1 && opaque; row += 1) {
+          const end = (row * image.width + x1) * 4;
+          for (let i = (row * image.width + x0) * 4 + 3; i < end; i += 4) {
+            if (image.data[i] !== 255) {
+              opaque = false;
+              break;
+            }
+          }
+        }
+        if (!opaque) nativeBail(this._canvas, state);
+      }
+      if (state.rec) {
+        const rw = x1 - x0;
+        const rows = new Uint8Array(rw * (y1 - y0) * 4);
+        for (let row = y0; row < y1; row += 1) {
+          rows.set(
+            image.data.subarray(
+              (row * image.width + x0) * 4,
+              (row * image.width + x1) * 4,
+            ),
+            (row - y0) * rw * 4,
+          );
+        }
+        state.rec.push([
+          'P',
+          x0 + ox,
+          y0 + oy,
+          rw,
+          y1 - y0,
+          base64OfBytes(rows),
+        ]);
+        nativeDirty(this._canvas);
+        return;
+      }
       for (let row = y0; row < y1; row += 1) {
         state.data.set(
           image.data.subarray(
@@ -17990,7 +18252,19 @@ export function installDom(
       const n = args.map(Number);
       // another canvas, an `OffscreenCanvas`, an `ImageBitmap`, an image
       // or a stream's frame: what this realm has the pixels of
-      const from = drawnPixels(source, this, 'drawImage');
+      // a native canvas drawn on a native one is drawn on the host, whose
+      // pixels are not read in for it: its size is all this needs
+      const native =
+        (source instanceof HTMLCanvasElement ||
+          source instanceof OffscreenCanvas) &&
+        !(source instanceof OffscreenCanvas && source._detached)
+          ? canvases.get(source)
+          : null;
+      this._guard();
+      const from =
+        native?.rec && canvasState(this._canvas).rec
+          ? { data: null as Any, width: native.width, height: native.height }
+          : drawnPixels(source, this, 'drawImage');
       if (!originClean(source)) canvasState(this._canvas).tainted = true;
       if (!from || !n.every(Number.isFinite)) return;
       let [sx, sy, sw, sh] = [0, 0, from.width, from.height];
@@ -18015,6 +18289,75 @@ export function installDom(
       if (dh < 0) [dy, dh] = [dy + dh, -dh];
       if (!sw || !sh || !dw || !dh) return;
       const state = canvasState(this._canvas);
+      if (state.rec) {
+        const st = this._state;
+        const nstate =
+          source instanceof HTMLCanvasElement ||
+          source instanceof OffscreenCanvas
+            ? canvases.get(source)
+            : null;
+        let ref: Any;
+        if (nstate?.rec) {
+          flushNative(source, nstate);
+          ref = ['c', nstate.nid];
+        } else if (
+          !(
+            source instanceof HTMLCanvasElement ||
+            source instanceof OffscreenCanvas
+          ) &&
+          from.data
+        ) {
+          let id = nativeUploads.get(from.data);
+          if (!id) {
+            nativeIds += 1;
+            id = nativeIds;
+            nativeUploads.set(from.data, id);
+            state.rec.push([
+              'U',
+              id,
+              from.width,
+              from.height,
+              base64OfBytes(
+                new Uint8Array(
+                  from.data.buffer,
+                  from.data.byteOffset,
+                  from.data.length,
+                ),
+              ),
+            ]);
+          }
+          ref = ['u', id];
+        } else {
+          ref = [
+            't',
+            from.width,
+            from.height,
+            base64OfBytes(
+              new Uint8Array(
+                from.data.buffer,
+                from.data.byteOffset,
+                from.data.length,
+              ),
+            ),
+          ];
+        }
+        state.rec.push([
+          'I',
+          ref,
+          sx,
+          sy,
+          sw,
+          sh,
+          dx,
+          dy,
+          dw,
+          dh,
+          !!st.imageSmoothingEnabled,
+          this._sid(state, null),
+        ]);
+        nativeDirty(this._canvas);
+        return;
+      }
       // a canvas drawn onto itself is read as it was before the draw
       const image =
         from === state || from.data === state.data
@@ -18144,6 +18487,7 @@ export function installDom(
     /** How a fill or a stroke with a style is drawn, or null for a style
      *  that paints nothing. */
     _drawOf(style: Any): Any {
+      this._guard(style);
       if (TAINTED_PATTERNS.has(style)) canvasState(this._canvas).tainted = true;
       const paint =
         typeof style === 'string'
@@ -18153,7 +18497,64 @@ export function installDom(
             })()
           : RASTER.paintOf(style, this._matrix);
       if (!paint) return null;
-      return { paint, ...this._howOf() };
+      const rec = canvasState(this._canvas);
+      return {
+        paint,
+        sid: rec.rec ? this._sid(rec, style) : 0,
+        ...this._howOf(),
+      };
+    }
+    /** SPIKE: the id of how the next draw is made (its paint, alpha,
+     *  operator, transform and clips), defined to the host the first time
+     *  and named after, so a command is its own numbers and one more. */
+    _sid(state: CanvasState, style: Any): number {
+      const memo: NonNullable<CanvasState['sm']> = (state.sm ??= {
+        map: new Map(),
+        next: 0,
+      });
+      const st = this._state;
+      const m = this._matrix;
+      const nc = this._nclip;
+      const a = st.globalAlpha;
+      const o = st.globalCompositeOperation;
+      if (
+        memo.id !== undefined &&
+        (style === null || typeof style === 'string') &&
+        memo.style === style &&
+        memo.m === m &&
+        memo.nc === nc &&
+        memo.a === a &&
+        memo.o === o
+      ) {
+        return memo.id;
+      }
+      const desc =
+        style === null
+          ? null
+          : typeof style === 'string'
+            ? { rgba: colourOf(style) }
+            : RASTER.describe(style);
+      const key = JSON.stringify([desc, a, o, m, nc]);
+      let id = memo.map.get(key);
+      if (id === undefined) {
+        if (memo.map.size >= 2048) {
+          memo.map.clear();
+          state.rec!.push(['DX']);
+        }
+        memo.next += 1;
+        id = memo.next;
+        memo.map.set(key, id);
+        state.rec!.push(['D', id, desc, a, o, m, nc]);
+      }
+      if (style === null || typeof style === 'string') {
+        memo.style = style;
+        memo.m = m;
+        memo.nc = nc;
+        memo.a = a;
+        memo.o = o;
+        memo.id = id;
+      } else memo.id = undefined;
+      return id;
     }
     /** How anything is drawn, whatever it is painted with: the alpha, the
      *  operator, the clip and the shadow. */
@@ -18167,7 +18568,9 @@ export function installDom(
       return {
         alpha: state.globalAlpha,
         op: state.globalCompositeOperation,
-        clip: this._clip,
+        clip: this._clipNow(),
+        matrix: this._matrix,
+        nclip: this._nclip,
         shadow:
           rgba && rgba[3] > 0
             ? {
@@ -18184,6 +18587,10 @@ export function installDom(
       if (!how) return;
       const state = canvasState(this._canvas);
       const changed = draw(state, how);
+      if (state.rec) {
+        nativeDirty(this._canvas);
+        return;
+      }
       if (changed) {
         markCanvas(
           this._canvas,
@@ -18216,6 +18623,7 @@ export function installDom(
     _strokePath(path: PathData, m: number[] = IDENTITY): void {
       // the pen is the transform's now, whatever transform the path's
       // points were added under
+      this._guardStroke(path);
       const pen = this._strokeStyle();
       this._paint(
         (target, how) => RASTER.stroke(target, path, m, pen, how),
@@ -18234,14 +18642,26 @@ export function installDom(
     clip(a?: Any, b?: Any): void {
       const [path, m, rule] = this._pathArgs(a, b);
       const state = canvasState(this._canvas);
+      // an empty path clips everything, which a context's clip does not
+      if (state.rec && !path.cmds.length) nativeBail(this._canvas, state);
+      if (state.rec) {
+        nativeIds += 1;
+        const cmds = path.cmds.slice();
+        state.rec.push(['K', nativeIds, cmds, m, rule]);
+        (state.nclips ??= new Map()).set(nativeIds, { cmds, m, rule });
+        this._nclip = [...this._nclip, nativeIds];
+        return;
+      }
+      const was = this._clipNow();
       this._clip = RASTER.clipMask(
         state.width,
         state.height,
         path,
         m,
         rule,
-        this._clip,
+        was,
       );
+      this._nclip = [];
     }
     isPointInPath(a: Any, b: Any, c?: Any, d?: Any): boolean {
       // `(x, y, fillRule)` or `(Path2D, x, y, fillRule)`: four arguments
@@ -18352,12 +18772,48 @@ export function installDom(
       const most = maxWidth === undefined ? Infinity : Number(maxWidth);
       if (!(most > 0)) return;
       const state = this._state;
-      const how = this._drawOf(stroke ? state.strokeStyle : state.fillStyle);
       const chars = str(text).replace(TEXT_SPACES, ' ');
+      {
+        // set otherwise by the host: an outline, a width it is fitted to, a
+        // right-to-left run, and white space at an end or run together
+        const nstate = canvasState(this._canvas);
+        if (
+          nstate.rec &&
+          (stroke ||
+            maxWidth !== undefined ||
+            (state.direction === 'inherit'
+              ? this._textNow()?.direction
+              : state.direction) === 'rtl' ||
+            chars !== chars.trim() ||
+            chars.includes('  ') ||
+            RTL_LETTERS.test(chars))
+        ) {
+          nativeBail(this._canvas, nstate);
+        }
+      }
+      const how = this._drawOf(stroke ? state.strokeStyle : state.fillStyle);
       const [a, b, c, d, e, f] = this._matrix;
       const scale = Math.max(Math.hypot(a, b), Math.hypot(c, d));
       const now = this._textNow();
       if (!how || !now || !(scale > 0) || !chars.trim()) return;
+      const nstate = canvasState(this._canvas);
+      if (nstate.rec) {
+        nstate.rec.push([
+          'T',
+          chars,
+          this._textFont(),
+          state.textAlign,
+          state.textBaseline,
+          left,
+          top,
+          maxWidth === undefined ? null : most,
+          stroke,
+          state.lineWidth,
+          how.sid,
+        ]);
+        nativeDirty(this._canvas);
+        return;
+      }
       const fontSize = state[FONT_SIZE];
       const device = fontSize * scale;
       const size = Math.max(
@@ -19129,6 +19585,11 @@ export function installDom(
         : kind === 'bitmaprenderer'
           ? new ImageBitmapRenderingContext(canvas, CANVAS_KEY)
           : WEBGL.context(canvas, kind as 'webgl' | 'webgl2', options);
+    if (kind === '2d' && call('nativeCanvas') === true) {
+      state.rec = [];
+      nativeIds += 1;
+      state.nid = nativeIds;
+    }
     return state.context;
   };
 

@@ -18,6 +18,7 @@
 // `storage` keeps it — memory, gone with the process, unless the host keeps
 // a profile; a cookie is what the host's jar lets the document's address
 // have; a navigation is a link the browser follows.
+import { NativeCanvas, nativeCanvasEnabled } from '../native-canvas.js';
 import { numericTaken } from '../css/typed-om-numbers.js';
 import { trustworthy } from '../fetch-metadata.js';
 import type { FetchMode } from '../fetch-metadata.js';
@@ -2591,7 +2592,9 @@ export class DomShared {
   /** Each `<canvas>`'s pixels, whichever realm's script drew them, and who
    *  is told as they change. */
   readonly canvases = new WeakMap<Element, CanvasPixels>();
-  readonly canvasListeners = new Set<(canvas: Element) => void>();
+  readonly canvasListeners = new Set<
+    (canvas: Element, rect?: number[] | null) => void
+  >();
 
   /** The frames' documents changed: one came, or went on to another. */
   framesChanged(): void {
@@ -3517,6 +3520,29 @@ export class DomHost {
   /** Whether the frames the markup has have been asked to load. */
   private _framesLoaded = false;
 
+  private readonly _natives = new Map<number, NativeCanvas>();
+  private readonly _byElement = new WeakMap<Element, NativeCanvas>();
+  private _native(nid: number): NativeCanvas {
+    let n = this._natives.get(nid);
+    if (!n) {
+      n = new NativeCanvas((id) => this._natives.get(id) ?? null);
+      this._natives.set(nid, n);
+    }
+    return n;
+  }
+  /** SPIKE: the surface a native canvas is drawn on, once it has one. */
+  nativeSurface(element: Element): unknown {
+    const n = this._byElement.get(element);
+    return n && !n.dropped ? n.ensure() : null;
+  }
+
+  /** The layer a native canvas's frames are drawn into, once it has one. */
+  canvasLayer(element: Element): { readonly surface: unknown } | null {
+    const n = this._byElement.get(element);
+    const layer = n && !n.dropped ? n.layer : null;
+    return layer?.surface ? layer : null;
+  }
+
   /** A `<canvas>`'s pixels, where a script drew any. */
   canvas(element: Element): CanvasPixels | null {
     this._contexts.settle(element);
@@ -3531,11 +3557,15 @@ export class DomHost {
   /** The alpha number of a canvas's pixels as they are, read as nothing
    *  else is: no frame is asked for. */
   canvasAlpha(element: Element): number | undefined {
+    // SPIKE: a native canvas's alpha is not read back; its shadow is kept
+    if (this._byElement.has(element)) return 1;
     return this._s.canvases.get(element)?.alphaVersion;
   }
 
   /** Be told when a canvas's pixels change; answers the way to stop. */
-  onCanvas(listener: (canvas: Element) => void): () => void {
+  onCanvas(
+    listener: (canvas: Element, rect?: number[] | null) => void,
+  ): () => void {
     this._s.canvasListeners.add(listener);
     return () => this._s.canvasListeners.delete(listener);
   }
@@ -6176,6 +6206,35 @@ export class DomHost {
         return null;
       }
 
+      // SPIKE: a canvas drawn on the native context
+      case 'nativeCanvas':
+        return nativeCanvasEnabled();
+      case 'nativeRun': {
+        const [nid, element, w, h] = text(a).split(',').map(Number);
+        const n = this._native(nid);
+        n.run(`${w},${h}`, text(b));
+        const dirty = n.takeDirty();
+        if (element) {
+          const el = this._element(element);
+          this._byElement.set(el, n);
+          // a frame that drew what the last one did shows nothing new
+          if (dirty !== 'none')
+            for (const listener of [...this._s.canvasListeners])
+              listener(el, dirty);
+        }
+        return null;
+      }
+      // a canvas the page goes on drawing in its own realm
+      case 'nativeDrop': {
+        const nid = Number(text(a));
+        this._natives.get(nid)?.dispose();
+        this._natives.delete(nid);
+        return null;
+      }
+      case 'nativeRead': {
+        const [nid, x, y, w, h] = text(a).split(',').map(Number);
+        return this._native(nid).read(x, y, w, h);
+      }
       // a canvas's pixels, the rectangle a task changed: its bitmap's
       // size, where the rectangle is in it, and its rows as base64
       case 'canvasPut': {

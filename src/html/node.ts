@@ -36,6 +36,7 @@
 // What is reused from `<richtext>` is everything that was not about the
 // element: the `TextRun` vocabulary, the per-run decoration painter, and the
 // bidi-correct selection bands. See `src/richtext/runs.ts`.
+import { setNativeApp } from './native-canvas.js';
 import {
   registerElement,
   registeredElements,
@@ -431,6 +432,7 @@ import {
   describeShadows,
   liftOf,
   overLiftOf,
+  canvasLiftOf,
   partOf,
   shadowLiftOf,
   shadowPartOf,
@@ -752,6 +754,7 @@ export interface HtmlViewProps {
    *  content box as an `<img>` is. `canvasChanged` says it changed. */
   canvasImage?: (element: Element) => unknown | null;
   canvasOpaque?: (element: Element) => boolean;
+  canvasLayer?: (element: Element) => { readonly surface: unknown } | null;
   /** Whether an `<object>` or an `<embed>` shows its document as it stands,
    *  over its box, where an image of it could otherwise be drawn. */
   framed?: (element: Element) => boolean;
@@ -4979,6 +4982,9 @@ export class HtmlViewNode extends Node {
   }
 
   private _update(target: number): void {
+    // the app that draws, before the page's scripts ask whether a canvas may
+    // be drawn on its native context
+    setNativeApp(this.app);
     const props = this._props();
     if ((props.domRevision ?? 0) !== this._reportedDomRevision) {
       this._reportedDomRevision = props.domRevision ?? 0;
@@ -13011,7 +13017,12 @@ export class HtmlViewNode extends Node {
     const animating = this._animating();
     // no animation, and no box turned out of the plane in the tree this
     // frame paints, or one a build it owes may make
-    if (!animating && this._stale === Stale.Nothing && !this._tree?.tilted) {
+    if (
+      !animating &&
+      this._stale === Stale.Nothing &&
+      !this._tree?.tilted &&
+      !this._layered.size
+    ) {
       return null;
     }
     // this frame paints after the presenter: a build it owes is built now,
@@ -13022,7 +13033,8 @@ export class HtmlViewNode extends Node {
     if (!tree || !cascade) return null;
     const live = animating ? this._timeline.live() : [];
     const tilted = this._tiltedBoxes(tree);
-    if (!live.length && !tilted.length) return null;
+    const layered = this._layeredBoxes(tree);
+    if (!live.length && !tilted.length && !layered.length) return null;
     const now = animationClock.now();
     // the pane that scrolls the element, whose viewport a box fixed to it
     // is drawn at
@@ -13083,6 +13095,13 @@ export class HtmlViewNode extends Node {
     // server through its whole matrix (`stillLiftOf`)
     for (const box of tilted) {
       const lift = stillLiftOf(host, box);
+      if (lift) lifts.push(lift);
+    }
+    // and each canvas whose frames are in a layer surface, which shows
+    // them as they are (`layered`)
+    for (const box of layered) {
+      if (lifts.some((l) => l.box === box)) continue;
+      const lift = canvasLiftOf(host, box);
       if (lift) lifts.push(lift);
     }
     if (lifts.length > 1) {
@@ -13245,25 +13264,34 @@ export class HtmlViewNode extends Node {
       const painted = (options ??= this._paintOptions(range, null));
       // from the viewport's corner, for one the document draws there
       const origin = part.atViewport && viewport ? viewport : this.abs;
-      (out ??= []).push(
-        describe(
-          part,
-          key,
-          entry.version,
-          origin.x,
-          origin.y,
-          now,
-          (ctx, box, children) =>
-            paintLiftedBox(
-              ctx as PaintContext,
-              tree,
-              box,
-              painted,
-              this._holesOf(tree, children),
-            ),
-          parent?.key ?? null,
-        ),
+      const sprite = describe(
+        part,
+        key,
+        entry.version,
+        origin.x,
+        origin.y,
+        now,
+        (ctx, box, children) =>
+          paintLiftedBox(
+            ctx as PaintContext,
+            tree,
+            box,
+            painted,
+            this._holesOf(tree, children),
+          ),
+        parent?.key ?? null,
       );
+      // a canvas drawn into a layer surface shows it, and paints nothing
+      const surface =
+        lift.pseudo === '' && this._layered.has(lift.el)
+          ? this._props().canvasLayer?.(lift.el)
+          : null;
+      if (surface) {
+        delete (sprite as { paint?: unknown }).paint;
+        (sprite as { contents?: unknown }).contents = surface;
+        delete (sprite as { animations?: unknown }).animations;
+      }
+      (out ??= []).push(sprite);
       for (const kid of entry.kids) offer(kid);
     };
     for (const top of kept) {
@@ -13276,6 +13304,29 @@ export class HtmlViewNode extends Node {
       (out ??= []).push(
         describeShadows(part, key, this.abs.x, this.abs.y, now),
       );
+    }
+    return out;
+  }
+
+  /** The boxes of the canvases a layer surface shows, whose picture is the
+   *  box's content and nothing else: no border or padding about it, and
+   *  stretched to the box. */
+  private _layeredBoxes(tree: BoxTree): Box[] {
+    if (!this._layered.size) return [];
+    const first = this._firstBoxesOf(tree);
+    const out: Box[] = [];
+    for (const el of this._layered) {
+      const box = first.get(el);
+      if (
+        !box ||
+        box.replaced !== 'frame' ||
+        box.style.objectFit !== 'fill' ||
+        Math.abs(box.contentWidth - box.width) > 0.01 ||
+        Math.abs(box.contentHeight - box.height) > 0.01
+      ) {
+        continue;
+      }
+      out.push(box);
     }
     return out;
   }
@@ -17349,11 +17400,27 @@ export class HtmlViewNode extends Node {
    * it was, given up.
    */
   private readonly _alphaSeen = new WeakMap<Element, number>();
-  canvasChanged(element: Element, alphaVersion?: number): void {
+  /** The canvases whose frames are in a layer surface
+   *  (`canvasLayer`): offered to the presenter as parts that show it. */
+  private readonly _layered = new Set<Element>();
+  canvasChanged(
+    element: Element,
+    alphaVersion?: number,
+    rect?: number[] | null,
+  ): void {
     const tree = this._tree;
     if (!tree) return;
     const box = this._firstBoxesOf(tree).get(element);
     if (!box || box.replaced !== 'frame') return;
+    // its frames in a layer surface: offered as a part that shows it, and
+    // where the presenter has it on a layer, drawn by it — nothing here is
+    // repainted
+    const layered = !!this._props().canvasLayer?.(element);
+    if (layered && !this._layered.has(element)) {
+      this._layered.add(element);
+      this.spritesChanged();
+    } else if (!layered) this._layered.delete(element);
+    const shown = layered && !!this._liftedTargets.get(element)?.has('');
     // what a filter casts a shadow from is the alpha: a picture drawn on
     // with its alpha as it was leaves the shadows around it as they were
     const alpha = alphaVersion;
@@ -17361,6 +17428,36 @@ export class HtmlViewNode extends Node {
       alpha !== undefined && this._alphaSeen.get(element) === alpha;
     if (alpha !== undefined) this._alphaSeen.set(element, alpha);
     this._dropSprites(box, true, coloursOnly);
+    // a canvas the presenter shows needs no repaint of its pixels; what a
+    // filter casts from its alpha, where that changed, is repainted
+    if (shown && coloursOnly !== false) return;
+    // where the picture changed, when it is known and drawn as it is
+    // made: the part of the box that shows those pixels
+    if (rect && coloursOnly !== false && box.contentWidth > 0) {
+      const [x0, y0, x1, y1, cw, ch] = rect;
+      const sx = box.contentWidth / cw;
+      const sy = box.contentHeight / ch;
+      if (Math.abs(sx - sy) < 0.01) {
+        const placed = throughTransforms(
+          {
+            x: box.contentX + x0 * sx - 1,
+            y: box.contentY + y0 * sy - 1,
+            width: (x1 - x0) * sx + 2,
+            height: (y1 - y0) * sy + 2,
+          },
+          box,
+        );
+        const shift = placed && this._fixedShift();
+        const part =
+          placed && shift && drawnAtViewport(box)
+            ? { ...placed, x: placed.x + shift.x, y: placed.y + shift.y }
+            : placed;
+        if (part) {
+          this._repaintInk([part]);
+          return;
+        }
+      }
+    }
     const ink = this._inkOf(box);
     if (ink) this._repaintInk([ink]);
   }
@@ -18983,6 +19080,7 @@ export class HtmlViewNode extends Node {
       reframe: AnimatedImage.reframe,
       imageFor: (box) => {
         if (box.replaced === 'frame') {
+          if (box.el && tagOf(box.el) === 'canvas') setNativeApp(this.app);
           return box.el && tagOf(box.el) === 'canvas'
             ? (this._props().canvasImage?.(box.el) ?? null)
             : null;

@@ -1152,6 +1152,7 @@ export function useScriptedHtml(
     onElementScroll,
     canvasImage,
     canvasOpaque: scripts.canvasOpaque,
+    canvasLayer: scripts.canvasLayer,
     ...(opening && { document: opening.document, baseUrl: opening.base }),
     onLink,
     onSubmit,
