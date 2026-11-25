@@ -4322,6 +4322,38 @@ metric(
   },
 );
 
+metric(
+  "a range whose thumb is centred by a transform stands on its track, in a box that holds the track's margins",
+  async () => {
+    // joshwcomeau.com/shadow-palette/: Chromium makes this 27px thick (a 3px
+    // track and 12px above and below) with the thumb's centre on the track's
+    const { result, node } = await render(
+      `<style>
+      body { margin: 0 }
+      #r { display: block; width: 200px; appearance: none; background: transparent;
+        --handle: 24px; --track: 3px }
+      #r::-webkit-slider-thumb { appearance: none; width: var(--handle);
+        height: var(--handle); border-radius: 50px; background: #00ff00;
+        transform: translateY(calc(-50% + (var(--track) / 2))) }
+      #r::-webkit-slider-runnable-track { width: calc(100% - var(--handle));
+        height: var(--track); background: #ff00ff;
+        margin: calc(var(--handle) / 2); margin-left: 0; margin-right: 0 }
+      </style><input id="r" type="range" value="0">`,
+      300,
+    );
+    await act();
+    const el = view(node);
+    assert.strictEqual(boxOf(el, 'r').height, 27, 'track and its margins');
+    const box = el.elementRect(findById(el.document, 'r')!)!;
+    const origin = el.getClientRects()[0];
+    const at = (x: number, y: number) =>
+      pixelAt(result.ctx, origin.x + box.x + x, origin.y + box.y + y);
+    assert.deepStrictEqual((await at(12, 13)).slice(0, 3), [0, 255, 0]);
+    // the top of the thumb is 1.5px down, not 12
+    assert.deepStrictEqual((await at(12, 3)).slice(0, 3), [0, 255, 0]);
+  },
+);
+
 test("a stylesheet's pseudo-classes of a control's state answer as Chromium's do", async () => {
   const { node } = await render(CONTROL_STATE_SOURCE, 800);
   await act();
