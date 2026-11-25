@@ -1267,6 +1267,11 @@ const FLING_TAU_MS = 200;
 const FLING_FRAME_MS = 16;
 
 /** What changed, and therefore how far back up the pipeline to go. */
+/** What a paint of a new animated frame costs and is not paced by, in ms,
+ *  and how many times that a frame is held back past it. */
+const GIF_COST_FREE_MS = 24;
+const GIF_SLIP = 3;
+
 const enum Stale {
   Nothing = 0,
   Layout = 1,
@@ -1693,6 +1698,12 @@ export class HtmlViewNode extends Node {
   /** The timer for the next frame of an animated image, and when it is due. */
   private _gifTimer: unknown = null;
   private _gifAt = Infinity;
+  /** What a paint that drew a new frame of an animated image took, a
+   *  moving average in ms, and when the last such frame was asked for. */
+  private _gifCost = 0;
+  private _gifLast = 0;
+  /** Whether the paint now under way drew a frame the clock moved on to. */
+  private _gifPainted = false;
   /**
    * The clock the animations of the drawings' elements run on, across
    * builds and cascades (`ShapeAnimations`): a drawing with one under way
@@ -12837,6 +12848,7 @@ export class HtmlViewNode extends Node {
     if (!this._animating()) return animation.image(0);
     const now = animationClock.now();
     const index = animation.indexAt(now);
+    if (this._gifs.get(animation)?.index !== index) this._gifPainted = true;
     const next = animation.nextChange(now);
     if (next !== null) {
       let drawn = this._gifs.get(animation);
@@ -12854,6 +12866,13 @@ export class HtmlViewNode extends Node {
    *  cheaper (`_behind`): the paint at rest after it asks again. */
   private _armGif(at: number): void {
     if (this.destroyed || this._cheap) return;
+    // A frame whose repaint costs more than a third of the time it has to
+    // be shown in slips, where it would hold the thread from the scroll
+    // and the page's own work: a card of two 1920 pixel GIFs a page
+    // scrolled past repainted at 12 frames a second, each 100 ms.
+    if (this._gifCost > GIF_COST_FREE_MS) {
+      at = Math.max(at, this._gifLast + this._gifCost * GIF_SLIP);
+    }
     if (this._gifTimer !== null && this._gifAt <= at) return;
     this._disarmGif();
     this._gifAt = at;
@@ -12861,6 +12880,14 @@ export class HtmlViewNode extends Node {
       this._gifFrame,
       Math.max(1, at - animationClock.now()),
     );
+  }
+
+  /** The paint just done took `ms`: where it drew a new frame of an
+   *  animated image, it is what the next such frame is paced by. */
+  private _noteGifCost(ms: number): void {
+    if (!this._gifPainted) return;
+    this._gifPainted = false;
+    this._gifCost = this._gifCost ? this._gifCost * 0.6 + ms * 0.4 : ms;
   }
 
   /** A timer for the next drawing whose shapes animate, where none is due
@@ -12917,6 +12944,7 @@ export class HtmlViewNode extends Node {
     this._gifAt = Infinity;
     if (this.destroyed) return;
     const now = animationClock.now();
+    this._gifLast = now;
     const inks: Rect[] = [];
     let whole = false;
     let lifted = false;
@@ -17585,7 +17613,9 @@ export class HtmlViewNode extends Node {
       this._props().onPaint?.();
       return;
     }
+    const paintStart = performance.now();
     this._counted(() => this._paintContent(ctx));
+    this._noteGifCost(performance.now() - paintStart);
     // the animations this paint is the first to show start now, and run
     // from here (`AnimationTimeline.startsAtPaint`)
     this._claimsPainted = this._claims;
@@ -23232,6 +23262,10 @@ function hoverChange(
     }
     if (TRANSFORM_FIELDS.has(key)) {
       change.move = true;
+      // a box that gains or loses its transform becomes a stacking context
+      // or stops being one, and the layers it holds are its own or its
+      // context's
+      if (transformed(a) !== transformed(b)) change.order = true;
       continue;
     }
     return false;
@@ -23269,13 +23303,30 @@ function movable(box: Box, was: ComputedStyle, now: ComputedStyle): boolean {
     return true;
   }
   if (was.position === 'static') return false;
-  if (typeof was.zIndex !== 'number' || typeof now.zIndex !== 'number') {
+  // A positioned box with no `z-index` is painted in the slot a `z-index` of
+  // 0 has, so gaining or losing a transform moves it nowhere among its
+  // siblings; only what it holds that a `z-index` puts elsewhere would be
+  // held inside it (Webflow's split text sets a transform on each line and
+  // word, and rebuilt the whole document for every one).
+  const loose = was.zIndex === 'auto' || now.zIndex === 'auto';
+  if (
+    (typeof was.zIndex !== 'number' && was.zIndex !== 'auto') ||
+    (typeof now.zIndex !== 'number' && now.zIndex !== 'auto')
+  ) {
     return false;
   }
   const stack: Box[] = [...box.children];
   while (stack.length) {
     const at = stack.pop()!;
     if (at.style.position === 'fixed') return false;
+    if (
+      loose &&
+      at.style.position !== 'static' &&
+      at.style.zIndex !== 'auto' &&
+      at.style.zIndex !== 0
+    ) {
+      return false;
+    }
     for (const child of at.children) stack.push(child);
   }
   return true;

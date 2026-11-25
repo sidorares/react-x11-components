@@ -1040,6 +1040,38 @@ metric(
 );
 
 metric(
+  'a frame that gives a relative box with no z-index a transform restyles it in place, to the pixels a build draws',
+  async (t) => {
+    // Webflow's split text moves each word with a transform it sets and
+    // takes off: a box in the flow with no z-index is painted in the slot
+    // a z-index of 0 has, so it came to be built again at every one
+    const doc = await running(
+      t,
+      '<style>body { margin: 0 }' +
+        '@keyframes g { 0% { transform: none } 100% { transform: translate(0, 30px) } }' +
+        '#s { position: relative; width: 40px; height: 20px; background: #aa0000;' +
+        ' animation: g 320ms linear infinite }</style>' +
+        '<div id="s"></div><p>after it</p>',
+      300,
+    );
+    const node = doc.el as unknown as {
+      _invalidate(stale: number, ...rest: unknown[]): void;
+      _rebuildFrame(reach: unknown): void;
+    };
+    const invalidated = t.mock.method(node, '_invalidate');
+    const { frames } = await framesAgainstBuilds(doc, [48, 144, 240]);
+    const built = invalidated.mock.calls.filter(
+      (call) => call.arguments[0] === 2 && call.arguments[2] !== undefined,
+    );
+    assert.strictEqual(built.length, 0, 'the boxes were built again');
+    assert.ok(
+      frames[0].some((v, i) => v !== frames[2][i]),
+      'it moved',
+    );
+  },
+);
+
+metric(
   'a frame that scales a box out of the flow from nothing restyles it in place and lays nothing out, to the pixels a build draws',
   async (t) => {
     // joshwcomeau.com's sparkles start their turns scaled to nothing, which

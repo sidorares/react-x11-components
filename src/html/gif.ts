@@ -196,6 +196,8 @@ export function decodeGif(bytes: Uint8Array): DecodedGif | null {
  * itself — the caller copies what it keeps, since the next `at` draws over
  * it.
  */
+const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+
 export class GifCanvas {
   private readonly _file: GifFile;
   private readonly _data: Uint8Array;
@@ -227,10 +229,20 @@ export class GifCanvas {
     if (last) {
       // what the frame before leaves of itself
       if (last.disposal === 2) {
-        forRect(this._file, last, (o) => data.fill(0, o, o + 4));
+        const right = Math.min(width, last.left + last.width);
+        const bottom = Math.min(this._file.height, last.top + last.height);
+        for (let y = last.top; y < bottom; y += 1) {
+          data.fill(0, (y * width + last.left) * 4, (y * width + right) * 4);
+        }
       } else if (last.disposal === 3 && this._saved) {
         const saved = this._saved;
-        forRect(this._file, last, (o) => data.set(saved.subarray(o, o + 4), o));
+        const right = Math.min(width, last.left + last.width);
+        const bottom = Math.min(this._file.height, last.top + last.height);
+        for (let y = last.top; y < bottom; y += 1) {
+          const from = (y * width + last.left) * 4;
+          const to = (y * width + right) * 4;
+          data.set(saved.subarray(from, to), from);
+        }
       }
     }
     this._index += 1;
@@ -245,6 +257,43 @@ export class GifCanvas {
     );
     const { palette, transparent } = frame;
     const height = this._file.height;
+    // The common frame — inside the screen, not interlaced — is one pass
+    // over the indices, a packed pixel at a time: a 1920 pixel square frame
+    // took some 65 ms a frame with a store for each channel.
+    if (
+      LITTLE_ENDIAN &&
+      !frame.interlaced &&
+      frame.left + frame.width <= width &&
+      frame.top + frame.height <= height &&
+      (data.byteOffset & 3) === 0
+    ) {
+      const packed = new Uint32Array(256);
+      const colours = Math.min(256, Math.floor(palette.length / 3));
+      for (let i = 0; i < colours; i += 1) {
+        packed[i] =
+          (palette[i * 3] |
+            (palette[i * 3 + 1] << 8) |
+            (palette[i * 3 + 2] << 16) |
+            0xff000000) >>>
+          0;
+      }
+      const screen = new Uint32Array(
+        data.buffer,
+        data.byteOffset,
+        data.length >> 2,
+      );
+      for (let row = 0; row < frame.height; row += 1) {
+        let o = (frame.top + row) * width + frame.left;
+        let i = row * frame.width;
+        const end = i + frame.width;
+        for (; i < end; i += 1, o += 1) {
+          const index = indices[i];
+          if (index === transparent || index >= colours) continue;
+          screen[o] = packed[index];
+        }
+      }
+      return;
+    }
     for (let row = 0; row < frame.height; row += 1) {
       const y =
         frame.top + (frame.interlaced ? interlacedRow(row, frame.height) : row);
@@ -261,20 +310,6 @@ export class GifCanvas {
         data[o + 3] = 255;
       }
     }
-  }
-}
-
-/** Each pixel's offset in the screen's RGBA that a frame's rectangle
- *  covers, clipped to the screen. */
-function forRect(
-  file: GifFile,
-  frame: GifFrame,
-  each: (offset: number) => void,
-): void {
-  const right = Math.min(file.width, frame.left + frame.width);
-  const bottom = Math.min(file.height, frame.top + frame.height);
-  for (let y = frame.top; y < bottom; y += 1) {
-    for (let x = frame.left; x < right; x += 1) each((y * file.width + x) * 4);
   }
 }
 

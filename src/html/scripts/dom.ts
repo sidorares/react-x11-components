@@ -16988,6 +16988,37 @@ export function installDom(
         const { width, height, data } = source;
         return { width, height, data: new Uint8Array(data.buffer) };
       }
+      // what the host decoded for an `<img>`, and what an `ImageBitmap`
+      // holds: a texture made of one is its pixels, where it had been
+      // none at all (Unicorn Studio's glyph atlas, an `<img>`)
+      if (source instanceof HTMLImageElement) {
+        if (call('image', source._id, 'complete') !== true) return null;
+        const pixels = imageElementPixels(source);
+        return pixels
+          ? {
+              width: pixels.width,
+              height: pixels.height,
+              data: new Uint8Array(
+                pixels.data.buffer,
+                pixels.data.byteOffset,
+                pixels.data.length,
+              ),
+            }
+          : null;
+      }
+      if (source instanceof ImageBitmap) {
+        return source._data
+          ? {
+              width: source._width,
+              height: source._height,
+              data: new Uint8Array(
+                source._data.buffer,
+                source._data.byteOffset,
+                source._data.length,
+              ),
+            }
+          : null;
+      }
       if (!(source instanceof HTMLCanvasElement) || !canvases.has(source)) {
         return null;
       }
