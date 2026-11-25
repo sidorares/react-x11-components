@@ -49,7 +49,7 @@ import { cursorKeyword, inkColor } from './css/values.js';
 import { CONTAIN_SIZE, verticalMode } from './css/style.js';
 import type { ComputedStyle } from './css/style.js';
 import type { WidgetPart } from './css/cascade.js';
-import { invert, mapRect } from './css/transform.js';
+import { invert, mapRect, matrixOf } from './css/transform.js';
 import { heldBack, heldShift, placedMatrix } from './layout/block.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
 import { lineHeightMultiplier, lineHeightOf } from './layout/inline.js';
@@ -589,10 +589,20 @@ function rangePart(style: ComputedStyle, scale: number): RangePart {
   // a share of the box, the round thumb's `50%`, which a slot has no word for
   const round = typeof radius === 'object' && radius.pct >= 50;
   const shadow = style.boxShadow?.find((s) => !s.inset);
+  // a `transform: translateY()` moves a thumb after Blink has put it at the
+  // track's top, as its `margin-top` does, which is how a page centres one
+  // (`translateY(calc(-50% + track / 2))`): percentages are of its own box
+  const shiftY =
+    style.transform &&
+    typeof style.width === 'number' &&
+    typeof style.height === 'number'
+      ? matrixOf(style, style.width, style.height)[5] / scale
+      : 0;
+  const marginTop = (px(style.marginTop) ?? 0) + shiftY;
   return {
     ...(width !== undefined && { width }),
     ...(height !== undefined && { height }),
-    ...(style.marginTop !== 0 && { marginTop: px(style.marginTop) }),
+    ...(marginTop !== 0 && { marginTop }),
     ...(style.backgroundColor !== null && {
       backgroundColor: inkColor(style.backgroundColor, style.color),
     }),
@@ -1082,8 +1092,19 @@ function ownThickness(
   if (!partOf) return null;
   const down = verticalMode(style.writingMode);
   const across = down ? 'width' : 'height';
-  const track = partOf(el, style, 'slider-track')?.[across];
-  if (typeof track === 'number') return track;
+  const trackStyle = partOf(el, style, 'slider-track');
+  const track = trackStyle?.[across];
+  // the box holds the track's margin box (Chromium: a 3px track with 12px
+  // margins above and below makes a 27px range)
+  if (typeof track === 'number') {
+    const margins = down
+      ? [trackStyle!.marginLeft, trackStyle!.marginRight]
+      : [trackStyle!.marginTop, trackStyle!.marginBottom];
+    return margins.reduce<number>(
+      (sum, m) => sum + (typeof m === 'number' ? m : 0),
+      track,
+    );
+  }
   if (style.appearance !== 'none') return null;
   const thumb = partOf(el, style, 'slider-thumb');
   if (thumb?.appearance !== 'none') return null;
