@@ -8336,6 +8336,49 @@ layers, a progress bar a part at a time, so a cap on covers counts the boxes
 that are in no other cover (`separateCovers`), and the room left for the
 fixed boxes over an in-flow player does too.
 
+**What is painted over a canvas that changes at every frame is kept on a
+surface** (`retainedForeground`, `RetainRequest`, `paint.ts`). A page's WebGL
+hero is repainted whole at every frame, and what a frame reached was every
+box over it: humanai.au's glow, vignette and text were 20 ms of a 40 ms frame
+(the page behind it 1.5 — measure which side of the canvas the cost is on
+before keeping either). The paint of a frame whose damage is within the
+canvas draws what is behind it, the canvas, and a surface of what is over it,
+the draws after the canvas being dropped (`stoppingAt`, set when the canvas's
+`paintBox` returns). Six things are load-bearing.
+
+- **Only where nothing else changed twice running.** `HtmlViewNode` keeps a
+  clock (`_retainGeneration`) that moves at every claim for a repaint that is
+  not the canvas's own (`canvasChanged` sets `_canvasClaiming` around its
+  repaint), and the paint compares it, the canvas's place and the tree; a
+  claim for a part of the document is kept (`RetainedForeground.dirty`)
+  and made again in the surface (`paintAfter`: cleared, cut to the part),
+  anything else is all of it. **Anything new that repaints the document
+  without going through `invalidate` has to bump the clock**, or the surface
+  shows what it was.
+- **The surface is made from the same walk**, over nothing, with what is
+  before the canvas dropped and every box that does not hold the canvas left
+  unpainted (`SkipUntil.path`), so its groups and kept surfaces are not made
+  for nothing.
+- **A box that reads what is under it is painted live** (`liveBoxes`: a
+  backdrop filter, a blend, over the canvas): left out of the surface and
+  painted at its turn, the surface drawn just before the first (`Hold.flush`).
+  That is right only when nothing else is drawn after it, which the capture
+  checks (`misordered`) and gives up on, and when nothing around it clips or
+  moves it, which `liveBoxes` checks, since the surface is drawn unclipped.
+- **Nothing around the canvas fades, filters, turns or masks it**
+  (`retainable`): its paint would be a group on a surface of its own, which no
+  context of ours drops.
+- **An image reaching past the surface it is drawn on is cut to it**
+  (`croppedTo`): a scaled draw costs its whole size whatever clip it is
+  under, which made a patch of 65 rows of a gradient 6 ms, and the 5 ms of
+  a canvas `makeBackdrop` drew whole for the strip a glass bar blurs. Where
+  the matrix is a move and one scale, with a margin a clip cuts away.
+- **The pixels are the paint of every box**, held by
+  `test/html/retained-foreground.test.ts`, whose hover step is the one that
+  fails without the patch (a restyle in place claims a rect and no layout),
+  and by reading the window of the real page back with and without the
+  surface, which differ in no pixel.
+
 **What an `<iframe>`, a `<canvas>` or an `<embed>` shows is the host's,
 mounted over its box** (`renderEmbedded`, `embedded.ts`). The document
 lays each out as an empty box of its size and loads and runs nothing for

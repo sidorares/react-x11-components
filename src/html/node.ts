@@ -517,6 +517,9 @@ import {
   paintDocument,
   paintLiftedBox,
   paintOrderOf,
+  releaseRetained,
+  retainedForegroundState,
+  RETAIN_DIRTY_MOST,
   pathClips,
   queryChildIndex,
   selectedPieces,
@@ -7597,6 +7600,7 @@ export class HtmlViewNode extends Node {
     this._shadowCache = null;
     this._drawings?.destroy();
     this._drawings = null;
+    releaseRetained(this._retained);
     this._drawnOnce.clear();
     this._tileBlocks?.destroy();
     this._tileBlocks = null;
@@ -13657,6 +13661,21 @@ export class HtmlViewNode extends Node {
     // a change anywhere under a view transition's tree may be drawn in any
     // image of it, wherever its group puts it
     if (damage && damage !== this && this._anyLive()) damage = this;
+    // what is painted over a canvas that changes at every frame, and kept,
+    // is what this claim changes, unless it is the canvas's own
+    // (`canvasChanged`): a part of the document is made again in it, and
+    // anything else is all of it
+    if (!this._canvasClaiming) {
+      const dirty = this._retained.dirty;
+      if (
+        damage &&
+        !layout &&
+        !(damage instanceof Node) &&
+        dirty.length < RETAIN_DIRTY_MOST
+      ) {
+        dirty.push(damage);
+      } else this._retainGeneration += 1;
+    }
     super.invalidate(layout, damage, reason);
   }
 
@@ -17400,6 +17419,13 @@ export class HtmlViewNode extends Node {
    * it was, given up.
    */
   private readonly _alphaSeen = new WeakMap<Element, number>();
+  /** The largest canvas that changes at frames, which what is painted over
+   *  it is kept for (`retain` in `PaintOptions`), and what the paint keeps. */
+  private _retainBox: Box | null = null;
+  private readonly _retained = retainedForegroundState();
+  /** Moves at every claim for a repaint that is not that canvas's own. */
+  private _retainGeneration = 0;
+  private _canvasClaiming = false;
   /** The canvases whose frames are in a layer surface
    *  (`canvasLayer`): offered to the presenter as parts that show it. */
   private readonly _layered = new Set<Element>();
@@ -17412,6 +17438,29 @@ export class HtmlViewNode extends Node {
     if (!tree) return;
     const box = this._firstBoxesOf(tree).get(element);
     if (!box || box.replaced !== 'frame') return;
+    // the repaint of the one canvas that what is over it is kept for
+    // changes nothing over it; the largest canvas that changes is that one
+    const kept = this._retainBox;
+    if (kept?.el === element) this._retainBox = box;
+    else if (!kept || box.width * box.height > kept.width * kept.height) {
+      this._retainBox = box;
+      this._retainGeneration += 1;
+    }
+    const own = this._retainBox === box;
+    if (own) this._canvasClaiming = true;
+    try {
+      this._canvasChanged(element, box, alphaVersion, rect);
+    } finally {
+      if (own) this._canvasClaiming = false;
+    }
+  }
+
+  private _canvasChanged(
+    element: Element,
+    box: Box,
+    alphaVersion?: number,
+    rect?: number[] | null,
+  ): void {
     // its frames in a layer surface: offered as a part that shows it, and
     // where the presenter has it on a layer, drawn by it — nothing here is
     // repainted
@@ -18969,8 +19018,16 @@ export class HtmlViewNode extends Node {
     const vt = this._vt?.phase === 'live' ? this._vt : null;
     const live = this._anyLive();
     const captured = live ? this._capturedBoxes(tree) : null;
+    const retain = this._retainBox;
     paintDocument(ctx as PaintContext, tree, {
       ...this._paintOptions(range, damage),
+      retain: retain
+        ? {
+            box: retain,
+            generation: this._retainGeneration,
+            state: this._retained,
+          }
+        : undefined,
       captured,
       noCanvas: !!vt && this._rootCaptured(vt),
       transitionImage: live ? this._transitionImage : undefined,
