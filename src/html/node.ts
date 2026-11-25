@@ -555,7 +555,7 @@ import { inReadingOrder } from './reading.js';
 import type { BareField, ControlRect, CoverAnswer } from './controls.js';
 import { decodesImageType } from './image-types.js';
 import { ResourceStore } from './resources.js';
-import type { AnimatedImage } from './animated.js';
+import { AnimatedImage } from './animated.js';
 import type {
   AudioSource,
   ImageResponse,
@@ -18980,6 +18980,7 @@ export class HtmlViewNode extends Node {
       highlights: this._litRanges(),
       litReplaced: this._litReplaced(),
       scrollbarHidden: this._barsHidden,
+      reframe: AnimatedImage.reframe,
       imageFor: (box) => {
         if (box.replaced === 'frame') {
           return box.el && tagOf(box.el) === 'canvas'

@@ -71,6 +71,12 @@ export function apngAnimation(
   return { ...file, at: (index) => canvas.at(index) };
 }
 
+/** The frames made, and what each is a frame of (`AnimatedImage.reframe`). */
+const FRAMES = new WeakMap<
+  object,
+  { animation: AnimatedImage; index: number }
+>();
+
 export class AnimatedImage {
   readonly width: number;
   readonly height: number;
@@ -81,6 +87,11 @@ export class AnimatedImage {
   private readonly _duration: number;
   private readonly _keepAll: boolean;
   private readonly _images: unknown[] = [];
+  /** The factor the frames in `_images` were made smaller by (`image`). */
+  private _factor = 1;
+  /** The longest side the frames have been drawn at, at most: what they
+   *  are made no smaller than. */
+  private _fit = 0;
   /** The time of the first frame's first showing: null until a paint asks. */
   private _start: number | null = null;
 
@@ -122,15 +133,51 @@ export class AnimatedImage {
     return this._start! + play * this._duration + end;
   }
 
-  /** Frame `index` as an image. */
-  image(index: number): unknown {
+  /**
+   * Frame `index` as an image. Where `fit` says the longest side it is drawn
+   * at, and the frames are too many to be kept, it is made smaller by the
+   * whole factor that leaves it no smaller than that (`reduced`): a GIF of
+   * 1920 pixels drawn at 480 was 14 MB sent to the display server and read
+   * whole by every draw, for each frame, and is 0.9 MB so.
+   */
+  image(index: number, fit = 0): unknown {
+    this._fit = Math.max(this._fit, fit);
+    const factor = this._keepAll
+      ? 1
+      : factorFor(this.width, this.height, this._fit);
+    if (factor !== this._factor) {
+      this.destroy();
+      this._factor = factor;
+    }
     const kept = this._images[index];
     if (kept) return kept;
-    const data = this._file.at(index).slice();
-    const image = this._make({ width: this.width, height: this.height, data });
+    const full = this._file.at(index);
+    const data =
+      factor === 1
+        ? full.slice()
+        : reduced(full, this.width, this.height, factor);
+    const image = this._make({
+      width: Math.floor(this.width / factor),
+      height: Math.floor(this.height / factor),
+      data,
+    });
     if (!this._keepAll) this.destroy();
     this._images[index] = image;
+    if (image && typeof image === 'object') {
+      FRAMES.set(image, { animation: this, index });
+    }
     return image;
+  }
+
+  /** `image`, if it is a frame of an animation, as it is for a draw whose
+   *  longest side is `fit`: the one asked for already, or a smaller one
+   *  made, and then the one every frame after it is. Any other image as
+   *  it is. */
+  static reframe(image: unknown, fit: number): unknown {
+    const frame =
+      image && typeof image === 'object' ? FRAMES.get(image) : undefined;
+    if (!frame) return image;
+    return frame.animation.image(frame.index, fit);
   }
 
   /** Give up the frames made, and their copies on any server. A frame
@@ -146,4 +193,47 @@ export class AnimatedImage {
     this._start ??= now;
     return Math.max(0, now - this._start);
   }
+}
+
+/** The whole number to make an image of `width` by `height` smaller by, so
+ *  that it is still no smaller than `fit` on its longest side: 1 for none
+ *  asked, and for less than a halving. */
+function factorFor(width: number, height: number, fit: number): number {
+  if (!(fit > 0)) return 1;
+  const side = Math.max(width, height);
+  return Math.max(1, Math.min(8, Math.floor(side / Math.ceil(fit))));
+}
+
+/**
+ * `data`, RGBA of `width` by `height`, made `factor` times smaller on each
+ * side: each pixel is the mean of a block of two by two taken from the
+ * middle of the `factor` by `factor` it stands for — all of it for a
+ * factor of 2, and a sample of it above that, which reads a sixteenth of
+ * the pixels of a factor of 4 where the mean of the whole block reads all.
+ */
+function reduced(
+  data: Uint8Array,
+  width: number,
+  height: number,
+  factor: number,
+): Uint8Array {
+  const w = Math.floor(width / factor);
+  const h = Math.floor(height / factor);
+  const out = new Uint8Array(w * h * 4);
+  const lead = Math.max(0, (factor >> 1) - 1);
+  for (let y = 0; y < h; y += 1) {
+    const row0 = (y * factor + lead) * width;
+    const row1 = row0 + width;
+    let o = y * w * 4;
+    for (let x = 0; x < w; x += 1) {
+      const a = (row0 + x * factor + lead) * 4;
+      const b = (row1 + x * factor + lead) * 4;
+      out[o] = (data[a] + data[a + 4] + data[b] + data[b + 4]) >> 2;
+      out[o + 1] = (data[a + 1] + data[a + 5] + data[b + 1] + data[b + 5]) >> 2;
+      out[o + 2] = (data[a + 2] + data[a + 6] + data[b + 2] + data[b + 6]) >> 2;
+      out[o + 3] = (data[a + 3] + data[a + 7] + data[b + 3] + data[b + 7]) >> 2;
+      o += 4;
+    }
+  }
+  return out;
 }

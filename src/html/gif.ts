@@ -190,14 +190,15 @@ export function decodeGif(bytes: Uint8Array): DecodedGif | null {
   return { width: file.width, height: file.height, data: canvas.at(0) };
 }
 
+/** Whether a `Uint32Array` over the screen holds a pixel as R, G, B, A. */
+const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+
 /**
  * The logical screen a GIF's frames are drawn on, one after another. `at`
  * answers the screen as it is once a frame is drawn, which is the canvas
  * itself — the caller copies what it keeps, since the next `at` draws over
  * it.
  */
-const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
-
 export class GifCanvas {
   private readonly _file: GifFile;
   private readonly _data: Uint8Array;
@@ -366,16 +367,21 @@ function lzw(
   const out = new Uint8Array(pixels);
   const clear = 1 << minCodeSize;
   const end = clear + 1;
-  const prefix = new Uint16Array(4096);
-  const suffix = new Uint8Array(4096);
-  const stack = new Uint8Array(4097);
-  for (let i = 0; i < clear; i += 1) suffix[i] = i;
+  // Every code's string is somewhere in what was written already: the
+  // previous string and one more index. So a code is where its string
+  // starts in `out` and how long it is, and a string is copied from there,
+  // where the stack the other way round walked a linked list a byte at a
+  // time for every pixel.
+  const starts = new Int32Array(4096);
+  const lengths = new Uint16Array(4096);
+  for (let i = 0; i < clear; i += 1) lengths[i] = 1;
 
   let size = minCodeSize + 1;
   let mask = (1 << size) - 1;
   let next = clear + 2;
   let previous = -1;
-  let first = 0;
+  let prevStart = 0;
+  let prevLength = 0;
   let written = 0;
 
   // the bit reader, over the sub-blocks
@@ -395,7 +401,7 @@ function lzw(
       count += 8;
       block -= 1;
     }
-    let code = bits & mask;
+    const code = bits & mask;
     bits >>>= size;
     count -= size;
 
@@ -409,37 +415,55 @@ function lzw(
     if (code === end) break;
     if (previous === -1) {
       if (code >= clear) break; // a first code that is no colour: corrupt
+      prevStart = written;
+      prevLength = 1;
       out[written++] = code;
       previous = code;
-      first = code;
       continue;
     }
-    const incoming = code;
-    let top = 0;
-    if (code >= next) {
-      // the code being defined by this very step: the previous string and
-      // its own first character (the "KwKwK" case)
-      if (code > next) break;
-      stack[top++] = first;
-      code = previous;
+    // where this code's string is written, and how long it is
+    const here = written;
+    let length: number;
+    if (code < clear) {
+      length = 1;
+      out[written++] = code;
+    } else {
+      let from: number;
+      let first = -1;
+      if (code < next) {
+        length = lengths[code];
+        from = starts[code];
+      } else {
+        // the code being defined by this very step: the previous string and
+        // its own first character (the "KwKwK" case)
+        if (code > next) break;
+        length = prevLength + 1;
+        from = prevStart;
+        first = out[prevStart];
+      }
+      const copy = Math.min(first < 0 ? length : length - 1, pixels - written);
+      if (from + copy <= written) {
+        out.copyWithin(written, from, from + copy);
+      } else {
+        for (let i = 0; i < copy; i += 1) out[written + i] = out[from + i];
+      }
+      written += copy;
+      if (first >= 0 && written < pixels) out[written++] = first;
     }
-    while (code >= clear) {
-      stack[top++] = suffix[code];
-      code = prefix[code];
-    }
-    first = code;
-    stack[top++] = first;
     if (next < 4096) {
-      prefix[next] = previous;
-      suffix[next] = first;
+      // the previous string, and the first index of this one: they lie one
+      // after the other, the previous string was written just before
+      starts[next] = prevStart;
+      lengths[next] = prevLength + 1;
       next += 1;
       if ((next & mask) === 0 && next < 4096) {
         size += 1;
         mask = (1 << size) - 1;
       }
     }
-    previous = incoming;
-    while (top > 0 && written < pixels) out[written++] = stack[--top];
+    previous = code;
+    prevStart = here;
+    prevLength = length;
   }
   return out;
 }

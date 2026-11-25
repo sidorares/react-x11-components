@@ -32,6 +32,7 @@ import { WebPCanvas, readAnimatedWebP } from '../src/html/webp.js';
 import { ApngCanvas, readApng } from '../src/html/apng.js';
 import { headerSize } from '../src/html/image-header.js';
 import * as ntk from 'react-x11/ntk';
+import { mulberry32 } from './mulberry32.js';
 import { WebPDecoder } from 'image-in-browser/lib/src/formats/webp-decoder.js';
 import { PngDecoder } from 'image-in-browser/lib/src/formats/png-decoder.js';
 import { gifBytes } from './gif-fixture.js';
@@ -775,6 +776,159 @@ test("a GIF's frames are drawn over each other, each leaving what its disposal s
     ),
     [3, 2, 1, 0],
     'decodeGif is the first frame',
+  );
+});
+
+/** GIF's LZW (Appendix F), as an encoder writes it: codes grow from one bit
+ *  past the minimum to twelve, and a clear code goes in when the table is
+ *  full. The decoder's table, strings and widening are what this reads. */
+function lzwBytes(indices: Uint8Array, min: number): number[] {
+  const clear = 1 << min;
+  const end = clear + 1;
+  const out: number[] = [];
+  let bits = 0;
+  let count = 0;
+  let size = min + 1;
+  const put = (code: number) => {
+    bits |= code << count;
+    count += size;
+    while (count >= 8) {
+      out.push(bits & 0xff);
+      bits >>>= 8;
+      count -= 8;
+    }
+  };
+  let table = new Map<string, number>();
+  let next = end + 1;
+  put(clear);
+  let prefix = '';
+  for (const index of indices) {
+    const tried = prefix + String.fromCharCode(index);
+    if (tried.length === 1 || table.has(tried)) {
+      prefix = tried;
+      continue;
+    }
+    put(prefix.length === 1 ? prefix.charCodeAt(0) : table.get(prefix)!);
+    if (next < 4096) {
+      table.set(tried, next);
+      next += 1;
+      if (next - 1 === 1 << size && size < 12) size += 1;
+    } else {
+      put(clear);
+      table = new Map();
+      next = end + 1;
+      size = min + 1;
+    }
+    prefix = String.fromCharCode(index);
+  }
+  put(prefix.length === 1 ? prefix.charCodeAt(0) : table.get(prefix)!);
+  put(end);
+  if (count) out.push(bits & 0xff);
+  return out;
+}
+
+test('a GIF with real LZW data decodes to the indices it was made of', () => {
+  for (let seed = 1; seed <= 24; seed += 1) {
+    const rand = mulberry32(seed);
+    const min = 2 + (seed % 7);
+    const colours = 1 << min;
+    const width = 40 + Math.floor(rand() * 90);
+    const height = 30 + Math.floor(rand() * 90);
+    // runs and repeats, so the strings grow and the code that is being
+    // defined is read as it is defined, and noise, so the table fills
+    const indices = new Uint8Array(width * height);
+    for (let i = 0; i < indices.length;) {
+      const run = 1 + Math.floor(rand() * (seed % 3 === 0 ? 3 : 40));
+      const value = Math.floor(rand() * colours);
+      const noisy = rand() < 0.4;
+      for (let k = 0; k < run && i < indices.length; k += 1, i += 1) {
+        indices[i] = noisy ? Math.floor(rand() * colours) : value;
+      }
+    }
+    const palette: number[] = [];
+    for (let c = 0; c < colours; c += 1)
+      palette.push(c, 255 - c, (c * 7) & 255);
+    const out: number[] = [...'GIF89a'].map((c) => c.charCodeAt(0));
+    out.push(width & 255, width >> 8, height & 255, height >> 8);
+    out.push(0x80 | (min - 1), 0, 0, ...palette);
+    out.push(
+      0x2c,
+      0,
+      0,
+      0,
+      0,
+      width & 255,
+      width >> 8,
+      height & 255,
+      height >> 8,
+    );
+    out.push(0, min);
+    const data = lzwBytes(indices, min);
+    for (let at = 0; at < data.length; at += 255) {
+      const block = data.slice(at, at + 255);
+      out.push(block.length, ...block);
+    }
+    out.push(0, 0x3b);
+    const decoded = decodeGif(new Uint8Array(out));
+    assert.ok(decoded, `seed ${seed}: the file reads`);
+    for (let i = 0; i < indices.length; i += 1) {
+      const c = indices[i];
+      const at = i * 4;
+      const same =
+        decoded!.data[at] === c &&
+        decoded!.data[at + 1] === 255 - c &&
+        decoded!.data[at + 2] === ((c * 7) & 255);
+      if (!same) {
+        assert.fail(
+          `seed ${seed} (min ${min}): pixel ${i} of ${indices.length}`,
+        );
+      }
+    }
+  }
+});
+
+test('an animation of frames too large to keep is made smaller to be drawn smaller, and a draw of the frame asks for it', () => {
+  const frames = Array.from({ length: 20 }, (_, i) => ({ delay: 100, i }));
+  const made: { width: number; height: number; data: Uint8Array }[] = [];
+  const animation = new AnimatedImage(
+    {
+      width: 1000,
+      height: 1000,
+      plays: 0,
+      frames: frames as never,
+      at: (index) => {
+        const data = new Uint8Array(1000 * 1000 * 4);
+        for (let p = 0; p < data.length; p += 4) {
+          data[p] = index * 10;
+          data[p + 3] = 255;
+        }
+        return data;
+      },
+    },
+    (rgba) => {
+      made.push(rgba);
+      return { ...rgba };
+    },
+  );
+  const whole = animation.image(0) as { width: number };
+  assert.strictEqual(whole.width, 1000, 'no size asked: as it is');
+  const small = AnimatedImage.reframe(whole, 200) as {
+    width: number;
+    height: number;
+    data: Uint8Array;
+  };
+  assert.strictEqual(small.width, 200);
+  assert.strictEqual(small.height, 200);
+  assert.strictEqual(small.data[0], 0);
+  assert.strictEqual(small.data[3], 255, 'opaque stays opaque');
+  const next = animation.image(3) as { width: number; data: Uint8Array };
+  assert.strictEqual(next.width, 200, 'the frames after are as small');
+  assert.strictEqual(next.data[0], 30, 'and are the frame asked for');
+  const bigger = AnimatedImage.reframe(next, 400) as { width: number };
+  assert.strictEqual(bigger.width, 500, 'a larger draw has the frame larger');
+  assert.strictEqual(
+    AnimatedImage.reframe({ width: 5 }, 100) instanceof AnimatedImage,
+    false,
   );
 });
 
