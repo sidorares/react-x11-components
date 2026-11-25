@@ -1429,6 +1429,48 @@ test('a small gradient tiled many times is copied from a block of its tiles, pix
   assert.ok(most <= 1, `${most} levels apart`);
 });
 
+test('a repeating gradient straight down or across is drawn from a cell of its periods, pixel for pixel as the whole', async () => {
+  // buttons.joshwcomeau.com hatches its whole window with one-pixel lines,
+  // a repeating gradient of some sixteen hundred stops, which CoreGraphics
+  // searched for every pixel and `gradientRuns` filled a line at a time:
+  // four seconds of its first frame. The period is a few whole pixels, so
+  // a cell of them is shaded once and copied; the box is no multiple of
+  // the period and each direction has the stops somewhere else, and
+  // `no-repeat` draws the same box from the gradient itself
+  const hatch = (to: string, repeat: string, size: string) =>
+    `<div style="${size};background:repeating-linear-gradient(${to},` +
+    `#c03 0 1px,#fff 1px 4px,#06c 4px 5px,transparent 5px 6px) ${repeat}"></div>`;
+  for (const [to, size] of [
+    ['to bottom', 'width:90px;height:203px'],
+    ['to top', 'width:90px;height:203px'],
+    ['to right', 'width:203px;height:90px'],
+    ['to left', 'width:203px;height:90px'],
+  ]) {
+    const drawn = async (repeat: string) => {
+      const { result, el } = await renderWithBytes(
+        `<style>body{margin:0}</style>${hatch(to, repeat, size)}`,
+        {},
+        240,
+        2,
+      );
+      const bytes = await snapshot(result, el);
+      const kept = (
+        el as unknown as { _tileBlocks: { kept: Map<string, unknown> } }
+      )._tileBlocks;
+      const cells = [...(kept?.kept.keys() ?? [])].filter((k) =>
+        k.startsWith('gradient '),
+      );
+      await cleanup();
+      return { bytes, cells };
+    };
+    const cell = await drawn('repeat');
+    const whole = await drawn('no-repeat');
+    assert.ok(cell.cells.length > 0, `${to}: drawn from a cell`);
+    assert.strictEqual(whole.cells.length, 0, `${to}: the whole is shaded`);
+    assert.strictEqual(bytesApart(cell.bytes, whole.bytes), 0, to);
+  }
+});
+
 test('a gradient tiled in a box drawn small is copied from a block of its tiles, and comes out as the tiles do', async () => {
   // tailwindcss.com draws a 20px dot grid of a hundred-stop gradient inside
   // a thumbnail of its stage at a twelfth of its size: over a thousand
