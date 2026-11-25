@@ -619,6 +619,18 @@ export interface PaintOptions {
   /** @internal What a box with a `backdrop-filter` paints what is behind
    *  it from (`paintBackdrop`). */
   backdrop?: BackdropPaint;
+  /** A box whose picture changes at every frame and the state that keeps
+   *  what is painted over it from one paint to the next
+   *  (`RetainedForeground`): once a paint has found that nothing but the
+   *  box changed twice running, that is drawn from a surface and not
+   *  painted again. */
+  retain?: RetainRequest;
+  /** @internal The box a paint draws nothing before, which makes what is
+   *  over it (`retainedForeground`). */
+  skip?: SkipUntil | null;
+  /** @internal The box a paint draws nothing after once it is painted,
+   *  what is over it being drawn from a surface (`retainedForeground`). */
+  hold?: Hold | null;
   /** @internal Where the surface being painted on is in the window, for
    *  one painted on a surface of its own (`onSurface`). */
   surfaceX?: number;
@@ -1608,6 +1620,10 @@ export function paintDocument(
   // whether any box's paint asks whether it is a vertical flow's
   framed.any = tree.vertical;
   brokenZIndex.any = tree.positionedInline;
+  // what is painted before a box that changes at every frame, drawn from a
+  // surface where nothing else has changed, and none of it painted again
+  const held = options.retain ? retainedForeground(ctx, tree, options) : null;
+  if (held) ctx = stoppingAt(ctx, held.hold);
   ctx.save();
   const canvas = canvasBackground(tree);
   const scheme = rootScheme(tree);
@@ -1665,6 +1681,7 @@ export function paintDocument(
     drawingUnits: tree.drawingUnits,
     foreign: tree.foreign ?? null,
     backdrop,
+    hold: held?.hold ?? null,
   };
   // the scroll containers' bars where each is in the paint order, but in a
   // backdrop, which is the page under a box
@@ -1690,6 +1707,9 @@ export function paintDocument(
     if (!options.backdrop) paintScrollBars(ctx, tree, options, box);
   }
   ctx.restore();
+  // what is over the box that changes at every frame, drawn from the
+  // surface it is kept on, after everything the paint drew
+  held?.hold.flush();
   if (!options.backdrop) {
     for (const made of backdrop.made.values()) made?.surface.destroy?.();
     backdrop.canvas?.surface.destroy?.();
@@ -2428,14 +2448,39 @@ function fixedGround(style: ComputedStyle): boolean {
 function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const was = painting;
   painting = box;
+  const hold = options.hold;
+  // a box that reads what is under it is painted over the surface that is
+  // drawn for what is over the box that changes, and not under it
+  const live = !!hold?.reached && hold.live.has(box);
+  if (live) {
+    hold!.flush();
+    hold!.reached = false;
+  }
   try {
     paintOwnBox(ctx, box, options);
+    // what is painted over a box that changes at every frame begins here
+    const over = hold ?? options.skip;
+    if (over && box === over.box) over.reached = true;
   } finally {
+    if (live) hold!.reached = true;
     painting = was;
   }
 }
 
 function paintOwnBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
+  // what is painted over a box kept on a surface is made from what comes
+  // after it: a box that does not hold it is all before it, and left
+  // unpainted, its groups and kept surfaces are not made for nothing; and
+  // one painted live is not kept (`retainedForeground`)
+  const skip = options.skip;
+  if (skip) {
+    if (!skip.reached) {
+      if (!skip.path.has(box)) return;
+    } else if (skip.live.has(box)) {
+      skip.liveSeen = true;
+      return;
+    }
+  }
   // a paint of what is behind a box with a backdrop filter ends at the box
   const until = options.backdrop?.until;
   if (until) {
@@ -4610,7 +4655,10 @@ function makeBackdrop(
   const until = { box, reached: false };
   on.save();
   on.transform(...matrix);
-  paintDocument(stoppingAt(on, until), bp.tree, {
+  // a draw that reaches past the surface is drawn where it is on it, which
+  // is all a scaled image costs for
+  const cropped = croppedTo(on, { x: 0, y: 0, width: across, height: down });
+  paintDocument(stoppingAt(cropped, until), bp.tree, {
     ...root,
     damage: { x, y, width: w, height: h },
     matrix: root.matrix ? multiply(matrix, root.matrix) : matrix,
@@ -4682,6 +4730,517 @@ function mirrorEdges(
       on.restore();
     }
   }
+}
+
+/** What `<Html>` hands `paintDocument` to retain what is painted over a
+ *  box (`retainedForeground`): the box, the clock of changes to the document
+ *  that are not the box's own, and the state kept from paint to paint. */
+export interface RetainRequest {
+  box: Box;
+  /** Moves at every change to the document but the box's own picture. */
+  generation: number;
+  state: RetainedForeground;
+}
+
+/** What is painted over a box, kept on a surface: its place, and the
+ *  paints in a row that found it as it was. */
+export interface RetainedForeground {
+  box: Box | null;
+  key: string;
+  seen: number;
+  kept: { surface: Offscreen; x: number; y: number } | null;
+  /** The parts of the document claimed for a repaint since the paint
+   *  before, in the window's coordinates, which what is kept is made again
+   *  in. */
+  dirty: Rect[];
+  /** Whether what was painted over the box could not be kept, for as long
+   *  as the key holds. */
+  unfit: boolean;
+  /** The boxes painted over it that read what is under it (a backdrop
+   *  filter, a blend), which are painted again at every frame. */
+  live: ReadonlySet<Box>;
+}
+
+/** How many parts a `RetainedForeground` holds before it is made again whole. */
+export const RETAIN_DIRTY_MOST = 12;
+
+/** A new `RetainedForeground`, which holds nothing. */
+export function retainedForegroundState(): RetainedForeground {
+  return {
+    box: null,
+    key: '',
+    seen: 0,
+    kept: null,
+    dirty: [],
+    unfit: false,
+    live: NO_LIVE,
+  };
+}
+
+/** Give up the surface a `RetainedForeground` holds. */
+export function releaseRetained(state: RetainedForeground): void {
+  state.kept?.surface.destroy?.();
+  state.kept = null;
+  state.box = null;
+  state.key = '';
+  state.seen = 0;
+  state.unfit = false;
+  state.live = NO_LIVE;
+  state.dirty.length = 0;
+}
+
+/** How far past a box what is kept for it reaches, in pixels: the repaint
+ *  of a box's ink is a pixel larger than it. */
+const RETAIN_EDGE = 2;
+
+/** No boxes are painted live. */
+const NO_LIVE: ReadonlySet<Box> = new Set();
+
+/** The smallest box worth retaining what is over: one a surface of its
+ *  size costs less than painting what is over it. */
+const RETAIN_PIXELS = 256 * 256;
+
+/** Whether what is painted before a box and after it can be told apart on
+ *  surfaces of their own: nothing around the box fades, filters, turns,
+ *  clips with a path or blends it, so its paint is no group. */
+function retainable(box: Box): boolean {
+  if (box.kind === 'inline' || box.topLayer || drawnAtViewport(box)) {
+    return false;
+  }
+  for (let at: Box | null = box; at; at = at.parent) {
+    const style = at.style;
+    if (
+      style.opacity < 1 ||
+      style.filter !== null ||
+      style.backdropFilter !== null ||
+      style.mixBlendMode !== 'normal' ||
+      style.transform !== null ||
+      style.translate !== null ||
+      style.rotate !== null ||
+      style.scale !== null ||
+      style.clipPath ||
+      masked(style)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * What is painted over a box whose picture changes at every frame — a
+ * canvas a page draws on — kept on a surface, so that the paint of a frame
+ * draws what is behind it, the box, and then that, where the paint reached
+ * every box over it and drew each again. humanai.au's hero is a WebGL
+ * canvas under a glow, a vignette and its text: 20 ms of the 40 a frame
+ * was those, the same at every frame, and the page behind the canvas 1.5.
+ *
+ * Only where the frame is that box alone: the damage is within it, so what
+ * is painted over it matters nowhere else. The surface is made on the
+ * second paint in a row that finds nothing but the box changed
+ * (`generation`, the box's place and the tree), and is given up at the
+ * first that does not, so a document that changes over the box, or
+ * scrolls, paints as it did and pays no surface. A part of the document
+ * claimed for a repaint is made again in it. Where something over the box
+ * reads what is under it — a backdrop filter, a blend — nothing is kept.
+ * Answers what the paint draws nothing after, which `stoppingAt` leaves
+ * undrawn once the box is painted, and the surface drawn when it ends;
+ * null where the paint is as it was.
+ */
+function retainedForeground(
+  ctx: PaintContext,
+  tree: BoxTree,
+  options: PaintOptions,
+): { hold: Hold } | null {
+  // a paint made inside this one, for what is behind a box that filters it,
+  // is no paint of the window's
+  if (options.backdrop || options.skip) return null;
+  const retain = options.retain!;
+  const { box, state } = retain;
+  const damage = options.damage;
+  // the box's own rectangle and the pixel the repaint of its ink grows by
+  const x = Math.floor(box.x + options.originX) - RETAIN_EDGE;
+  const y = Math.floor(box.y + options.originY) - RETAIN_EDGE;
+  const width =
+    Math.ceil(box.x + options.originX + box.width) - x + RETAIN_EDGE;
+  const height =
+    Math.ceil(box.y + options.originY + box.height) - y + RETAIN_EDGE;
+  if (
+    options.matrix ||
+    options.captured ||
+    options.drag ||
+    options.surfaceX ||
+    options.surfaceY ||
+    !damage ||
+    !ctx.drawImage ||
+    !options.surface ||
+    !(width * height >= RETAIN_PIXELS) ||
+    width > RASTER_SIDE ||
+    height > RASTER_SIDE ||
+    width * height > RASTER_LIMIT ||
+    damage.x < x ||
+    damage.y < y ||
+    damage.x + damage.width > x + width ||
+    damage.y + damage.height > y + height ||
+    !retainable(box)
+  ) {
+    releaseRetained(state);
+    return null;
+  }
+  const key = `${retain.generation} ${x} ${y} ${width} ${height}`;
+  if (state.box !== box || state.key !== key) {
+    releaseRetained(state);
+    state.box = box;
+    state.key = key;
+    state.seen = 1;
+    return null;
+  }
+  state.seen += 1;
+  if (state.unfit) return null;
+  if (!state.kept) {
+    state.dirty.length = 0;
+    const live = liveBoxes(tree, options, { x, y, width, height });
+    if (!live) {
+      state.unfit = true;
+      return null;
+    }
+    state.live = live;
+    const surface = options.surface(width, height);
+    if (!surface) return null;
+    const made = paintAfter(surface, box, tree, options, state.live, {
+      x,
+      y,
+      width,
+      height,
+    });
+    if (made !== true) {
+      surface.destroy?.();
+      if (made === 'unfit') state.unfit = true;
+      return null;
+    }
+    state.kept = { surface, x, y };
+  } else if (state.dirty.length) {
+    // the parts of the document that changed, made again in it: what is
+    // over the box there, as the document has it now
+    const parts = state.dirty.splice(0);
+    for (const part of parts) {
+      const x0 = Math.max(x, Math.floor(part.x));
+      const y0 = Math.max(y, Math.floor(part.y));
+      const x1 = Math.min(x + width, Math.ceil(part.x + part.width));
+      const y1 = Math.min(y + height, Math.ceil(part.y + part.height));
+      if (x1 <= x0 || y1 <= y0) continue;
+      const made = paintAfter(
+        state.kept.surface,
+        box,
+        tree,
+        options,
+        state.live,
+        { x: x0, y: y0, width: x1 - x0, height: y1 - y0 },
+        { x, y },
+      );
+      if (made !== true) {
+        const unfit = made === 'unfit';
+        releaseRetained(state);
+        state.unfit = unfit;
+        return null;
+      }
+    }
+  }
+  const kept = state.kept;
+  const hold: Hold = {
+    box,
+    reached: false,
+    live: state.live,
+    blitted: false,
+    flush: () => {
+      if (hold.blitted) return;
+      hold.blitted = true;
+      ctx.drawImage!(kept.surface, kept.x, kept.y);
+    },
+  };
+  return { hold };
+}
+
+/** The box a paint draws nothing after once it is painted (the rest being
+ *  drawn from a surface), the boxes over it painted anyway, and the draw
+ *  of that surface (`retainedForeground`). */
+interface Hold {
+  box: Box;
+  reached: boolean;
+  live: ReadonlySet<Box>;
+  blitted: boolean;
+  flush(): void;
+}
+
+/**
+ * The boxes of the document that read what is under them — a backdrop
+ * filter, a blend — which what is over a box is kept without, and painted
+ * at every frame, over it. Null where one is somewhere a surface drawn
+ * before it would be cut or moved wrongly: inside a box that clips, masks
+ * or turns it, which the surface is not.
+ */
+function liveBoxes(
+  tree: BoxTree,
+  options: PaintOptions,
+  area: Rect,
+): ReadonlySet<Box> | null {
+  const live = new Set<Box>();
+  const stack: Box[] = [tree.root];
+  while (stack.length) {
+    const box = stack.pop()!;
+    const style = box.style;
+    if (style.backdropFilter !== null || style.mixBlendMode !== 'normal') {
+      // one that is nowhere near the box reads nothing of it
+      const bx = box.x + options.originX;
+      const by = box.y + options.originY;
+      if (
+        bx >= area.x + area.width ||
+        by >= area.y + area.height ||
+        bx + box.width <= area.x ||
+        by + box.height <= area.y
+      ) {
+        continue;
+      }
+      for (let at = box.parent; at; at = at.parent) {
+        const above = at.style;
+        if (
+          above.overflowX !== 'visible' ||
+          above.overflowY !== 'visible' ||
+          above.transform !== null ||
+          above.translate !== null ||
+          above.rotate !== null ||
+          above.scale !== null ||
+          above.opacity < 1 ||
+          above.clipPath ||
+          masked(above)
+        ) {
+          return null;
+        }
+      }
+      live.add(box);
+      continue;
+    }
+    for (const child of box.children) stack.push(child);
+  }
+  return live;
+}
+
+/**
+ * What is painted over `box` in `area`, on `surface`, which holds the
+ * window's rectangle at `origin` (the area's corner, for the whole of it):
+ * everything the paint draws after the box, over nothing. A part made again
+ * is cleared first and cut to the part, so that what is painted over a part
+ * of its own layers does not paint twice. True where it was made; false
+ * where the surface cannot be drawn on so, and `'unfit'` where something
+ * painted over the box reads what is under it.
+ */
+function paintAfter(
+  surface: Offscreen,
+  box: Box,
+  tree: BoxTree,
+  options: PaintOptions,
+  live: ReadonlySet<Box>,
+  area: Rect,
+  origin: { x: number; y: number } = area,
+): boolean | 'unfit' {
+  const on = surface.getContext('2d') as PaintContext;
+  if (!on.transform) return false;
+  const whole = origin === area;
+  if (!whole && !(on.clearRect && on.beginPath && on.rect && on.clip)) {
+    return false;
+  }
+  const matrix: Matrix = [1, 0, 0, 1, -origin.x, -origin.y];
+  const path = new Set<Box>();
+  for (let at: Box | null = box; at; at = at.parent) path.add(at);
+  const skip: SkipUntil = {
+    box,
+    reached: false,
+    path,
+    live,
+    liveSeen: false,
+    misordered: false,
+  };
+  on.save();
+  on.transform(...matrix);
+  if (!whole) {
+    on.clearRect!(area.x, area.y, area.width, area.height);
+    on.beginPath!();
+    on.rect!(area.x, area.y, area.width, area.height);
+    on.clip!();
+  }
+  try {
+    paintDocument(
+      skippingTo(
+        whole
+          ? on
+          : croppedTo(on, {
+              x: area.x - origin.x,
+              y: area.y - origin.y,
+              width: area.width,
+              height: area.height,
+            }),
+        skip,
+      ),
+      tree,
+      {
+        ...options,
+        damage: area,
+        matrix,
+        retain: undefined,
+        hold: null,
+        skip,
+        // what is kept from paint to paint is kept for the window's paint
+        sprites: null,
+        filters: null,
+        drawingKept: undefined,
+      },
+    );
+  } finally {
+    on.restore();
+  }
+  // what is painted after a box that is painted live is over it, and the
+  // surface is drawn under it
+  return skip.misordered ? 'unfit' : true;
+}
+
+/** The box a paint of what is over it draws nothing before, and the boxes
+ *  above it, which it does paint. */
+interface SkipUntil {
+  box: Box;
+  reached: boolean;
+  path: ReadonlySet<Box>;
+  live: ReadonlySet<Box>;
+  /** Whether a box painted live was passed, and then something was drawn:
+   *  the surface cannot be drawn under that box and over what drew. */
+  liveSeen: boolean;
+  misordered: boolean;
+}
+
+/** How far past `area` a cropped image is drawn (`croppedTo`), which a
+ *  clip to the area cuts away: what a scaled draw reads at its edge is the
+ *  pixels past it. */
+const CROP_MARGIN = 2;
+
+/**
+ * A context whose images are drawn only where `area` is, in the pixels of
+ * the surface it draws on, cut from the image in proportion: for a part of
+ * the document made again (`paintAfter`) and for what is behind a box that
+ * filters it (`makeBackdrop`), where the boxes that reach past it draw all
+ * they have, and the cost of a scaled draw is its whole size whatever clip
+ * it is under — 6 ms of a 2360 by 1324 gradient to remake 65 rows of it, 5
+ * of a canvas for the strip a glass bar blurs. Only where the matrix is a
+ * move and a scale the same both ways, and a draw that is not much larger
+ * than the area is drawn as it is.
+ */
+function croppedTo(ctx: PaintContext, area: Rect): PaintContext {
+  const draw = (...args: unknown[]): void => {
+    const target = ctx as unknown as {
+      drawImage(...a: unknown[]): void;
+      getTransform?(): {
+        a: number;
+        b: number;
+        c: number;
+        d: number;
+        e: number;
+        f: number;
+      };
+    };
+    const m = target.getTransform?.();
+    const image = args[0] as { width?: unknown; height?: unknown };
+    if (
+      !m ||
+      !(m.a > 0) ||
+      m.a !== m.d ||
+      m.b !== 0 ||
+      m.c !== 0 ||
+      typeof image?.width !== 'number' ||
+      typeof image.height !== 'number' ||
+      (args.length !== 3 && args.length !== 5 && args.length !== 9)
+    ) {
+      target.drawImage(...args);
+      return;
+    }
+    // the part of the draw's own space that the area is
+    const margin = CROP_MARGIN / m.a;
+    const ax = (area.x - m.e) / m.a - margin;
+    const ay = (area.y - m.f) / m.a - margin;
+    const aw = area.width / m.a + 2 * margin;
+    const ah = area.height / m.a + 2 * margin;
+    let sx = 0;
+    let sy = 0;
+    let sw = image.width;
+    let sh = image.height;
+    let dx: number;
+    let dy: number;
+    let dw: number;
+    let dh: number;
+    if (args.length === 9) {
+      [, sx, sy, sw, sh, dx, dy, dw, dh] = args as number[];
+    } else if (args.length === 5) {
+      [, dx, dy, dw, dh] = args as number[];
+    } else {
+      [, dx, dy] = args as number[];
+      dw = sw;
+      dh = sh;
+    }
+    if (!(dw > 0 && dh > 0 && sw > 0 && sh > 0)) {
+      target.drawImage(...args);
+      return;
+    }
+    const x0 = Math.max(dx, Math.floor(ax));
+    const y0 = Math.max(dy, Math.floor(ay));
+    const x1 = Math.min(dx + dw, Math.ceil(ax + aw));
+    const y1 = Math.min(dy + dh, Math.ceil(ay + ah));
+    if (x1 <= x0 || y1 <= y0) return;
+    if ((x1 - x0) * (y1 - y0) > 0.7 * dw * dh) {
+      target.drawImage(...args);
+      return;
+    }
+    const fx = sw / dw;
+    const fy = sh / dh;
+    target.drawImage(
+      args[0],
+      sx + (x0 - dx) * fx,
+      sy + (y0 - dy) * fy,
+      (x1 - x0) * fx,
+      (y1 - y0) * fy,
+      x0,
+      y0,
+      x1 - x0,
+      y1 - y0,
+    );
+  };
+  return new Proxy(ctx, {
+    get(target, key) {
+      if (key === 'drawImage') return draw;
+      const value: unknown = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+    set: (target, key, value) => Reflect.set(target, key, value),
+  });
+}
+
+/**
+ * A context that draws nothing until a paint reaches the box `skip` names,
+ * and everything after (`retainedForeground`), keeping what a stopped one
+ * keeps: its saves, paths, clips and matrix.
+ */
+function skippingTo(ctx: PaintContext, skip: SkipUntil): PaintContext {
+  return new Proxy(ctx, {
+    get(target, key) {
+      const value: unknown = Reflect.get(target, key);
+      if (typeof value !== 'function') return value;
+      if (typeof key === 'string' && KEEPS_STATE.has(key)) {
+        return value.bind(target);
+      }
+      return (...args: unknown[]) => {
+        if (!skip.reached) return undefined;
+        if (skip.liveSeen) skip.misordered = true;
+        return value.apply(target, args);
+      };
+    },
+    set: (target, key, value) => Reflect.set(target, key, value),
+  });
 }
 
 /**
@@ -5586,7 +6145,9 @@ function paintContent(
     return;
   }
   const visible = box.style.visibility === 'visible';
-  if (visible && box.style.backdropFilter) paintBackdrop(ctx, box, options);
+  if (visible && box.style.backdropFilter) {
+    paintBackdrop(ctx, box, options);
+  }
   if (visible) paintOwnBackground(ctx, box, options);
   // `content-visibility: hidden` skips what the box holds, its own
   // background, borders and outline drawn (CSS Containment 2, 4)
