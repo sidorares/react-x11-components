@@ -7051,6 +7051,30 @@ test('a canvas has a WebGL context of either version, which keeps what a page se
   );
 });
 
+test('a box that is no scroll container has the scrollable overflow of what it holds for scrollHeight and scrollWidth', async () => {
+  // React Aria's virtualizer measures each row as the scrollHeight of a
+  // wrapper that `contain: size` makes no taller than nothing, with its
+  // inline height cleared: Chrome says 32 for a row 32px tall inside it, and
+  // a 0 here left the row with no height, so a Picker's list was a single
+  // option, as tall as its padding
+  const doc = await hosted(
+    '<style>body{margin:0}#w{position:absolute;top:8px;left:8px;width:114px;' +
+      'overflow:visible;contain:size layout style}#o{height:32px;width:114px}' +
+      '#p{width:50px;height:20px;border:3px solid}</style>' +
+      '<div id="w"><div id="o"></div></div><div id="p"></div><p id="out"></p><script>' +
+      'var w = document.getElementById("w"), p = document.getElementById("p"), r = [];' +
+      'r.push(w.clientHeight, w.scrollHeight, w.scrollWidth, p.scrollHeight, p.scrollWidth);' +
+      // as the virtualizer reads it: the inline height cleared
+      'w.style.height = "0px"; w.style.height = ""; r.push(w.scrollHeight);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t.split('|').length > 5);
+  // nothing for the wrapper's own height, 32 for what it holds; a box
+  // with nothing in it reaches as far as its padding box
+  assert.equal(text, '0|32|114|20|50|32');
+});
+
 test('a scroll container scrolls as a script sets it, reads back where it is, and is told its scroll', async () => {
   const doc = await hosted(
     '<style>body{margin:0}#s{height:100px;overflow:auto;border:2px solid;padding:3px}' +

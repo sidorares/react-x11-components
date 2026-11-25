@@ -15515,15 +15515,27 @@ export class HtmlViewNode extends Node {
    * left, in CSS pixels, laid out first. Null for an element with no box,
    * and for one whose box is inline, which has no client box.
    */
-  clientBoxOf(
-    element: Element,
-  ): { width: number; height: number; top: number; left: number } | null {
+  clientBoxOf(element: Element): {
+    width: number;
+    height: number;
+    top: number;
+    left: number;
+    scrollWidth: number;
+    scrollHeight: number;
+  } | null {
     this._settle();
     const tree = this._tree;
     const box = tree ? this._ownBoxOf(tree, element) : null;
     if (!box || box.kind === 'inline') return null;
     const s = this._scale;
+    // what it holds reaches as far as it reaches, scroll container or not
+    // (CSSOM View 6: `scrollWidth` and `scrollHeight` are of the scrolling
+    // area, which an `overflow: visible` box has too): a box of no height
+    // around a box that is 32px tall is 32px of scrollable overflow
+    const reach = scrollStateOf(box);
     return {
+      scrollWidth: reach.width / s,
+      scrollHeight: reach.height / s,
       width: Math.max(0, box.width - box.borderLeft - box.borderRight) / s,
       height:
         Math.max(
