@@ -1282,6 +1282,10 @@ function computedPseudo(b: Primitive): ComputedPseudo {
     : null;
 }
 
+/** A selector that is nothing but type names, a list of them: answered by
+ *  a lookup of each element's name (`_query`). */
+const QUERY_TYPES = /^\s*[a-z][a-z0-9]*(?:\s*,\s*[a-z][a-z0-9]*)*\s*$/i;
+
 /** A selector that names the node a query is asked from (`_query`). */
 const QUERY_SCOPED = /:scope(?![\w-])/i;
 
@@ -9499,6 +9503,23 @@ export class DomHost {
     const queries = xml ? this._xmlQueries : this._queries;
     const kept = keeps ? queries.get(selector) : undefined;
     if (kept) return kept;
+    // a list of bare type names is a lookup of the element's, as css-select
+    // reads one in an HTML document (`getName`, its name folded): the
+    // page's own SMIL asked `animate, set, animateMotion,
+    // animateTransform` of the whole document at every frame, 0.8 ms of
+    // each on tailwindcss.com, most of it css-select's matcher
+    if (keeps && !xml && QUERY_TYPES.test(selector)) {
+      const names = new Set(
+        selector
+          .toLowerCase()
+          .split(/\s*,\s*/)
+          .map((n) => n.trim()),
+      );
+      const types = (el: Element): boolean => names.has(typeNameOf(el));
+      if (queries.size >= KEPT_QUERIES) queries.clear();
+      queries.set(selector, types);
+      return types;
+    }
     // an argument css-select takes as any text is the parser's to refuse, as
     // a sheet's is
     if (TAKES_AN_IDENT.test(selector) && !selectorList(selector)) {
