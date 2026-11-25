@@ -18777,9 +18777,15 @@ export function installDom(
         // set otherwise by the host: an outline, a width it is fitted to, a
         // right-to-left run, and white space at an end or run together
         const nstate = canvasState(this._canvas);
+        // an outline is the host's context has no `strokeText` for: a solid
+        // one is recorded as the coverage the realm makes of it, below
         if (
           nstate.rec &&
-          (stroke ||
+          ((stroke &&
+            (typeof state.strokeStyle !== 'string' ||
+              state.shadowBlur > 0 ||
+              state.shadowOffsetX !== 0 ||
+              state.shadowOffsetY !== 0)) ||
             maxWidth !== undefined ||
             (state.direction === 'inherit'
               ? this._textNow()?.direction
@@ -18797,7 +18803,7 @@ export function installDom(
       const now = this._textNow();
       if (!how || !now || !(scale > 0) || !chars.trim()) return;
       const nstate = canvasState(this._canvas);
-      if (nstate.rec) {
+      if (nstate.rec && !stroke) {
         nstate.rec.push([
           'T',
           chars,
@@ -18849,6 +18855,42 @@ export function installDom(
         raster.x * sx;
       const uy =
         top + baselineOffset(raster, state.textBaseline) * sy - raster.y * sy;
+      if (nstate.rec) {
+        // the outline's coverage as an image of the stroke colour, drawn on
+        // the host's context under the transform the text was drawn under
+        const rgba = colourOf(state.strokeStyle);
+        const [u0, v0, u1, v1] = raster.ink;
+        const w = u1 - u0;
+        const h = v1 - v0;
+        if (!rgba || !(w > 0) || !(h > 0)) return;
+        const px = new Uint8Array(w * h * 4);
+        for (let v = 0; v < h; v += 1) {
+          for (let u = 0; u < w; u += 1) {
+            const at = (v * w + u) * 4;
+            const cover = raster.data[(v0 + v) * raster.width + u0 + u];
+            px[at] = rgba[0];
+            px[at + 1] = rgba[1];
+            px[at + 2] = rgba[2];
+            px[at + 3] = Math.round((cover * rgba[3]) / 255);
+          }
+        }
+        nstate.rec.push([
+          'I',
+          ['t', w, h, base64OfBytes(px)],
+          0,
+          0,
+          w,
+          h,
+          ux + u0 * sx,
+          uy + v0 * sy,
+          w * sx,
+          h * sy,
+          true,
+          this._sid(nstate, null),
+        ]);
+        nativeDirty(this._canvas);
+        return;
+      }
       this._paint(
         (target, paint) =>
           RASTER.mask(
