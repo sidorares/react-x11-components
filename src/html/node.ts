@@ -17584,6 +17584,17 @@ export class HtmlViewNode extends Node {
     // a finger's drag pans, and selects nothing (`touchPan`)
     if (!drag && this._pan) return;
     if (!drag) {
+      // a release the window never heard (a resize's tracking loop takes
+      // it) leaves core's press standing: motion with the primary button
+      // up is the end of the drag, and extends nothing
+      const buttons = (ev.nativeEvent as { buttons?: number } | undefined)
+        ?.buttons;
+      if (typeof buttons === 'number' && (buttons & 1) === 0) {
+        super.defaultMouseUp?.(ev);
+        this._pointerAt = { x: ev.x, y: ev.y };
+        this.setHover(ev.x, ev.y);
+        return;
+      }
       super.defaultMouseDrag?.(ev);
       // a press on the document holds the pointer, and core leaves the
       // hover to the holder
