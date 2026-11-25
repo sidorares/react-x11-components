@@ -736,6 +736,26 @@ class RuleIndex {
   ownStyleEverywhere = false;
   /** How many rules are in here, so an empty index costs one comparison. */
   size = 0;
+  private _contentAt = -1;
+  private _content = false;
+
+  /** Whether any rule in here declares a `content`: an index whose rules
+   *  set only a look, as the user-agent sheet's `::scroll-button(*)` does,
+   *  makes no box, and was matched against every element of every build
+   *  to find that out. Worked out again when `size` has moved. */
+  declaresContent(): boolean {
+    if (this._contentAt !== this.size) {
+      this._contentAt = this.size;
+      this._content = false;
+      for (const indexed of this.all()) {
+        if (indexed.rule.declarations.some((d) => d.prop === 'content')) {
+          this._content = true;
+          break;
+        }
+      }
+    }
+    return this._content;
+  }
   /** The rules under a media query, which a width can turn on or off
    *  (`Cascade.crossed`). */
   readonly withMedia: IndexedRule[] = [];
@@ -8653,7 +8673,9 @@ export class Cascade {
     elementStyle: ComputedStyle,
   ): ComputedStyle | null {
     const index = this._pseudo[which];
-    if (index.size === 0 || !index.reaches(el)) return null;
+    if (index.size === 0 || !index.declaresContent() || !index.reaches(el)) {
+      return null;
+    }
     const candidates: Candidate[] = [];
     this._matchInto(index, el, candidates);
     if (!candidates.some(setsContent)) return null;
@@ -9091,7 +9113,7 @@ export class Cascade {
    */
   firstLineStyle(el: Element, style: ComputedStyle): ComputedStyle | null {
     const index = this._pseudo['first-line'];
-    if (!index.size) return null;
+    if (!index.size || !index.reaches(el)) return null;
     const candidates: Candidate[] = [];
     this._matchInto(index, el, candidates);
     if (!candidates.length) return null;
