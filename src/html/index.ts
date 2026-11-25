@@ -757,6 +757,14 @@ export interface HtmlProps {
    */
   canvasOpaque?: (element: Element) => boolean;
   /**
+   * A layer surface (react-x11's `createLayerSurface`) a canvas's frames
+   * are drawn into, where there is one: the document offers the canvas to
+   * the presenter as a part that shows it, and leaves a hole for it, so a
+   * frame the page draws reaches the screen with no composite of its pixels
+   * over the window's.
+   */
+  canvasLayer?: (element: Element) => { readonly surface: unknown } | null;
+  /**
    * What to show in an `<iframe>`, a `<canvas>`, or an `<embed>` or an
    * `<object>` that shows no image: called with where the element's content
    * box is, in this component's space, and what it returns is mounted
@@ -871,7 +879,11 @@ export interface HtmlHandle {
    */
   scrollState(element: Element): ElementScroll | null;
   /** A `<canvas>`'s picture changed (`canvasImage`): repaint it. */
-  canvasChanged(element: Element, alphaVersion?: number): void;
+  canvasChanged(
+    element: Element,
+    alphaVersion?: number,
+    rect?: number[] | null,
+  ): void;
   /**
    * Tell a `<video>`'s player what a script asked of it: `paused` for
    * `play()` and `pause()`, `muted`, `volume`, `playbackRate`, and
@@ -1589,6 +1601,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onImage: props._onImage ?? (onDomEvent ? handleSheet : undefined),
     canvasImage: props.canvasImage,
     canvasOpaque: props.canvasOpaque,
+    canvasLayer: props.canvasLayer,
     framed: props._framed,
     domRevision,
     animate,
@@ -1936,8 +1949,11 @@ export function makeHtmlHandle(
       nodeRef.current?.movedPoint(node, offset, granularity, back) ?? null,
     scrollState: (element: Element) =>
       nodeRef.current?.scrollStateOf(element) ?? null,
-    canvasChanged: (element: Element, alphaVersion?: number) =>
-      nodeRef.current?.canvasChanged(element, alphaVersion),
+    canvasChanged: (
+      element: Element,
+      alphaVersion?: number,
+      rect?: number[] | null,
+    ) => nodeRef.current?.canvasChanged(element, alphaVersion, rect),
     setMediaState: (element: Element, state: MediaState) =>
       nodeRef.current?.setMediaState(element, state),
     setScriptAnimation: (

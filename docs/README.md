@@ -61,6 +61,13 @@ parts.
   docx, pptx and xlsx, which parser each should stand on and what was measured
   of the alternatives, why reading comes before writing, and the order of work
   to pick up from.
+- [A page's canvas on the native context](prd-native-canvas.md) —
+  experimental, off by default: `<Html scripts>` 2d canvases replayed on
+  CoreGraphics instead of the realm's JS rasterizer, what it keeps and
+  where a canvas goes back to the realm, and what it measured on wland.
+- [A page's canvas on the GPU](prd-native-canvas-gpu.md) — what is left
+  after the native context: a canvas shown on a layer with no copy, and why
+  Skia over Metal and a shared readback were measured and not built.
 - [A pure-JS VT backend for `<Terminal>`](prd-vt-terminal.md) — the design
   behind `backend="vt"`.
 - [Composable, cost-bounded charts](prd-charts.md) — the decimation

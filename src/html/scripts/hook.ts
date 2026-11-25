@@ -138,6 +138,7 @@ export interface ScriptProps {
   canvasImage?: (element: Element) => unknown | null;
   /** Whether that picture lets nothing behind it show. */
   canvasOpaque?: (element: Element) => boolean;
+  canvasLayer?: (element: Element) => { readonly surface: unknown } | null;
   /** Whether an `<object>` or an `<embed>` shows its document as it stands,
    *  over its box (`DomHost.framed`). */
   framed?: (element: Element) => boolean;
@@ -467,6 +468,8 @@ export function useScripts(
     new WeakMap<Element, { version: number; image: unknown }>(),
   );
   const canvasImage = useCallback((element: Element) => {
+    const native = runner.current?.host.nativeSurface(element);
+    if (native) return native;
     const pixels = runner.current?.host.canvas(element);
     if (!pixels || !pixels.width || !pixels.height) return null;
     const kept = pictures.current.get(element);
@@ -481,6 +484,10 @@ export function useScripts(
   }, []);
   const canvasOpaque = useCallback(
     (element: Element) => runner.current?.host.canvasOpaque(element) ?? false,
+    [],
+  );
+  const canvasLayer = useCallback(
+    (element: Element) => runner.current?.host.canvasLayer(element) ?? null,
     [],
   );
   const framed = useCallback(
@@ -534,10 +541,11 @@ export function useScripts(
       );
     }
     unwatch.current =
-      runner.current?.host.onCanvas((canvas) =>
+      runner.current?.host.onCanvas((canvas, rect) =>
         seams.current.handle.canvasChanged(
           canvas,
           runner.current?.host.canvasAlpha(canvas),
+          rect,
         ),
       ) ?? null;
     ran();
@@ -733,6 +741,7 @@ export function useScripts(
     mediaEvent,
     canvasImage,
     canvasOpaque,
+    canvasLayer,
     framed,
     runner: getRunner,
     runtime: engine,

@@ -4858,6 +4858,19 @@ function thingsDrawn(box: Box): number {
 /** The options a box is painted with on a surface `width` by `height`
  *  whose corner is at (`x0`, `y0`) in the window: its own coordinates, the
  *  window's moved to its corner. */
+/** The lifted boxes but for canvases, which a layer shows the pixels of
+ *  as the document would draw them: a group a filter runs over holds them. */
+function withoutCanvases(
+  lifted: ReadonlySet<Box> | null | undefined,
+): ReadonlySet<Box> | null {
+  if (!lifted?.size) return null;
+  let rest: Set<Box> | null = null;
+  for (const box of lifted) {
+    if (box.replaced !== 'frame') (rest ??= new Set()).add(box);
+  }
+  return rest;
+}
+
 function onSurface(
   options: PaintOptions,
   x0: number,
@@ -4883,6 +4896,8 @@ function onSurface(
       y: options.viewport.y - y0,
     },
     clips: [],
+    // what a group is read from is all of it, a canvas a layer shows too
+    lifted: withoutCanvases(options.lifted),
     // drawn on the surface as laid out, and the surface through the matrix
     matrix: undefined,
   };
@@ -12275,14 +12290,28 @@ function gradientBlocks(
   ) {
     return false;
   }
-  const right = area.x + area.w;
-  const bottom = area.y + area.h;
-  for (let y = fromY; y < toY; y += bh) {
-    const top = Math.max(y, area.y);
+  // only what the paint reaches: a window's background is one box, and its
+  // damage is most often a small part of it
+  const damage = options.damage;
+  const reach = damage
+    ? {
+        x: Math.max(area.x, Math.floor(damage.x - m.e)),
+        y: Math.max(area.y, Math.floor(damage.y - m.f)),
+        r: Math.min(area.x + area.w, Math.ceil(damage.x + damage.width - m.e)),
+        b: Math.min(area.y + area.h, Math.ceil(damage.y + damage.height - m.f)),
+      }
+    : { x: area.x, y: area.y, r: area.x + area.w, b: area.y + area.h };
+  if (reach.r <= reach.x || reach.b <= reach.y) return true;
+  const right = reach.r;
+  const bottom = reach.b;
+  const startY = fromY + Math.max(0, Math.floor((reach.y - fromY) / bh)) * bh;
+  const startX = fromX + Math.max(0, Math.floor((reach.x - fromX) / bw)) * bw;
+  for (let y = startY; y < toY && y < bottom; y += bh) {
+    const top = Math.max(y, reach.y);
     const end = Math.min(y + bh, bottom);
     if (end <= top) continue;
-    for (let x = fromX; x < toX; x += bw) {
-      const left = Math.max(x, area.x);
+    for (let x = startX; x < toX && x < right; x += bw) {
+      const left = Math.max(x, reach.x);
       const far = Math.min(x + bw, right);
       if (far <= left) continue;
       ctx.drawImage(

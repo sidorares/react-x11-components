@@ -84,6 +84,8 @@ export interface Bitmap {
   data: Uint8ClampedArray;
   width: number;
   height: number;
+  /** Native canvas spike: where a draw is recorded instead of rasterized. */
+  rec?: unknown[][] | null;
 }
 
 /** How a fill or a stroke is drawn: its paint, the alpha over it, the
@@ -95,6 +97,10 @@ export interface Draw {
   clip: Float32Array | null;
   /** The context's shadow, where one is drawn (HTML 4.12.5.1.18). */
   shadow?: Shadow | null;
+  /** Native canvas spike: the paint as data, the transform and the clips. */
+  sid?: number;
+  matrix?: Matrix;
+  nclip?: number[];
 }
 
 /** A shadow: its colour as straight RGBA bytes, its blur, and its offset in
@@ -193,6 +199,8 @@ export interface RasterInstall {
   /** A gradient's or a pattern's paint, under the matrix it is drawn
    *  through; null for what is neither. */
   paintOf(style: unknown, m: Matrix): Paint | null;
+  /** Native canvas spike: a gradient as data, or null. */
+  describe(style: unknown): unknown;
   makeLinear(x0: number, y0: number, x1: number, y1: number): unknown;
   makeRadial(
     x0: number,
@@ -2743,6 +2751,10 @@ export function installRaster(
     newPath: () => new Path(),
     pathOf: (p) => (p && typeof p === 'object' ? (PATHS.get(p) ?? null) : null),
     fill(target, path, m, rule, draw) {
+      if (target.rec) {
+        target.rec.push(['F', path.cmds, m, rule, draw.sid]);
+        return null;
+      }
       const [l, t, r, b] = regionOf(target, draw);
       const shape = memoized(
         `f|${rule}|${l},${t},${r},${b}|${m.join(',')}|${path.cmds.join(',')}`,
@@ -2753,6 +2765,23 @@ export function installRaster(
       return paintCoverage(target, shape, draw);
     },
     stroke(target, path, m, style, draw) {
+      if (target.rec) {
+        target.rec.push([
+          'S',
+          path.cmds,
+          m,
+          [
+            style.width,
+            style.cap,
+            style.join,
+            style.miterLimit,
+            style.dash,
+            style.dashOffset,
+          ],
+          draw.sid,
+        ]);
+        return null;
+      }
       const [l, t, r, b] = regionOf(target, draw);
       const shape = memoized(
         `s|${l},${t},${r},${b}|${m.join(',')}|${JSON.stringify(style)}|${path.cmds.join(',')}`,
@@ -2900,6 +2929,27 @@ export function installRaster(
     },
     solid,
     paintOf,
+    describe(style) {
+      const g = GRADIENTS.get(style as object);
+      if (!g) return null;
+      const stops = g.stops.map((o: Any) => [o.offset, ...o.rgba]);
+      if (g.kind === 'linear') {
+        return { k: 'l', x0: g.x0, y0: g.y0, x1: g.x1, y1: g.y1, stops };
+      }
+      if (g.kind === 'radial') {
+        return {
+          k: 'r',
+          x0: g.x0,
+          y0: g.y0,
+          r0: g.r0,
+          x1: g.x1,
+          y1: g.y1,
+          r1: g.r1,
+          stops,
+        };
+      }
+      return null;
+    },
     makeLinear: (x0, y0, x1, y1) =>
       gradient({ kind: 'linear', x0, y0, x1, y1 }),
     makeRadial: (x0, y0, r0, x1, y1, r1) => {
