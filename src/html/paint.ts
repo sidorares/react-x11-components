@@ -12151,8 +12151,8 @@ function paintGradient(
   // a gradient has no size of its own: the positioning area's, unless
   // `background-size` gives it one, and then `background-position` places
   // it in the area as it does an image
-  const repeat = style.backgroundRepeat;
-  const [w, h] = roundedTile(
+  let repeat = style.backgroundRepeat;
+  let [w, h] = roundedTile(
     style.backgroundSize,
     repeat,
     sizedTile(style.backgroundSize, NO_SIZE, at, 1),
@@ -12167,6 +12167,13 @@ function paintGradient(
     h === at.height
       ? at.y
       : at.y + resolve(style.backgroundPositionY, at.height - h);
+  const cell = periodicCell(gradient, w, h, x0, y0, area, repeat);
+  if (cell) {
+    gradient = cell.gradient;
+    w = cell.w;
+    h = cell.h;
+    repeat = cell.repeat;
+  }
   const across = tileRun(
     repeat[0],
     x0,
@@ -12227,6 +12234,75 @@ function paintGradient(
       gradientTile(ctx, gradient, x, y, w, h, style.color, tile, options);
     }
   }
+}
+
+/**
+ * A repeating gradient straight down or across, whose period is a few whole
+ * pixels, as the cell it repeats in: a hatch of 1px lines over a window
+ * unrolls to a thousand stops, which CoreGraphics searches for each pixel
+ * and which `gradientRuns` fills a line at a time, and a cell of a few
+ * dozen pixels is shaded once and copied (`gradientBlocks`). The cell is a
+ * whole number of periods, with the stops moved so that it holds the box's
+ * pattern wherever it lands. Only where the box is the whole positioning
+ * area's tile and no repeat shows beyond it, and the tile has room for
+ * several cells; null where it is not done.
+ */
+function periodicCell(
+  gradient: Gradient,
+  w: number,
+  h: number,
+  x0: number,
+  y0: number,
+  area: { x: number; y: number; w: number; h: number },
+  repeat: ComputedStyle['backgroundRepeat'],
+): {
+  gradient: Gradient;
+  w: number;
+  h: number;
+  repeat: ComputedStyle['backgroundRepeat'];
+} | null {
+  if (gradient.kind !== 'linear' || !gradient.repeating || gradient.corner) {
+    return null;
+  }
+  const angle = lineAngle(gradient, w, h);
+  const dx = Math.sin(angle);
+  const dy = -Math.cos(angle);
+  const down = Math.abs(dx) < 1e-9;
+  if (!down && Math.abs(dy) >= 1e-9) return null;
+  const axis = down ? 1 : 0;
+  if (repeat[axis] !== 'repeat') return null;
+  const size = down ? h : w;
+  const start = down ? y0 : x0;
+  const lo = down ? area.y : area.x;
+  const hi = lo + (down ? area.h : area.w);
+  if (lo < start || hi > start + size) return null;
+  const at = stopOffsets(gradient.stops, size).map((t) => t * size);
+  const period = at[at.length - 1] - at[0];
+  if (!(period >= 1) || size < 8 * period) return null;
+  let cell = 0;
+  for (let k = 1; k <= 64 && k * period <= 128; k += 1) {
+    const length = k * period;
+    if (Math.abs(length - Math.round(length)) < 1e-6) {
+      cell = Math.round(length);
+      break;
+    }
+  }
+  if (!cell) return null;
+  cell *= Math.ceil(16 / cell);
+  if (size < 4 * cell) return null;
+  // where along the line a pixel of the cell is, as the box has it
+  const shift = dx + dy < 0 ? size - cell : 0;
+  const stops = gradient.stops.map((stop, i) => ({
+    ...stop,
+    at: at[i] - shift,
+  }));
+  const modes: [RepeatMode, RepeatMode] = [repeat[0], repeat[1]];
+  return {
+    gradient: { ...gradient, stops },
+    w: down ? w : cell,
+    h: down ? cell : h,
+    repeat: modes as ComputedStyle['backgroundRepeat'],
+  };
 }
 
 /**
@@ -12503,11 +12579,20 @@ function gradientRuns(
   // what is shaded is the part shaded whole, as before, cut to what is not
   // filled, as a repaint of part of it is
   const shaded = (a: number, b: number): void => {
+    // only the stops the piece sees: a hatch of a thousand stops shaded a
+    // line at a time was a gradient of a thousand stops made for each
+    const seen = stopsSeen(
+      stops,
+      at,
+      (a - start) / (dir * length),
+      (b - start) / (dir * length),
+    );
+    const sub = seen ? { ...gradient, stops: seen } : gradient;
     pushClip(ctx, span(a, b), null);
     if (b - a < 4 * STRIP) {
-      const paint = gradientFill(ctx, gradient, x, y, w, h, currentColor, part);
+      const paint = gradientFill(ctx, sub, x, y, w, h, currentColor, part);
       if (paint) fillGradient(ctx, paint, part);
-    } else shadedPart(ctx, gradient, x, y, w, h, currentColor, part, options);
+    } else shadedPart(ctx, sub, x, y, w, h, currentColor, part, options);
     ctx.restore();
   };
   let from = lo;
@@ -12523,6 +12608,33 @@ function gradientRuns(
   if (hi > from) shaded(from, hi);
   return true;
 }
+
+/**
+ * The stops of a gradient that colour a stretch of its line, `t0` to `t1` of
+ * its length, and the one either side of it: the same colours there, and a
+ * line as long as the stops' own, since each stop keeps its place. Null where
+ * that is all of them, or too few to be a gradient.
+ */
+function stopsSeen(
+  stops: readonly GradientStop[],
+  at: readonly number[],
+  t0: number,
+  t1: number,
+): GradientStop[] | null {
+  const lo = Math.min(t0, t1);
+  const hi = Math.max(t0, t1);
+  if (stops.length < MANY_STOPS) return null;
+  let first = 0;
+  while (first + 1 < at.length && at[first + 1] <= lo) first += 1;
+  let last = at.length - 1;
+  while (last - 1 > first && at[last - 1] >= hi) last -= 1;
+  if (last - first + 1 >= stops.length) return null;
+  return stops.slice(first, last + 1);
+}
+
+/** The most stops a gradient has before a piece of it is made of the stops
+ *  it sees alone (`stopsSeen`). */
+const MANY_STOPS = 32;
 
 /** How wide a strip of a gradient is shaded (`gradientStrip`). */
 const STRIP = 64;
