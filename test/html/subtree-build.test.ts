@@ -2132,6 +2132,70 @@ metric(
 );
 
 metric(
+  'a rule for a first line no element has leaves a change building only the subtree it reached, where a build of all new boxes puts it',
+  async (t) => {
+    // a framework's sheet holds one `::first-line` rule, and every change a
+    // page made was a build of all its elements, laid out again
+    const { node } = await render(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        '.nothing::first-line { font-size: 24px; color: #00aa00 }' +
+        'p { margin: 2px }</style></head><body>' +
+        '<div class="lead"><p id="l1">Opening <span id="ls">words</span></p>' +
+        '<p id="l2">and more</p></div>' +
+        '<div><p id="b1">beside <span id="bs">it</span></p>' +
+        '<p id="b2">a second row</p></div></body></html>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _subtreeBuild(...a: unknown[]): BoxTree | null;
+      _invalidate(stale: number): void;
+    };
+    const byId = (id: string): Element =>
+      elementsUnder(el.document as unknown as Element).find(
+        (e) => e.attribs.id === id,
+      )!;
+    // no element has what the rule is for, so no first line is styled
+    for (const [at, apart] of [
+      ['bs', true],
+      ['ls', true],
+    ] as const) {
+      const built = t.mock.method(internals, '_subtreeBuild');
+      const span = byId(at);
+      const text = createText(' and more of it');
+      appendChild(span, text);
+      el.touchDocument([
+        {
+          type: 'childList',
+          target: span,
+          addedNodes: [text],
+          removedNodes: [],
+        },
+      ]);
+      await act();
+      const result = built.mock.calls.at(-1)?.result;
+      built.mock.restore();
+      assert.strictEqual(
+        result !== null && result !== undefined,
+        apart,
+        `#${at} built ${result ? 'its subtree' : 'the whole document'}`,
+      );
+      const kept = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      const whole = treeLines(internals._tree);
+      const line = kept.findIndex((one, i) => one !== whole[i]);
+      assert.ok(
+        line < 0 && kept.length === whole.length,
+        `line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
+      );
+    }
+  },
+);
+
+metric(
   'a parse that waits at a script goes on after it as a stream does: what it reads on to is styled and built, and the rest kept, as a build of the whole makes it',
   async (t) => {
     // Apple's product pages wait at six scripts in their `<body>`, and the

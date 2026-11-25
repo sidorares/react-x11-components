@@ -64,6 +64,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { GCProfiler } from 'node:v8';
 import { fileURLToPath } from 'node:url';
 import React from 'react';
+import { boxLayoutsMade } from '../../../dist/html/layout/block.js';
 
 process.env.REACT_X11_NO_AUTORUN = '1';
 const { createRoot, ThemeProvider } = await import('react-x11');
@@ -580,9 +581,11 @@ async function measure(doc) {
     await nextFrame(300);
     await wait(500);
     const stop = await costOf(`${doc.name}-dwell`);
+    const laidBefore = boxLayoutsMade();
     await wait(DWELL_MS);
+    const laidBoxes = boxLayoutsMade() - laidBefore;
     const { step } = await stop();
-    result.dwell = { at: p.scrollY, ms: DWELL_MS, ...step };
+    result.dwell = { at: p.scrollY, ms: DWELL_MS, laidBoxes, ...step };
     p.scrollTo(0);
     await nextFrame(150);
   }
