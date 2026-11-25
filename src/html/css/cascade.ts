@@ -3721,12 +3721,22 @@ function scanFunctionChanges(
         !parts.length ||
         READS_AROUND.test(relative) ||
         parts.some(({ next }) => next === '+' || next === '~');
+      // and whether a text put in or changed can change its answer, which
+      // is what it holds or says, or a direction it gives: not where an
+      // element sits, nor a focus or a radio's group, which a character
+      // typed into a code demo changed none of — every `.group:has(:checked)`
+      // of tailwindcss.com's rules put the group and all it holds among
+      // the elements each one reached (`'x'`, `TreeReach.anchors`)
+      let textual = !parts.length || /:dir\b/i.test(relative);
       scanChanges(relative, bits, at, (key, b, anchor, subject) => {
         if (SITS_KEYS.has(key)) sits = true;
+        if (key === 'h' || key === 't' || key === 'k') textual = true;
         note(key, b, anchor, subject);
       });
-      if (sits) note('s', bits, at);
-      else {
+      if (sits) {
+        note('s', bits, at);
+        if (textual) note('x', bits, at);
+      } else {
         const subject = stableCompound(parts[parts.length - 1].text);
         note('g', bits, at, subject || '*');
       }
@@ -3881,7 +3891,7 @@ function noteReach(
 
 /** The keys a change to the tree reaches (`MutationRules.treePseudo`):
  *  where an element sits, what it holds, its text, a sibling combinator. */
-const TREE_KEYS = new Set(['s', 'h', 'k', 't', 'e', 'n', 'g', '+', '~']);
+const TREE_KEYS = new Set(['s', 'x', 'h', 'k', 't', 'e', 'n', 'g', '+', '~']);
 
 /** How many sheets a cascade's reading of its rules may hold that its
  *  document no longer has before it reads them afresh (`Cascade`). */
@@ -6006,7 +6016,8 @@ export class Cascade {
     let later = rules.bits('h') & CHANGES_LATER;
     if (text) later |= rules.bits('t') & CHANGES_LATER;
     bits = (bits & ~CHANGES_LATER) | later;
-    const asked = rules.anchors('s') ?? EMPTY_ANCHORS;
+    const asked =
+      (text ? rules.anchors('x') : rules.anchors('s')) ?? EMPTY_ANCHORS;
     // Below the holder, a test of what an element holds or where it sits
     // reaches from an element its compound names, and what there its
     // rule's subject does: the webmail page's split buttons hide a

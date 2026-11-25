@@ -2248,6 +2248,46 @@ test('a child coming or going restyles the children a test of where they sit can
   assert.equal(el.computedStyle(m0)?.color, 'rgb(255, 0, 0)');
 });
 
+test('a text written reaches the :has() that can read it, and not one that asks a radio, a focus or a place', async () => {
+  // Tailwind's `group-has-indeterminate:` and `group-has-focus:` are
+  // `.group:has(:indeterminate) *` and the like: no character typed into a
+  // code demo changes what they answer, and each put the group and all it
+  // holds among what the change reached (`'x'`, `TreeReach.anchors`)
+  const { node } = await render(
+    '<style>body{margin:0}' +
+      ' .a:has(:indeterminate) *{opacity:.5} .b:has(:focus-within) *{opacity:.5}' +
+      ' .c:has(:first-child) *{opacity:.5}' +
+      ' .d:has(:empty) *{opacity:.5} .e:has(:blank) *{opacity:.5}' +
+      ' .f:has(:contains("zz")) *{opacity:.5}</style>' +
+      ['a', 'b', 'c', 'd', 'e', 'f']
+        .map((k) => `<div class="${k}" id="${k}"><p id="${k}p">x</p></div>`)
+        .join(''),
+    300,
+  );
+  const el = view(node);
+  await act();
+  for (const [k, reaches] of [
+    ['a', false],
+    ['b', false],
+    ['c', false],
+    ['d', true],
+    ['e', true],
+    ['f', true],
+  ] as const) {
+    const p = byId(el, `${k}p`);
+    const text = p.children[0] as unknown as { data: string };
+    text.data = 'xy';
+    const change: HtmlChange = {
+      type: 'characterData',
+      target: text as never,
+      oldValue: 'x',
+    } as HtmlChange;
+    const own = scopeOf(el, [change]);
+    assert.ok(own, `${k}: a refresh of everything`);
+    assert.equal(own.has(byId(el, k)), reaches, `${k}: its group reached`);
+  }
+});
+
 /** What a refresh told of `changes` would restyle by itself, or null where
  *  it would restyle everything. */
 function scopeOf(el: HtmlViewNode, changes: HtmlChange[]): Set<Element> | null {

@@ -1776,6 +1776,34 @@ test("PageSwapEvent and PageRevealEvent construct, and a link's, a script's and 
   ]);
 });
 
+test('a selector of bare type names finds what css-select finds, in an HTML document and a drawing, as the tree changes', async () => {
+  // the page's own SMIL asks `animate, set, animateMotion, animateTransform`
+  // of the whole document at every frame, answered by a lookup of each
+  // element's name; it has to find the same elements, a camel-cased SVG
+  // name among them, in document order, and the ones put in after
+  const doc = await hosted(
+    '<p id="out">-</p><div><svg><animate id="a"></animate><g><animateMotion id="m">' +
+      '</animateMotion></g><set id="s"></set></svg><span id="x"></span></div><script>' +
+      'var q = function (sel) { return Array.prototype.map.call(document.querySelectorAll(sel), function (e) { return e.id || e.localName; }).join("+"); };' +
+      'var r = [q("animate, set, animateMotion, animateTransform"), q("ANIMATEMOTION,span"), q("div"), q("g , SET"), q("nothing")];' +
+      'var t = document.createElementNS("http://www.w3.org/2000/svg", "animateTransform"); t.id = "t";' +
+      'document.querySelector("svg").appendChild(t);' +
+      'r.push(q("animate, set, animateMotion, animateTransform"), document.querySelector("animatemotion").id, document.querySelector("svg").matches("svg, div"), document.getElementById("x").matches("div"));' +
+      "document.getElementById('out').textContent = JSON.stringify(r);</script>",
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    'a+m+s',
+    'm+x',
+    'div',
+    'g+s',
+    '',
+    'a+m+s+t',
+    'm',
+    true,
+    false,
+  ]);
+});
+
 test("a link reflects its hreflang and the rest of HTMLLinkElement's attributes, and crossOrigin is a CORS setting", async () => {
   // Apple's locale switcher splits the `hreflang` of every `[hreflang]`
   const doc = await hosted(
