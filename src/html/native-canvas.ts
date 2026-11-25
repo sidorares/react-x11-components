@@ -19,7 +19,9 @@ let nativeApp: unknown = null;
 
 /** `<Html>` tells which app draws, once it paints a canvas. */
 export function setNativeApp(app: unknown): void {
-  nativeApp = app;
+  // only an app on a native backend has a context that replays a canvas
+  // and reads it back at once: the in-process X server's reads are promises
+  nativeApp = (app as Any)?.nativeBezels ? app : null;
 }
 
 function process_env(name: string): boolean {
@@ -31,6 +33,7 @@ export function nativeCanvasEnabled(): boolean {
   const env = process?.env;
   // the Cocoa backend's: where nothing replays a canvas, it would show none
   return (
+    nativeApp !== null &&
     env?.REACT_X11_NATIVE_CANVAS === '1' &&
     process?.platform === 'darwin' &&
     (env.REACT_X11_BACKEND ?? 'cocoa') === 'cocoa'

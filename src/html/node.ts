@@ -4971,6 +4971,9 @@ export class HtmlViewNode extends Node {
   }
 
   private _update(target: number): void {
+    // the app that draws, before the page's scripts ask whether a canvas may
+    // be drawn on its native context
+    setNativeApp(this.app);
     const props = this._props();
     if ((props.domRevision ?? 0) !== this._reportedDomRevision) {
       this._reportedDomRevision = props.domRevision ?? 0;
