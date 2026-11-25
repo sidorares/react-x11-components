@@ -2175,7 +2175,7 @@ function linesOf(
       const held = keepsSpaces ? open.x : open.x - Math.max(0, open.hang);
       let fits =
         !deferred.length &&
-        (isEmpty(open) || held + pendingWidth + outer <= available);
+        (isEmpty(open) || held + pendingWidth + outer <= available + FIT_SLACK);
       if (fits && !isEmpty(open) && !breaksAtEnd(open, style)) {
         const after = unbreakableAfter(
           lineItems,
@@ -2184,7 +2184,7 @@ function linesOf(
           fonts!,
           lineBase,
         );
-        fits = open.x + pendingWidth + after + outer <= available;
+        fits = open.x + pendingWidth + after + outer <= available + FIT_SLACK;
       }
       if (fits) {
         options.floatBoxes!.place(item.box, options.startY + y);
@@ -2240,7 +2240,7 @@ function linesOf(
       // (`ATOMIC_GLUE`)
       if (
         open.x !== open.indent &&
-        open.x + pendingWidth + outer > roomWidth &&
+        open.x + pendingWidth + outer > roomWidth + FIT_SLACK &&
         wraps((box.parent ?? block).style) &&
         !open.glued
       ) {
@@ -2252,7 +2252,7 @@ function linesOf(
       // lines do not wrap, as a word does
       if (
         isEmpty(open) &&
-        pendingWidth + outer > roomWidth &&
+        pendingWidth + outer > roomWidth + FIT_SLACK &&
         roomWidth < options.width &&
         wraps(style)
       ) {

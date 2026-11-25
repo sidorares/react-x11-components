@@ -64,3 +64,28 @@ metric(
     );
   },
 );
+
+// A shrink-to-fit box is as wide as its line's content, and the sum of the
+// pieces comes to its width only to the last bit: a link's text and the icon
+// after it (Docusaurus's navbar "GitHub ↗") wrapped the icon below the text
+// on a Mac, where the box was 140.9885154724121 wide and its content the
+// same number a bit more. A word fits a line a 64th of a pixel over
+// (`FIT_SLACK`), and an atomic inline has to as well.
+metric(
+  'an atomic inline fits a line it overruns by less than a 64th of a pixel',
+  async () => {
+    const { node } = await render(
+      '<style>body{margin:0} div{width:100px;font:20px monospace}' +
+        'i{display:inline-block;width:100.01px;height:10px}</style>' +
+        '<div><i id="a"></i></div><div>' +
+        '<i id="b" style="width:50px"></i><i id="c" style="width:50.01px"></i>' +
+        '</div><div><i id="d" style="width:50px"></i>' +
+        '<i id="e" style="width:50.5px"></i></div>',
+    );
+    const el = view(node);
+    await act();
+    const top = (id: string) => el.elementRect(findById(el.document, id)!)!.y;
+    assert.ok(Math.abs(top('b') - top('c')) < 1, 'within the slack: one line');
+    assert.ok(Math.abs(top('d') - top('e')) > 1, 'past it: wraps');
+  },
+);
