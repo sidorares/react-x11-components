@@ -182,6 +182,20 @@ const ALPHA = 8;
 
 /** Any colour but `currentColor`, as numbers: what `color-mix()` mixes. */
 function readRgba(value: string): Rgba | null {
+  // pure of its text, and a gradient reads the same few strings at every
+  // paint: tailwindcss.com's, 3 s of a 6 s scroll on a Mac
+  const kept = RGBA_KEPT.get(value);
+  if (kept !== undefined) return kept;
+  const read = readRgbaNow(value);
+  if (RGBA_KEPT.size >= RGBA_KEPT_MOST) RGBA_KEPT.clear();
+  RGBA_KEPT.set(value, read);
+  return read;
+}
+
+const RGBA_KEPT = new Map<string, Rgba | null>();
+const RGBA_KEPT_MOST = 2048;
+
+function readRgbaNow(value: string): Rgba | null {
   const v = value.trim();
   const lower = v.toLowerCase();
   if (lower === 'transparent') return { rgb: [0, 0, 0], a: 0 };

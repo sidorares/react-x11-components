@@ -12257,20 +12257,33 @@ function gradientBlocks(
   options: PaintOptions,
 ): boolean {
   const keep = options.tilesKept;
-  if (!keep || !ctx.drawImage || !ctx.getTransform || options.matrix) {
-    return false;
-  }
+  if (!keep || !ctx.drawImage || !ctx.getTransform) return false;
   const { fromX, toX, fromY, toY } = run;
+  const m = ctx.getTransform();
+  // a box drawn small through a matrix — a page's thumbnail of its own
+  // stage, a 20px dot grid at a twelfth of its size, over a thousand
+  // tiles — is no pixel for pixel copy of anything, and each tile shaded
+  // on its own, a hundred stops apiece, was most of a frame there
+  const shrunk =
+    !!options.matrix &&
+    m.b === 0 &&
+    m.c === 0 &&
+    m.a > 0 &&
+    m.d > 0 &&
+    m.a < 1 &&
+    m.d < 1;
+  if (options.matrix && !shrunk) return false;
   if (
-    ![w, h, fromX, fromY, area.x, area.y, area.w, area.h].every(
-      Number.isInteger,
-    )
+    !(
+      shrunk ? [w, h] : [w, h, fromX, fromY, area.x, area.y, area.w, area.h]
+    ).every(Number.isInteger)
   ) {
     return false;
   }
-  const m = ctx.getTransform();
-  if (m.a !== 1 || m.b !== 0 || m.c !== 0 || m.d !== 1) return false;
-  if (!Number.isInteger(m.e) || !Number.isInteger(m.f)) return false;
+  if (!shrunk) {
+    if (m.a !== 1 || m.b !== 0 || m.c !== 0 || m.d !== 1) return false;
+    if (!Number.isInteger(m.e) || !Number.isInteger(m.f)) return false;
+  }
   const tile = keep(
     `gradient ${JSON.stringify(gradient)} ${currentColor} ${w}x${h}`,
     w,
@@ -12296,7 +12309,7 @@ function gradientBlocks(
   }
   // only what the paint reaches: a window's background is one box, and its
   // damage is most often a small part of it
-  const damage = options.damage;
+  const damage = shrunk ? null : options.damage;
   const reach = damage
     ? {
         x: Math.max(area.x, Math.floor(damage.x - m.e)),
@@ -12870,6 +12883,29 @@ function addStops(
   offsets: readonly number[],
   colors: readonly string[],
 ): void {
+  // the stops a list comes to are a function of it, and a page paints the
+  // same few gradients at every frame of a scroll
+  const key = `${offsets.join(',')}|${colors.join('|')}`;
+  let stops = STOPS_KEPT.get(key);
+  if (!stops) {
+    stops = [];
+    stopsOf(offsets, colors, (o, c) => stops!.push(o, c));
+    if (STOPS_KEPT.size >= 256) STOPS_KEPT.clear();
+    STOPS_KEPT.set(key, stops);
+  }
+  for (let i = 0; i < stops.length; i += 2) {
+    g.addColorStop(stops[i] as number, stops[i + 1] as string);
+  }
+}
+
+const STOPS_KEPT = new Map<string, (number | string)[]>();
+
+function stopsOf(
+  offsets: readonly number[],
+  colors: readonly string[],
+  add: (offset: number, color: string) => void,
+): void {
+  const g = { addColorStop: add };
   const rgba = colors.map((c) => rgbaOf(c));
   const clear = (i: number): string | null => {
     const c = rgba[i];

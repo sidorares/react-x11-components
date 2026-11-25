@@ -1429,6 +1429,39 @@ test('a small gradient tiled many times is copied from a block of its tiles, pix
   assert.ok(most <= 1, `${most} levels apart`);
 });
 
+test('a gradient tiled in a box drawn small is copied from a block of its tiles, and comes out as the tiles do', async () => {
+  // tailwindcss.com draws a 20px dot grid of a hundred-stop gradient inside
+  // a thumbnail of its stage at a twelfth of its size: over a thousand
+  // tiles, each shaded again at every frame of a scroll, 3 s of 6 on a Mac.
+  // Drawn through a matrix that shrinks, the tiles are copied from a kept
+  // one; a shrunk copy is no pixel for pixel anything, so it is held to a
+  // few levels where it is seen
+  const { result, el } = await renderWithBytes(
+    '<style>body{margin:0}div{width:600px;height:400px;' +
+      'transform:scale(.25);transform-origin:0 0;' +
+      'background:radial-gradient(circle,#0a0 30%,#fff 31%,#00f) 0 0/20px 20px}' +
+      '</style><div></div>',
+    {},
+    240,
+    2,
+  );
+  const blocks = await snapshot(result, el);
+  const kept = (
+    el as unknown as { _tileBlocks: { kept: Map<string, unknown> } }
+  )._tileBlocks;
+  assert.ok(
+    [...(kept?.kept.keys() ?? [])].some((k) => k.startsWith('gradient ')),
+    'drawn from blocks',
+  );
+  withoutTileBlocks(el);
+  const tiles = await rebuilt(result, el);
+  let most = 0;
+  for (let i = 0; i < blocks.length; i += 1) {
+    most = Math.max(most, Math.abs(blocks[i] - tiles[i]));
+  }
+  assert.ok(most <= 64, `${most} levels apart`);
+});
+
 metric(
   'a large image drawn at another size is copied from tiles of a raster kept at it, pixel for pixel as the image drawn there',
   async () => {

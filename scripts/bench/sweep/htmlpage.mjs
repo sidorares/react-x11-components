@@ -17,6 +17,8 @@
 //            (default all four)
 //   SCROLL_STEP  pixels a scroll step (default 100, a wheel notch's);
 //   SCROLL_MAX   the most steps (default 300)
+//   DWELL_AT, DWELL_MS  for STEPS=dwell: the pane held still at that offset
+//            (default 5000) for that long (default 4000), animations running
 //   DRAG_STEP    pixels a step of the drag (default 8); DRAG_STEPS each
 //            way (default 40)
 //   SCRIPTS  1: the page's scripts run, as the browser example's JS
@@ -80,6 +82,8 @@ const BACKEND = process.env.REACT_X11_BACKEND ?? 'x11';
 const STEPS = new Set(
   (process.env.STEPS ?? 'reload,scroll,resize,hover').split(','),
 );
+const DWELL_AT = Number(process.env.DWELL_AT ?? 5000);
+const DWELL_MS = Number(process.env.DWELL_MS ?? 4000);
 const SCROLL_STEP = Number(process.env.SCROLL_STEP ?? 100);
 const SCROLL_MAX = Number(process.env.SCROLL_MAX ?? 300);
 const DRAG_STEP = Number(process.env.DRAG_STEP ?? 8);
@@ -565,6 +569,20 @@ async function measure(doc) {
     }
     const { step } = await stop();
     result.scroll = { steps, ...step };
+    p.scrollTo(0);
+    await nextFrame(150);
+  }
+
+  if (STEPS.has('dwell')) {
+    // the pane held still at DWELL_AT, a page's animations running
+    const p = pane.current;
+    p.scrollTo(DWELL_AT);
+    await nextFrame(300);
+    await wait(500);
+    const stop = await costOf(`${doc.name}-dwell`);
+    await wait(DWELL_MS);
+    const { step } = await stop();
+    result.dwell = { at: p.scrollY, ms: DWELL_MS, ...step };
     p.scrollTo(0);
     await nextFrame(150);
   }
