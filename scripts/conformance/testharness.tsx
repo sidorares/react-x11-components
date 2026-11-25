@@ -941,14 +941,33 @@ const ACT_MS = Number(process.env.WPT_ACT_MS || 10000 * TIMEOUT_MULTIPLIER);
 /** The `act()`s that outlasted that, until the page they wait on goes. */
 let restless: Promise<unknown> | null = null;
 
+/** `WPT_NATIVE=1`: the page's window is a native one — Cocoa on a Mac — in
+ *  place of the in-process X server, so what only a native context does
+ *  (a canvas drawn on it, say) is what the tests run. There is no server to
+ *  inject input into and no window to read back: script tests only. */
+async function nativeHarness(): Promise<RenderX11Result> {
+  const { createRoot } = await import('react-x11');
+  const root = await createRoot();
+  root.render(tree(null));
+  return {
+    root,
+    rerender: (element: React.ReactElement) => root.render(element),
+    server: undefined,
+    window: undefined,
+    ctx: undefined,
+  } as unknown as RenderX11Result;
+}
+
 async function show(element: React.ReactElement | null): Promise<void> {
   if (!harness) {
     // the first page is shown as the ones after it
-    harness = await renderX11(tree(null), {
-      width: WIDTH,
-      height: HEIGHT,
-      fonts: FONTS,
-    });
+    harness = process.env.WPT_NATIVE
+      ? await nativeHarness()
+      : await renderX11(tree(null), {
+          width: WIDTH,
+          height: HEIGHT,
+          fonts: FONTS,
+        });
   }
   const rendered = harness;
   if (restless) {
