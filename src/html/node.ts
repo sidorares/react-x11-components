@@ -17613,9 +17613,9 @@ export class HtmlViewNode extends Node {
       this._props().onPaint?.();
       return;
     }
-    const paintStart = performance.now();
+    const paintStart = frameClock.now();
     this._counted(() => this._paintContent(ctx));
-    this._noteGifCost(performance.now() - paintStart);
+    this._noteGifCost(frameClock.now() - paintStart);
     // the animations this paint is the first to show start now, and run
     // from here (`AnimationTimeline.startsAtPaint`)
     this._claimsPainted = this._claims;
@@ -23265,7 +23265,7 @@ function hoverChange(
       // a box that gains or loses its transform becomes a stacking context
       // or stops being one, and the layers it holds are its own or its
       // context's
-      if (transformed(a) !== transformed(b)) change.order = true;
+      if (transformed(was) !== transformed(now)) change.order = true;
       continue;
     }
     return false;
