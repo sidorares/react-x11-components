@@ -887,6 +887,45 @@ test('a GIF with real LZW data decodes to the indices it was made of', () => {
   }
 });
 
+test('a frame made smaller is the mean of the pixels it stands for, as bytes and as words', () => {
+  const rand = mulberry32(7);
+  for (const offset of [0, 1]) {
+    const noise = new Uint8Array(40 * 40 * 4 + 1);
+    for (let i = 0; i < noise.length; i += 1)
+      noise[i] = Math.floor(rand() * 256);
+    const frame = noise.subarray(offset, offset + 40 * 40 * 4);
+    const animation = new AnimatedImage(
+      {
+        width: 40,
+        height: 40,
+        plays: 0,
+        frames: Array.from({ length: 6000 }, () => ({ delay: 10 })) as never,
+        at: () => frame,
+      },
+      (rgba) => ({ ...rgba }),
+    );
+    const small = animation.image(0, 20) as { data: Uint8Array };
+    for (let y = 0; y < 20; y += 1) {
+      for (let x = 0; x < 20; x += 1) {
+        for (let k = 0; k < 4; k += 1) {
+          const at = (px: number, py: number) => frame[(py * 40 + px) * 4 + k];
+          const mean =
+            (at(2 * x, 2 * y) +
+              at(2 * x + 1, 2 * y) +
+              at(2 * x, 2 * y + 1) +
+              at(2 * x + 1, 2 * y + 1)) >>
+            2;
+          assert.strictEqual(
+            small.data[(y * 20 + x) * 4 + k],
+            mean,
+            `offset ${offset}, ${x},${y},${k}`,
+          );
+        }
+      }
+    }
+  }
+});
+
 test('an animation of frames too large to keep is made smaller to be drawn smaller, and a draw of the frame asks for it', () => {
   const frames = Array.from({ length: 20 }, (_, i) => ({ delay: 100, i }));
   const made: { width: number; height: number; data: Uint8Array }[] = [];

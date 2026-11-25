@@ -207,6 +207,8 @@ export class GifCanvas {
   /** The screen before the frame last drawn, where its disposal puts it
    *  back (3). */
   private _saved: Uint8Array | null = null;
+  /** Where a frame's colour indices are read to, kept for the next. */
+  private _indices = new Uint8Array(0);
 
   constructor(file: GifFile) {
     this._file = file;
@@ -250,11 +252,15 @@ export class GifCanvas {
     const frame = frames[this._index];
     this._saved = frame.disposal === 3 ? data.slice() : null;
     const { bytes } = this._file;
+    const pixels = frame.width * frame.height;
+    // the indices are read at once, so the same bytes serve every frame
+    if (this._indices.length < pixels) this._indices = new Uint8Array(pixels);
     const indices = lzw(
       bytes,
       frame.data,
       frame.minCodeSize,
-      frame.width * frame.height,
+      pixels,
+      this._indices.subarray(0, pixels),
     );
     const { palette, transparent } = frame;
     const height = this._file.height;
@@ -363,8 +369,10 @@ function lzw(
   at: number,
   minCodeSize: number,
   pixels: number,
+  into?: Uint8Array,
 ): Uint8Array {
-  const out = new Uint8Array(pixels);
+  // a frame whose data ends early has the rest 0, as a new array has it
+  const out = into ? into.fill(0) : new Uint8Array(pixels);
   const clear = 1 << minCodeSize;
   const end = clear + 1;
   // Every code's string is somewhere in what was written already: the
