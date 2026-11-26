@@ -1178,6 +1178,9 @@ export interface HostSeams {
   /** A thread's own GPU made a frame for the page process to show: its
    *  pixels go there, moved, under the number it knows them by. */
   shipFrame?(id: number): void;
+  /** Whether the page has not taken the frames shipped to it yet: a thread
+   *  with a GPU of its own draws no more until it has. */
+  frameBusy?(): boolean;
   /** The sheets the document adopted (`document.adoptedStyleSheets`),
    *  each its text, for `<Html>` to apply after the document's own. */
   adopt?(sheets: string[]): void;
@@ -8713,6 +8716,8 @@ export class DomHost {
         return null;
       case 'glFrame':
         return this._contexts.frameData(Number(a), Number(b));
+      case 'glBusy':
+        return this._seams.frameBusy?.() ? 1 : 0;
       case 'glShip':
         this._seams.shipFrame?.(Number(a));
         return null;
