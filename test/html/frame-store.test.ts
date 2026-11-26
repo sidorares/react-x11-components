@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
   discardFrame,
   keepFrame,
+  keepFrameAs,
   peekFrame,
   takeFrame,
 } from '../../src/html/frame-store.js';
@@ -59,4 +60,16 @@ test('a frame is compared with the one before it for the box that moved, and its
   const only = diffFrames(before, colour, w, h);
   assert.deepEqual(only.rect, [0, 4, 1, 5]);
   assert.equal(only.alpha, false);
+});
+
+test('a frame another thread made says so when it is gone, taken or pushed out', () => {
+  let acked = 0;
+  keepFrameAs(900_000_001, frame(0), () => (acked += 1));
+  keepFrameAs(900_000_002, frame(0), () => (acked += 1));
+  assert.ok(takeFrame(900_000_001));
+  assert.equal(acked, 1);
+  discardFrame(900_000_002);
+  assert.equal(acked, 2);
+  takeFrame(900_000_002);
+  assert.equal(acked, 2);
 });

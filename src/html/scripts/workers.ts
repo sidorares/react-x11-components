@@ -144,6 +144,8 @@ export interface WorkerThreadData {
   gpu: boolean;
   /** The lock every thread takes its turns at the GPU by (`useGpuLock`). */
   gpuLock: SharedArrayBuffer;
+  /** One word: the frames this thread shipped that the page has not taken. */
+  gpuInflight: SharedArrayBuffer;
   /** When the page made it, as `performance.timeOrigin +
    *  performance.now()` reads it here, which a thread's own origin and
    *  `now` come to alike: where the worker's time starts (HR Time 3, the
@@ -303,6 +305,7 @@ interface Running {
   up: boolean;
   /** Whether it holds a GPU context of its own (`end`). */
   gpu: boolean;
+  gpuInflight: SharedArrayBuffer;
   url: string;
   sync: MessagePort;
   fetches: Map<number, AbortController>;
@@ -409,6 +412,7 @@ export class PageWorkers implements PageWorkersLike {
     }
     const { port1, port2 } = new MessageChannel();
     const flag = new SharedArrayBuffer(4);
+    const gpuInflight = new SharedArrayBuffer(4);
     const data: WorkerThreadData = {
       init,
       userAgent: this._seams.userAgent,
@@ -421,6 +425,7 @@ export class PageWorkers implements PageWorkersLike {
       notifies: !!this._seams.notifications,
       gpu: !!this._seams.webgl,
       gpuLock: gpuLockBuffer(),
+      gpuInflight,
       born: performance.timeOrigin + performance.now(),
     };
     const source = threadSource();
@@ -440,6 +445,7 @@ export class PageWorkers implements PageWorkersLike {
       url: init.url,
       sync: port1,
       gpu: false,
+      gpuInflight,
       fetches: new Map(),
       shown: new Map(),
       gl: new Map(),
@@ -1007,7 +1013,13 @@ export class PageWorkers implements PageWorkersLike {
         void running.thread.terminate();
         return;
       case 'gpuFrame':
-        keepFrameAs(m.id, { width: m.width, height: m.height, data: m.data });
+        keepFrameAs(
+          m.id,
+          { width: m.width, height: m.height, data: m.data },
+          () => {
+            Atomics.sub(new Int32Array(running.gpuInflight), 0, 1);
+          },
+        );
         return;
       case 'up':
         running.up = true;
