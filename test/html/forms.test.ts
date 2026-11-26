@@ -4354,6 +4354,38 @@ metric(
   },
 );
 
+metric(
+  'a range whose thumb is drawn in a gradient still has a thumb',
+  async () => {
+    // joshwcomeau.com/shadow-palette/: the thumb's `:focus` background is a
+    // radial gradient over a conic one, and a thumb with no flat colour was
+    // transparent, so a focused slider showed no handle at all
+    const { result, node } = await render(
+      `<style>
+      body { margin: 0 }
+      #r { display: block; width: 200px; height: 24px; appearance: none;
+        background: transparent }
+      #r::-webkit-slider-thumb { appearance: none; width: 24px; height: 24px;
+        border-radius: 50px;
+        background: radial-gradient(#00ff0000, #00ff0000 40%),
+          conic-gradient(#00ff00, #00ff00) }
+      #r::-webkit-slider-runnable-track { height: 24px; background: transparent }
+      </style><input id="r" type="range" value="0">`,
+      300,
+    );
+    await act();
+    const el = view(node);
+    const box = el.elementRect(findById(el.document, 'r')!)!;
+    const origin = el.getClientRects()[0];
+    const pixel = await pixelAt(
+      result.ctx,
+      origin.x + box.x + 12,
+      origin.y + box.y + 12,
+    );
+    assert.deepStrictEqual(pixel.slice(0, 3), [0, 255, 0]);
+  },
+);
+
 test("a stylesheet's pseudo-classes of a control's state answer as Chromium's do", async () => {
   const { node } = await render(CONTROL_STATE_SOURCE, 800);
   await act();
