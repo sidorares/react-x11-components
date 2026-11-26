@@ -36,6 +36,7 @@
 // What is reused from `<richtext>` is everything that was not about the
 // element: the `TextRun` vocabulary, the per-run decoration painter, and the
 // bidi-correct selection bands. See `src/richtext/runs.ts`.
+import { repaintWatch } from './repaint-watch.js';
 import { setNativeApp } from './native-canvas.js';
 import {
   registerElement,
@@ -9545,7 +9546,11 @@ export class HtmlViewNode extends Node {
     const shift = this._fixedShift(this._scrolledOrigin());
     let rect = this._moveToViewport(at, drawn, shift);
     const box = this._boxOf(tree, element);
-    const cut = box && clipFor(box, drawn, this._scale);
+    // by their rectangles alone: a stop is a box that core scrolls into
+    // view, and the corners of a sheet a page rounds are no reason to let
+    // what its overlay clips reach past it (a dialog set in a rounded
+    // sheet scrolled the pane by the height the viewport cut off)
+    const cut = box && clipFor(box, drawn, this._scale, null, null, true);
     if (cut) rect = shownBy(this._moveToViewport(at, cut.rect, shift), rect);
     // what no scroll of the pane moves is cut to the viewport: core scrolls
     // a focused stop into view, and a link in a fixed box that hangs past
@@ -17896,6 +17901,14 @@ export class HtmlViewNode extends Node {
       const window = this.root?.abs;
       if (window && window.height > 0) {
         damage = { x: 0, y: 0, width: window.width, height: window.height };
+      }
+    }
+    if (repaintWatch && damage) {
+      const said = repaintWatch.note(damage, frameClock.now());
+      if (said) {
+        (globalThis as { console?: { warn(m: string): void } }).console?.warn(
+          said,
+        );
       }
     }
     const promised = this._promisedOpaque;

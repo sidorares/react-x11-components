@@ -9533,6 +9533,7 @@ export function clipFor(
   scale: number,
   within: Box | null = null,
   zoomFrom: ((at: Box) => Zoom) | null = null,
+  rectangular = false,
 ): { rect: Rect; radius: number } | null | undefined {
   const space: ClipSpace = { originX: 0, originY: 0, scale, damage: null };
   let clip: Rect | undefined;
@@ -9586,9 +9587,9 @@ export function clipFor(
       if (clipsOverflow(at)) {
         const edge = clipEdge(at, space);
         // a border's shape is no rectangle, nor a circle's corners
-        if (edge.shape) return null;
+        if (edge.shape && !rectangular) return null;
         const rect = drawn(edge.rect, at);
-        const radii = edge.radii;
+        const radii = rectangular ? undefined : edge.radii;
         if (radii) {
           let r = 0;
           for (const v of radii.x) r = Math.max(r, v);
