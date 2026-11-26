@@ -321,6 +321,78 @@ interface LayerLike {
   close(): void;
 }
 
+/**
+ * The picture of a canvas a WebGL stage's frames are put in, kept as one
+ * surface on a native backend and brought up to date by the box of what
+ * changed. A new image of the whole canvas for each frame was an upload of all
+ * of it, 11 MB for a stage at 2x, to change a menu's worth of it: a third of
+ * the page's thread under a glass panel's animation.
+ */
+/** The surfaces a `FrameSurface` owns, which nothing else frees. */
+const OWNED = new WeakSet<object>();
+export const isFrameSurface = (picture: unknown): boolean =>
+  typeof picture === 'object' && picture !== null && OWNED.has(picture);
+
+export class FrameSurface {
+  private _surface: SurfaceLike | null = null;
+  private _width = 0;
+  private _height = 0;
+
+  /** The surface with `pixels` in it, or null where the backend has none:
+   *  the caller then draws the pixels as an image. `pending` is the box of
+   *  what changed since this was last asked, null for all of it. */
+  update(
+    data: Uint8ClampedArray,
+    width: number,
+    height: number,
+    pending: number[] | null | undefined,
+  ): SurfaceLike | null {
+    if (!nativeCanvasEnabled()) return null;
+    let box = pending;
+    if (!this._surface || this._width !== width || this._height !== height) {
+      this._surface?.destroy?.();
+      this._surface = newSurface(nativeApp, width, height);
+      if (this._surface) OWNED.add(this._surface);
+      this._width = width;
+      this._height = height;
+      box = null;
+    }
+    const surface = this._surface;
+    if (!surface) return null;
+    if (box === undefined) return surface;
+    let ctx: Any;
+    try {
+      ctx = surface.getContext('2d');
+    } catch {
+      // one something freed: made again, and drawn in whole
+      this._surface = null;
+      return this.update(data, width, height, null);
+    }
+    if (typeof ctx?.putImageData !== 'function') return null;
+    const [x0, y0, x1, y1] = box ?? [0, 0, width, height];
+    const w = x1 - x0;
+    const h = y1 - y0;
+    let block = data;
+    if (w !== width) {
+      // the rows of the box, side by side
+      block = new Uint8ClampedArray(w * h * 4);
+      for (let row = 0; row < h; row += 1) {
+        const from = ((y0 + row) * width + x0) * 4;
+        block.set(data.subarray(from, from + w * 4), row * w * 4);
+      }
+    } else if (h !== height) {
+      block = data.subarray(y0 * width * 4, y1 * width * 4);
+    }
+    ctx.putImageData({ data: block, width: w, height: h }, x0, y0);
+    return surface;
+  }
+
+  destroy(): void {
+    this._surface?.destroy?.();
+    this._surface = null;
+  }
+}
+
 export class NativeCanvas {
   surface: SurfaceLike | null = null;
   /** Where the frames are, when a layer can show them as they are. */

@@ -35,10 +35,16 @@ export interface WebGLInstall {
   pixels(
     context: unknown,
   ): { width: number; height: number; data: Uint8ClampedArray } | null;
+  /** A frame of the context kept where its pixels are taken from, and its
+   *  number: null where the host cannot keep one. */
+  snapshot(
+    context: unknown,
+  ): { ctx: number; id: number; width: number; height: number } | null;
 }
 
 // the page's, as `dom.ts`'s are: this runs in its context
 declare const queueMicrotask: (fn: () => void) => void;
+declare const console: { warn(...args: unknown[]): void };
 
 /** What a context asks of the realm around it. */
 export interface WebGLHost {
@@ -48,6 +54,16 @@ export interface WebGLHost {
   bytes(base64: string): Uint8Array;
   /** The canvas as the host numbers it: null for one that is no element. */
   id(canvas: unknown): number | null;
+  /** Whether the canvas is an `OffscreenCanvas`, which no element shows:
+   *  its frames are handed to the realm (`deliver`), which routes them to
+   *  the placeholder, here or across a thread. */
+  offscreen(canvas: unknown): boolean;
+  /** A frame an offscreen canvas's context drew, as straight RGBA with its
+   *  top row first, in base64. */
+  deliver(canvas: unknown, frame: string): void;
+  /** Whether the canvas's picture is shown anywhere: a context no element
+   *  and no placeholder shows reads no frame out. */
+  shown(canvas: unknown): boolean;
   /** A source's pixels, for `texImage2D`: straight RGBA, or null where the
    *  realm has none of it. */
   pixelsOf(
@@ -1004,7 +1020,8 @@ export function installWebGL(Event: unknown, host: WebGLHost): WebGLInstall {
     readBuffer(src: Any) {
       own(this).params.READ_BUFFER = src;
     },
-    // a fence is passed, and a query has its answer, at once
+    // with no GPU behind it a fence is passed, and a query has its answer,
+    // at once; with one they are the GPU's (`ASKED`)
     clientWaitSync() {
       return K.ALREADY_SIGNALED;
     },
@@ -1208,6 +1225,9 @@ export function installWebGL(Event: unknown, host: WebGLHost): WebGLInstall {
     'getShaderInfoLog',
     'getShaderParameter',
     'getUniformLocation',
+    // a fence is a GPU's, where there is one, and passed at once where not
+    'clientWaitSync',
+    'getSyncParameter',
     'readPixels',
   ]);
   /** What draws, and shows where the default framebuffer is bound. */
@@ -1255,7 +1275,14 @@ export function installWebGL(Event: unknown, host: WebGLHost): WebGLInstall {
       send(s);
       if (s.drew) {
         s.drew = false;
-        host.call('glPresent', s.live, host.id(s.canvas));
+        const element = host.id(s.canvas);
+        if (element !== null) host.call('glPresent', s.live, element);
+        // an `OffscreenCanvas` has no element to read into: the frame is
+        // read out and handed to the canvas, which routes it
+        else if (s.offscreen && host.shown(s.canvas)) {
+          const frame = host.call('glRead', s.live);
+          if (typeof frame === 'string' && frame) host.deliver(s.canvas, frame);
+        }
       }
     }
     waiting.clear();
@@ -1274,15 +1301,46 @@ export function installWebGL(Event: unknown, host: WebGLHost): WebGLInstall {
     const answer = host.call('glAsk', s.live, calls);
     return typeof answer === 'string' ? parse(answer) : null;
   };
-  /** A source element or an `ImageData` as `texImage2D`'s long form: its
-   *  pixels, turned as `pixelStorei` said to take them. */
-  const sourced = (s: Any, args: Any[]): Any[] | null => {
-    const [target, level, internal, format, type, source] =
-      args.length === 6
-        ? args
-        : [...args.slice(0, 3), args[6], args[7], args[8]];
+  /** A texture format's channels, as which of RGBA's they keep. */
+  const CHANNELS: Record<number, number[]> = {
+    0x1906: [3], // ALPHA
+    0x1907: [0, 1, 2], // RGB
+    0x1908: [0, 1, 2, 3], // RGBA
+    0x1909: [0], // LUMINANCE
+    0x190a: [0, 3], // LUMINANCE_ALPHA
+    0x1903: [0], // RED
+    0x8227: [0, 1], // RG
+  };
+  /** A source element or an `ImageData` as `texImage2D`'s long form, or
+   *  `texSubImage2D`'s: its pixels, turned and premultiplied as `pixelStorei`
+   *  said to take them, and kept to the channels of the format they are
+   *  uploaded as (a canvas uploaded as `ALPHA` is its alpha channel alone, which
+   *  is how a glyph atlas is a coverage texture). */
+  /** The kinds of source an upload was dropped for, told of once. */
+  const unread = new Set<string>();
+  const sourced = (s: Any, args: Any[], sub = false): Any[] | null => {
+    const short = sub ? args.length === 7 : args.length === 6;
+    const [target, level, first, second, format, type, source] = sub
+      ? short
+        ? [args[0], args[1], args[2], args[3], args[4], args[5], args[6]]
+        : [args[0], args[1], args[2], args[3], args[6], args[7], args[8]]
+      : short
+        ? [args[0], args[1], args[2], 0, args[3], args[4], args[5]]
+        : [args[0], args[1], args[2], 0, args[6], args[7], args[8]];
     const pixels = host.pixelsOf(source);
-    if (!pixels) return null;
+    if (!pixels) {
+      // as a browser says of an upload it cannot take, once for each kind of
+      // source: the texture has no storage, and a driver says it is
+      // unloadable where it is sampled, as a zero texture
+      const kind = String((source as Any)?.constructor?.name ?? source);
+      if (!unread.has(kind)) {
+        unread.add(kind);
+        console.warn(
+          `WebGL: ${sub ? 'texSubImage2D' : 'texImage2D'}: no pixels could be read from a ${kind}, and the texture is left as it was`,
+        );
+      }
+      return null;
+    }
     const { width, height } = pixels;
     let { data } = pixels;
     if (s.params.UNPACK_FLIP_Y_WEBGL) {
@@ -1297,7 +1355,28 @@ export function installWebGL(Event: unknown, host: WebGLHost): WebGLInstall {
       }
       data = turned;
     }
-    return [target, level, internal, width, height, 0, format, type, data];
+    if (s.params.UNPACK_PREMULTIPLY_ALPHA_WEBGL) {
+      const premultiplied = new Uint8(data.length);
+      for (let i = 0; i < data.length; i += 4) {
+        const a = data[i + 3];
+        premultiplied[i] = (data[i] * a + 127) / 255;
+        premultiplied[i + 1] = (data[i + 1] * a + 127) / 255;
+        premultiplied[i + 2] = (data[i + 2] * a + 127) / 255;
+        premultiplied[i + 3] = a;
+      }
+      data = premultiplied;
+    }
+    const channels = CHANNELS[format];
+    if (channels && channels.length < 4 && type === 0x1401) {
+      const kept = new Uint8(width * height * channels.length);
+      for (let i = 0, o = 0; i < data.length; i += 4) {
+        for (const c of channels) kept[o++] = data[i + c];
+      }
+      data = kept;
+    }
+    return sub
+      ? [target, level, first, second, width, height, format, type, data]
+      : [target, level, first, width, height, 0, format, type, data];
   };
   const SOURCE_FORM = (args: Any[]): boolean =>
     args.length === 6 ||
@@ -1528,6 +1607,19 @@ export function installWebGL(Event: unknown, host: WebGLHost): WebGLInstall {
           args = long;
         }
         break;
+      case 'texSubImage2D':
+        if (
+          args.length === 7 ||
+          (args.length === 9 &&
+            args[8] !== null &&
+            typeof args[8] === 'object' &&
+            !isView(args[8]))
+        ) {
+          const long = sourced(s, args, true);
+          if (!long) return undefined;
+          args = long;
+        }
+        break;
       case 'drawRangeElements':
         name = 'drawElements';
         args = [args[0], args[3], args[4], args[5]];
@@ -1564,7 +1656,7 @@ export function installWebGL(Event: unknown, host: WebGLHost): WebGLInstall {
     if (args[0] === null && name.startsWith('uniform')) return undefined;
     const out = apply(fn, gl, args);
     if (KEPT.test(name)) return out;
-    if (name.startsWith('create') && out) {
+    if ((name.startsWith('create') || name === 'fenceSync') && out) {
       objects += 1;
       Object.defineProperty(out, '_live', { value: objects });
       s.queue[s.queue.length] = [name, objects, ...args.map(written)];
@@ -1663,8 +1755,9 @@ export function installWebGL(Event: unknown, host: WebGLHost): WebGLInstall {
       // a GL of the host's, where it has one and this is an element's: the
       // page can draw on no canvas nothing shows
       const element = host.id(canvas);
+      const offscreen = element === null && host.offscreen(canvas);
       const opened =
-        element === null
+        element === null && !offscreen
           ? null
           : parse(
               host.call(
@@ -1691,12 +1784,26 @@ export function installWebGL(Event: unknown, host: WebGLHost): WebGLInstall {
         drawingBufferColorSpace: 'srgb',
         unpackColorSpace: 'srgb',
         live: opened?.id ?? 0,
+        offscreen,
         extensions: opened?.extensions ?? [],
         queue: [],
         drew: false,
         read: null,
       });
       return gl;
+    },
+    /** A frame of the context kept where its pixels are taken from
+     *  (`frame-store.ts`), and not read here: null where the host cannot. */
+    snapshot(
+      context: Any,
+    ): { ctx: number; id: number; width: number; height: number } | null {
+      const s = own(context);
+      if (!s.live || !s.canvas.width || !s.canvas.height) return null;
+      send(s);
+      const kept = host.call('glSnapshot', s.live);
+      if (typeof kept !== 'string' || !kept) return null;
+      const [id, width, height] = kept.split(',').map(Number);
+      return { ctx: s.live, id, width, height };
     },
     pixels(context: Any) {
       const s = own(context);

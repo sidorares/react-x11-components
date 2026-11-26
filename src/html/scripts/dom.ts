@@ -16989,6 +16989,16 @@ export function installDom(
     bytes: (text: string) => bytesOfBase64(text),
     id: (canvas: Any) =>
       canvas instanceof HTMLCanvasElement ? idOf(canvas) : null,
+    offscreen: (canvas: Any) => canvas instanceof OffscreenCanvas,
+    shown: (canvas: Any) => canvasShown(canvas),
+    deliver(canvas: Any, frame: string) {
+      if (!(canvas instanceof OffscreenCanvas)) return;
+      const state = canvasState(canvas);
+      const bytes = bytesOfBase64(frame);
+      if (bytes.length !== state.width * state.height * 4) return;
+      state.data.set(bytes);
+      markCanvas(canvas, state, 0, 0, state.width, state.height);
+    },
     pixelsOf(source: Any) {
       if (source instanceof ImageData) {
         const { width, height, data } = source;
@@ -17025,7 +17035,13 @@ export function installDom(
             }
           : null;
       }
-      if (!(source instanceof HTMLCanvasElement) || !canvases.has(source)) {
+      if (
+        !(
+          source instanceof HTMLCanvasElement ||
+          source instanceof OffscreenCanvas
+        ) ||
+        !canvases.has(source)
+      ) {
         return null;
       }
       const { width, height, data } = canvasBitmap(source);
@@ -19220,16 +19236,40 @@ export function installDom(
     _tainted = false;
     _width = 0;
     _height = 0;
-    /** Its pixels, or null once it is detached. */
-    _data: Uint8ClampedArray | null = null;
+    /** Its pixels, once they are here. */
+    _pixels: Uint8ClampedArray | null = null;
+    /** A frame a WebGL context kept for it, where the pixels have not come
+     *  here (`frame-store.ts`): the context's number and the frame's. A
+     *  canvas it is moved to takes the frame where it is, and the pixels
+     *  of a stage's frame, 13 MB at 2x, are never read into this realm. */
+    _frame: { ctx: number; id: number } | null = null;
     constructor(key?: Any) {
       if (key !== CANVAS_KEY) throw new TypeError('Illegal constructor');
     }
+    /** Its pixels, or null once it is detached: read from the frame it holds
+     *  where it holds one, and that is let go. */
+    get _data(): Uint8ClampedArray | null {
+      if (this._pixels) return this._pixels;
+      const frame = this._frame;
+      if (!frame) return null;
+      this._frame = null;
+      const text = call('glFrame', frame.ctx, frame.id);
+      this._pixels =
+        typeof text === 'string' && text
+          ? new Uint8ClampedArray(bytesOfBase64(text))
+          : new Uint8ClampedArray(this._width * this._height * 4);
+      call('glDiscard', frame.ctx, frame.id);
+      return this._pixels;
+    }
+    set _data(v: Uint8ClampedArray | null) {
+      this._pixels = v;
+      this._frame = null;
+    }
     get width(): number {
-      return this._data ? this._width : 0;
+      return this._pixels || this._frame ? this._width : 0;
     }
     get height(): number {
-      return this._data ? this._height : 0;
+      return this._pixels || this._frame ? this._height : 0;
     }
     close(): void {
       detachBitmap(this);
@@ -19246,10 +19286,59 @@ export function installDom(
     bitmap._data = data;
     return bitmap;
   };
+  /** A bitmap of a frame a WebGL context kept (`frame-store.ts`). */
+  const makeFrameBitmap = (
+    width: number,
+    height: number,
+    ctx: number,
+    id: number,
+  ): Any => {
+    const bitmap = new ImageBitmap(CANVAS_KEY);
+    bitmap._width = width;
+    bitmap._height = height;
+    bitmap._frame = { ctx, id };
+    return bitmap;
+  };
   const detachBitmap = (bitmap: Any): void => {
-    bitmap._data = null;
+    const frame = bitmap._frame;
+    if (frame) call('glDiscard', frame.ctx, frame.id);
+    bitmap._pixels = null;
+    bitmap._frame = null;
     bitmap._width = 0;
     bitmap._height = 0;
+  };
+  /**
+   * A bitmap's frame given to the canvas it is moved to, as the frame and not
+   * its pixels: to the `<canvas>` an `OffscreenCanvas` is the placeholder
+   * of, or across the thread it came over. False where the bitmap holds
+   * pixels, or the canvas is shown nowhere, which take them as ever.
+   */
+  const handOverFrame = (canvas: Any, bitmap: Any): boolean => {
+    const frame = bitmap._frame;
+    if (!frame || !canvasShown(canvas)) return false;
+    const size = [
+      bitmap._width,
+      bitmap._height,
+      0,
+      0,
+      bitmap._width,
+      bitmap._height,
+    ].join(',');
+    const route = canvas instanceof OffscreenCanvas ? canvas._route : null;
+    if (route) {
+      // a thread with a GPU of its own moves the pixels to the page process
+      // ahead of the message that names the frame
+      call('glShip', frame.id);
+      route.across.send(
+        JSON.stringify({ k: route.token, s: size, snap: frame.id }),
+      );
+    } else {
+      const shownIn =
+        canvas instanceof OffscreenCanvas ? canvas._placeholder : canvas;
+      call('canvasPutFrame', idOf(shownIn), size, frame.id);
+    }
+    bitmap._frame = null;
+    return true;
   };
 
   /** The pixels a source a 2d context draws holds, where this realm has
@@ -19491,13 +19580,24 @@ export function installDom(
           `${where}: parameter 1 is not of type 'ImageBitmap'.`,
         );
       }
-      if (bitmap && !bitmap._data) {
+      if (bitmap && !(bitmap._pixels || bitmap._frame)) {
         throw new DOMException(
           `${where}: The input ImageBitmap has been detached`,
           'InvalidStateError',
         );
       }
       const state = canvasState(this._canvas);
+      if (bitmap && handOverFrame(this._canvas, bitmap)) {
+        // the canvas has the frame now: what this realm keeps of its
+        // bitmap is the size, and no pixels are made for it
+        state.width = bitmap._width;
+        state.height = bitmap._height;
+        if (state.data.length !== state.width * state.height * 4) {
+          state.data = new Uint8ClampedArray(state.width * state.height * 4);
+        }
+        detachBitmap(bitmap);
+        return;
+      }
       if (bitmap) {
         state.width = bitmap._width;
         state.height = bitmap._height;
@@ -19773,9 +19873,26 @@ export function installDom(
           'InvalidStateError',
         );
       }
-      const bitmap = makeBitmap(state.width, state.height, state.data);
+      // a WebGL context's bitmap is its drawing buffer, read from the GL:
+      // `state.data` is a 2d canvas's, and empty for one that never drew
+      // there. The pixels are copied, since the read is kept for the next
+      // `drawImage` of the canvas.
+      const isGl = state.kind === 'webgl' || state.kind === 'webgl2';
+      // kept where the GPU is, for the canvas it is moved to to take, and
+      // read here only for a bitmap that is used as pixels
+      const kept = isGl ? WEBGL.snapshot(state.context) : null;
+      const glRead = isGl && !kept ? WEBGL.pixels(state.context) : null;
+      const bitmap = kept
+        ? makeFrameBitmap(kept.width, kept.height, kept.ctx, kept.id)
+        : makeBitmap(
+            state.width,
+            state.height,
+            glRead ? new Uint8ClampedArray(glRead.data) : state.data,
+          );
       bitmap._tainted = !!state.tainted;
-      state.data = new Uint8ClampedArray(state.width * state.height * 4);
+      if (!isGl) {
+        state.data = new Uint8ClampedArray(state.width * state.height * 4);
+      }
       state.tainted = false;
       markCanvas(this, state, 0, 0, state.width, state.height);
       return bitmap;
@@ -19860,6 +19977,11 @@ export function installDom(
     canvas._height = height;
     const state = canvases.get(canvas);
     if (state) resetCanvas(canvas, state, width, height);
+    // a WebGL context's drawing buffer is the canvas's size, and one made at
+    // the default 300 by 150 and sized after cut whatever it drew past that
+    if (state?.kind === 'webgl' || state?.kind === 'webgl2') {
+      WEBGL.resized(state.context);
+    }
   };
   /** An `OffscreenCanvas` given up to a transfer (HTML 4.12.5.3, its
    *  transfer steps): no size, no bitmap and nowhere it shows. */
@@ -25100,6 +25222,11 @@ export function installDom(
     /** The document whose base its URLs are read against, and who loads
      *  it. */
     _doc: Any = null;
+    /** A worker's face, which has no document to be the host's: its bytes
+     *  are kept here, and it loads in this realm (`_loadHere`). */
+    _realm = false;
+    _bytes: Uint8Array | null = null;
+    _src: string | null = null;
     constructor(family: Any, source: Any, descriptors: Any = {}) {
       if (arguments.length < 2) {
         throw new TypeError(
@@ -25129,6 +25256,14 @@ export function installDom(
         : source instanceof ArrayBuffer
           ? new Uint8Array(source)
           : null;
+      if (workerGlobal) {
+        this._doc = null;
+        this._realm = true;
+        this._bytes = bytes ? new Uint8Array(bytes) : null;
+        this._src = bytes ? null : str(source);
+        if (bytes) this._startLoad();
+        return;
+      }
       const made = call(
         'fontFaceNew',
         this._doc._id,
@@ -25155,7 +25290,35 @@ export function installDom(
     _startLoad(): void {
       this._status = 'loading';
       this._set?._faceLoading(this);
-      call('fontFaceLoad', this._doc._id, this._script);
+      if (this._realm) this._loadHere();
+      else call('fontFaceLoad', this._doc._id, this._script);
+    }
+    /** A worker's face loads where it is: its bytes were handed over, or a
+     *  `url()` is fetched through the worker's own network. A worker has no
+     *  document whose fonts draw anything, so what loading comes to is the
+     *  face's status and the bytes it holds. */
+    _loadHere(): void {
+      if (this._bytes) {
+        Promise.resolve().then(() => this._done(true));
+        return;
+      }
+      const match = /^\s*url\(\s*(["']?)(.*?)\1\s*\)/.exec(this._src ?? '');
+      if (!match) {
+        Promise.resolve().then(() => this._done(false));
+        return;
+      }
+      Promise.resolve()
+        .then(() => G.fetch(new URL(match[2], workerLocation.href).href))
+        .then((response: Any) =>
+          response.ok ? response.arrayBuffer() : Promise.reject(),
+        )
+        .then(
+          (buffer: Any) => {
+            this._bytes = new Uint8Array(buffer);
+            this._done(true);
+          },
+          () => this._done(false),
+        );
     }
     get family(): string {
       return this._desc.family;
@@ -25589,6 +25752,128 @@ export function installDom(
     }
     clear(): void {
       for (const face of [...this._added]) this.delete(face);
+    }
+  }
+
+  /**
+   * A worker's `fonts` (CSS Font Loading 3, 2.6): a set of the faces the
+   * worker made and added, with a `ready` and the loading events. Nothing a
+   * worker draws is set in them yet, since a worker has no text engine of
+   * its own: a face here is a status and the bytes it holds, which is what
+   * a script that draws a document's text in a worker waits on.
+   */
+  class WorkerFontFaceSet extends FontFaceSet {
+    _faceSet = new Set<Any>();
+    _pending = 0;
+    _readyPromise: Any = Promise.resolve(this);
+    _readyResolve: (() => void) | null = null;
+    constructor() {
+      super(null);
+    }
+    override _all(): Any[] {
+      return [...this._faceSet];
+    }
+    override get size(): number {
+      return this._faceSet.size;
+    }
+    override get status(): string {
+      return this._pending > 0 ? 'loading' : 'loaded';
+    }
+    override get ready(): Any {
+      return this._readyPromise;
+    }
+    override has(face: Any): boolean {
+      this._checked(face, 'has');
+      return this._faceSet.has(face);
+    }
+    _checked(face: Any, method: string): void {
+      if (!(face instanceof FontFace)) {
+        throw new TypeError(
+          `Failed to execute '${method}' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.`,
+        );
+      }
+    }
+    override add(face: Any): Any {
+      this._checked(face, 'add');
+      if (this._faceSet.has(face)) return this;
+      this._faceSet.add(face);
+      face._set = this;
+      if (face._status === 'loading') this._faceLoading(face);
+      return this;
+    }
+    override delete(face: Any): boolean {
+      this._checked(face, 'delete');
+      if (!this._faceSet.delete(face)) return false;
+      face._set = null;
+      return true;
+    }
+    override clear(): void {
+      for (const face of [...this._faceSet]) this.delete(face);
+    }
+    override _faceLoading(_face: Any): void {
+      if (this._pending === 0) {
+        this._came = [];
+        this._failed = [];
+        this._readyPromise = new Promise((resolve) => {
+          this._readyResolve = () => resolve(this);
+        });
+        const ev = new FontFaceSetLoadEvent('loading', {});
+        ev.isTrusted = true;
+        dispatch(this, ev);
+      }
+      this._pending += 1;
+    }
+    override _faceDone(face: Any, ok: boolean): void {
+      (ok ? this._came : this._failed).push(face);
+      this._pending -= 1;
+      if (this._pending > 0) return;
+      this._pending = 0;
+      const came = this._came;
+      const failed = this._failed;
+      this._came = [];
+      this._failed = [];
+      if (came.length) {
+        const ev = new FontFaceSetLoadEvent('loadingdone', { fontfaces: came });
+        ev.isTrusted = true;
+        dispatch(this, ev);
+      }
+      if (failed.length) {
+        const ev = new FontFaceSetLoadEvent('loadingerror', {
+          fontfaces: failed,
+        });
+        ev.isTrusted = true;
+        dispatch(this, ev);
+      }
+      const resolve = this._readyResolve;
+      this._readyResolve = null;
+      resolve?.();
+    }
+    /** The faces whose family a `font` shorthand names. */
+    _named(font: Any): Any[] {
+      const list = str(font)
+        .split(/\s(?=[^\s]*$)|,/)
+        .map((name) =>
+          name
+            .trim()
+            .replace(/^["']|["']$/g, '')
+            .toLowerCase(),
+        );
+      const text = str(font).toLowerCase();
+      return this._all().filter(
+        (face) =>
+          list.includes(
+            face.family.toLowerCase().replace(/^["']|["']$/g, ''),
+          ) || text.includes(face.family.toLowerCase()),
+      );
+    }
+    override load(font: Any, _text: Any = ' '): Any {
+      const faces = this._named(font);
+      return Promise.all(
+        faces.map((face) => (face._script ? face.load() : face.loaded)),
+      ).then(() => faces);
+    }
+    override check(font: Any, _text: Any = ' '): boolean {
+      return this._named(font).every((face) => face._status === 'loaded');
     }
   }
 
@@ -34064,6 +34349,23 @@ export function installDom(
     }
     const to = canvasRoutes.get(`${across.key} ${str(frame.k)}`);
     if (!to) return true;
+    // a frame a WebGL context kept, which crosses as its number
+    // (`frame-store.ts`) and not as its pixels
+    if (frame.snap !== undefined) {
+      if (to.placeholder) {
+        call(
+          'canvasPutFrame',
+          idOf(to.placeholder),
+          str(frame.s),
+          Number(frame.snap),
+        );
+      } else if (to.route) {
+        to.route.across.send(
+          JSON.stringify({ k: to.route.token, s: frame.s, snap: frame.snap }),
+        );
+      }
+      return true;
+    }
     if (to.placeholder) {
       call('canvasPut', idOf(to.placeholder), str(frame.s), str(frame.d));
     } else if (to.route) {
@@ -50836,6 +51138,17 @@ export function installDom(
       enumerable: true,
       configurable: true,
     });
+    // `WorkerGlobalScope.fonts` (CSS Font Loading 3, 2.6): the faces a worker
+    // made and added, which no document draws with
+    {
+      const fonts = new WorkerFontFaceSet();
+      Object.defineProperty(G, 'fonts', {
+        get: () => fonts,
+        set() {},
+        enumerable: true,
+        configurable: true,
+      });
+    }
     // a service worker's registrations and workers are what any secure
     // worker can be handed (`[Exposed=(Window,Worker)]`)
     if (call('secureContext') === true) {

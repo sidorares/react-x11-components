@@ -697,6 +697,9 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
       get webSocket() {
         return latest().webSocket;
       },
+      get webgl() {
+        return latest().webgl;
+      },
       get notifications() {
         return latest().notifications;
       },

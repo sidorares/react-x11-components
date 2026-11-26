@@ -36,6 +36,11 @@ import type {
 } from '../notifications.js';
 import type { HtmlPermissions, HtmlPermissionState } from '../permissions.js';
 import type { HtmlCacheAnswer, HtmlCacheAsk } from '../cache-storage.js';
+import { gpuWebGL, useGpuLock } from '../webgl.js';
+import type { HtmlGLContext, HtmlGLOptions, HtmlWebGL } from '../webgl.js';
+import { setFrameIdBase, takeFrame } from '../frame-store.js';
+import type { GLAsk, TextAsk } from './workers.js';
+import type { CanvasText } from '../canvas-text.js';
 
 declare const AbortController: AbortControllerClass;
 declare const performance: { now(): number };
@@ -64,6 +69,8 @@ const {
   stopped,
   permissions,
   notifies,
+  gpu,
+  gpuLock,
   born,
 } = workerData as WorkerThreadData;
 const port = parentPort!;
@@ -262,7 +269,12 @@ const cachesThrough = (
   });
 
 const seams: HostSeams = {
-  handle: NO_VIEW,
+  handle: new Proxy(NO_VIEW, {
+    get: (target, key, receiver) =>
+      key === 'canvasText'
+        ? () => pageText()
+        : Reflect.get(target, key, receiver),
+  }),
   viewport: () => ({
     width: 0,
     height: 0,
@@ -328,6 +340,157 @@ seams.opfs = (origin, op, a, b, c) => {
   if (answer.error) throw new FsError(answer.error[0], answer.error[1]);
   return answer.value;
 };
+
+/** The page's text engine, which a worker's canvases set their text in: a
+ *  worker has none, and drawn with nothing a string was no ink and a guess at
+ *  its width. Each ask is made of the page and slept on. Null where the page
+ *  has no engine either, which leaves the text as it was. */
+const pageText = (() => {
+  const ask = (text: TextAsk): { value?: unknown; none?: true } => {
+    const id = ++syncSeq;
+    sync.postMessage({ id, text });
+    const answer = waitFor(
+      (m): m is { id: number; value?: unknown; none?: true; error?: string } =>
+        (m as { id?: number }).id === id,
+      performance.now() + 30_000,
+    );
+    if (!answer) throw new Error('The page did not answer.');
+    if ('error' in answer && answer.error) throw new Error(answer.error);
+    return answer;
+  };
+  let present: boolean | undefined;
+  /** Whether the page has an engine, asked once. */
+  const has = (): boolean => (present ??= !ask(['now']).none);
+  const text = {
+    get generation(): number {
+      return (ask(['now']).value as [number, string])[0];
+    },
+    direction: (_element: unknown) =>
+      (ask(['now']).value as [number, string])[1],
+    font: (value: string, _element: unknown) => ask(['font', value]).value,
+    measure: (font: string, string: string, setting: unknown) =>
+      ask(['measure', font, string, setting as never]).value,
+    raster: (
+      font: string,
+      string: string,
+      size: number,
+      setting: unknown,
+      stroke: number,
+    ) => ask(['raster', font, string, size, setting as never, stroke]).value,
+  };
+  return (): CanvasText | null =>
+    has() ? (text as unknown as CanvasText) : null;
+})();
+
+/** The page's GPU, which a worker's WebGL contexts draw through
+ *  (`HtmlWebGL`): each call is asked of the page process and slept on, since
+ *  `getError` and `readPixels` answer at once. A page with no GPU answers
+ *  `open` with null, and the context draws nothing. */
+seams.webgl = ((): HtmlWebGL => {
+  const ask = (gl: GLAsk) => {
+    const id = ++syncSeq;
+    sync.postMessage({ id, gl });
+    const answer = waitFor(
+      (
+        m,
+      ): m is {
+        id: number;
+        value?: unknown;
+        frame?: Uint8ClampedArray;
+        error?: string;
+      } => (m as { id?: number }).id === id,
+      performance.now() + 30_000,
+    );
+    if (!answer) throw new Error('The GPU did not answer.');
+    if (answer.error) throw new Error(answer.error);
+    return answer;
+  };
+  return {
+    open(options: HtmlGLOptions) {
+      const opened = ask(['open', options]).value as {
+        ctx: number;
+        extensions: string[];
+      } | null;
+      if (!opened) return null;
+      const { ctx } = opened;
+      // batches posted and not waited for, and how many the page has not
+      // got to: past a few it is asked to catch up, since a thread that
+      // draws without end would otherwise queue without end
+      let posted = 0;
+      return {
+        extensions: opened.extensions,
+        run: (commands) => ask(['run', ctx, commands]).value,
+        post: (commands) => {
+          sync.postMessage({ id: 0, gl: ['run', ctx, commands], quiet: true });
+          posted += 1;
+          if (posted >= 64) {
+            posted = 0;
+            ask(['sync']);
+          }
+        },
+        resize: (width, height) => void ask(['resize', ctx, width, height]),
+        present: (into) => {
+          const { frame } = ask(['present', ctx, into.length]);
+          if (frame) into.set(frame);
+        },
+        snapshot: () =>
+          (ask(['snapshot', ctx]).value as {
+            id: number;
+            width: number;
+            height: number;
+          } | null) ?? null,
+        discard: (id) => void ask(['discard', ctx, id]),
+        frameData: (id) => ask(['frame', ctx, id]).frame ?? null,
+        dispose: () => void ask(['dispose', ctx]),
+      };
+    },
+  };
+})();
+
+/** A GPU of this thread's own, where the page has one and this thread can
+ *  reach it: a glass panel's frames are drawn here, in parallel with the
+ *  page, where they were each a request the page's thread ran between its own
+ *  tasks (`PageWorkers._gl`) — most of its time under a scroll. What the
+ *  page process shows of one is moved to it a frame at a time
+ *  (`shipFrame`). Where there is none, the page's GPU is the one above. */
+const localGpu = gpu ? await gpuWebGL() : null;
+const localContexts = new Set<HtmlGLContext>();
+if (localGpu) {
+  useGpuLock(gpuLock);
+  // two threads' frame numbers must not meet in the page process
+  setFrameIdBase((1 + Math.floor(Math.random() * 1_000_000)) * 1_000_000_000);
+  let told = false;
+  seams.webgl = {
+    open(options: HtmlGLOptions) {
+      const context = localGpu.open(options);
+      if (!context) return null;
+      if (!told) {
+        told = true;
+        tell({ kind: 'gpu' });
+      }
+      localContexts.add(context);
+      const dispose = context.dispose.bind(context);
+      context.dispose = () => {
+        localContexts.delete(context);
+        dispose();
+      };
+      return context;
+    },
+  };
+  seams.shipFrame = (id) => {
+    const frame = takeFrame(id);
+    if (!frame) return;
+    const { width, height } = frame;
+    const data =
+      frame.data.byteOffset === 0 &&
+      frame.data.byteLength === frame.data.buffer.byteLength
+        ? frame.data
+        : new Uint8ClampedArray(frame.data);
+    port.postMessage({ kind: 'gpuFrame', id, width, height, data }, [
+      data.buffer,
+    ]);
+  };
+}
 
 /**
  * The page's answer this thread is asleep for, or undefined where `end` came
@@ -578,7 +741,10 @@ const hearHeld = (): void => {
 };
 
 port.on('message', (m: ToWorker) => {
-  if (m.kind === 'message') {
+  if (m.kind === 'releaseGpu') {
+    for (const context of [...localContexts]) context.dispose();
+    tell({ kind: 'gpuGone' });
+  } else if (m.kind === 'message') {
     if (unheard) unheard.push(m.data);
     else engine.call('__workerMessage', [0, m.data]);
   } else if (m.kind === 'service') {

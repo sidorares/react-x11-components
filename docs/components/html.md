@@ -1925,6 +1925,38 @@ them, and to another peer the host can reach.
   GLSL 4.10, which most of it is; uniform blocks, samplers and transform
   feedback are not forwarded, and a texture takes an `ImageData` or a canvas
   but not yet an `<img>`.
+  **A context on an `OffscreenCanvas` draws too**, on the page's thread or in
+  a worker, and shows in the `<canvas>` that gave it its control: with no
+  element to read into, its frame is read out as the document paints and
+  handed to the canvas (`glRead`, `deliver`), which routes it to its
+  placeholder as a 2d one's pixels are. **A worker's context runs on the
+  page's GPU**, each call asked of the page's process across the thread and
+  slept on (`seams.webgl` in `worker-thread.ts`, `PageWorkers._gl`), since
+  `getError` and `readPixels` answer at once; its contexts are disposed as
+  its thread ends. A drawing buffer read back with `readPixels` is resolved
+  first where it is multisampled, which GL refuses to read.
+  **A worker has `FontFace` and `self.fonts`**, with the loading events and a
+  `ready`: a face there is a status and the bytes it holds, since a worker has
+  no document whose fonts draw anything. **Text drawn on an `OffscreenCanvas`
+  in a worker is set by the page's text engine**, each ask made of the page
+  across the thread and slept on (`pageText` in `worker-thread.ts`,
+  `PageWorkers._text`), so it inks and measures as the page's own does. It
+  resolves a family against the document's faces, so a face a worker made from
+  bytes is not drawn in yet.
+  **`transferToImageBitmap()` on a WebGL `OffscreenCanvas` hands over its
+  drawing buffer**, read from the GL, as a page that draws on a stage no
+  element shows and hands each frame to the canvases it appears in
+  (`bitmaprenderer`) needs. A texture takes an `OffscreenCanvas` as well as a
+  `<canvas>`, an `ImageData` and an `ImageBitmap`, through `texSubImage2D` as
+  well as `texImage2D`, turned, premultiplied and kept to the channels of its
+  format as `pixelStorei` and the format say. A core profile has no `ALPHA`,
+  `LUMINANCE` or `LUMINANCE_ALPHA`, so they are uploaded as `RED` or `RG` and
+  read through a texture swizzle (`LEGACY_FORMATS`): a glyph atlas is a
+  canvas uploaded as `ALPHA`. **A canvas's picture is freed as the next
+  replaces it** (`canvasImage` in `scripts/hook.ts`): an ntk `Image` is
+  uploaded to the display as it is first drawn and freed by `destroy()`
+  alone, so a canvas that changes at every frame, as a WebGL stage does, made
+  one of its whole size each frame and kept every one.
 - **`MediaSource` streams fragmented MP4 of H.264 and AAC, and holds a clip
   of VP9** (`src/html/scripts/mse.ts`, `feeds.ts`, `clips.ts`): a media
   element opens one through its object URL. Where the host's player reads
@@ -7470,7 +7502,13 @@ and otherwise the last element in the document to declare it, as though
 the root took every name, and never one a page's script has taken out of
 the document since the boxes were last built; an element whose own `timeline-scope` takes a
 name keeps what it and its subtree declare by it from outside; and
-`none`, no timeline and no effect. Its timing
+`none`, no timeline and no effect. What the document's scan of every style
+comes to for a name is kept while the styles are as they were (`_stylesMoved`
+is told wherever they are replaced), since a page whose elements all run on
+one named timeline asked it for each of them at every frame of a scroll:
+66,000 scans of 570 styles for twenty notches of rida.dev's, some 40 ms a
+notch. **Anything new that replaces or takes out `tree.styles` entries calls
+`_stylesMoved`**, or a named timeline is found where it no longer is. Its timing
 is a proportion of the timeline, an `auto` duration filling it, and at
 the end of its scroller's scroll its end is held, as Web Animations 2's
 timeline boundary has it. It is styled again when a scroll or a layout
@@ -11622,3 +11660,21 @@ holds.
 [domhandler]: https://github.com/fb55/domhandler
 [domutils]: https://github.com/fb55/domutils
 [css-select]: https://github.com/fb55/css-select
+
+## A worker's WebGL draws on the worker's thread
+
+Where the page has a GPU (`gpuWebGL()`), each worker's thread opens one of its
+own, so a glass panel's frames are drawn in parallel with the page and not as
+requests the page's thread runs between its own tasks (a scroll over
+rida.dev's glass spent about a fifth of the page's thread there, and the GPU
+driver's calls a third more). A frame a worker shows in a canvas of the page's
+is read on the worker's thread and its pixels moved to the page process, a
+frame at a time, ahead of the message that names it (`gpuFrame`, `glShip`);
+frame numbers carry a per-thread base so two threads' never meet. x11-dri is
+not safe to call from two threads at once (two contexts clearing at once abort
+the process in malloc), so every call into a context takes one lock the
+threads share (`useGpuLock`), and a thread that is ended lets go of its
+contexts first (`releaseGpu`). A thread with no GPU of its own uses the page's,
+through the relay, as before. A canvas's old pictures on a Mac are freed a few
+frames after they are replaced and not at once: the presenter may still hold
+the last, and one freed under it drew nothing.

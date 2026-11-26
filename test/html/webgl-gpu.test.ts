@@ -246,3 +246,96 @@ test('GLSL ES 3.00 is said as 4.10 to a core profile, and to nothing else', () =
   const es1 = 'attribute vec2 p; void main() {}';
   assert.equal(desktopGlsl(es1, true), es1, 'ES 1.00 has a way in of its own');
 });
+
+test('a page reads its drawing buffer back, multisampled or not', (t) => {
+  // WebGL's `antialias` defaults on, and GL refuses to read a multisampled
+  // framebuffer: every page that read its canvas back got INVALID_OPERATION
+  // and zeroes
+  for (const antialias of [true, false]) {
+    const context = contextOf(t, { antialias });
+    if (!context) return;
+    const read = context.run([
+      ['clearColor', 0, 1, 0, 1],
+      ['clear', COLOR],
+      ['readPixels', 0, 0, 1, 1, 0x1908, 0x1401, 4],
+      ['getError'],
+    ]);
+    assert.equal(read, 0, `no error, antialias ${antialias}`);
+    const bytes = context.run([['readPixels', 0, 0, 1, 1, 0x1908, 0x1401, 4]]);
+    assert.deepEqual(
+      [...Buffer.from(bytes as string, 'base64')],
+      [0, 255, 0, 255],
+      `the clear colour, antialias ${antialias}`,
+    );
+  }
+});
+
+test('a frame is read top row first and straight, with the rows turned on the GPU, antialiased or not', (t) => {
+  for (const antialias of [false, true]) {
+    const context = contextOf(t, {
+      width: 2,
+      height: 2,
+      antialias,
+      premultipliedAlpha: true,
+    });
+    if (!context) return;
+    const SCISSOR_TEST = 0xc11;
+    context.run([
+      ['enable', SCISSOR_TEST],
+      // GL's first row is the bottom: opaque red
+      ['scissor', 0, 0, 2, 1],
+      ['clearColor', 1, 0, 0, 1],
+      ['clear', COLOR],
+      // and its second the top: blue at half alpha, premultiplied
+      ['scissor', 0, 1, 2, 1],
+      ['clearColor', 0, 0, 0.25, 0.5],
+      ['clear', COLOR],
+    ]);
+    const pixels = new Uint8ClampedArray(2 * 2 * 4);
+    context.present(pixels);
+    const near = (got: number, want: number) =>
+      assert.ok(Math.abs(got - want) <= 1, `${got} for ${want}`);
+    // the picture's top row is the blue, made straight: 0.25 / 0.5
+    near(pixels[0], 0);
+    near(pixels[1], 0);
+    near(pixels[2], 128);
+    near(pixels[3], 128);
+    // and its bottom the red
+    assert.deepEqual([...pixels.slice(8, 12)], [255, 0, 0, 255]);
+    // read again where the scissor is on, and into a snapshot: the same
+    const kept = context.snapshot!();
+    assert.ok(kept);
+    assert.deepEqual(
+      [...context.frameData!(kept.id)!.slice(8, 12)],
+      [255, 0, 0, 255],
+    );
+    context.discard!(kept.id);
+  }
+});
+
+test('a fence is the GPU’s: unsignaled until what came before it has run, and waited on for real', (t) => {
+  // it was passed at once, so a page that limits its frames in flight by
+  // fences drew a frame for each message it got and the GPU's backlog
+  // stalled the next read for seconds
+  const context = contextOf(t, { width: 64, height: 64 });
+  if (!context) return;
+  const SYNC_GPU_COMMANDS_COMPLETE = 0x9117;
+  const SYNC_STATUS = 0x9114;
+  const SIGNALED = 0x9119;
+  context.run([
+    ['clearColor', 1, 0, 0, 1],
+    ['clear', COLOR],
+    ['fenceSync', 1, SYNC_GPU_COMMANDS_COMPLETE, 0],
+    ['flush'],
+  ]);
+  const wait = context.run([['clientWaitSync', ['o', 1], 1, 5_000_000_000]]);
+  assert.ok(
+    wait === 0x911a || wait === 0x911c,
+    `waited for it, was 0x${Number(wait).toString(16)}`,
+  );
+  assert.equal(
+    context.run([['getSyncParameter', ['o', 1], SYNC_STATUS]]),
+    SIGNALED,
+  );
+  context.run([['deleteSync', ['o', 1]]]);
+});

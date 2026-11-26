@@ -1324,6 +1324,9 @@ const PLACED_FIELDS: ReadonlySet<string> = new Set([
   'marginLeft',
 ]);
 
+/** How many pictures of a canvas stay held after the newest. */
+const PICTURES_KEPT = 4;
+
 export class HtmlViewNode extends Node {
   /** What `<Html>` holds, for the handle (`DocumentInteraction`). */
   interactive: DocumentInteraction | null = null;
@@ -4961,6 +4964,7 @@ export class HtmlViewNode extends Node {
   private _failures: Set<string> | null = null;
 
   private _fail(error: unknown, width: number): void {
+    this._stylesMoved();
     this._tree = null;
     this._sprites?.clear();
     this._filtered?.staleAll();
@@ -5410,7 +5414,9 @@ export class HtmlViewNode extends Node {
           return tree;
         };
         this._lastMade = null;
+        this._stylesMoved();
         this._tree = build(true);
+        this._stylesMoved();
         // A build of some subtrees during a drag leaves what a restyle in
         // place owed what the drag set aside owed, and its tree stops where
         // a step's would, as a breakpoint's does (`_stopAt`): every write of
@@ -5438,7 +5444,9 @@ export class HtmlViewNode extends Node {
           again = true;
         }
         if (again) {
+          this._stylesMoved();
           this._tree = build();
+          this._stylesMoved();
           this._owedDone();
         }
         // a frame's build keeps them, for `_rebuildFrame` to move to the new
@@ -7612,6 +7620,7 @@ export class HtmlViewNode extends Node {
     this._liftedTargets.clear();
     this._offered.clear();
     this._sheetsRead = null;
+    this._stylesMoved();
     this._tree = null;
     this._cascade = null;
     // a host waiting to run a script goes on, to find its document gone
@@ -11227,6 +11236,7 @@ export class HtmlViewNode extends Node {
       // An element that draws no box — `display: none`, or one whose box
       // the fix-up dissolved — still has the style a script reads, and the
       // one a later build keeps for it (`KeptStyles`).
+      this._stylesMoved();
       for (const [el, style] of changed) {
         tree.styles.set(el, { style, inFlex: tree.styles.get(el)!.inFlex });
       }
@@ -11327,6 +11337,7 @@ export class HtmlViewNode extends Node {
       // faded otherwise
       forgetCasts(text.spans);
     }
+    this._stylesMoved();
     for (const [el, style] of changed) {
       tree.styles.set(el, { style, inFlex: tree.styles.get(el)!.inFlex });
     }
@@ -12326,6 +12337,67 @@ export class HtmlViewNode extends Node {
     }
   }
 
+  /** The picture each `<canvas>` was last drawn with. */
+  private readonly _canvasPictures = new WeakMap<Element, unknown[]>();
+  /**
+   * A canvas's picture is a new image at each change of its pixels, and the
+   * display holds a copy of each one that was drawn: a pixmap on X, freed by
+   * `destroy()`, and a CoreGraphics bitmap on a Mac, which `destroy()` cannot
+   * see and only the app's `releaseImage` frees, or the collector, long after
+   * the JavaScript heap has shown nothing. A canvas that changes every frame,
+   * as a WebGL stage does, made one of the whole canvas's size each frame and
+   * kept them until a collection came: gigabytes in a pane that was ended for
+   * its resident memory. The ones a new picture replaces are let go of here,
+   * but not at once: the native presenter may still hold the one just
+   * replaced for the frame it has in flight, and a bitmap freed under it
+   * drew nothing (a menu that never showed on a Mac), so the last
+   * `PICTURES_KEPT` stay.
+   */
+  private _letGoOfCanvasPicture(el: Element, picture: unknown): void {
+    const held = this._canvasPictures.get(el) ?? [];
+    if (picture === null || picture === undefined) {
+      this._canvasPictures.delete(el);
+      return;
+    }
+    // only the images the hook made are freed here: a surface is a native
+    // canvas's or a stage's own, which its owner frees, and freed under it
+    // a page's next read of it threw "expected a surface handle"
+    if (!(picture instanceof ntk.Image)) return;
+    if (held[held.length - 1] === picture) return;
+    held.push(picture);
+    this._canvasPictures.set(el, held);
+    while (held.length > PICTURES_KEPT) {
+      const was = held.shift();
+      (was as { destroy?(): void }).destroy?.();
+      (
+        this.app as unknown as { releaseImage?(image: unknown): void }
+      ).releaseImage?.(was);
+    }
+  }
+
+  /** What the timelines of the tree's styles came to, and the count of
+   *  changes to those styles it was made at (`_stylesMoved`). */
+  private _timelineKept: {
+    tree: BoxTree;
+    epoch: number;
+    memo: TimelineMemo;
+  } | null = null;
+  private _stylesEpoch = 0;
+  /** The styles a tree's elements have were replaced, taken out or built
+   *  again: what a named timeline found in them may not hold. */
+  private _stylesMoved(): void {
+    this._stylesEpoch += 1;
+  }
+  private _timelineMemo(tree: BoxTree): TimelineMemo {
+    const kept = this._timelineKept;
+    if (kept && kept.tree === tree && kept.epoch === this._stylesEpoch) {
+      return kept.memo;
+    }
+    const memo: TimelineMemo = new Map();
+    this._timelineKept = { tree, epoch: this._stylesEpoch, memo };
+    return memo;
+  }
+
   /**
    * Where a scroll-driven timeline is for an element (Scroll-driven
    * Animations 1): a `scroll()` timeline how far its scroller — the
@@ -12369,6 +12441,7 @@ export class HtmlViewNode extends Node {
         ref.name,
         this._source.document,
         this._pseudoStyleOf,
+        this._timelineMemo(tree),
       );
       if (!named) return null;
       subject = named.el;
@@ -14723,7 +14796,9 @@ export class HtmlViewNode extends Node {
       );
       if (!found) return null;
       found.appendOnly = parsed;
+      this._stylesMoved();
       built = buildSubtrees(tree, this._source.document, found, options, first);
+      this._stylesMoved();
       // A root that came out as no block in the flow of its own — Apple's
       // gallery caption, made absolute by a class its script sets at every
       // step of a drag — is what its parent's flow places otherwise, and
@@ -15173,6 +15248,7 @@ export class HtmlViewNode extends Node {
     // what moved into a drawing is a shape now, and takes the style it had
     // with it, as a build of the block around it would
     if (scope.shaped && this._tree) {
+      this._stylesMoved();
       for (const el of scope.shaped) forgetStyles(el, this._tree.styles);
     }
     if (scope.drawings.size) this._drawAgain(scope.drawings);
@@ -15209,6 +15285,7 @@ export class HtmlViewNode extends Node {
           !inDocument(el, document) ||
           (parent && isElement(parent) && undrawn(parent, tree))
         ) {
+          this._stylesMoved();
           forgetStyles(el, tree.styles);
         }
       }
@@ -16202,6 +16279,7 @@ export class HtmlViewNode extends Node {
           ref.name,
           this._source.document,
           this._pseudoStyleOf,
+          this._timelineMemo(tree),
         );
         timeline = !named
           ? { kind: 'none' }
@@ -19150,9 +19228,10 @@ export class HtmlViewNode extends Node {
       imageFor: (box) => {
         if (box.replaced === 'frame') {
           if (box.el && tagOf(box.el) === 'canvas') setNativeApp(this.app);
-          return box.el && tagOf(box.el) === 'canvas'
-            ? (this._props().canvasImage?.(box.el) ?? null)
-            : null;
+          if (!box.el || tagOf(box.el) !== 'canvas') return null;
+          const picture = this._props().canvasImage?.(box.el) ?? null;
+          this._letGoOfCanvasPicture(box.el, picture);
+          return picture;
         }
         const streamed =
           box.el && this._streamPictures.size
@@ -20257,6 +20336,7 @@ function namedTimeline(
   name: string,
   doc: Document,
   pseudoOf?: PseudoStyleOf,
+  memo?: TimelineMemo,
 ): NamedTimeline | null {
   for (let at: Element | null = el; at;) {
     const style = tree.styles.get(at)?.style;
@@ -20264,13 +20344,20 @@ function namedTimeline(
       const own = declaredTimeline(at, style, name);
       if (own) return own;
       if (scopes(style, name))
-        return scopedTimeline(tree, at, name, doc, pseudoOf);
+        return scopedTimeline(tree, at, name, doc, pseudoOf, memo);
     }
     const parent = flatParentOf(at);
     at = parent && isElement(parent) ? parent : null;
   }
-  return scopedTimeline(tree, null, name, doc, pseudoOf);
+  return scopedTimeline(tree, null, name, doc, pseudoOf, memo);
 }
+
+/** What `scopedTimeline` found, by the scope it was asked for and the name,
+ *  kept while the styles it scanned are as they were: the scan is every
+ *  element's style, and a page whose elements are driven by a named scroll
+ *  timeline asked it for each of them at every frame of a scroll — 66,000
+ *  scans of 570 styles for twenty notches of rida.dev's, some 40 ms each. */
+type TimelineMemo = Map<Element | null, Map<string, NamedTimeline | null>>;
 
 interface NamedTimeline {
   el: Element;
@@ -20350,6 +20437,28 @@ function declaredTimeline(
  *  declares the name, where neither it nor an element between them has a
  *  scope of the name of its own, which keeps it from outside. */
 function scopedTimeline(
+  tree: BoxTree,
+  scope: Element | null,
+  name: string,
+  doc: Document,
+  pseudoOf?: PseudoStyleOf,
+  memo?: TimelineMemo,
+): NamedTimeline | null {
+  const kept = memo?.get(scope)?.get(name);
+  // an element a page's script took out since the scan is no timeline now
+  if (kept !== undefined && (kept === null || inDocument(kept.el, doc))) {
+    return kept;
+  }
+  const scanned = scanTimelines(tree, scope, name, doc, pseudoOf);
+  if (memo) {
+    let byName = memo.get(scope);
+    if (!byName) memo.set(scope, (byName = new Map()));
+    byName.set(name, scanned);
+  }
+  return scanned;
+}
+
+function scanTimelines(
   tree: BoxTree,
   scope: Element | null,
   name: string,

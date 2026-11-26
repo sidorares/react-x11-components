@@ -27,6 +27,8 @@ import type {
   WorkerThreadsModule,
 } from './platform.js';
 import { wholeBytes } from './host.js';
+import { keepFrameAs } from '../frame-store.js';
+import { gpuLockBuffer } from '../webgl.js';
 import type {
   FetchRequest,
   FetchResponse,
@@ -39,6 +41,8 @@ import type { TransportAsk, TransportTell } from './transport-relay.js';
 import { SocketRelay } from './socket-relay.js';
 import type { SocketAsk, SocketTell } from './socket-relay.js';
 import type { HtmlWebSocket } from '../socket.js';
+import type { HtmlGLContext, HtmlGLOptions, HtmlWebGL } from '../webgl.js';
+import type { CanvasText, TextSetting } from '../canvas-text.js';
 import type {
   HtmlNotification,
   HtmlNotifications,
@@ -51,6 +55,7 @@ import type { HtmlCacheAnswer, HtmlCacheAsk } from '../cache-storage.js';
 declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
 declare const performance: { now(): number; timeOrigin: number };
 declare const URL: UrlClass;
+declare const setTimeout: (fn: () => void, ms: number) => { unref?(): void };
 declare const AbortController: AbortControllerClass;
 type AbortController = InstanceType<AbortControllerClass>;
 
@@ -71,6 +76,12 @@ export interface PageWorkersSeams {
   /** What a worker's WebSockets are carried over: the page's own seam,
    *  read as each connection opens. */
   readonly webSocket?: HtmlWebSocket;
+  /** What a worker's WebGL contexts draw through: the page's own seam, read
+   *  as each context opens. */
+  readonly webgl?: HtmlWebGL;
+  /** The page's text engine, which a worker's canvases set their text in:
+   *  asked as each string is drawn or measured. */
+  canvasText?(): CanvasText | null;
   /** What a worker's `Notification`s reach: the page's own seam. */
   readonly notifications?: HtmlNotifications;
   /** Where each permission stands for the page, handed to a worker as it
@@ -127,6 +138,12 @@ export interface WorkerThreadData {
   permissions: Record<string, string>;
   /** Whether the page has anything to show a notification with. */
   notifies: boolean;
+  /** Whether the page has a GPU, which the thread may open one of its own
+   *  on (`gpuWebGL`): its contexts then draw here, where the page's thread
+   *  is not held up by a glass panel's frames. */
+  gpu: boolean;
+  /** The lock every thread takes its turns at the GPU by (`useGpuLock`). */
+  gpuLock: SharedArrayBuffer;
   /** When the page made it, as `performance.timeOrigin +
    *  performance.now()` reads it here, which a thread's own origin and
    *  `now` come to alike: where the worker's time starts (HR Time 3, the
@@ -138,6 +155,20 @@ export interface WorkerThreadData {
 export type FromWorker =
   /** Its modules are in, and it can be terminated (`PageWorkers.end`). */
   | { kind: 'up' }
+  /** It opened a GPU context of its own, which ending it has to let go of
+   *  first (`PageWorkers.end`). */
+  | { kind: 'gpu' }
+  /** It let its contexts go. */
+  | { kind: 'gpuGone' }
+  /** A frame its GPU drew, for a canvas of the page's: the pixels are moved,
+   *  and the number is the one the message that names it will carry. */
+  | {
+      kind: 'gpuFrame';
+      id: number;
+      width: number;
+      height: number;
+      data: Uint8ClampedArray;
+    }
   /** A worker's `Notification`, over the page's seam. */
   | { kind: 'notification'; id: number; show: HtmlNotification }
   | { kind: 'notification'; id: number; close: true }
@@ -171,6 +202,8 @@ export type FromWorker =
 /** What this side tells the thread. */
 export type ToWorker =
   | { kind: 'message'; data: string }
+  /** Let go of the GPU contexts: it is to end. */
+  | { kind: 'releaseGpu' }
   /** What a service worker's registry says to its realm. */
   | { kind: 'service'; text: string }
   /** What a worker's `caches` asked came to. */
@@ -236,12 +269,40 @@ type SyncAsk =
   | { id: number; abort: true }
   /** An op on the origin private file system (`opfs.ts`), which this
    *  process holds for the worker's page and its workers alike. */
-  | { id: number; opfs: [string, string, string, string, string] };
+  | { id: number; opfs: [string, string, string, string, string] }
+  /** An op on the page's GPU (`HtmlWebGL`), which a worker's WebGL contexts
+   *  draw through: a context is the page process's, its calls are asked
+   *  and slept on, since `getError` and `readPixels` answer at once. */
+  | { id: number; gl: GLAsk; quiet?: true }
+  /** What a worker's canvas asks of the page's fonts (`canvas-text.ts`): a
+   *  worker has no text engine, and sets its text in the page's. */
+  | { id: number; text: TextAsk };
+
+/** What a worker's canvas asks of the fonts, as `CanvasText` has them. */
+export type TextAsk =
+  | ['now']
+  | ['font', string]
+  | ['measure', string, string, TextSetting]
+  | ['raster', string, string, number, TextSetting, number];
+
+/** What a worker asks of its WebGL contexts: its own number for each. */
+export type GLAsk =
+  | ['open', HtmlGLOptions]
+  | ['run', number, unknown[]]
+  | ['resize', number, number, number]
+  | ['present', number, number]
+  | ['sync']
+  | ['snapshot', number]
+  | ['discard', number, number]
+  | ['frame', number, number]
+  | ['dispose', number];
 
 interface Running {
   thread: WorkerLike;
   /** Whether its modules are in, as it said (`end`). */
   up: boolean;
+  /** Whether it holds a GPU context of its own (`end`). */
+  gpu: boolean;
   url: string;
   sync: MessagePort;
   fetches: Map<number, AbortController>;
@@ -251,6 +312,8 @@ interface Running {
   sockets: SocketRelay | null;
   /** Its notifications that are showing. */
   shown: Map<number, HtmlShownNotification | null>;
+  /** Its WebGL contexts, made on the page's GPU as it opens them. */
+  gl: Map<number, HtmlGLContext>;
   /** The workers it started itself, run from here, made the first time it
    *  starts one: what each is known by there, and here. */
   nested: {
@@ -356,6 +419,8 @@ export class PageWorkers implements PageWorkersLike {
       stopped: this._stopped,
       permissions: this._seams.permissions?.() ?? {},
       notifies: !!this._seams.notifications,
+      gpu: !!this._seams.webgl,
+      gpuLock: gpuLockBuffer(),
       born: performance.timeOrigin + performance.now(),
     };
     const source = threadSource();
@@ -374,8 +439,10 @@ export class PageWorkers implements PageWorkersLike {
       up: false,
       url: init.url,
       sync: port1,
+      gpu: false,
       fetches: new Map(),
       shown: new Map(),
+      gl: new Map(),
       transports: null,
       sockets: null,
       nested: null,
@@ -393,6 +460,8 @@ export class PageWorkers implements PageWorkersLike {
         running.nested!.workers.end(sub);
       }
       releaseOwner(owner);
+      for (const context of running.gl.values()) context.dispose();
+      running.gl.clear();
       this._seams.exited?.(id);
       this._running.delete(id);
       this._ending.delete(running);
@@ -409,7 +478,18 @@ export class PageWorkers implements PageWorkersLike {
       Atomics.store(word, 0, 1);
       Atomics.notify(word, 0);
     };
+    let nextGl = 1;
     port1.on('message', (m: SyncAsk) => {
+      if ('gl' in m) {
+        const done = this._gl(running, m.gl, () => nextGl++);
+        // a batch posted and not waited for has no one to answer
+        if (!m.quiet) answer({ id: m.id, ...done });
+        return;
+      }
+      if ('text' in m) {
+        answer({ id: m.id, ...this._text(m.text) });
+        return;
+      }
       if ('opfs' in m) {
         const [origin, op, a, b, c] = m.opfs;
         try {
@@ -508,7 +588,12 @@ export class PageWorkers implements PageWorkersLike {
     running.transports?.dispose();
     running.sockets?.dispose();
     for (const shown of running.shown.values()) closeNotification(shown);
-    if (running.up) void running.thread.terminate();
+    if (running.gpu) {
+      // a context of its own is let go of by the thread that made it, and
+      // the thread ended once it has, or after a moment where it cannot
+      running.thread.postMessage({ kind: 'releaseGpu' } satisfies ToWorker);
+      setTimeout(() => void running.thread.terminate(), 2000).unref?.();
+    } else if (running.up) void running.thread.terminate();
     else this._ending.add(running);
   }
 
@@ -831,8 +916,99 @@ export class PageWorkers implements PageWorkersLike {
     running.thread.postMessage({ kind: 'fetchEnd', id, error });
   }
 
+  /** One of a worker's asks of the page's fonts: what they came to, or
+   *  `none` where the page has no text engine, which leaves the worker's
+   *  text as it was, drawn as nothing. */
+  private _text(ask: TextAsk): {
+    value?: unknown;
+    none?: true;
+    error?: string;
+  } {
+    try {
+      const fonts = this._seams.canvasText?.() ?? null;
+      if (!fonts) return { none: true };
+      switch (ask[0]) {
+        case 'now':
+          return { value: [fonts.generation, fonts.direction(null)] };
+        case 'font':
+          return { value: fonts.font(ask[1], null) };
+        case 'measure':
+          return { value: fonts.measure(ask[1], ask[2], ask[3]) };
+        case 'raster':
+          return {
+            value: fonts.raster(ask[1], ask[2], ask[3], ask[4], ask[5]),
+          };
+      }
+    } catch (error) {
+      return { error: String((error as Error)?.message ?? error) };
+    }
+  }
+
+  /** One of a worker's WebGL ops, on the page's GPU: what it came to, for
+   *  the thread asleep on it. A page with no GPU answers `open` with null,
+   *  and the worker's context draws nothing, as the page's own would. */
+  private _gl(
+    running: Running,
+    ask: GLAsk,
+    next: () => number,
+  ): { value?: unknown; frame?: Uint8ClampedArray; error?: string } {
+    try {
+      switch (ask[0]) {
+        case 'open': {
+          const context = this._seams.webgl?.open(ask[1]);
+          if (!context) return { value: null };
+          const ctx = next();
+          running.gl.set(ctx, context);
+          return { value: { ctx, extensions: [...context.extensions] } };
+        }
+        case 'run':
+          return {
+            value:
+              running.gl.get(ask[1])?.run(ask[2] as [string, ...unknown[]][]) ??
+              null,
+          };
+        case 'resize':
+          running.gl.get(ask[1])?.resize(ask[2], ask[3]);
+          return { value: null };
+        case 'present': {
+          const frame = new Uint8ClampedArray(ask[2]);
+          running.gl.get(ask[1])?.present(frame);
+          return { value: null, frame };
+        }
+        case 'sync':
+          return { value: null };
+        case 'snapshot':
+          return { value: running.gl.get(ask[1])?.snapshot?.() ?? null };
+        case 'discard':
+          running.gl.get(ask[1])?.discard?.(ask[2]);
+          return { value: null };
+        case 'frame': {
+          const data = running.gl.get(ask[1])?.frameData?.(ask[2]) ?? null;
+          return data
+            ? { value: null, frame: new Uint8ClampedArray(data) }
+            : { value: null };
+        }
+        case 'dispose':
+          running.gl.get(ask[1])?.dispose();
+          running.gl.delete(ask[1]);
+          return { value: null };
+      }
+    } catch (error) {
+      return { error: String((error as Error)?.message ?? error) };
+    }
+  }
+
   private _heard(id: number, running: Running, m: FromWorker): void {
     switch (m.kind) {
+      case 'gpu':
+        running.gpu = true;
+        return;
+      case 'gpuGone':
+        void running.thread.terminate();
+        return;
+      case 'gpuFrame':
+        keepFrameAs(m.id, { width: m.width, height: m.height, data: m.data });
+        return;
       case 'up':
         running.up = true;
         if (this._ending.has(running)) void running.thread.terminate();
