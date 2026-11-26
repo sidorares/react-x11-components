@@ -17,7 +17,21 @@ import { FONTS, PAGE } from './harness.js';
 afterEach(cleanup);
 await preloadHtmlScripts();
 
-const gpu = await gpuWebGL();
+const gpuModule = await gpuWebGL();
+// the module loading says nothing: a CI machine has x11-dri and no GPU to
+// make a context on
+const probe = gpuModule?.open({
+  version: 2,
+  width: 1,
+  height: 1,
+  alpha: true,
+  depth: false,
+  stencil: false,
+  antialias: false,
+  premultipliedAlpha: true,
+});
+probe?.dispose();
+const gpu = probe ? gpuModule : null;
 const test = SCRIPTS_CONTAINED && FONTS && gpu ? nodeTest : nodeTest.skip;
 
 const worker = (source: string): string =>
