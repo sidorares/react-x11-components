@@ -21,6 +21,17 @@ export interface Frame {
 const MOST_BYTES = 128 * 1024 * 1024;
 
 const frames = new Map<number, Frame>();
+/** What a frame another thread made tells it when it is gone, taken or not:
+ *  that thread makes no more until the page has what it sent. */
+const acks = new Map<number, () => void>();
+
+function forget(id: number): void {
+  const ack = acks.get(id);
+  if (ack) {
+    acks.delete(id);
+    ack();
+  }
+}
 let next = 1;
 let held = 0;
 
@@ -32,13 +43,15 @@ export function setFrameIdBase(base: number): void {
 }
 
 /** A frame another thread made, kept under the number it knew it by. */
-export function keepFrameAs(id: number, frame: Frame): void {
+export function keepFrameAs(id: number, frame: Frame, ack?: () => void): void {
   frames.set(id, frame);
+  if (ack) acks.set(id, ack);
   held += frame.data.byteLength;
   for (const [old, f] of frames) {
     if (held <= MOST_BYTES || old === id) break;
     frames.delete(old);
     held -= f.data.byteLength;
+    forget(old);
   }
 }
 
@@ -53,6 +66,7 @@ export function keepFrame(frame: Frame): number {
     if (held <= MOST_BYTES || old === id) break;
     frames.delete(old);
     held -= f.data.byteLength;
+    forget(old);
   }
   return id;
 }
@@ -63,6 +77,7 @@ export function takeFrame(id: number): Frame | null {
   if (frame) {
     frames.delete(id);
     held -= frame.data.byteLength;
+    forget(id);
   }
   return frame;
 }

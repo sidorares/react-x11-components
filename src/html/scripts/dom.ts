@@ -51277,6 +51277,11 @@ export function installDom(
       const FRAME_MS = 1000 / 60;
       const runFrame = (): void => {
         frameTimer = 0;
+        // the page still has the last frames this thread drew: wait
+        if (call('glBusy') === 1) {
+          frameTimer = setTimer(runFrame, FRAME_MS, [], false);
+          return;
+        }
         const due = [...frameCallbacks];
         frameCallbacks.clear();
         const t = now();

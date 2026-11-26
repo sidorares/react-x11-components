@@ -71,6 +71,7 @@ const {
   notifies,
   gpu,
   gpuLock,
+  gpuInflight,
   born,
 } = workerData as WorkerThreadData;
 const port = parentPort!;
@@ -455,6 +456,7 @@ seams.webgl = ((): HtmlWebGL => {
  *  (`shipFrame`). Where there is none, the page's GPU is the one above. */
 const localGpu = gpu ? await gpuWebGL() : null;
 const localContexts = new Set<HtmlGLContext>();
+const inflight = new Int32Array(gpuInflight);
 if (localGpu) {
   useGpuLock(gpuLock);
   // two threads' frame numbers must not meet in the page process
@@ -486,9 +488,25 @@ if (localGpu) {
       frame.data.byteLength === frame.data.buffer.byteLength
         ? frame.data
         : new Uint8ClampedArray(frame.data);
+    Atomics.add(inflight, 0, 1);
     port.postMessage({ kind: 'gpuFrame', id, width, height, data }, [
       data.buffer,
     ]);
+  };
+  // frames are made no faster than the page takes them: a page busy with a
+  // scroll or a resize held two of them, and a thread drawing sixty a second
+  // behind it held a second of 13 MB frames in its queue, which is the memory
+  // a long scroll ran out of. A page that takes none for a while is not
+  // waited for, since a frame nobody wants is let go with its canvas.
+  let busySince = 0;
+  seams.frameBusy = () => {
+    if (Atomics.load(inflight, 0) < 2) {
+      busySince = 0;
+      return false;
+    }
+    const t = performance.now();
+    if (!busySince) busySince = t;
+    return t - busySince < 500;
   };
 }
 
