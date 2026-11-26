@@ -456,6 +456,10 @@ export class ScriptRunner {
             get webSocket() {
               return _options.webSocket;
             },
+            get webgl() {
+              return _options.webgl;
+            },
+            canvasText: () => _options.handle.canvasText?.() ?? null,
             get notifications() {
               return _options.notifications;
             },
@@ -640,6 +644,8 @@ export class ScriptRunner {
         workerSeams: () => ({
           webTransport: options.webTransport,
           webSocket: options.webSocket,
+          webgl: options.webgl,
+          canvasText: () => options.handle.canvasText?.() ?? null,
           notifications: options.notifications,
           permissions: () => this.host.permissionStates(),
           log: (level, text) => options.log(level, text),

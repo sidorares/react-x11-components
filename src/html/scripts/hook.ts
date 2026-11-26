@@ -12,6 +12,7 @@
 // the parse waits at among them, so the parse waits for the engine too.
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { Image as NtkImage } from 'react-x11/ntk';
+import { FrameSurface } from '../native-canvas.js';
 import type { Element } from 'domhandler';
 
 import type {
@@ -467,6 +468,10 @@ export function useScripts(
   const pictures = useRef(
     new WeakMap<Element, { version: number; image: unknown }>(),
   );
+  const frameSurfaces = useRef(new WeakMap<Element, FrameSurface>());
+  const [surfaceFinalizer] = useState(
+    () => new FinalizationRegistry<FrameSurface>((held) => held.destroy()),
+  );
   const canvasImage = useCallback((element: Element) => {
     const native = runner.current?.host.nativeSurface(element);
     if (native) return native;
@@ -474,11 +479,42 @@ export function useScripts(
     if (!pixels || !pixels.width || !pixels.height) return null;
     const kept = pictures.current.get(element);
     if (kept?.version === pixels.version) return kept.image;
+    if (pixels.framed) {
+      // a stage's frames: one surface, brought up to date by the box that
+      // changed, where each was an image of the whole canvas
+      let held = frameSurfaces.current.get(element);
+      if (!held) {
+        held = new FrameSurface();
+        frameSurfaces.current.set(element, held);
+        surfaceFinalizer.register(element, held);
+      }
+      const surface = held.update(
+        pixels.data,
+        pixels.width,
+        pixels.height,
+        pixels.pending,
+      );
+      if (surface) {
+        pixels.pending = undefined;
+        pictures.current.set(element, {
+          version: pixels.version,
+          image: surface,
+        });
+        return surface;
+      }
+    }
     const image = new NtkImage({
       width: pixels.width,
       height: pixels.height,
       data: pixels.data,
     });
+    // an image is uploaded to the display the first time it is drawn, and
+    // that copy is freed by `destroy()` alone: a canvas that changes at every
+    // frame, as a WebGL stage does, made one of its whole size at each, and
+    // none was ever let go. One drawn again after this uploads again.
+    const previous = kept?.image;
+    if (previous instanceof NtkImage)
+      (previous as { destroy(): void }).destroy();
     pictures.current.set(element, { version: pixels.version, image });
     return image;
   }, []);

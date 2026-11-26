@@ -4416,6 +4416,46 @@ test('a named timeline is found through a timeline-scope, and from anywhere in t
   assert.strictEqual(doc.style('stopped').opacity, 1);
 });
 
+test('a named timeline an element stops declaring and another takes is followed, where the document finds it once for every animation in it', async (t) => {
+  // a page whose elements all run on one named scroll timeline asked the
+  // document for it at every frame of every one of them; that is found once
+  // now, and found again where a style that declares it changes
+  const doc = await running(
+    t,
+    '<style>body{margin:0}' +
+      '@keyframes fade { from { opacity: 0 } to { opacity: 1 } }' +
+      '.sc{height:50px;overflow:auto} .sc>div{height:150px}' +
+      '.owner{scroll-timeline:--a}' +
+      '.on-a{animation:fade linear;animation-timeline:--a}</style>' +
+      '<div id="one" class="on-a"></div><div id="two" class="on-a"></div>' +
+      '<div class="sc owner" id="s1"><div></div></div>' +
+      '<div class="sc" id="s2"><div></div></div>',
+  );
+  const scroll = async (id: string, y: number) => {
+    doc.el.scrollElementTo(findById(doc.el.document, id)!, { y });
+    await act();
+    for (let i = 0; i < 2; i += 1) await doc.clock.frame();
+    await act();
+  };
+  await scroll('s1', 50);
+  assert.strictEqual(doc.style('one').opacity, 0.5, 'the first owner');
+  assert.strictEqual(doc.style('two').opacity, 0.5, 'for each of them');
+  // the declaration moves to the other scroller
+  findById(doc.el.document, 's1')!.attribs.class = 'sc';
+  findById(doc.el.document, 's2')!.attribs.class = 'sc owner';
+  doc.el.touchDocument();
+  await act();
+  await scroll('s2', 25);
+  assert.strictEqual(doc.style('one').opacity, 0.25, 'the second owner');
+  assert.strictEqual(doc.style('two').opacity, 0.25);
+  // and none declares it
+  findById(doc.el.document, 's2')!.attribs.class = 'sc';
+  doc.el.touchDocument();
+  await act();
+  await scroll('s2', 50);
+  assert.strictEqual(doc.style('one').opacity, 1, 'no timeline, no effect');
+});
+
 test('an animation-range narrows the part of a scroll timeline an animation runs over, a named range of a view timeline among them', async (t) => {
   const doc = await triggering(
     t,

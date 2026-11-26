@@ -28,6 +28,14 @@ import type {
   HtmlWebGL,
 } from '../webgl.js';
 
+declare const Buffer: {
+  from(
+    buffer: ArrayBufferLike,
+    offset?: number,
+    length?: number,
+  ): { toString(encoding: 'base64'): string };
+};
+
 /** Chrome's limit on the live WebGL contexts of a page. */
 const MOST_CONTEXTS = 16;
 
@@ -80,7 +88,12 @@ export class PageContexts {
   }
 
   run(id: number, calls: string): void {
-    this._held.get(id)?.context.run(JSON.parse(calls) as HtmlGLCommand[]);
+    const context = this._held.get(id)?.context;
+    if (!context) return;
+    const commands = JSON.parse(calls) as HtmlGLCommand[];
+    // nothing is asked of what these came to
+    if (context.post) context.post(commands);
+    else context.run(commands);
   }
 
   /** As `run`, and what the last call came to, as JSON. */
@@ -105,6 +118,45 @@ export class PageContexts {
     held.owed = element;
     this._byElement.set(element, held);
     this._seams.drawn(element);
+  }
+
+  /** What an `OffscreenCanvas`'s context drew, which no element shows: the
+   *  frame as straight RGBA with its top row first, in base64, or '' where
+   *  there is none. The realm hands it to the canvas (`deliver`), which
+   *  routes it to its placeholder. */
+  read(id: number): string {
+    const held = this._held.get(id);
+    if (!held || !held.width || !held.height) return '';
+    const into = new Uint8ClampedArray(held.width * held.height * 4);
+    held.context.present(into);
+    return Buffer.from(into.buffer, into.byteOffset, into.length).toString(
+      'base64',
+    );
+  }
+
+  /** A frame of a context, kept where the pixels are taken from
+   *  (`frame-store.ts`): its number and size as `id,width,height`, or '' for
+   *  a context that cannot keep one, which the caller reads as it always did. */
+  snapshot(id: number): string {
+    const held = this._held.get(id);
+    if (!held?.context.snapshot || !held.width || !held.height) return '';
+    const kept = held.context.snapshot();
+    return kept ? `${kept.id},${kept.width},${kept.height}` : '';
+  }
+
+  /** A kept frame no one is to take. */
+  discard(id: number, frame: number): void {
+    this._held.get(id)?.context.discard?.(frame);
+  }
+
+  /** A kept frame's pixels as base64, left kept: for a bitmap something
+   *  other than a canvas is to hold. */
+  frameData(id: number, frame: number): string {
+    const data = this._held.get(id)?.context.frameData?.(frame);
+    if (!data) return '';
+    return Buffer.from(data.buffer, data.byteOffset, data.length).toString(
+      'base64',
+    );
   }
 
   /** What `present` owes the element's pixels, read in. */

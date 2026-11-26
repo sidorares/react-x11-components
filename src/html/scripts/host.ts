@@ -19,6 +19,7 @@
 // a profile; a cookie is what the host's jar lets the document's address
 // have; a navigation is a link the browser follows.
 import { NativeCanvas, nativeCanvasEnabled } from '../native-canvas.js';
+import { diffFrames, takeFrame } from '../frame-store.js';
 import { numericTaken } from '../css/typed-om-numbers.js';
 import { trustworthy } from '../fetch-metadata.js';
 import type { FetchMode } from '../fetch-metadata.js';
@@ -414,6 +415,14 @@ export interface CanvasPixels {
    *  what a page drew changes, and stays where the colours alone do:
    *  what a filter casts a shadow from is the alpha. */
   alphaVersion?: number;
+  /** For a canvas a WebGL frame is put in: what has changed since the
+   *  picture last asked (`canvasImage`), as the box of the pixels, null for
+   *  all of them, and undefined where nothing has. It is what a persistent
+   *  surface is brought up to date by, where a new picture of the whole
+   *  canvas was made for each frame. */
+  pending?: number[] | null;
+  /** Whether the pixels are a frame's, which `pending` says the changes of. */
+  framed?: boolean;
 }
 
 /** A request a page's `fetch` makes, and what it came to. */
@@ -1166,6 +1175,9 @@ export interface HostSeams {
   /** What a page's WebGL contexts draw through (`HtmlScripts`' `webgl`).
    *  Absent, they keep their state and draw nothing. */
   webgl?: HtmlWebGL;
+  /** A thread's own GPU made a frame for the page process to show: its
+   *  pixels go there, moved, under the number it knows them by. */
+  shipFrame?(id: number): void;
   /** The sheets the document adopted (`document.adoptedStyleSheets`),
    *  each its text, for `<Html>` to apply after the document's own. */
   adopt?(sheets: string[]): void;
@@ -6283,6 +6295,56 @@ export class DomHost {
         for (const listener of [...this._s.canvasListeners]) listener(canvas);
         return null;
       }
+      // a frame a WebGL context kept (`frame-store.ts`) as the canvas's
+      // pixels, moved and not copied: the canvas's size, and the number
+      case 'canvasPutFrame': {
+        const canvas = this._element(a);
+        const frame = takeFrame(Number(c));
+        if (!frame) return null;
+        const was = this._s.canvases.get(canvas);
+        // as `canvasPut` has it, the alpha moved only where a pixel's did,
+        // since the picture is told of a change in it
+        const same =
+          !!was &&
+          was.width === frame.width &&
+          was.height === frame.height &&
+          was.alphaVersion !== undefined;
+        const diff = same
+          ? diffFrames(was.data, frame.data, frame.width, frame.height)
+          : null;
+        // a frame that is the picture already shows nothing new
+        if (same && diff && !diff.rect) return null;
+        const alphaMoved = !diff || diff.alpha;
+        const rect = diff?.rect ?? null;
+        // what has changed since the picture last asked is the union
+        let pending: number[] | null | undefined;
+        if (!rect || !was || was.pending === null) pending = null;
+        else if (was.pending === undefined) pending = rect;
+        else {
+          pending = [
+            Math.min(was.pending[0], rect[0]),
+            Math.min(was.pending[1], rect[1]),
+            Math.max(was.pending[2], rect[2]),
+            Math.max(was.pending[3], rect[3]),
+          ];
+        }
+        this._s.canvases.set(canvas, {
+          width: frame.width,
+          height: frame.height,
+          data: frame.data,
+          version: (was?.version ?? 0) + 1,
+          alphaVersion: alphaMoved ? nextAlphaVersion() : was?.alphaVersion,
+          pending,
+          framed: true,
+        });
+        for (const listener of [...this._s.canvasListeners]) {
+          listener(
+            canvas,
+            rect ? [...rect, frame.width, frame.height] : undefined,
+          );
+        }
+        return null;
+      }
       // a bitmap as a file (`toDataURL`, `toBlob`, `convertToBlob`): its
       // size and its straight RGBA as base64, and the PNG as base64, the
       // one type every bitmap is had as
@@ -8639,6 +8701,20 @@ export class DomHost {
         return null;
       case 'glPresent':
         this._contexts.present(Number(a), this._element(b));
+        return null;
+      case 'glRead':
+        return this._contexts.read(Number(a));
+      // a context's frame kept for a canvas to take, rather than read out
+      // and sent as text (`frame-store.ts`)
+      case 'glSnapshot':
+        return this._contexts.snapshot(Number(a));
+      case 'glDiscard':
+        this._contexts.discard(Number(a), Number(b));
+        return null;
+      case 'glFrame':
+        return this._contexts.frameData(Number(a), Number(b));
+      case 'glShip':
+        this._seams.shipFrame?.(Number(a));
         return null;
       // a page's `MediaSource` (`mse.ts`), its bytes kept here: a clip of
       // VP9 to be played whole (`clips.ts`), or fragmented MP4 played as
