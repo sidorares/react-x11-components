@@ -44,7 +44,7 @@ import type {
   FieldLayout,
   SegmentValues,
 } from './date-fields.js';
-import { fadeColor } from './css/color.js';
+import { fadeColor, rgbaOf } from './css/color.js';
 import { cursorKeyword, inkColor } from './css/values.js';
 import { CONTAIN_SIZE, verticalMode } from './css/style.js';
 import type { ComputedStyle } from './css/style.js';
@@ -575,8 +575,10 @@ type PartStyles = (
 ) => ComputedStyle | null;
 
 /** What a range's thumb or track draws, as its rules leave it: a page sets
- *  each in a flat colour and a radius, nearly always. A gradient or an image
- *  on one is not drawn. */
+ *  each in a flat colour and a radius, nearly always. An image is not drawn,
+ *  and a gradient is drawn as the one colour it comes to on average
+ *  (`gradientInk`), since a slot takes a colour: a thumb the page gives a
+ *  gradient on `:focus` is there, and not gone. */
 function rangePart(style: ComputedStyle, scale: number): RangePart {
   if (style.display === 'none' || style.visibility !== 'visible') {
     return { width: 0, height: 0 };
@@ -603,8 +605,13 @@ function rangePart(style: ComputedStyle, scale: number): RangePart {
     ...(width !== undefined && { width }),
     ...(height !== undefined && { height }),
     ...(marginTop !== 0 && { marginTop }),
-    ...(style.backgroundColor !== null && {
-      backgroundColor: inkColor(style.backgroundColor, style.color),
+    ...((style.backgroundColor !== null || gradientInk(style) !== null) && {
+      backgroundColor:
+        style.backgroundColor !== null &&
+        style.backgroundColor !== 'transparent'
+          ? inkColor(style.backgroundColor, style.color)
+          : (gradientInk(style) ??
+            inkColor(style.backgroundColor ?? 'transparent', style.color)),
     }),
     ...(style.borderTopStyle !== 'none' && {
       borderWidth: style.borderTopWidth / scale,
@@ -1305,4 +1312,36 @@ function fieldAlign(
   align: ComputedStyle['textAlign'],
 ): ControlRect['textAlign'] {
   return align === 'start' || align === 'justify' ? undefined : align;
+}
+
+/**
+ * The colour a part's gradient comes to on average, over its stops, from the
+ * bottom layer that is a gradient: the one the others are drawn over. Null
+ * where the part has no gradient, or one with no stop this can read.
+ */
+function gradientInk(style: ComputedStyle): string | null {
+  const layers = style.backgroundImages;
+  if (!layers) return null;
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const layer = layers[i];
+    if (!layer || typeof layer === 'string' || !('stops' in layer)) continue;
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    let a = 0;
+    let n = 0;
+    for (const stop of layer.stops) {
+      const c = rgbaOf(inkColor(stop.color, style.color));
+      if (!c) continue;
+      r += c[0] * c[3];
+      g += c[1] * c[3];
+      b += c[2] * c[3];
+      a += c[3];
+      n += 1;
+    }
+    if (n === 0 || a === 0) continue;
+    const to = (v: number) => Math.round((v / a) * 255);
+    return `rgba(${to(r)}, ${to(g)}, ${to(b)}, ${(a / n).toFixed(3)})`;
+  }
+  return null;
 }
