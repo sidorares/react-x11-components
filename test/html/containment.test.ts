@@ -963,3 +963,24 @@ metric(
     assert.ok(size('f')[0] >= 70 && size('f')[0] < size('e')[0]);
   },
 );
+
+test('a stop in a rounded box an overlay clips is cut to the overlay', async () => {
+  // core scrolls a focused stop into view, and one the clips leave whole
+  // made the pane scroll by what the overlay cut off: a dialog in a sheet
+  // with rounded corners, in an overlay a window tall that clips, opened
+  // with its lower half below the window and the page shifted up by it
+  const { node } = await render(
+    '<style>body{margin:0}.o{position:absolute;top:0;left:0;width:300px;' +
+      'height:100px;overflow:clip}.s{margin-top:50px;border-radius:20px;' +
+      'overflow:clip}a{display:block;width:100%;height:200px}</style><div class="o"><div class="s">' +
+      '<a id="b" href="#x"></a></div></div>',
+  );
+  const el = view(node);
+  await act();
+  const rect = el.stopRect(findById(el.document, 'b')!);
+  assert.ok(rect, 'a stop');
+  assert.ok(
+    rect.y + rect.height <= 100.5,
+    `ends at the overlay's edge, not at ${rect.y + rect.height}`,
+  );
+});
