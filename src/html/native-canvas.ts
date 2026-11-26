@@ -335,8 +335,45 @@ export const isFrameSurface = (picture: unknown): boolean =>
 
 export class FrameSurface {
   private _surface: SurfaceLike | null = null;
+  private _layer: LayerLike | null = null;
   private _width = 0;
   private _height = 0;
+
+  /** Where the frames are, when a layer can show them as they are: the
+   *  presenter then puts each on glass as it is drawn, with no repaint of the
+   *  window's bitmap, so the page and the stage reach the display in one
+   *  commit. */
+  get layer(): LayerLike | null {
+    return this._layer && !this._layer.closed && this._layer.surface
+      ? this._layer
+      : null;
+  }
+
+  private _make(width: number, height: number): void {
+    this._release();
+    const make = (core as Any).createLayerSurface;
+    if (
+      typeof make === 'function' &&
+      typeof (nativeApp as Any)?.createSharedSurface === 'function' &&
+      !process_env('REACT_X11_NO_LAYER_CANVAS')
+    ) {
+      try {
+        this._layer = make(nativeApp, { width, height }) as LayerLike;
+        return;
+      } catch {
+        this._layer = null;
+      }
+    }
+    this._surface = newSurface(nativeApp, width, height);
+    if (this._surface) OWNED.add(this._surface);
+  }
+
+  private _release(): void {
+    this._layer?.close();
+    this._layer = null;
+    this._surface?.destroy?.();
+    this._surface = null;
+  }
 
   /** The surface with `pixels` in it, or null where the backend has none:
    *  the caller then draws the pixels as an image. `pending` is the box of
@@ -349,26 +386,20 @@ export class FrameSurface {
   ): SurfaceLike | null {
     if (!nativeCanvasEnabled()) return null;
     let box = pending;
-    if (!this._surface || this._width !== width || this._height !== height) {
-      this._surface?.destroy?.();
-      this._surface = newSurface(nativeApp, width, height);
-      if (this._surface) OWNED.add(this._surface);
+    if (
+      (!this._surface && !this._layer) ||
+      this._width !== width ||
+      this._height !== height
+    ) {
+      this._make(width, height);
       this._width = width;
       this._height = height;
       box = null;
     }
+    const layer = this._layer;
     const surface = this._surface;
-    if (!surface) return null;
-    if (box === undefined) return surface;
-    let ctx: Any;
-    try {
-      ctx = surface.getContext('2d');
-    } catch {
-      // one something freed: made again, and drawn in whole
-      this._surface = null;
-      return this.update(data, width, height, null);
-    }
-    if (typeof ctx?.putImageData !== 'function') return null;
+    if (!surface && !layer) return null;
+    if (box === undefined) return surface ?? layer!.surface;
     const [x0, y0, x1, y1] = box ?? [0, 0, width, height];
     const w = x1 - x0;
     const h = y1 - y0;
@@ -383,13 +414,45 @@ export class FrameSurface {
     } else if (h !== height) {
       block = data.subarray(y0 * width * 4, y1 * width * 4);
     }
-    ctx.putImageData({ data: block, width: w, height: h }, x0, y0);
+    const put = (ctx: Any): boolean => {
+      if (typeof ctx?.putImageData !== 'function') return false;
+      ctx.putImageData({ data: block, width: w, height: h }, x0, y0);
+      return true;
+    };
+    if (layer) {
+      let ok = true;
+      try {
+        layer.draw(
+          (ctx) => {
+            ok = put(ctx);
+          },
+          { full: box === null },
+        );
+      } catch {
+        ok = false;
+      }
+      if (!ok) {
+        // one something freed: made again, and drawn in whole
+        this._release();
+        this._width = 0;
+        return box === null ? null : this.update(data, width, height, null);
+      }
+      return layer.surface;
+    }
+    let ctx: Any;
+    try {
+      ctx = surface!.getContext('2d');
+    } catch {
+      // one something freed: made again, and drawn in whole
+      this._surface = null;
+      return this.update(data, width, height, null);
+    }
+    if (!put(ctx)) return null;
     return surface;
   }
 
   destroy(): void {
-    this._surface?.destroy?.();
-    this._surface = null;
+    this._release();
   }
 }
 
