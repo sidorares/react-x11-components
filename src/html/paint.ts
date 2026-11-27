@@ -13384,10 +13384,7 @@ function gradientRaster(
   if (!options.cached || !ctx.drawImage) return false;
   if (part.w * part.h < STRIP_AREA) return false;
   const k = smoothScale(gradient, w, h);
-  // a third of the size saves most of the shading, and stops 72 raster
-  // pixels apart lose nothing at it: villagecinemas.com.au draws twenty
-  // page-wide orbs whose stops are 1.6 radii apart
-  if (!(k >= 2)) return false;
+  if (!(k >= 4)) return false;
   const sw = Math.max(1, Math.ceil(w / k));
   const sh = Math.max(1, Math.ceil(h / k));
   const key = `radial ${JSON.stringify(gradient)} ${currentColor} ${w} ${h} ${sw} ${sh}`;
