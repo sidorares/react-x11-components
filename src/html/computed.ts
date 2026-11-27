@@ -58,6 +58,7 @@ import type { Len } from './css/values.js';
 import {
   currentColorIn,
   inkColor,
+  isMathFunction,
   keptColorText,
   liveSource,
   parseColor,
@@ -71,6 +72,7 @@ import {
   NOT_A_NAME,
   parseUrl,
   readFamilyName,
+  resolutionOf,
 } from './css/parse.js';
 import { closingParen } from './css/vars.js';
 
@@ -622,8 +624,13 @@ function imageSetOptionText(option: string): string {
   const types: string[] = [];
   for (const word of rest) {
     const m = RESOLUTION_WORD.exec(word);
+    // a calculation is what it comes to
+    const calculated =
+      m || !isMathFunction(word) ? null : resolutionOf(word, false);
     if (m) {
       resolution = `${num(Number(m[1]) * DPPX[m[2].toLowerCase()])}dppx`;
+    } else if (calculated !== null) {
+      resolution = `${num(calculated)}dppx`;
     } else types.push(word);
   }
   return [image, resolution, ...types].join(' ');

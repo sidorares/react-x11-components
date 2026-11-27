@@ -1719,6 +1719,75 @@ test('an image-set() takes the least dense option at or above the scale, else th
   }
 });
 
+test("an image-set() option's resolution may be a calculation, and an option of no resolution at all is an image that is none", async () => {
+  // CSS Images 4, 2.4: a `<resolution>` is a calculation too, which was no
+  // resolution here, so `image-set(url(g.png) calc(0.5x * 2))` was no
+  // image-set() and its declaration dropped (image-set-calc-x-rendering).
+  // One that comes to less than nothing is none, as `0x` is, which was
+  // drawn at no density at all: the option is no image, and the
+  // declaration stands (image-set-zero-resolution-rendering, -2,
+  // image-set-negative-resolution-rendering-3). What is and is not a
+  // resolution, and how each computes, is WPT's image-set-parsing and
+  // image-set-computed
+  const set = (id: string, value: string) =>
+    `<div id="${id}" style="background-image:url(before.png);` +
+    `background-image:${value}"></div>`;
+  const source =
+    set('a', `image-set('g.png' calc(0.5x * 2))`) +
+    set('b', `image-set('g.png' calc(0.5x * 2), 'r.png' 2x)`) +
+    set('c', `image-set('r.png' 1x, 'b.png' calc(96dpi * 2))`) +
+    set('d', `image-set('b.png' calc(1 * 96dpi) type('image/png'))`) +
+    set('e', `image-set('r.png' min(1x, 3x), 'b.png' calc(2x * 3))`) +
+    // no resolution at all: an image that is none, and not the url before
+    set('f', `image-set('r.png' 0x)`) +
+    set('g', `image-set('r.png' calc(-1 * 1x))`) +
+    set('h', `image-set('r.png' calc(0dppx * -1))`) +
+    set('i', `image-set('r.png' calc(1x + -1x))`) +
+    // and one that is passed over for an option that has one
+    set('j', `image-set('r.png' 0x, 'b.png' 2x)`) +
+    // none of these is a resolution, and the url before it stands
+    set('k', `image-set('b.png' calc(3 * 4))`) +
+    set('l', `image-set('b.png' calc(2x - 1))`) +
+    set('m', `image-set('b.png' calc(1 + 4dpi))`) +
+    set('n', `image-set('b.png' calc(1x * 1px))`) +
+    set('o', `image-set('b.png' calc(1x) 2x)`) +
+    set('p', `image-set('b.png' calc(1x) calc(2x))`);
+  const at = (density: number, url: string) =>
+    density === 1 ? url : { url, density };
+  const want: Record<string, [unknown, unknown]> = {
+    a: ['g.png', 'g.png'],
+    b: ['g.png', at(2, 'r.png')],
+    c: ['r.png', at(2, 'b.png')],
+    d: ['b.png', 'b.png'],
+    e: ['r.png', at(6, 'b.png')],
+    f: [null, null],
+    g: [null, null],
+    h: [null, null],
+    i: [null, null],
+    j: [at(2, 'b.png'), at(2, 'b.png')],
+  };
+  for (const id of 'klmnop') want[id] = ['before.png', 'before.png'];
+  for (const [i, scale] of [1, 2].entries()) {
+    const { node } = await (scale === 1 ? render(source) : render2x(source));
+    const el = view(node);
+    for (const [id, layer] of Object.entries(want)) {
+      assert.deepStrictEqual(layerOf(el, id), layer[i], `#${id} at ${scale}x`);
+    }
+    if (scale === 1) {
+      // a calculation computes to what it comes to, in dppx
+      const computed = (id: string) =>
+        el.computedStyle(findById(el.document, id)!)!['background-image'];
+      assert.strictEqual(computed('a'), 'image-set(url("g.png") 1dppx)');
+      assert.strictEqual(
+        computed('c'),
+        'image-set(url("r.png") 1dppx, url("b.png") 2dppx)',
+      );
+      assert.strictEqual(computed('g'), 'image-set(url("r.png") 0dppx)');
+    }
+    cleanup();
+  }
+});
+
 test('an image-set() option is as large as its pixels over its density', async () => {
   // a 40 by 20 image: at 2x it is 20 CSS pixels across, whatever the
   // display's scale, and `background-size` reads that size
