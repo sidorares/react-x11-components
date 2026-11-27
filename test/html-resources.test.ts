@@ -2029,6 +2029,71 @@ withFonts(
 );
 
 withFonts(
+  'a normal line of two fonts reaches as high as the higher and as deep as the deeper',
+  async (t) => {
+    // a face of capitals with a deep descent, and the harness's
+    // sans-serif, of a higher ascent, which the engine sets the small
+    // letter in. Its line is the taller font's own, shorter than from the
+    // one's ascent to the other's descent, so the small letter stood out
+    // of the top of its line
+    const script = woff2('Script-Regular');
+    if (!script) return t.skip('no such face to load');
+    const { node, result } = await mount(
+      '<style>@font-face { font-family: Capitals; src: url(script.woff2) }' +
+        'div { font: 40px Capitals, sans-serif; line-height: normal;' +
+        '  white-space: nowrap }' +
+        'i { display: inline-block; width: 4px; height: 4px }' +
+        '</style><div id="mixed">Aa</div><div id="boxed">Aa<i></i></div>' +
+        '<div id="own">AB</div>',
+      () => ({ kind: 'font', bytes: script }),
+      {},
+      true,
+    );
+    await settle(node);
+    const fonts = (
+      result.app as unknown as {
+        fonts: {
+          match(
+            f: string,
+            o: object,
+          ): {
+            metrics(size: number): {
+              ascent: number;
+              descent: number;
+              lineHeight: number;
+            };
+          };
+        };
+      }
+    ).fonts;
+    const [first] = boxOf(node, 'own').style.fontFamily.split(', ');
+    const deep = fonts.match(first, {}).metrics(40);
+    const high = fonts.match('sans-serif', {}).metrics(40);
+    assert.ok(
+      high.ascent > deep.ascent + 1 &&
+        deep.descent > high.descent + 1 &&
+        high.ascent + deep.descent >
+          Math.max(high.lineHeight, deep.lineHeight) + 1,
+      "the two reach past either one's line, or this tests nothing",
+    );
+    for (const id of ['mixed', 'boxed']) {
+      const [line] = linesUnder(node, id);
+      assert.ok(
+        line.baseline >= high.ascent - 0.06,
+        `${id}: as high as the higher ascent, ${line.baseline}`,
+      );
+      assert.ok(
+        line.height - line.baseline >= deep.descent - 0.06,
+        `${id}: as deep as the deeper descent, ${line.height - line.baseline}`,
+      );
+    }
+    // and a line in the one font is that font's own
+    const [own] = linesUnder(node, 'own');
+    assert.ok(Math.abs(own.height - deep.lineHeight) < 0.06, `${own.height}`);
+  },
+);
+
+withFonts(
   "a face from a url() is set at its size-adjust, and an override answers the layout's metrics",
   async () => {
     const { node } = await mount(
