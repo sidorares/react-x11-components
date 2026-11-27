@@ -51282,7 +51282,7 @@ export function installDom(
       const FRAME_MS = 1000 / 60;
       /** A frame no sooner than this after the last, where a message from
        *  the page has just told what to draw. */
-      const KICK_GAP_MS = 6;
+      const KICK_GAP_MS = 12;
       const runFrame = (): void => {
         frameTimer = 0;
         lastFrameAt = now();
