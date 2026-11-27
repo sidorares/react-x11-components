@@ -21125,6 +21125,14 @@ export function conicTable(
   const first = at[0];
   const period = at[at.length - 1] - first;
   const table = new Float32Array(CONIC_STEPS * 4);
+  // a repeating one whose stops span nothing is one colour, the last of
+  // them, as a linear or a radial one is (`averageColor`, CSS Images 3,
+  // 3.5.1): taken for one that does not repeat, it went round once
+  if (gradient.repeating && !(period > 0)) {
+    const last = rgba[rgba.length - 1];
+    for (let k = 0; k < CONIC_STEPS; k += 1) table.set(last, k * 4);
+    return table;
+  }
   for (let k = 0; k < CONIC_STEPS; k += 1) {
     let t = (k + 0.5) / CONIC_STEPS;
     // a repeating one's stops go round again from the first, both ways

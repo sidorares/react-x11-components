@@ -659,6 +659,27 @@ metric(
 );
 
 metric(
+  'a repeating conic gradient whose stops span nothing is its last colour',
+  async () => {
+    // CSS Images 3, 3.5.1: a repeating gradient whose first and last stops
+    // meet is one colour, the last as every engine draws it, which a
+    // repeating linear or radial one was already. A conic one was drawn as
+    // though it did not repeat: orange for half a turn and blue for the
+    // rest (css-images/normalization-conic-degenerate.html)
+    const ctx = await renderWithImages(
+      '<style>body{margin:0}div{width:40px;height:40px}</style>' +
+        '<div style="background:repeating-conic-gradient(#ffa500 50%,#0000ff 50%)"></div>',
+    );
+    await expectPixel(ctx, 30, 10, '#0000ff', {
+      message: 'the first half turn',
+    });
+    await expectPixel(ctx, 30, 30, '#0000ff', { message: 'top right, lower' });
+    await expectPixel(ctx, 10, 30, '#0000ff', { message: 'the second half' });
+    await expectPixel(ctx, 10, 10, '#0000ff', { message: 'top left' });
+  },
+);
+
+metric(
   'a repeating gradient lays its stops down again along its whole line',
   async () => {
     // CSS Images 3, 3.4: from the first stop to the last, again and again,
