@@ -7002,7 +7002,15 @@ export class HtmlViewNode extends Node {
     // frame would restyle it, and a page that reads it before then reads
     // what no animation gives it (`_timedNow` asks the scripts)
     if (!this._animating() || !this._scripts.has(element)) {
-      this._invalidate(Stale.Boxes, new Set([element]), true);
+      // its boxes are the only ones that can differ, and building the
+      // document for each of a page's animations that ends was most of the
+      // builds of villagecinemas.com.au's load
+      this._invalidate(
+        Stale.Boxes,
+        new Set([element]),
+        true,
+        new Set([element]),
+      );
       return;
     }
     for (const pseudo of touched) {
@@ -8960,7 +8968,15 @@ export class HtmlViewNode extends Node {
       box.style !== style &&
       laidOutDiffers(box.style, style)
     ) {
-      this._invalidate(Stale.Boxes, new Set([element]), true);
+      // its boxes are the only ones that can differ, and building the
+      // document for each of a page's animations that ends was most of the
+      // builds of villagecinemas.com.au's load
+      this._invalidate(
+        Stale.Boxes,
+        new Set([element]),
+        true,
+        new Set([element]),
+      );
       this._settle();
       const again = this._tree;
       if (again) box = this._ownBoxOf(again, element);

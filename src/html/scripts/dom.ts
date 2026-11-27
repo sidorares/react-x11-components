@@ -8832,6 +8832,9 @@ export function installDom(
     },
   };
 
+  const HIDDEN: PropertyDescriptor = Object.assign(Object.create(null), {
+    enumerable: false,
+  });
   /** The wrapper of a node id, made the first time it is asked for. */
   const wrap = (id: number): Any => {
     if (!id) return null;
@@ -8901,6 +8904,18 @@ export function installDom(
       node._unloadCounter = 0;
       node._leaveChecked = false;
       node._unloaded = false;
+    }
+    // a node has no own enumerable property in a browser: video.js ingests a
+    // `<video-js>` with `Object.keys(el).forEach(k => tech[k] = el[k])`, and
+    // copied here `_id` made its new `<video>` the same node as the player,
+    // so Brightcove's player threw HierarchyRequestError and the page showed
+    // its error screen (villagecinemas.com.au)
+    // (through what was taken before page code ran, with a descriptor that
+    // inherits nothing a page put on `Object.prototype`)
+    for (const key of REFLECT.ownKeys(node)) {
+      REFLECT.defineProperty(node, key, HIDDEN);
+    }
+    if (Kind === Document || Kind === XMLDocument) {
       node = new Proxy(node, DOC_PROXY);
     }
     wrappers.set(id, node);

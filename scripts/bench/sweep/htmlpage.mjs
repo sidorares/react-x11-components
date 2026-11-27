@@ -454,6 +454,10 @@ function view(doc, width = W) {
               scripts: SCRIPTS
                 ? {
                     timeout: 10_000,
+                    log: process.env.LOG
+                      ? (l, t) =>
+                          console.error('PAGE', l, String(t).slice(0, 600))
+                      : undefined,
                     fetch: (request) => {
                       pending += 1;
                       return doc.fetch(request).finally(() => {
@@ -572,6 +576,51 @@ async function measure(doc) {
     result.scroll = { steps, ...step };
     p.scrollTo(0);
     await nextFrame(150);
+  }
+
+  if (process.env.IDLE) {
+    // the page left alone, its animations and timers running
+    const p = pane.current;
+    p.scrollTo(Number(process.env.IDLE_AT ?? 0));
+    for (let i = 0; i < Number(process.env.IDLE); i += 1) {
+      await wait(5000);
+      globalThis.gc?.();
+      const m = process.memoryUsage();
+      console.error(
+        `IDLE ${i * 5}s heap ${Math.round(m.heapUsed / 2 ** 20)} rss ${Math.round(m.rss / 2 ** 20)} ext ${Math.round(m.external / 2 ** 20)} ab ${Math.round(m.arrayBuffers / 2 ** 20)}`,
+      );
+    }
+  }
+
+  if (process.env.SOAK) {
+    // the page lived with: scrolled to its end and back, its window dragged,
+    // over and over, and what the process holds after each round
+    const p = pane.current;
+    for (let round = 0; round < Number(process.env.SOAK); round += 1) {
+      for (
+        let y = SCROLL_STEP;
+        y < SCROLL_STEP * SCROLL_MAX;
+        y += SCROLL_STEP
+      ) {
+        const was = p.scrollY;
+        p.scrollTo(y);
+        if (p.scrollY === was) break;
+        await nextFrame(150);
+      }
+      p.scrollTo(0);
+      await nextFrame(150);
+      for (let i = 1; i <= 20; i += 1) {
+        root.render(view(doc, W - i * DRAG_STEP));
+        await nextFrame(500);
+      }
+      root.render(view(doc, W));
+      await nextFrame(500);
+      globalThis.gc?.();
+      const m = process.memoryUsage();
+      console.error(
+        `MEM round ${round} heap ${Math.round(m.heapUsed / 2 ** 20)} rss ${Math.round(m.rss / 2 ** 20)} ext ${Math.round(m.external / 2 ** 20)} ab ${Math.round(m.arrayBuffers / 2 ** 20)}`,
+      );
+    }
   }
 
   if (STEPS.has('dwell')) {
