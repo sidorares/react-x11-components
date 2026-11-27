@@ -451,6 +451,44 @@ test("display's two words are the one keyword that says the same", async () => {
   });
 });
 
+test('display: flow-root list-item is a list item that makes a formatting context of its own', async () => {
+  // CSS Display 3, 2.3: a list item's inner display may be `flow-root`.
+  // The value was dropped whole, so a `<span>` given it stayed an inline
+  // box with no marker (display-flow-root-list-item-001.html)
+  const { node } = await render(
+    '<style>body{margin:0 0 0 100px;font:16px/20px sans-serif}' +
+      '.li{display:flow-root list-item}' +
+      '.f{float:left;width:20px;height:40px}</style>' +
+      // its children's margins stay inside it
+      '<div id="a" style="overflow:hidden"><span id="margins" class="li" style="margin:20px 0">' +
+      '<div style="margin:20px 0">x</div></span></div>' +
+      // it holds its floats
+      '<div><span id="holds" class="li"><div class="f"></div></span></div>' +
+      // and stands beside a float before it
+      '<div><div class="f"></div><span id="beside" class="li">x</span></div>' +
+      '<div style="clear:both"><span id="ref" style="display:list-item">x</span></div>' +
+      // in either order of its words, and with its outer one written
+      '<span id="swapped" style="display:list-item flow-root"></span>' +
+      '<span id="outer" style="display:block flow-root list-item"></span>' +
+      // an inline one is not drawn yet, and is dropped as it was
+      '<span id="inline" style="display:inline flow-root list-item"></span>',
+    800,
+  );
+  const el = view(node);
+  const display = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)!.display;
+  for (const id of ['margins', 'holds', 'beside', 'swapped', 'outer']) {
+    assert.strictEqual(display(id), 'flow-root list-item', id);
+  }
+  assert.strictEqual(display('inline'), 'inline');
+  assert.strictEqual(display('ref'), 'list-item');
+  assert.strictEqual(boxOf(el, 'a').height, 100, 'its margins and its own');
+  assert.strictEqual(boxOf(el, 'margins').height, 60);
+  assert.strictEqual(boxOf(el, 'holds').height, 40);
+  const beside = boxOf(el, 'beside');
+  assert.deepStrictEqual([beside.x, beside.width], [120, 680]);
+});
+
 test('calc() and its kin come down to pixels and a percentage of what layout knows', () => {
   const ctx = { em: 20, rem: 16, vw: 1000, vh: 500, scale: 1 };
   const len = (v: string) => parseLength(v, ctx);

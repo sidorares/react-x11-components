@@ -3186,6 +3186,7 @@ export function applyDeclaration(
       else if (v === 'inline-grid' || v === 'inline-grid-lanes') {
         style.display = 'inline-flex';
       } else if (v === 'flow-root') style.display = 'block';
+      else if (v === FLOW_ROOT_ITEM) style.display = 'list-item';
       // the legacy flexible box, a flex box until `settleClamp` has read
       // its orient, and the prefixed spelling of the modern one
       else if (v === '-webkit-box' || v === '-webkit-flex') {
@@ -3195,7 +3196,7 @@ export function applyDeclaration(
       } else if (DISPLAYS.has(v)) style.display = v as Display;
       else return;
       style.rubyKind = null;
-      style.flowRoot = v === 'flow-root';
+      style.flowRoot = v === 'flow-root' || v === FLOW_ROOT_ITEM;
       style.gridLanes = v === 'grid-lanes' || v === 'inline-grid-lanes';
       style.grid = style.gridLanes || v === 'grid' || v === 'inline-grid';
       style.webkitBox =
@@ -6061,6 +6062,10 @@ const INNER_DISPLAYS = new Set([
   'table',
 ]);
 
+/** A list item that makes a formatting context of its own, as
+ *  `oneDisplay` names it: a `list-item` whose style says `flowRoot`. */
+const FLOW_ROOT_ITEM = 'flow-root list-item';
+
 /**
  * `display`'s words as the one keyword that says the same (CSS Display 3,
  * 2.1): an outer display and an inner one, in either order, and `list-item`
@@ -6086,11 +6091,12 @@ function oneDisplay(value: string): string {
       inner = word;
     } else return value;
   }
-  // the marker's box is a block's, and an inline one is not drawn yet
+  // the marker's box is a block's, and an inline one is not drawn yet; a
+  // list item may be the root of a flow of its own (2.3)
   if (item) {
-    return outer !== 'inline' && (inner === '' || inner === 'flow')
-      ? 'list-item'
-      : value;
+    if (outer === 'inline') return value;
+    if (inner === '' || inner === 'flow') return 'list-item';
+    return inner === 'flow-root' ? FLOW_ROOT_ITEM : value;
   }
   if (!inner || inner === 'flow') return outer;
   if (outer !== 'inline') return inner;
