@@ -7002,7 +7002,15 @@ export class HtmlViewNode extends Node {
     // frame would restyle it, and a page that reads it before then reads
     // what no animation gives it (`_timedNow` asks the scripts)
     if (!this._animating() || !this._scripts.has(element)) {
-      this._invalidate(Stale.Boxes, new Set([element]), true);
+      // its boxes are the only ones that can differ, and building the
+      // document for each of a page's animations that ends was most of the
+      // builds of villagecinemas.com.au's load
+      this._invalidate(
+        Stale.Boxes,
+        new Set([element]),
+        true,
+        new Set([element]),
+      );
       return;
     }
     for (const pseudo of touched) {
@@ -8960,7 +8968,15 @@ export class HtmlViewNode extends Node {
       box.style !== style &&
       laidOutDiffers(box.style, style)
     ) {
-      this._invalidate(Stale.Boxes, new Set([element]), true);
+      // its boxes are the only ones that can differ, and building the
+      // document for each of a page's animations that ends was most of the
+      // builds of villagecinemas.com.au's load
+      this._invalidate(
+        Stale.Boxes,
+        new Set([element]),
+        true,
+        new Set([element]),
+      );
       this._settle();
       const again = this._tree;
       if (again) box = this._ownBoxOf(again, element);
@@ -15523,8 +15539,11 @@ export class HtmlViewNode extends Node {
    */
   geometryKey(): string {
     if (this._stale !== Stale.Nothing) return `owed ${++this._geometry}`;
-    const at = this._scrolledOrigin();
-    return `${this._geometry} ${at.x},${at.y} ${this.abs.width}x${this.abs.height} ${this._viewportHeight()}`;
+    // what a `ResizeObserver` measures is a size, which no scroll moves: the
+    // key leaves out where the pane is scrolled to and the scrolls that
+    // bumped `_geometry`, or every frame of a scroll measured every target
+    // again (12 to 30 ms a frame on rida.dev)
+    return `${this._geometry - this._scrollBumps} ${this.abs.width}x${this.abs.height} ${this._viewportHeight()}`;
   }
 
   /** An element's effective zoom (CSS Viewport 1, 5.3), as its style was
@@ -15542,6 +15561,9 @@ export class HtmlViewNode extends Node {
 
   /** Moved by everything `geometryKey` follows. */
   private _geometry = 0;
+  /** How many of those moves were a scroll's (`_scrollBox`), which the key
+   *  of sizes leaves out. */
+  private _scrollBumps = 0;
 
   /**
    * How far the viewport's scrollable overflow reaches, across and down, in
@@ -17429,6 +17451,7 @@ export class HtmlViewNode extends Node {
    */
   private _scrollBox(box: Box, x: number, y: number): ScrollOffset {
     this._geometry += 1;
+    this._scrollBumps += 1;
     // a scroll that is no layout's is the user's or a script's, which a
     // container's initial target no longer moves
     if (!this._layoutScrolling && box.el) this._scrolledBy.add(box.el);

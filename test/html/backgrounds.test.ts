@@ -1193,6 +1193,22 @@ test('a radial gradient that changes slowly is drawn from a raster of it made sm
   assert.strictEqual(kept.length, 0, 'nor with a hard stop');
 });
 
+test('a radial gradient that ends in no ink is shaded only where its last stop reaches', async () => {
+  // a sparkle is a dot a few pixels across over a box the size of the page,
+  // and CoreGraphics shaded all of the box for it: twenty of them were most
+  // of every frame of villagecinemas.com.au's resize on a Mac
+  const { node } = await render(
+    '<style>body{margin:0}</style><div style="width:1000px;height:600px;' +
+      'background:radial-gradient(circle at 20% 50%, #ffffff 1px, #0000 4px)">' +
+      '</div>',
+  );
+  const fills = radialFills(await fillsOf(view(node)));
+  assert.strictEqual(fills.length, 1);
+  const [x, y, w, h] = fills[0].rect;
+  assert.ok(w <= 10 && h <= 10, `a ${w}x${h} fill`);
+  assert.ok(x <= 200 && x + w >= 200 && y <= 300 && y + h >= 300, 'round it');
+});
+
 test('a canvas of slowly changing radial gradients over a colour is painted small on a surface of its own and drawn up once', async () => {
   // drawn up one layer at a time, six orbs were still 43 ms of a frame at
   // 2x: an image drawn larger is some 2 ns a pixel on a Mac

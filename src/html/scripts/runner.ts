@@ -1270,9 +1270,14 @@ export class ScriptRunner {
       this._scrollEndOwed = null;
     }
     if (this._disposed || this._scrollOwed) return;
+    // the first scroll after a still frame is told at once, and the rest at
+    // most one a frame: a page that draws for the scroll in a worker (a glass
+    // panel over the text) was told a frame late, and its panel with it
+    const wait = Math.max(0, this._scrollToldAt + FRAME_MS - Date.now());
     this._scrollOwed = setTimeout(() => {
       this._scrollOwed = null;
       if (this._disposed) return;
+      this._scrollToldAt = Date.now();
       this.host.snapEvent(null, 'changing');
       this.engine.call('__scrolled', null);
       // and `scrollend` a frame on, where no scroll came since and the
@@ -1288,8 +1293,9 @@ export class ScriptRunner {
         this.engine.call('__scrollended', null);
       };
       this._scrollEndOwed = setTimeout(end, FRAME_MS);
-    }, FRAME_MS);
+    }, wait);
   }
+  private _scrollToldAt = -1e9;
   private _scrollEndOwed: ReturnType<typeof setTimeout> | null = null;
 
   /** `<Html>` painted: what the page's windows measure may have moved, which

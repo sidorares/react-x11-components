@@ -8832,6 +8832,9 @@ export function installDom(
     },
   };
 
+  const HIDDEN: PropertyDescriptor = Object.assign(Object.create(null), {
+    enumerable: false,
+  });
   /** The wrapper of a node id, made the first time it is asked for. */
   const wrap = (id: number): Any => {
     if (!id) return null;
@@ -8901,6 +8904,18 @@ export function installDom(
       node._unloadCounter = 0;
       node._leaveChecked = false;
       node._unloaded = false;
+    }
+    // a node has no own enumerable property in a browser: video.js ingests a
+    // `<video-js>` with `Object.keys(el).forEach(k => tech[k] = el[k])`, and
+    // copied here `_id` made its new `<video>` the same node as the player,
+    // so Brightcove's player threw HierarchyRequestError and the page showed
+    // its error screen (villagecinemas.com.au)
+    // (through what was taken before page code ran, with a descriptor that
+    // inherits nothing a page put on `Object.prototype`)
+    for (const key of REFLECT.ownKeys(node)) {
+      REFLECT.defineProperty(node, key, HIDDEN);
+    }
+    if (Kind === Document || Kind === XMLDocument) {
       node = new Proxy(node, DOC_PROXY);
     }
     wrappers.set(id, node);
@@ -50932,6 +50947,9 @@ export function installDom(
     return true;
   });
 
+  /** A dedicated worker's: runs its waiting animation frame now, where one
+   *  waits (`requestAnimationFrame` below). */
+  let kickFrame: (() => void) | null = null;
   // a message a worker posted, to its `Worker` here; or, in a worker, one
   // the page posted to it, to the worker's global (id 0)
   entry('__workerMessage', () => {
@@ -50974,6 +50992,7 @@ export function installDom(
     });
     ev.isTrusted = true;
     dispatch(target, ev);
+    if (id === 0) kickFrame?.();
     return true;
   });
 
@@ -51302,9 +51321,14 @@ export function installDom(
       const frameCallbacks = new Map<number, Any>();
       let frameSeq = 0;
       let frameTimer = 0;
+      let lastFrameAt = -1e9;
       const FRAME_MS = 1000 / 60;
+      /** A frame no sooner than this after the last, where a message from
+       *  the page has just told what to draw. */
+      const KICK_GAP_MS = 12;
       const runFrame = (): void => {
         frameTimer = 0;
+        lastFrameAt = now();
         // the page still has the last frames this thread drew: wait
         if (call('glBusy') === 1) {
           frameTimer = setTimer(runFrame, FRAME_MS, [], false);
@@ -51319,6 +51343,20 @@ export function installDom(
           } catch (error) {
             report(error);
           }
+        }
+      };
+      // what the page just posted is what the next frame draws, so a frame
+      // that waits for its tick is brought forward to the message: a scroll
+      // told to a worker drawing a panel for it was drawn at the grid's next
+      // sixtieth, 8 ms on average, a frame behind the page it was for
+      kickFrame = (): void => {
+        if (
+          frameTimer &&
+          frameCallbacks.size > 0 &&
+          now() - lastFrameAt >= KICK_GAP_MS
+        ) {
+          clearTimer(frameTimer);
+          runFrame();
         }
       };
       define(

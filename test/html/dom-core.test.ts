@@ -270,3 +270,19 @@ test('a wheel or touch listener on the page as a whole is passive, and isTrusted
     false,
   ]);
 });
+
+test('a node has no own enumerable property, so copying a node’s keys makes no alias of it', async () => {
+  // video.js ingests a `<video-js>` with `Object.keys(el).forEach(k =>
+  // tech[k] = el[k])`: with `_id` among the keys the new `<video>` was the
+  // player, and appending one to the other threw HierarchyRequestError
+  // (Brightcove on villagecinemas.com.au, which showed its error page)
+  const out = await inPage(
+    `var a = document.getElementById('box');
+     var b = document.createElement('video');
+     var keys = Object.keys(a);
+     Object.keys(a).forEach(function (k) { try { b[k] = a[k]; } catch (e) {} });
+     a.appendChild(b);
+     return [keys, b !== a, b.parentNode === a, b.tagName];`,
+  );
+  assert.deepEqual(out, [[], true, true, 'VIDEO']);
+});
