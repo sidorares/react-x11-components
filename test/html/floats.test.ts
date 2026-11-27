@@ -882,6 +882,60 @@ test('a negative margin that reaches a float outside its containing block', asyn
   assert.deepStrictEqual([z.x, z.y, z.width], [0, 0, 150]);
 });
 
+test('a box of no width with a formatting context of its own has no room between floats that pass each other', async () => {
+  // CSS 2.1 9.5: its border box overlaps no float's margin box. Where a
+  // left float lower down reaches past a right float beside the box's top,
+  // the two leave no room over its height, less than none: read as none,
+  // a box of no width fit in it, at the left float's edge, inside the right
+  // one (display-flow-root-002.html)
+  const { node } = await render(
+    '<style>body{margin:0}.f{width:250px;height:100px}</style>' +
+      '<div style="width:400px">' +
+      '<div class="f" style="float:right"></div>' +
+      '<div class="f" style="float:left"></div>' +
+      '<div id="z" style="display:flow-root;width:0;height:200px"></div></div>' +
+      // and floats that only meet leave it the line they meet at
+      '<div style="width:400px;clear:both">' +
+      '<div style="float:right;width:150px;height:100px"></div>' +
+      '<div style="float:left;width:250px;height:100px"></div>' +
+      '<div id="m" style="display:flow-root;width:0;height:50px"></div></div>',
+  );
+  const el = view(node);
+  const z = boxOf(el, 'z');
+  assert.deepStrictEqual([z.x, z.y], [250, 100]);
+  const m = boxOf(el, 'm');
+  assert.deepStrictEqual([m.x, m.y - 300], [250, 0]);
+});
+
+test('a size container beside floats is moved down them and never back up, whatever its queries then answer', async () => {
+  // CSS Conditional 5, 3.1: a container's width decides what its queries
+  // answer, which decides its height, which decides where it fits beside
+  // the floats, which decides its width, so layout only moves forward.
+  // Placed from the top at every pass a new answer asked for, this one was
+  // 200px wide with all it holds and 100px wide with none of it by turns,
+  // and was drawn 100px wide, 250px down, with both red blocks in it
+  // (container-queries/inline-size-bfc-floats.html)
+  const { node } = await render(
+    '<style>body{margin:0;font:16px/20px sans-serif}.f{float:left}' +
+      '.r{float:right}.c{height:100px}' +
+      '@container (width < 200px){#c1{display:none}}' +
+      '@container (width < 150px){#c2{display:none}}</style>' +
+      '<div style="width:400px">' +
+      '<div class="r" style="width:200px;height:150px"></div>' +
+      '<div class="f" style="width:250px;height:100px"></div>' +
+      '<div class="r" style="width:300px;height:100px"></div>' +
+      '<div id="q" style="container-type:inline-size">No red' +
+      '<div id="c1" class="c"></div><div id="c2" class="c"></div></div></div>',
+  );
+  const el = view(node);
+  const q = boxOf(el, 'q');
+  // beside the third float, which the first two leave it no room above
+  assert.deepStrictEqual([q.x, q.y, q.width, q.height], [0, 250, 100, 20]);
+  const display = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)?.display;
+  assert.deepStrictEqual([display('c1'), display('c2')], ['none', 'none']);
+});
+
 test('a box that clips its overflow, too wide for a column no float narrows, stays at its top beside the float', async () => {
   // Where no float narrows the room on either side, a box with a
   // formatting context of its own is where it would be were there none, and

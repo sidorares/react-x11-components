@@ -319,6 +319,7 @@ import {
   setAsideHere,
   setAsideIn,
   asideOf,
+  beginForward,
   showsUnseen,
   unseenHeld,
   unseenIn,
@@ -5325,6 +5326,8 @@ export class HtmlViewNode extends Node {
      *  change reached, and the width the document was laid out at before. */
     let builtApart = false;
     let wasLaidAt = -2;
+    // what the passes below move down their floats starts from the top
+    beginForward();
     for (let pass = 0; ; pass += 1) {
       builtApart = false;
       if (this._stale >= Stale.Boxes || !this._tree) {

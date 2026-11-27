@@ -6775,6 +6775,9 @@ block's: a column with `overflow: hidden` and a 220px margin beside a
 the floats leave too little room for goes below them. One too wide for its
 containing block where no float narrows its room stays where it is and
 overflows it, as it would with no floats; below them it would be as wide.
+Where a left float lower down reaches past a right float beside it, the
+two leave less than no room, and not even a box of no width stands
+between them: it goes below the first of them to end.
 A float in a paragraph goes on the line it is met on (CSS 2.1 9.5.1): at
 that line's top where it fits beside what the line holds already, which
 moves over for it, and at the next line's top where it does not — so an
@@ -9503,7 +9506,11 @@ viewport's where none has. A container's size is layout's, so a query is
 answered for the size the last layout gave its container: the first layout
 of a document whose queries hold is followed by a second, for the elements
 they answer for, and each level of containers whose size a query moves
-adds one more, up to four. See [the decisions](#the-decisions).
+adds one more, up to four. A size container beside floats only moves
+forward through those: each lays it out no higher than the one before put
+it, so a container the floats leave less room lower down, whose queries
+make it shorter there, stays there and is not placed back at the top,
+wide and tall again. See [the decisions](#the-decisions).
 
 **Scroll-state queries** (CSS Conditional 5): `container-type:
 scroll-state`, alone or beside a size type, makes an element answer

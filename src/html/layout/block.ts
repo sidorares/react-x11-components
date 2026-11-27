@@ -3486,6 +3486,27 @@ function layoutChildren(
 }
 
 /**
+ * How far down its floats a size container was last placed, by its
+ * element, in the update under way (`beginForward`). Its width decides
+ * what its container queries answer, which decides its height, which
+ * decides where it fits beside the floats, which decides its width: so
+ * layout only moves forward (CSS Conditional 5, 3.1, inline-size
+ * containment), and a pass a query's new answer asks for starts no higher
+ * than the one before put the container. Started from the top each time,
+ * a container beside floats that leave it less room lower down was wide
+ * and tall, narrow and short, at alternate passes, and drawn as whichever
+ * the last pass made of it under the other's styles.
+ */
+const FORWARD = new WeakMap<Element, { update: number; by: number }>();
+let forwardUpdate = 0;
+
+/** A new update of a document's layout: what the passes of the one before
+ *  moved forward starts from the top again. */
+export function beginForward(): void {
+  forwardUpdate += 1;
+}
+
+/**
  * A block that makes its own formatting context — a table, a box that
  * clips its overflow — or a block-level image does not flow round the
  * floats beside it: it is a rectangle beside them (CSS 2.1 9.5), in the
@@ -3520,6 +3541,14 @@ function layoutBesideFloats(
     : Math.min(contentLeft, contentLeft + box.marginLeft);
   const reachRight = inRoom ? right : Math.max(right, right - box.marginRight);
   let at = y;
+  // a size container goes no higher than a pass before this one put it
+  // (`FORWARD`), in a layout that is no probe's
+  const forward =
+    style.containerType !== 'normal' && ctx.probing !== true ? box.el : null;
+  if (forward) {
+    const moved = FORWARD.get(forward);
+    if (moved?.update === forwardUpdate) at = y + moved.by;
+  }
   for (let tries = 0; tries < 64; tries += 1) {
     let band = floats.bandAt(at, 1, reachLeft, reachRight, !inRoom);
     let fits = false;
@@ -3579,13 +3608,31 @@ function layoutBesideFloats(
         const limit = Math.min(right - Math.min(0, box.marginRight), hi);
         fits = box.x + box.width <= limit + 0.5;
       }
+      // no room is room for a box of no width, where the floats only meet;
+      // where they pass each other there is less than none, and the box
+      // would stand in one of them
+      if (
+        fits &&
+        band.right - band.left < 0.5 &&
+        floats.crossedAt(at, box.height, reachLeft, reachRight, !inRoom)
+      ) {
+        fits = false;
+      }
       break;
     }
-    if (fits) return;
+    if (fits) {
+      if (forward && at > y) {
+        FORWARD.set(forward, { update: forwardUpdate, by: at - y });
+      }
+      return;
+    }
     // under the float it meets, which may start below its top
     const below = floats.nextEdgeBelow(at, Math.max(1, box.height));
     if (below === null || below <= at) break;
     at = below;
+  }
+  if (forward && at > y) {
+    FORWARD.set(forward, { update: forwardUpdate, by: at - y });
   }
   layoutBlockLevel(box, ctx, floats, contentLeft, at, contentWidth);
 }

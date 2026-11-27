@@ -113,6 +113,30 @@ export class FloatContext {
     return { left, right: Math.max(left, right) };
   }
 
+  /**
+   * Whether the floats on the two sides pass each other over a range: the
+   * left ones reach further right than the right ones reach left, as a
+   * left float lower down does under a right float it had no room beside.
+   * `bandAt` answers no room for that, as for floats that only meet, and a
+   * box of no width fits in no room but not between floats that crossed.
+   */
+  crossedAt(
+    y: number,
+    height: number,
+    left = this.left,
+    right = this.right,
+    solid = false,
+  ): boolean {
+    const bottom = y + Math.max(1, height);
+    for (const box of this._boxes) {
+      if (box.bottom <= y || box.top >= bottom) continue;
+      if (solid && box.right <= box.left) continue;
+      if (box.side === 'left') left = Math.max(left, box.right);
+      else right = Math.min(right, box.left);
+    }
+    return left > right + 0.5;
+  }
+
   /** Whether any float overlaps a vertical range at all. The inline layout
    *  asks this to decide between one text layout and one per line. */
   intersects(from: number, to: number): boolean {
