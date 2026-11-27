@@ -40280,7 +40280,20 @@ export function installDom(
     const zoom = typeof e === 'string' && e ? Number(e.split(',')[8]) : 1;
     return zoom > 0 ? zoom : 1;
   };
-  const boxSizesOf = (el: Any): number[] | null => {
+  /** What `boxSizesOf` asks the host of an HTML element, for a list of
+   *  them in one call (`resizeBoxes`): an offset geometry, a display, a
+   *  writing mode and the edges. */
+  type BoxRead = [string, string, string, string] | null;
+  const readBoxes = (els: Any[]): Map<Any, BoxRead> => {
+    const got = new Map<Any, BoxRead>();
+    if (els.length < 2) return got;
+    const raw = call('resizeBoxes', els.map((el) => el._id).join(','));
+    if (typeof raw !== 'string' || !raw) return got;
+    const list = JSON.parse(raw) as BoxRead[];
+    els.forEach((el, i) => got.set(el, list[i] ?? null));
+    return got;
+  };
+  const boxSizesOf = (el: Any, read?: BoxRead | undefined): number[] | null => {
     // an HTML element's as layout sized it; what has no offset geometry,
     // an `<svg>` or what is in one, its box as drawn, as it was
     const html = el.namespaceURI === HTML_NS;
@@ -40302,18 +40315,25 @@ export function installDom(
       const h = Number(b?.height) || 0;
       return [w, h, w, h, 0, 0, 0];
     }
-    const o = html ? offsetOf(el) : null;
+    // read with the other targets' in one call, or one at a time
+    const batched = html && read !== undefined;
+    if (batched && read === null) return null;
+    const o = html
+      ? batched
+        ? read![0].split(',').map(Number)
+        : offsetOf(el)
+      : null;
     const r = html ? null : docRect(el);
     if (!o && !r) return null;
-    const style = getComputedStyle(el);
+    const display = batched ? read![1] : getComputedStyle(el).display;
     if (
-      style.display === 'inline' &&
+      display === 'inline' &&
       el.namespaceURI === HTML_NS &&
       !REPLACED_TAGS.has(el.localName)
     ) {
       return [0, 0, 0, 0, 0, 0, 0, 1];
     }
-    const e = call('edges', el._id);
+    const e = batched ? read![3] : call('edges', el._id);
     const [pt, pr, pb, pl, bt, br, bb, bl, edgeZoom] =
       typeof e === 'string' && e
         ? e.split(',').map(Number)
@@ -40324,7 +40344,9 @@ export function installDom(
     const zoom = html && edgeZoom > 0 ? edgeZoom : 1;
     const w = (o ? o[3] : r![2]) / zoom;
     const h = (o ? o[4] : r![3]) / zoom;
-    const vertical = /^(vertical|sideways)/.test(str(style.writingMode));
+    const vertical = /^(vertical|sideways)/.test(
+      batched ? read![2] : str(getComputedStyle(el).writingMode),
+    );
     return [
       w,
       h,
@@ -40564,9 +40586,15 @@ export function installDom(
       this._active = [];
       this._skipped = [];
       const dpr = viewport().dpr || 1;
+      // the targets to measure, asked of the host together
+      const read = readBoxes(
+        [...this._told.keys()].filter(
+          (el) => (all || this._fresh.has(el)) && el.namespaceURI === HTML_NS,
+        ),
+      );
       for (const [el, told] of this._told) {
         if (!all && !this._fresh.has(el)) continue;
-        const sizes = boxSizesOf(el) ?? [0, 0, 0, 0, 0, 0, 0, 1];
+        const sizes = boxSizesOf(el, read.get(el)) ?? [0, 0, 0, 0, 0, 0, 0, 1];
         const px = dpr * (sizes[7] || 1);
         // the size of the box observed, in its own axes
         const [w, h] =

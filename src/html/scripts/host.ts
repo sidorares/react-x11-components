@@ -7192,6 +7192,50 @@ export class DomHost {
       // `offsetParent` and the offsets from it, in one walk up the boxes:
       // the parent's id, then x, y, width and height in CSS pixels, or ''
       // for an element with no box (`HtmlHandle.offsetRect`)
+      // what a `ResizeObserver` measures of each of a list of elements (ids,
+      // comma separated) in one call, where it was three for each (`offset`,
+      // `computed` for its display and writing mode, `edges`): for each, its
+      // offset geometry, display, writing mode and edges as those ops answer
+      // them, or null where it has no offset geometry
+      case 'resizeBoxes': {
+        this.flush();
+        const out: Array<[string, string, string, string] | null> = [];
+        for (const id of text(a).split(',')) {
+          let element: Element;
+          try {
+            element = this._element(Number(id));
+          } catch {
+            out.push(null);
+            continue;
+          }
+          const r = this._handle.offsetRect(element);
+          if (!r) {
+            out.push(null);
+            continue;
+          }
+          const style = this._handle.computedStyle(element, null);
+          const n = (name: string) => parseFloat(style?.[name] ?? '0') || 0;
+          out.push([
+            `${this.idOf(r.parent)},${r.x},${r.y},${r.width},${r.height}`,
+            style?.display ?? '',
+            style?.['writing-mode'] ?? '',
+            style
+              ? [
+                  n('padding-top'),
+                  n('padding-right'),
+                  n('padding-bottom'),
+                  n('padding-left'),
+                  n('border-top-width'),
+                  n('border-right-width'),
+                  n('border-bottom-width'),
+                  n('border-left-width'),
+                  this._handle.effectiveZoom?.(element) ?? 1,
+                ].join(',')
+              : '',
+          ]);
+        }
+        return JSON.stringify(out);
+      }
       case 'offset': {
         this.flush();
         const r = this._handle.offsetRect(this._element(a));
