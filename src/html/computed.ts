@@ -1362,7 +1362,13 @@ function cssomAt(
         ? 'normal'
         : style.lineHeightIsLength
           ? px(style.lineHeight, scale)
-          : num(style.lineHeight),
+          : given?.edgesOnly
+            ? // a keyframe is made up of computed values, which keep the number
+              num(style.lineHeight)
+            : // a style is read as the length a number comes to, as all three
+              // engines answer (CSSOM 7.1, the used value): rida.dev sizes its
+              // selection's bands from it
+              px(style.lineHeight * style.fontSize, scale),
     'letter-spacing':
       style.letterSpacing || style.letterSpacingPct
         ? spacingText(
