@@ -257,9 +257,14 @@ metric(
         `damage ${rect.width}x${rect.height} is the boxes that drew it`,
       );
     }
-    await clock.frame();
-    await clock.frame();
-    await clock.frame();
+    // Each of these changes the picture, and the next is waited for from
+    // the paint of that one, which a busy runner does after the `act` a
+    // `frame()` ends in: a frame taken before it found nothing waiting and
+    // moved no time, so the image was read a frame short, green
+    for (let i = 0; i < 3; i += 1) {
+      await waitFor(() => assert.ok(clock.pending, 'a frame is waited for'));
+      await clock.frame();
+    }
     await act();
     await expectPixel(ctx, abs.x + 4, abs.y + 4, '#ff0000', {
       message: 'img, again',
