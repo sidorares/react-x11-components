@@ -8669,7 +8669,14 @@ the line's baseline. White space collapses across element boundaries as CSS
 words whatever elements they are in — and text at `font-size: 0` takes no
 room, which is how a row of inline-blocks is set without gaps, but for the
 forced breaks and the tabs a `white-space` keeps in it, which still break
-the line and go to the next stop. The space
+the line and go to the next stop. It is still text, where it is more than
+white space that collapses: the line it is on is a line, so its block's
+margins do not collapse through it and an inline-block holding nothing
+else has a baseline, at its top. Nothing of it is drawn: a word joiner
+stands for it in the document's text, where no line breaks and a
+selection across it takes a character that shows as nothing. On macOS,
+where CoreText reads a size of 0 as twelve points, it is handed to the
+engine at a thousandth of a pixel. The space
 that is left is the first of them, in the element it was written in: a
 link whose text ends in a space, before more on its line, is that space
 wider (`elementRect`, a selection's band) and is underlined under it, and

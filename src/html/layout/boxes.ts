@@ -5845,7 +5845,18 @@ class Builder {
           : ws === 'pre-line'
             ? data.replace(/[^\n]+/g, '')
             : '';
-      if (!kept) return;
+      if (!kept) {
+        // What is left is still text, where it is more than white space
+        // that collapses: the line it is on is no phantom one, as tall as
+        // its strut, and its block has a line and a baseline (CSS 2.1
+        // 9.4.2). A character of no width stands for it, which an engine
+        // that reads a size of 0 as some size is handed at next to none
+        // (`sizedFor` in layout/cache.ts)
+        if (!/[^ \t\n\r\f]/.test(data)) return;
+        this._ws = 'content';
+        this._textBox(NO_SIZE_TEXT, into, style, owner);
+        return;
+      }
       this._ws = kept.endsWith('\n') ? 'start' : 'content';
       this._textBox(kept, into, style, owner);
       return;
@@ -7638,6 +7649,11 @@ function removesSegmentBreak(cp: number): boolean {
   const ch = String.fromCodePoint(cp);
   return EAST_ASIAN_WIDE.test(ch) && !HANGUL.test(ch);
 }
+
+/** What stands for text set at no size (`_textNode`): a word joiner, which
+ *  draws nothing and takes no room at any size, and at which no line
+ *  breaks, as none broke where the text was left out. */
+const NO_SIZE_TEXT = '\u2060';
 
 /** White space that collapsing would change: anything but a lone space.
  *  Most of a document's text has none, and is its own collapsed form. */

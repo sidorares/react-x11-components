@@ -338,3 +338,60 @@ test('runs grouped otherwise by nowrap are a different layout', () => {
     apart,
   );
 });
+
+test('an engine that reads a size of 0 as some size is handed text of no size at next to none', () => {
+  // CoreText reads a size of 0 as its default twelve points: a line
+  // holding text of no size was twelve points tall on macOS, and the text
+  // was drawn. Asked once with a letter, such an engine is handed each run
+  // of no size at a thousandth of a pixel; the block's own size, and every
+  // run that has one, go over as they came
+  const asked: { sizes: (number | undefined)[]; base: unknown }[] = [];
+  const engineThat = (reads: 'default' | 'none'): FontsLike => ({
+    layout(content, style): TextLayoutLike {
+      const sizes = content.map((r) => (r as { size?: number }).size);
+      asked.push({ sizes, base: style.size });
+      const size = sizes[0] ?? (style.size as number);
+      const used = size === 0 && reads === 'default' ? 12 : size;
+      return {
+        lines: [{ height: used, width: used / 2 }],
+      } as unknown as TextLayoutLike;
+    },
+    match: countingEngine().match,
+  });
+  const none = { family: 'sans-serif', size: 0 };
+  const runs = (): TextRun[] => [
+    { text: '⁠' } as TextRun,
+    { text: '\n', size: 0 } as TextRun,
+    run('sized'),
+  ];
+
+  const coreText = new TextLayoutCache(engineThat('default'));
+  coreText.begin();
+  coreText.fonts.layout(runs(), { ...none }, options());
+  // the probe, a letter at no size, and then the runs
+  assert.deepStrictEqual(asked[asked.length - 2], { sizes: [0], base: 0 });
+  assert.deepStrictEqual(asked[asked.length - 1], {
+    sizes: [1 / 1024, 1 / 1024, 14],
+    base: 0,
+  });
+  // a run under a block of some size inherits that, and is left alone
+  coreText.fonts.layout([{ text: 'x' } as TextRun], base(), options());
+  assert.deepStrictEqual(asked[asked.length - 1], {
+    sizes: [undefined],
+    base: 14,
+  });
+  // and the engine is asked what it reads once
+  const before = asked.length;
+  coreText.fonts.layout(runs(), { ...none }, options({ maxWidth: 300 }));
+  assert.strictEqual(asked.length, before + 1);
+
+  // an engine that lays text of no size out at no size is handed it as is
+  asked.length = 0;
+  const ntk = new TextLayoutCache(engineThat('none'));
+  ntk.begin();
+  ntk.fonts.layout(runs(), { ...none }, options());
+  assert.deepStrictEqual(asked[asked.length - 1], {
+    sizes: [undefined, 0, 14],
+    base: 0,
+  });
+});
