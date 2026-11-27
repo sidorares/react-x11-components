@@ -4013,6 +4013,35 @@ test('an area the author gives a display is drawn, in its map', async () => {
   assert.ok(fills.some((f) => f.style === '#00ff00'));
 });
 
+test("a ratio of the page's makes a replaced box's natural height of its natural width", async () => {
+  // CSS Sizing 4, 5.1: a ratio written without `auto` is the box's
+  // preferred one over its own, so its natural size is its natural width
+  // and what the ratio makes of it: a 40 by 10 canvas at `aspect-ratio: 1`
+  // is 40 by 40. It kept its natural height, 40 by 10, a size at no ratio
+  // of anyone's (aspect-ratio/replaced-element-045.html and -046)
+  const { node } = await render(
+    '<style>body{margin:0}canvas{display:block}</style>' +
+      '<canvas id="wide" width="40" height="10" style="aspect-ratio:1"></canvas>' +
+      '<canvas id="tall" width="10" height="40" style="aspect-ratio:1"></canvas>' +
+      // of the border box, where `box-sizing` says so
+      '<canvas id="padded" width="40" height="10" style="aspect-ratio:1;' +
+      'padding-right:60px;padding-bottom:60px;box-sizing:border-box"></canvas>' +
+      '<canvas id="limited" width="10" height="40" style="aspect-ratio:1;' +
+      'padding-right:90px;padding-bottom:90px;box-sizing:border-box;' +
+      'max-height:110px"></canvas>' +
+      // written with `auto`, its own ratio stands, and its own size
+      '<canvas id="own" width="40" height="10" style="aspect-ratio:auto 1">' +
+      '</canvas>',
+  );
+  const el = view(node);
+  const sizeOf = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.deepStrictEqual(sizeOf('wide'), [40, 40]);
+  assert.deepStrictEqual(sizeOf('tall'), [10, 10]);
+  assert.deepStrictEqual(sizeOf('padded'), [100, 100]);
+  assert.deepStrictEqual(sizeOf('limited'), [100, 100]);
+  assert.deepStrictEqual(sizeOf('own'), [40, 10]);
+});
+
 test('aspect-ratio: a ratio, auto, or both', async () => {
   const { node } = await render(
     '<div id="a" style="aspect-ratio:16 / 9"></div>' +

@@ -7993,7 +7993,9 @@ box, as its own ratio is, and of the box `box-sizing` names otherwise. The
 ratio runs the other
 way too: a box with a height and an `auto` width, or one of its content's,
 is as wide as the height makes it, and a least or greatest height is a
-least or greatest width through it.
+least or greatest width through it. A ratio a replaced element takes over
+its own makes its natural height of its natural width, so a 40 by 10
+canvas at `aspect-ratio: 1` is 40 by 40.
 
 **SVG:** an inline `<svg>`, an SVG image and an SVG background are drawn by
 ntk's `SvgView`, which core's own `<svg>` element draws with, so they draw
