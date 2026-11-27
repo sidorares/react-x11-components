@@ -6578,7 +6578,9 @@ the item before it ended, and is laid out in its area there, as wide as its
 lanes and as tall as its content. An item of a row lane whose lines run
 down the page wraps to its lane's height, and is as wide along the lane as
 its lines then come to; the container's own width is from its items each
-on one line, so one that wraps in a short lane runs past it.
+on one line, so one that wraps in a short lane runs past it. A row lane
+its items size takes from such an item how long its lines are, at their
+shortest and at their longest, as a grid's row does.
 `grid-lanes-pack: dense` puts an item in
 a hole a spanning item left above, where the lanes there come to the width
 it was laid out at. `track-reverse` fills the lanes from the last, and
