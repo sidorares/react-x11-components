@@ -767,6 +767,124 @@ test('image-orientation: none sizes and draws an image as its file stores it, wi
   );
 });
 
+/** A PNG with an `eXIf` chunk that says `orientation` put in before its
+ *  image data, or after it where `late`. */
+function withExif(
+  png: Uint8Array,
+  orientation: number,
+  late = false,
+): Uint8Array {
+  // a big-endian TIFF header and one entry, Orientation, a SHORT
+  const tiff = [
+    0x4d,
+    0x4d,
+    0x00,
+    0x2a,
+    0x00,
+    0x00,
+    0x00,
+    0x08,
+    0x00,
+    0x01,
+    0x01,
+    0x12,
+    0x00,
+    0x03,
+    0x00,
+    0x00,
+    0x00,
+    0x01,
+    0x00,
+    orientation,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+  ];
+  const body = Buffer.concat([
+    Buffer.from('eXIf', 'latin1'),
+    Buffer.from(tiff),
+  ]);
+  let crc = ~0;
+  for (const byte of body) {
+    crc ^= byte;
+    for (let k = 0; k < 8; k += 1)
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  const chunk = Buffer.alloc(12 + tiff.length);
+  chunk.writeUInt32BE(tiff.length, 0);
+  body.copy(chunk, 4);
+  chunk.writeUInt32BE(~crc >>> 0, 8 + tiff.length);
+  // a chunk starts four bytes before its type, with its length
+  const at = Buffer.from(png).indexOf(late ? 'IEND' : 'IDAT', 0, 'latin1') - 4;
+  return new Uint8Array(
+    Buffer.concat([png.subarray(0, at), chunk, png.subarray(at)]),
+  );
+}
+
+test('a PNG is turned by an eXIf chunk before its image data, and not by one after it', async () => {
+  // CSS Images 3, 5.3: `from-image` is an image's own orientation, and a
+  // PNG says its in an `eXIf` chunk, which no decoder here reads: a PNG was
+  // drawn as stored whatever it said (image-orientation-exif-png-2, -3).
+  // One after the image data is too late to be read, in Chrome, Firefox and
+  // Safari alike. 3 by 2 as stored, a quarter turn clockwise is 2 by 3
+  const colour = (x: number, y: number): [number, number, number] => [
+    50 + x * 60,
+    20 + y * 90,
+    7,
+  ];
+  const stored = pixelsPng(3, 2, colour);
+  const doc = await choosing(
+    '<img id="early" src="early.png"><img id="late" src="late.png">' +
+      '<img id="plain" src="plain.png">' +
+      '<img id="none" src="early.png" style="image-orientation:none">',
+    {
+      'early.png': withExif(stored, 6),
+      'late.png': withExif(stored, 6, true),
+      'plain.png': stored,
+    },
+  );
+  const el = doc.el();
+  await waitFor(() => assert.deepStrictEqual(doc.size('early'), [2, 3]));
+  assert.deepStrictEqual(doc.size('late'), [3, 2], 'too late to turn it');
+  assert.deepStrictEqual(doc.size('plain'), [3, 2]);
+  assert.deepStrictEqual(doc.size('none'), [3, 2], 'as stored');
+  const { imageFor } = (
+    el as unknown as {
+      _paintOptions(r: null, d: null): { imageFor(box: unknown): unknown };
+    }
+  )._paintOptions(null, null);
+  type Pixels = { width: number; height: number; data: Uint8ClampedArray };
+  const pixels = (id: string) => {
+    const image = imageFor(boxOf(el, id)) as Pixels;
+    const out: number[][] = [];
+    for (let i = 0; i < image.width * image.height; i += 1) {
+      out.push([...image.data.slice(i * 4, i * 4 + 3)]);
+    }
+    return { size: [image.width, image.height], out };
+  };
+  // the stored left column, read up it, is the turned top row
+  assert.deepStrictEqual(pixels('early'), {
+    size: [2, 3],
+    out: [
+      colour(0, 1),
+      colour(0, 0),
+      colour(1, 1),
+      colour(1, 0),
+      colour(2, 1),
+      colour(2, 0),
+    ],
+  });
+  const asStored = {
+    size: [3, 2],
+    out: [0, 1].flatMap((y) => [0, 1, 2].map((x) => colour(x, y))),
+  };
+  assert.deepStrictEqual(pixels('late'), asStored);
+  assert.deepStrictEqual(pixels('none'), asStored);
+});
+
 test('an image is laid out at the size its header says before its decode lands, and drawn only once it has', async (t) => {
   // Apple's MacBook Pro page: an `<img>` only its image sizes, answered
   // from the host's cache, was still decoding on a worker 2.5 s later, and
