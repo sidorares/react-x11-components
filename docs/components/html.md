@@ -8772,7 +8772,8 @@ content included, and there is none when something other than a letter
 starts the line: a `<br>`, an image, an inline-block. The box sits inside
 whatever the letter is in, so `<p><b>T</b>his` has a bold first letter. An
 opening quote in a text of its own before the letter — `<q>`'s — takes the
-letter's style too.
+letter's style too. A list item's marker is no part of it: the letter is
+the first after the marker, an inside marker written as a string included.
 
 **First lines:** `::first-line` (and `:first-line`) gives the first
 formatted line of a block its colour and background. A block whose first
