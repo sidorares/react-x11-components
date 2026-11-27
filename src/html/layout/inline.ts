@@ -4362,6 +4362,15 @@ function finishLine(
         under = Math.min(under, room.descent);
       }
     }
+    // and no shorter than the fonts on it reach, where every box's line
+    // height is `normal` (`reachOfFonts`)
+    if (boxed && reachesPastLine(natural)) {
+      const reach = reachOfFonts(boxed, open.texts[i], natural);
+      if (reach) {
+        own = Math.max(own, reach.ascent);
+        under = Math.max(under, reach.descent);
+      }
+    }
     ascent = Math.max(ascent, own);
     descent = Math.max(descent, under);
     // and the marks over or under it, as an annotation over a ruby base
@@ -7452,12 +7461,64 @@ function shortOfStrut(
       boxed &&
       text &&
       natural &&
-      tallerThanBoxes(boxed, text, natural, ascent, line.height - ascent, holds)
+      (tallerThanBoxes(
+        boxed,
+        text,
+        natural,
+        ascent,
+        line.height - ascent,
+        holds,
+      ) ||
+        (reachesPastLine(natural) &&
+          reachOfFonts(boxed, text, natural) !== null))
     ) {
       return true;
     }
   }
   return liftsApart(lines);
+}
+
+/** Whether the fonts a line's glyphs are in reach further above and below
+ *  its baseline than the line is tall: the highest ascent and the deepest
+ *  descent on it are two fonts', and the engine made the line as tall as
+ *  the taller of the two. */
+function reachesPastLine(natural: TextLayoutLike['lines'][number]): boolean {
+  const { ascent, descent } = natural;
+  return (
+    Number.isFinite(ascent) &&
+    Number.isFinite(descent) &&
+    (ascent as number) + (descent as number) > natural.height + 0.5
+  );
+}
+
+/**
+ * How far the fonts of a text reach about its baseline, where every box
+ * the text is in has a `normal` line height: such a box is as tall as the
+ * fonts its glyphs are in, the highest ascent among them and the deepest
+ * descent (CSS 2.1 10.8.1), which in two fonts come to more than either
+ * font's own line. An engine's line is the tallest font's, so a letter of
+ * a deep font beside one of a high font stood out of its line at both
+ * ends, and the block was shorter than the same letters in a span each
+ * (WPT's `line-height-205`). Null where a box has a line height of its
+ * own, which says how tall it is (`boxRoom`).
+ */
+function reachOfFonts(
+  boxed: BoxRooms,
+  text: LineText,
+  natural: TextLayoutLike['lines'][number],
+): InlineDecoration | null {
+  let seen: ComputedStyle | null = null;
+  for (const run of natural.runs) {
+    const at = text.spans.boxAt?.(run.start);
+    if (!at) return null;
+    const style = boxed.styleOf(at);
+    if (style === seen) continue;
+    seen = style;
+    if (style.lineHeight !== 'normal') return null;
+  }
+  return seen
+    ? { ascent: natural.ascent as number, descent: natural.descent as number }
+    : null;
 }
 
 /** What says how tall a text's boxes are on a line: the fonts, and a box's
