@@ -1957,6 +1957,78 @@ withFonts(
 );
 
 withFonts(
+  'under a line height of its own, a line is no taller for a glyph set in a font its box has not',
+  async (t) => {
+    // a face with letters and none of a brace's pieces, and one of a far
+    // higher ascent and deeper descent that has the pieces and no letters:
+    // the engine sets U+23A7 in the second
+    const letters = woff2('SansSerif-Regular');
+    const braces = woff2('Size4-Regular');
+    if (!letters || !braces) return t.skip('no such faces to load');
+    const { node, result } = await mount(
+      '<style>@font-face { font-family: Letters; src: url(letters.woff2) }' +
+        '@font-face { font-family: Braces; src: url(braces.woff2) }' +
+        'div { font: 40px/50px Letters, Braces; white-space: nowrap }' +
+        '.wraps { white-space: normal; width: 60px }' +
+        '.normal { line-height: normal }' +
+        'i { display: inline-block; width: 4px; height: 4px }' +
+        // the second face is asked for by the document's first brace
+        '</style><div id="own">ab</div><div id="other">a\u23a7</div>' +
+        '<div id="own-box">ab<i></i></div><div id="other-box">a\u23a7<i></i></div>' +
+        '<div id="lines" class="wraps">ab a\u23a7 ab</div>' +
+        '<div id="own-normal" class="normal">ab</div>' +
+        '<div id="other-normal" class="normal">a\u23a7</div>',
+      (r) => ({
+        kind: 'font',
+        bytes: r.url === 'braces.woff2' ? braces : letters,
+      }),
+      {},
+      true,
+    );
+    await settle(node);
+    const fonts = (
+      result.app as unknown as {
+        fonts: {
+          match(
+            f: string,
+            o: object,
+          ): { metrics(size: number): { ascent: number; descent: number } };
+        };
+      }
+    ).fonts;
+    const [first, second] = boxOf(node, 'own').style.fontFamily.split(', ');
+    const own = fonts.match(first, {}).metrics(40);
+    const other = fonts.match(second, {}).metrics(40);
+    assert.ok(
+      other.ascent > own.ascent + 20 && other.descent > own.descent + 20,
+      'the second face is the taller, or this tests nothing',
+    );
+    const lineOf = (id: string) =>
+      linesUnder(node, id).map((l) => [l.height, l.baseline]);
+    // one layout, a line made a piece at a time, and lines that wrap
+    assert.deepStrictEqual(
+      lineOf('own').map(([height]) => height),
+      [50],
+    );
+    assert.deepStrictEqual(lineOf('other'), lineOf('own'));
+    assert.deepStrictEqual(lineOf('other-box'), lineOf('own-box'));
+    const [one, two, three] = lineOf('lines');
+    assert.deepStrictEqual(
+      [two[0], three[0], two[1] - one[1], three[1] - two[1]],
+      [50, 50, 50, 50],
+      'the line with the brace on it is as tall as the others',
+    );
+    // a `normal` line is as tall as the fonts its glyphs are in
+    const [plain] = lineOf('own-normal');
+    const [mixed] = lineOf('other-normal');
+    assert.ok(
+      mixed[0] > plain[0] + 40 && mixed[1] > plain[1] + 20,
+      `taller, its baseline lower: ${mixed} and ${plain}`,
+    );
+  },
+);
+
+withFonts(
   "a face from a url() is set at its size-adjust, and an override answers the layout's metrics",
   async () => {
     const { node } = await mount(

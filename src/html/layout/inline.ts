@@ -1578,6 +1578,9 @@ function linesOf(
   // smaller than the block's, the lines are made a piece at a time too,
   // where every line holds it (`shortOfStrut`)
   const strut = fonts ? strutOf(fonts, style) : null;
+  // and where one makes a line taller than its text's boxes are, a glyph
+  // set in a font the box's own is not (`tallerThanBoxes`)
+  const boxed: BoxRooms | null = fonts ? { fonts, styleOf: ownStyle } : null;
   // and the first line holds what it is handed besides: a marker's room
   const firstStrut = withRoom(strut, options.firstStrut);
   // text with emphasis marks, whose lines make room for them a piece at a
@@ -1617,7 +1620,8 @@ function linesOf(
       keepsSpaces,
       pretty,
     );
-    if (laid && !shortOfStrut(laid.lines, strut, firstStrut)) return laid;
+    if (laid && !shortOfStrut(laid.lines, strut, firstStrut, boxed))
+      return laid;
     if (laid) strutted = true;
   }
 
@@ -1655,7 +1659,8 @@ function linesOf(
       align,
       fonts,
     );
-    if (laid && !shortOfStrut(laid.lines, strut, firstStrut)) return laid;
+    if (laid && !shortOfStrut(laid.lines, strut, firstStrut, boxed))
+      return laid;
     if (laid) strutted = true;
   }
 
@@ -1690,7 +1695,7 @@ function linesOf(
       align,
       fonts,
     );
-    if (!shortOfStrut(laid.lines, strut, firstStrut)) return laid;
+    if (!shortOfStrut(laid.lines, strut, firstStrut, boxed)) return laid;
     strutted = true;
   }
 
@@ -1751,7 +1756,8 @@ function linesOf(
         keepsSpaces,
         pretty,
       );
-      if (!shortOfStrut(chunked.lines, strut, firstStrut)) return chunked;
+      if (!shortOfStrut(chunked.lines, strut, firstStrut, boxed))
+        return chunked;
       strutted = true;
       break fast;
     }
@@ -1982,7 +1988,7 @@ function linesOf(
       detachUncut(lines, layout, style, fonts, base, lineHeightMul);
     }
     // a clamp and a cut are the one layout's to make
-    if (!clamp && !cut && shortOfStrut(lines, strut, firstStrut)) {
+    if (!clamp && !cut && shortOfStrut(lines, strut, firstStrut, boxed)) {
       strutted = true;
       break fast;
     }
@@ -2119,6 +2125,7 @@ function linesOf(
         : null,
       levels,
       emphasized ? fonts : null,
+      onFirst ? lineOne.boxed : boxed,
     );
     if (!line) {
       open = openLine(last ? indents.forced : indents.soft);
@@ -2402,7 +2409,7 @@ function linesOf(
       }
       if (keepsSpaces) hangLines(tail, 0, tailRuns, fonts, rtl);
       // or a line at a time, where one of them is shorter than the strut
-      if (!shortOfStrut(tail, strut, lines.length ? null : firstStrut)) {
+      if (!shortOfStrut(tail, strut, lines.length ? null : firstStrut, boxed)) {
         for (const line of tail) {
           lines.push(line);
           widest = Math.max(widest, line.width);
@@ -4261,6 +4268,8 @@ function finishLine(
   /** The fonts, where the line's text has emphasis marks to make room
    *  for (`emphasisRoom`). */
   emphasized: FontsLike | null = null,
+  /** What says how tall the boxes of the line's text are (`boxRoom`). */
+  boxed: BoxRooms | null = null,
 ): LineBox | null {
   if (!open.texts.length && !open.atomics.length && !open.edges.length) {
     return null;
@@ -4338,9 +4347,23 @@ function finishLine(
     const natural = open.texts[i].layout.lines[open.texts[i].layoutLine];
     // with its leading shared as the strut's is: it is drawn on the line's
     // baseline, wherever its engine put its own
-    const own = lineAscent(natural);
+    let own = lineAscent(natural);
+    let under = natural.height - own;
+    // and no taller than its boxes are, where their line heights say how
+    // tall that is: asked only of a text that reaches past the strut
+    if (
+      boxed &&
+      strut &&
+      (own > strut.ascent + ROOM_EPS || under > strut.descent + ROOM_EPS)
+    ) {
+      const room = boxRoom(boxed, open.texts[i], natural);
+      if (room) {
+        own = Math.min(own, room.ascent);
+        under = Math.min(under, room.descent);
+      }
+    }
     ascent = Math.max(ascent, own);
-    descent = Math.max(descent, natural.height - own);
+    descent = Math.max(descent, under);
     // and the marks over or under it, as an annotation over a ruby base
     // grows a line where its leading has no room for it (`placeRuby`)
     if (emphasized) {
@@ -6926,6 +6949,8 @@ interface FirstLineSetting {
   lineHeight: number;
   strut: InlineDecoration | null;
   lifts: Lifts;
+  /** How tall the boxes of the line's text are on it (`boxRoom`). */
+  boxed: BoxRooms;
   justify: LineJustify | null;
 }
 
@@ -6994,6 +7019,7 @@ function firstLineSetting(
       descent: Math.max(strut.descent, own.descent),
     },
     lifts: new Lifts(fonts, style, of),
+    boxed: { fonts, styleOf: of },
     justify: justify && {
       ...justify,
       base,
@@ -7404,6 +7430,8 @@ function shortOfStrut(
   strut: InlineDecoration | null,
   /** The first line's, where it holds more: a marker's room. */
   first: InlineDecoration | null = null,
+  /** What says how tall the boxes of a line's text are (`boxRoom`). */
+  boxed: BoxRooms | null = null,
 ): boolean {
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
@@ -7420,8 +7448,82 @@ function shortOfStrut(
     ) {
       return true;
     }
+    if (
+      boxed &&
+      text &&
+      natural &&
+      tallerThanBoxes(boxed, text, natural, ascent, line.height - ascent, holds)
+    ) {
+      return true;
+    }
   }
   return liftsApart(lines);
+}
+
+/** What says how tall a text's boxes are on a line: the fonts, and a box's
+ *  style on that line. */
+interface BoxRooms {
+  fonts: FontsLike;
+  styleOf: (box: Box) => ComputedStyle;
+}
+
+/** How far a text's room may differ from its boxes' before it counts. */
+const ROOM_EPS = 0.01;
+
+/**
+ * The room the inline boxes of a text take on its line, where the line
+ * height of every one of them is no `normal`: each its own face at its own
+ * line height (CSS 2.1 10.8.1), about the baseline, whatever fonts its
+ * glyphs were set in. An engine makes a line as tall as the fonts it set
+ * the glyphs in, so a letter its box's font has no glyph for, set in a
+ * font of a deeper descent, made its line taller and moved its baseline
+ * down, where a browser's line is the same with it as without (WPT's
+ * `line-height-202`, `first-available-font-006`). Null where a box's line
+ * height is `normal`, whose room is the fonts its glyphs are in.
+ */
+function boxRoom(
+  boxed: BoxRooms,
+  text: LineText,
+  natural: TextLayoutLike['lines'][number],
+): InlineDecoration | null {
+  let ascent = -Infinity;
+  let descent = -Infinity;
+  let seen: ComputedStyle | null = null;
+  for (const run of natural.runs) {
+    const at = text.spans.boxAt?.(run.start);
+    if (!at) return null;
+    const style = boxed.styleOf(at);
+    if (style === seen) continue;
+    seen = style;
+    if (style.lineHeight === 'normal') return null;
+    const room = strutOf(boxed.fonts, style);
+    ascent = Math.max(ascent, room.ascent);
+    descent = Math.max(descent, room.descent);
+  }
+  return seen ? { ascent, descent } : null;
+}
+
+/** Whether a line one layout made is taller than its text's boxes are
+ *  (`boxRoom`), by more than the strut that holds it open accounts for: it
+ *  is made a piece at a time then, where `finishLine` gives the text its
+ *  boxes' room. */
+function tallerThanBoxes(
+  boxed: BoxRooms,
+  text: LineText,
+  natural: TextLayoutLike['lines'][number],
+  ascent: number,
+  descent: number,
+  holds: InlineDecoration,
+): boolean {
+  if (ascent <= holds.ascent + 0.5 && descent <= holds.descent + 0.5) {
+    return false;
+  }
+  const room = boxRoom(boxed, text, natural);
+  return (
+    room !== null &&
+    (ascent > Math.max(room.ascent, holds.ascent) + 0.5 ||
+      descent > Math.max(room.descent, holds.descent) + 0.5)
+  );
 }
 
 /** Whether a layout the lines are drawn from would move their baselines by
