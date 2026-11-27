@@ -84,7 +84,7 @@ export function tableGrid(table: Box): TableGrid {
   let grid = GRIDS.get(table);
   if (!grid) {
     const rows = rowsOf(table);
-    const cells = gridOf(rows.rows);
+    const cells = gridOf(rows.rows, rows.groups);
     const { column, group } = columnsOf(table, cells.columnCount);
     if (table.style.direction === 'rtl') {
       // A table right to left has its first column at the right (CSS 2.1
@@ -113,9 +113,14 @@ export function tableGrid(table: Box): TableGrid {
  * Assign every cell a row and a column, honouring `colspan` and `rowspan`.
  * The occupancy grid is what makes a `rowspan` in an earlier row push a
  * later row's cells to the right, which is the bug every naive table
- * renderer ships with.
+ * renderer ships with. A cell spans no further down than the last row of
+ * its row group, which is where `rowspan="0"` takes it (HTML 4.9.11,
+ * 4.9.12): `groups` is the row group each row is in, as `rowsOf` has them.
  */
-export function gridOf(rows: Box[]): { cells: Cell[]; columnCount: number } {
+export function gridOf(
+  rows: Box[],
+  groups: readonly (Box | null)[] = [],
+): { cells: Cell[]; columnCount: number } {
   const cells: Cell[] = [];
   const occupied: boolean[][] = [];
   let columnCount = 0;
@@ -125,13 +130,21 @@ export function gridOf(rows: Box[]): { cells: Cell[]; columnCount: number } {
   };
   const taken = (r: number, c: number): boolean => occupied[r]?.[c] === true;
 
+  // the row after the last of the row group being read
+  let groupEnd = 0;
   for (let r = 0; r < rows.length; r += 1) {
+    if (r >= groupEnd) {
+      groupEnd = r + 1;
+      while (groupEnd < rows.length && groups[groupEnd] === groups[r]) {
+        groupEnd += 1;
+      }
+    }
     let c = 0;
     for (const box of rows[r].children) {
       if (box.kind !== 'table-cell') continue;
       while (taken(r, c)) c += 1;
       const colSpan = Math.max(1, spanAttr(box, 'colspan'));
-      const rowSpan = Math.max(1, spanAttr(box, 'rowspan'));
+      const rowSpan = Math.min(rowSpanAttr(box) || Infinity, groupEnd - r);
       cells.push({ box, row: r, column: c, colSpan, rowSpan });
       for (let dr = 0; dr < rowSpan; dr += 1) {
         for (let dc = 0; dc < colSpan; dc += 1) mark(r + dr, c + dc);
@@ -148,6 +161,15 @@ export function spanAttr(box: Box, name: string): number {
   if (!raw) return 1;
   const n = parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? Math.min(n, 1000) : 1;
+}
+
+/** A cell's `rowspan` as HTML reads it: 0 for a cell that runs to the end
+ *  of its row group, and 1 where the attribute is no number. */
+function rowSpanAttr(box: Box): number {
+  const raw = box.el?.attribs?.rowspan;
+  if (!raw) return 1;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? Math.min(n, 65534) : 1;
 }
 
 /** Which column box and column group each column of the grid is in. */

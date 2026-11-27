@@ -228,6 +228,57 @@ metric("a corner equal borders meet at is the top-left cell's", async () => {
   assert.strictEqual(over[over.length - 1].style, parseColor('#0000ff'));
 });
 
+test('a rowspan of 0 runs to the end of its row group, and no rowspan runs past it', async () => {
+  // HTML 4.9.11: `rowspan="0"` is every row to the end of the cell's row
+  // group, where it was read as 1 (zero-rowspan-001.html, -002.html). And a
+  // cell is cut at its row group's last row (4.9.12, ending a row group),
+  // where a rowspan past it took a column of the next group's rows
+  const { node } = await render(
+    '<style>body{margin:0} table{border-spacing:0}' +
+      ' td{padding:0;width:20px;height:10px}</style>' +
+      '<table><tr><td id="a" rowspan="0"></td><td id="a1"></td></tr>' +
+      '<tr><td id="a2"></td></tr><tr><td id="a3"></td></tr></table>' +
+      '<table><tbody><tr><td id="b" rowspan="5"></td><td id="b1"></td></tr>' +
+      '<tr><td id="b2"></td></tr></tbody>' +
+      '<tbody><tr><td id="c1"></td><td id="c" rowspan="0"></td></tr>' +
+      '<tr><td id="c2"></td></tr><tr><td id="c3"></td></tr></tbody>' +
+      '<tfoot><tr><td id="f"></td><td id="f1"></td></tr></tfoot></table>' +
+      // what is no number is 1, and so is one below 0
+      '<table><tr><td id="d" rowspan="-1"></td><td id="d1"></td></tr>' +
+      '<tr><td id="d2"></td><td id="e" rowspan="x"></td></tr>' +
+      '<tr><td id="d3"></td></tr></table>',
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const box = boxOf(el, id);
+    return [box.x, box.height];
+  };
+  // every row of the table's one group, with the other cells beside it
+  assert.deepStrictEqual(at('a'), [0, 30]);
+  for (const id of ['a1', 'a2', 'a3']) assert.strictEqual(at(id)[0], 20, id);
+  // two rows and no more, so the next group starts in the first column
+  assert.deepStrictEqual(at('b'), [0, 20]);
+  assert.deepStrictEqual([at('b1')[0], at('b2')[0]], [20, 20]);
+  assert.deepStrictEqual(at('c'), [20, 30]);
+  for (const id of ['c1', 'c2', 'c3']) assert.strictEqual(at(id)[0], 0, id);
+  // and the footer's cells are under neither
+  assert.deepStrictEqual(
+    [at('f'), at('f1')],
+    [
+      [0, 10],
+      [20, 10],
+    ],
+  );
+  assert.deepStrictEqual(
+    [at('d'), at('e')],
+    [
+      [0, 10],
+      [20, 10],
+    ],
+  );
+  assert.deepStrictEqual([at('d2')[0], at('d3')[0]], [0, 0]);
+});
+
 test("a collapsed table's sides are half its widest outer borders", async () => {
   // CSS Tables 3: along each side, the widest of its rows' borders, where
   // CSS 2.1 took the first row's and let a wider one below spill out of
