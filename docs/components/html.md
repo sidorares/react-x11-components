@@ -5984,7 +5984,10 @@ rule sets its colour, its font and its `text-transform` — which is `none`
 unless it says so, as the user agent's sheet has it, so an item set in
 capitals keeps its `i.` — and a `content` sets it as that,
 counters and all, its white space kept: `counter(list-item) ".\a0"` is
-where the default marker is. A list item counts with the
+where the default marker is. A marker's digits are as wide as one another,
+the same sheet's `font-variant-numeric: tabular-nums`, so the numbers down a
+list end in a line, unless a `::marker` rule sets `font-variant-numeric`,
+`font-variant` or `font`. A list item counts with the
 `list-item` counter, which `<ol>`, `<ul>` and `<menu>` reset, and which
 `start`, `value`, `reversed` and `type` set as HTML has them: an
 `<ol reversed>` counts down to 1. A `list-style-type` is any counter style

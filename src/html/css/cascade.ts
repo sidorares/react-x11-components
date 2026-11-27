@@ -173,6 +173,7 @@ import {
   settleClamp,
   copyStyle,
   CONTAIN_LAYOUT,
+  MARKER_NUMERIC,
   decorate,
   inherit,
   zoomedBy,
@@ -1113,6 +1114,15 @@ export interface SelectionStyle {
 
 /** The properties of a highlight's `text-decoration`, which it draws over
  *  the text it lights (CSS Pseudo 4, 3.6). */
+/** The properties a `::marker` rule says how its digits are set with, which
+ *  the user agent's `tabular-nums` then gives way to (`markerStyle`). */
+const SETS_NUMERIC = new Set([
+  'font-variant-numeric',
+  'font-variant',
+  'font',
+  'all',
+]);
+
 const DECORATION_PROPS = new Set([
   'text-decoration',
   'text-decoration-line',
@@ -8907,6 +8917,13 @@ export class Cascade {
       c.declarations.some((d) => d.prop === 'text-transform'),
     );
     if (!cased) out.textTransform = 'none';
+    // and its digits are as wide as one another: the same sheet's
+    // `font-variant-numeric: tabular-nums`, which the numbers of a list
+    // line up by, unless a rule says how its digits are set
+    const figures = candidates.some((c) =>
+      c.declarations.some((d) => SETS_NUMERIC.has(d.prop)),
+    );
+    if (!figures) out.fontVariantNumeric = MARKER_NUMERIC;
     return out;
   }
 
