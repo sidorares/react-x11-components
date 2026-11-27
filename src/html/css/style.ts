@@ -3252,7 +3252,11 @@ export function applyDeclaration(
           if (!value.trim()) return;
         }
       }
-      for (const part of splitValue(value)) {
+      // a count and a width at most, `auto` standing for either, and one
+      // value for a longhand: a third is no value of it, an `auto` or not
+      const parts = splitValue(value);
+      if (parts.length > (bit === 3 ? 2 : 1)) return;
+      for (const part of parts) {
         const v = part.toLowerCase();
         if (v === 'auto') continue;
         if (/^\d+$/.test(v) && Number(v) >= 1) {
