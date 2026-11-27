@@ -8319,7 +8319,9 @@ and is 8. A hard stop is drawn as it is.
 **Shadows:** `box-shadow`, outer and inset, with offsets, blur, spread and
 any number of them, under the box's background and over it: a card's,
 Tailwind's `shadow-*`, and its `ring-*`, which is a shadow that only
-spreads and draws a border without taking room. A spread rounds a corner
+spreads and draws a border without taking room. A block of no width or no
+height still casts the outer shadow its spread makes, as a rule drawn with
+one does. A spread rounds a corner
 out by less than itself where the radius is small beside it and the box
 is not already round, as browsers do, so a ring keeps a card's corners
 nearly square and a circle's round. An outer shadow is not

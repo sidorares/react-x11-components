@@ -7645,7 +7645,15 @@ function paintShadows(
   const left = box.x + options.originX;
   const top = frameY(box) + options.originY;
   const rect = snapped(left, top, box.width, frameHeight(box));
-  if (!(rect.width > 0 && rect.height > 0)) return;
+  // A box of no size has nothing an inset shadow falls inside, and still
+  // casts an outer one, as far as it spreads: but an inline box, whose
+  // shadows are its fragments' (`paintFragmentShadows`) and whose own
+  // rectangle is no layout's, and a fragment of no size
+  if (!(rect.width > 0 && rect.height > 0)) {
+    const kind = (box as Partial<Box>).kind;
+    if (inset || kind === undefined || kind === 'inline') return;
+    if (!(rect.width >= 0 && rect.height >= 0)) return;
+  }
   const corners = cornersOf(style, rect.width, rect.height) ?? SQUARE;
   const canShadow = 'shadowBlur' in ctx;
   if (!inset) {
