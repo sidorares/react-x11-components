@@ -7143,6 +7143,22 @@ test('a resize observer is told a size as its target is observed and again each 
   assert.equal(text, 'box:100:20:5:114,none:0:0:0:0,box:100:40:5:114|function');
 });
 
+test('a scroll tells a resize observer nothing and a later change of size still is told (a scroll is no change of size)', async () => {
+  const doc = await hosted(
+    '<style>#box{width:100px;height:20px}</style>' +
+      '<div id="box"></div><div style="height:3000px"></div><p id="out"></p><script>' +
+      'var seen = [], box = document.getElementById("box");' +
+      'new ResizeObserver(function (entries) { entries.forEach(function (e) {' +
+      '  seen.push(e.contentRect.width + "x" + e.contentRect.height); }); }).observe(box);' +
+      'setTimeout(function () { window.scrollTo(0, 500); }, 150);' +
+      'setTimeout(function () { box.style.height = "40px"; }, 300);' +
+      'setTimeout(function () { document.getElementById("out").textContent = seen.join(",") + "|" + Math.round(window.scrollY); }, 700);' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.match(text, /^100x20,100x40\|/);
+});
+
 test('a resize observer measures an SVG element by its bounding box, and again when an attribute moves it', async () => {
   // Resize Observer 1, 3.1: no CSS box, so its box is its bounding box,
   // all of it content
