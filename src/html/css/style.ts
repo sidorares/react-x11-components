@@ -3671,11 +3671,10 @@ export function applyDeclaration(
       style.anchoredContainer = type.anchored;
       return;
     }
+    // the logical two are these by the writing mode (`LOGICAL`)
     case 'contain-intrinsic-size':
     case 'contain-intrinsic-width':
-    case 'contain-intrinsic-height':
-    case 'contain-intrinsic-inline-size':
-    case 'contain-intrinsic-block-size': {
+    case 'contain-intrinsic-height': {
       const parts = splitValue(value);
       const sizes: (number | null)[] = [];
       for (let i = 0; i < parts.length; i += 1) {
@@ -3692,19 +3691,13 @@ export function applyDeclaration(
         sizes.push(len);
       }
       if (!sizes.length || sizes.length > 2) return;
-      const across =
-        name === 'contain-intrinsic-size' ||
-        name === 'contain-intrinsic-width' ||
-        name === 'contain-intrinsic-inline-size';
-      const down =
-        name !== 'contain-intrinsic-width' &&
-        name !== 'contain-intrinsic-inline-size';
       if (name === 'contain-intrinsic-size') {
         style.containIntrinsicWidth = sizes[0];
         style.containIntrinsicHeight = sizes.length > 1 ? sizes[1] : sizes[0];
       } else if (sizes.length === 1) {
-        if (across) style.containIntrinsicWidth = sizes[0];
-        else if (down) style.containIntrinsicHeight = sizes[0];
+        if (name === 'contain-intrinsic-width') {
+          style.containIntrinsicWidth = sizes[0];
+        } else style.containIntrinsicHeight = sizes[0];
       }
       return;
     }
@@ -10709,6 +10702,16 @@ const LOGICAL: Record<string, Logical> = (() => {
     ['min-block-size', 'min-height', 'min-width'],
     ['max-inline-size', 'max-width', 'max-height'],
     ['max-block-size', 'max-height', 'max-width'],
+    [
+      'contain-intrinsic-inline-size',
+      'contain-intrinsic-width',
+      'contain-intrinsic-height',
+    ],
+    [
+      'contain-intrinsic-block-size',
+      'contain-intrinsic-height',
+      'contain-intrinsic-width',
+    ],
   ];
   for (const [name, physical, vertical] of sizes) {
     out[name] = { kind: 'size', physical, vertical };
@@ -11970,8 +11973,6 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'contain-intrinsic-size': ['containIntrinsicWidth', 'containIntrinsicHeight'],
   'contain-intrinsic-width': ['containIntrinsicWidth'],
   'contain-intrinsic-height': ['containIntrinsicHeight'],
-  'contain-intrinsic-inline-size': ['containIntrinsicWidth'],
-  'contain-intrinsic-block-size': ['containIntrinsicHeight'],
   'object-position': ['objectPositionX', 'objectPositionY'],
   position: ['position'],
   top: ['top'],
