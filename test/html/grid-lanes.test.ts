@@ -586,3 +586,52 @@ test('the last item of a row lane stretched along it is as tall as its lane', as
   );
   assert.deepStrictEqual(items.b, [75, 0, 125, 80]);
 });
+
+test('an orthogonal item of a row lane wraps to its lane and is as wide along it as that makes it', async () => {
+  // CSS Writing Modes 4, 7.3: an orthogonal flow's root is laid out across
+  // the height it is given, and is as wide as its lines come to. A row
+  // lane's items were laid out across the container alone before they were
+  // placed, at no height, so a vertical item was on one line however short
+  // its lane, as narrow as one line and running past the lane
+  // (row-explicit-placement-008.html, row-negative-margin-003.html). Two
+  // 10 by 30 boxes down a vertical line are 60 tall: one line in a 100px
+  // lane, two in a 40px one
+  const piece =
+    '<span style="display:inline-block;width:10px;height:30px"></span>';
+  const vertical = (id: string, style: string) =>
+    `<div id="${id}" style="writing-mode:vertical-rl;font-size:0;` +
+    `line-height:0;${style}">${piece} ${piece}</div>`;
+  const items =
+    vertical('a', 'grid-row:1') +
+    vertical('b', 'grid-row:2') +
+    item('c', 'grid-row:1;width:7px') +
+    vertical('d', 'grid-row:1;align-self:start') +
+    vertical('e', 'grid-row:1;height:35px');
+  const laid = await lanes(
+    'display:grid-lanes;grid-template-rows:40px 100px;width:300px',
+    items,
+  );
+  assert.deepStrictEqual(laid.items, {
+    // two lines in the short lane, and what follows it after both
+    a: [0, 0, 20, 40],
+    // one in the tall one
+    b: [0, 40, 10, 100],
+    c: [20, 0, 7, 40],
+    // aligned and not stretched, it still has no more room than its lane
+    d: [27, 0, 20, 40],
+    // and a height of its own is the one it wraps to
+    e: [47, 0, 20, 35],
+  });
+  // the container's own width is from its items at their widest, each on
+  // its one line, so one that wraps in a short lane runs past it
+  // (grid-lanes-intrinsic-sizing-rows-003-mix2.html)
+  const shrunk = await lanes(
+    'display:inline grid-lanes;grid-template-rows:40px 100px',
+    vertical('a', 'grid-row:1') + item('c', 'grid-row:1;width:7px'),
+  );
+  assert.deepStrictEqual(shrunk.size, [17, 140]);
+  assert.deepStrictEqual(shrunk.items, {
+    a: [0, 0, 20, 40],
+    c: [20, 0, 7, 40],
+  });
+});

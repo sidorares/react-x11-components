@@ -6563,7 +6563,11 @@ tracks as large as its hypothetical ones fit (3.1.1). Each item, in
 tracks end lowest, or among those within `fit-tolerance` of it — `normal`
 is 1em, `infinite` fills strictly in order — the first at or after where
 the item before it ended, and is laid out in its area there, as wide as its
-lanes and as tall as its content. `grid-lanes-pack: dense` puts an item in
+lanes and as tall as its content. An item of a row lane whose lines run
+down the page wraps to its lane's height, and is as wide along the lane as
+its lines then come to; the container's own width is from its items each
+on one line, so one that wraps in a short lane runs past it.
+`grid-lanes-pack: dense` puts an item in
 a hole a spanning item left above, where the lanes there come to the width
 it was laid out at. `track-reverse` fills the lanes from the last, and
 `fill-reverse` stacks from the far edge, the stacking range mirrored in

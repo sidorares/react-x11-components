@@ -61,6 +61,7 @@ import {
   wholeAgain,
 } from './block.js';
 import type { LayoutContext } from './block.js';
+import { FRAMES, framed } from './writing.js';
 import {
   alignColumnBaselines,
   autoMargins,
@@ -596,6 +597,27 @@ export function layoutGridLanes(
     if (rows) {
       item.row = from;
       item.rows = span;
+      // An orthogonal flow's root is as wide along the lanes as its frame
+      // comes to at the height its lane gives it (CSS Writing Modes 4,
+      // 7.3), so it is laid out in its lane before it is placed. Laid out
+      // across the container alone, at no height, it was all on one line
+      // however short its lane, and as narrow as one line. Not where the
+      // container's own width is being found, which is from its items at
+      // their widest, each on its one line: it is then no wider for an
+      // item that wraps in a short lane, which runs past it
+      if (
+        framed.any &&
+        Number.isFinite(contentWidth) &&
+        FRAMES.has(child) &&
+        child.style.height === AUTO &&
+        !child.style.heightKeyword
+      ) {
+        child.percentHeightBase = area;
+        // what it measured of its own widths was at no height
+        child.intrinsicMinContent = -1;
+        child.intrinsicMaxContent = -1;
+        layoutItem(item, contentWidth, ctx, NaN, true);
+      }
     } else {
       item.col = from;
       item.cols = span;
