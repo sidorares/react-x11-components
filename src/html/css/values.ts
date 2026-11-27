@@ -159,6 +159,14 @@ export interface UnitContext {
    *  only for a length in them; 1.2em where they are missing. */
   lh?: () => number;
   rlh?: () => number;
+  /** The root element's font's x-height, capital height, "0" and "水",
+   *  for `rex`, `rcap`, `rch` and `ric` (CSS Values 4, 6.1.2), asked only
+   *  for a length in them; what the root's font size comes to by the
+   *  fractions above where they are missing. */
+  rex?: () => number;
+  rcap?: () => number;
+  rch?: () => number;
+  ric?: () => number;
   /** Every property at its initial value, which `initial` sets one to. */
   initial?: ComputedStyle;
   /** Whether the element is the root, whose parent style is no element's:
@@ -195,7 +203,7 @@ export interface UnitContext {
 const NUMBER_SRC = '[+-]?(?:\\d*\\.\\d+|\\d+)(?:e[+-]?\\d+)?';
 
 const LENGTH_RE = new RegExp(
-  `^(${NUMBER_SRC})(px|em|rem|pt|pc|in|cm|mm|ex|cap|ch|ic|lh|rlh|[sld]?v(?:w|h|i|b|min|max)|cq(?:w|h|i|b|min|max)|q|%)?$`,
+  `^(${NUMBER_SRC})(px|em|rem|pt|pc|in|cm|mm|ex|cap|ch|ic|lh|rlh|rex|rcap|rch|ric|[sld]?v(?:w|h|i|b|min|max)|cq(?:w|h|i|b|min|max)|q|%)?$`,
 );
 
 /**
@@ -330,6 +338,19 @@ function unitScale(unit: string, ctx: UnitContext): number {
       return ctx.lh ? ctx.lh() : ctx.em * 1.2;
     case 'rlh':
       return ctx.rlh ? ctx.rlh() : ctx.rem * 1.2;
+    // the root element's font's, whatever font the element is in
+    case 'rex':
+      ctx.remRead?.();
+      return ctx.rex ? ctx.rex() : ctx.rem * 0.5;
+    case 'rcap':
+      ctx.remRead?.();
+      return ctx.rcap ? ctx.rcap() : ctx.rem * 0.7;
+    case 'rch':
+      ctx.remRead?.();
+      return ctx.rch ? ctx.rch() : ctx.rem * 0.5;
+    case 'ric':
+      ctx.remRead?.();
+      return ctx.ric ? ctx.ric() : ctx.rem;
     case 'vw':
       ctx.viewport?.('vw');
       return ctx.vw / 100;

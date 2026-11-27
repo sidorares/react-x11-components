@@ -8821,7 +8821,8 @@ the selection, in `Mark` under `MarkText` where no rule says otherwise: see
 a text field's hint its colour and its opacity, which its widget draws:
 see [Forms](#forms).
 
-**Lengths:** `px`, `em`, `rem`, `ex`, `cap`, `ch`, `ic`, `lh`, `rlh`, `vw`, `vh`,
+**Lengths:** `px`, `em`, `rem`, `ex`, `cap`, `ch`, `ic`, `lh`, `rlh`, the
+root's `rex`, `rcap`, `rch` and `ric`, `vw`, `vh`,
 `vi`, `vb` (the element's own inline and block axes, so the height and
 the width in a vertical writing mode), `vmin`, `vmax` — and the small,
 large and dynamic viewports'
@@ -8833,7 +8834,9 @@ where it cannot say; a `cap` the height of its capitals, or its ascent
 where the face states none; an `ic` the advance of its "水", or an em, and an em
 down a vertical line, where an ideograph stands upright; an `lh` is the element's line height, `normal` as its
 font's own — in `line-height` itself its parent's, as an `em` in
-`font-size` is — and an `rlh` the root's. A `rem` is the root element's font
+`font-size` is — and an `rlh` the root's; `rex`, `rcap`, `rch` and `ric`
+are an `ex`, a `cap`, a `ch` and an `ic` of the root element's font,
+whatever font the element is in. A `rem` is the root element's font
 size, so `html { font-size: 62.5% }` makes it ten pixels, and in the root's
 own `font-size` the initial size, as CSS has both. A source that writes no
 `<html>` has one all the same, as a browser's parser gives it, so a rule on

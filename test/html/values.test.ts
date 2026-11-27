@@ -206,6 +206,38 @@ metric(
   },
 );
 
+metric(
+  "rex, rcap, rch and ric are the root element's font's, whatever font the element is in",
+  async () => {
+    // CSS Values 4, 6.1.2: the root font-relative units, each what its
+    // counterpart is in the root element's font. None of the four was a
+    // unit here, so a declaration in one was dropped
+    // (css-fonts/rex-in-monospace.html and its three kin)
+    const pairs = ['ex', 'cap', 'ch', 'ic'];
+    const { node } = await render(
+      '<style>html{font:20px monospace}body{margin:0}' +
+        '.other{font:40px sans-serif}div[id]{height:4px}</style>' +
+        pairs
+          .map(
+            (unit) =>
+              // in the root's font, by its own unit
+              `<div id="${unit}" style="width:10${unit}"></div>` +
+              // and in another font, by the root's unit and by its own
+              `<div class="other"><div id="r${unit}" style="width:10r${unit}">` +
+              `</div><div id="o${unit}" style="width:10${unit}"></div></div>`,
+          )
+          .join(''),
+    );
+    const el = view(node);
+    const widthOf = (id: string) => boxOf(el, id).width;
+    for (const unit of pairs) {
+      assert.ok(widthOf(unit) > 0, unit);
+      assert.strictEqual(widthOf(`r${unit}`), widthOf(unit), `r${unit}`);
+      assert.notStrictEqual(widthOf(`r${unit}`), widthOf(`o${unit}`), unit);
+    }
+  },
+);
+
 metric("ex is the font's x-height, or half an em", async () => {
   const { node } = await render(
     '<div id="d" style="width:10ex;height:10px;font-size:20px"></div>',
