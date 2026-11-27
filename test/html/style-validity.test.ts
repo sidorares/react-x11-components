@@ -335,3 +335,26 @@ test('a keyword property takes its keywords each at most once, as the three brow
     cases,
   );
 });
+
+test('a system colour is taken by every colour property, as a page that paints a selection sets it (rida.dev: el.style.backgroundColor = "Highlight")', async () => {
+  const cases: [string, string][] = [
+    ['background-color', 'Highlight'],
+    ['background-color', 'HighlightText'],
+    ['background-color', 'Canvas'],
+    ['border-top-color', 'CanvasText'],
+    ['border-left-color', 'AccentColor'],
+    ['background-color', 'notacolour'],
+  ];
+  const out = await answers(cases);
+  assert.deepEqual(
+    out.map(([, , , supports], i) => [cases[i][1], supports]),
+    cases.map(([, v]) => [v, v !== 'notacolour']),
+  );
+  for (const [setter, set, text, supports] of out.slice(0, -1)) {
+    assert.deepEqual(
+      [setter, set, text, supports],
+      ['set', 'set', 'set', true],
+    );
+  }
+  assert.deepEqual(out.at(-1), ['', '', '', false]);
+});

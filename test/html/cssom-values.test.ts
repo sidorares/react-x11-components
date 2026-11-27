@@ -305,3 +305,16 @@ test("a nested rule's selectorText says the & it is relative to", async () => {
   );
   assert.deepEqual(out, ['& > .b', '& .c, &.d, .e &', '& .f']);
 });
+
+test('getComputedStyle answers a unitless line-height as the length it comes to, as all three engines do (rida.dev sized its selection bands from it)', async () => {
+  const out = await inPage(
+    '<p id="a" style="line-height: 1.5; font-size: 16px">x</p>' +
+      '<p id="b" style="line-height: normal">y</p>' +
+      '<p id="c" style="line-height: 150%; font-size: 20px">z</p>' +
+      '<p id="d" style="line-height: 22px">w</p>',
+    `return ['a', 'b', 'c', 'd'].map(function (id) {
+       return getComputedStyle(document.getElementById(id)).lineHeight;
+     });`,
+  );
+  assert.deepEqual(out, ['24px', 'normal', '30px', '22px']);
+});

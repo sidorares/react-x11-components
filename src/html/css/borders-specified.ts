@@ -5,7 +5,7 @@
 // and read back from them as short as they go. And `background-color`, which
 // is a colour as a border's is.
 
-import { rgbaOf, specifiedColorText } from './color.js';
+import { rgbaOf, specifiedColorText, SYSTEM_COLOR } from './color.js';
 import { serializeMath } from './calc-tree.js';
 import { parseLength, splitValue } from './values.js';
 import type { UnitContext } from './values.js';
@@ -70,6 +70,9 @@ export function colorSpecified(value: string): string | null {
   if (/^[a-z]+$/i.test(v)) {
     const lower = v.toLowerCase();
     if (lower === 'currentcolor' || lower === 'transparent') return lower;
+    // a system colour is a colour (CSS Color 4, 6.2): `Highlight` is what a
+    // page that paints a selection asks of `el.style.backgroundColor`
+    if (SYSTEM_COLOR.test(v)) return lower;
     return rgbaOf(lower) ? lower : null;
   }
   if (v[0] === '#' || LEGACY.test(v)) {
