@@ -20,6 +20,65 @@
 import type { TextLayoutLike } from './boxes.js';
 import type { DocumentRun, FontsLike } from './inline.js';
 
+/** The size text set at no size is handed to an engine at where the engine
+ *  reads 0 as a size of its own: a thousandth of a pixel, which rounds to
+ *  no room and no ink. */
+const NEXT_TO_NONE = 1 / 1024;
+
+/** Whether an engine lays text of no size out at some size, by engine. */
+const READS_NONE_AS_SOME = new WeakMap<FontsLike, boolean>();
+
+/**
+ * Whether an engine reads a size of 0 as a size of its own: asked of it,
+ * once, with a letter. CoreText reads 0 as its default twelve points, so
+ * a line holding text of no size was twelve points tall on macOS, and the
+ * text was drawn; ntk lays it out at no size.
+ */
+function readsNoneAsSome(engine: FontsLike): boolean {
+  let answer = READS_NONE_AS_SOME.get(engine);
+  if (answer === undefined) {
+    answer = false;
+    try {
+      const probe = engine.layout([{ text: 'x', size: 0 }], { size: 0 }, {});
+      const line = probe.lines[0];
+      answer = !!line && (line.height > 0.25 || line.width > 0.25);
+    } catch {
+      // an engine that will not lay it out at all is asked nothing more
+    }
+    READS_NONE_AS_SOME.set(engine, answer);
+  }
+  return answer;
+}
+
+/**
+ * The engine's layout of these runs, with text of no size handed over at
+ * next to none where the engine would read 0 as a size of its own
+ * (`readsNoneAsSome`): each run that says 0, or says nothing under a block
+ * that does. The block's own size is handed over as it came, so nothing
+ * else about such a block's lines changes. What the layout is kept by is
+ * what was asked for.
+ */
+function sizedFor(
+  engine: FontsLike,
+  content: DocumentRun[],
+  style: Record<string, unknown>,
+  options: Parameters<FontsLike['layout']>[2],
+): TextLayoutLike {
+  const inherited = style.size === 0;
+  const none = (run: DocumentRun): boolean => {
+    const size = (run as { size?: number }).size;
+    return size === 0 || (inherited && size === undefined);
+  };
+  if (!content.some(none) || !readsNoneAsSome(engine)) {
+    return engine.layout(content, style, options);
+  }
+  return engine.layout(
+    content.map((run) => (none(run) ? { ...run, size: NEXT_TO_NONE } : run)),
+    style,
+    options,
+  );
+}
+
 export class TextLayoutCache {
   /** The fonts to lay out with: the engine's, answered from here when a
    *  layout is already on hand. One object for the cache's life, since the
@@ -87,7 +146,7 @@ export class TextLayoutCache {
       content: content.map((run) => ({ ...run })),
       style: { ...style },
       options: { ...options },
-      layout: this.engine.layout(content, style, options),
+      layout: sizedFor(this.engine, content, style, options),
     };
     if (now) now.push(kept);
     else this._now.set(key, [kept]);

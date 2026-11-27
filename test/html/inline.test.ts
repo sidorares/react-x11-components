@@ -11,6 +11,7 @@ import {
   MOVED,
   baselinesOf,
   boxOf,
+  drawnText,
   extentOf,
   fillsOf,
   findById,
@@ -192,6 +193,41 @@ test('inline-blocks in an element that does not wrap stay on one line, wider tha
   const wrapping = view((await row('normal')).node);
   assert.ok(boxOf(wrapping, 'b').y > boxOf(wrapping, 'a').y, 'two lines');
 });
+
+metric(
+  'text set at no size still makes a line, which its block is not empty for',
+  async () => {
+    // A line with text on it is no phantom line, whatever size the text is
+    // set at (CSS 2.1 9.4.2): its block's margins do not collapse through
+    // it, and an inline-block holding it has a line to stand its baseline
+    // on. Text of no size was given no box, so its block had no line at all
+    // (CSS2/visudet/inline-block-baseline-016.html and
+    // css-fonts/font-size-zero-1.html)
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/20px sans-serif}p{margin:10px 0}' +
+        '.z{margin:0;font-size:0;line-height:0}' +
+        '.i{display:inline-block;width:10px;height:40px}</style>' +
+        // margins that do not meet through it
+        '<p>before</p><p id="zero" class="z">zero</p><p id="after">after</p>' +
+        // as they do through white space alone, which collapses to nothing
+        '<p id="blank" class="z"> \n </p><p id="last">last</p>' +
+        // and two inline-blocks with their baselines at their tops
+        '<div id="row" class="z">' +
+        '<div class="i" id="a">text</div><div class="i" id="b" ' +
+        'style="white-space:pre">\n</div></div>',
+    );
+    const el = view(node);
+    const zero = boxOf(el, 'zero');
+    assert.deepStrictEqual([zero.y, zero.height], [40, 0]);
+    assert.strictEqual(boxOf(el, 'after').y, 50, '10 above it and 10 below');
+    assert.strictEqual(boxOf(el, 'last').y, 80, 'one margin of 10 through it');
+    const [a, b] = [boxOf(el, 'a'), boxOf(el, 'b')];
+    assert.strictEqual(a.y, b.y, 'side by side');
+    assert.strictEqual(boxOf(el, 'row').height, 40);
+    // it is still no part of what the document draws or hands a selection
+    assert.ok(!drawnText(el).includes('zero'));
+  },
+);
 
 metric('font-size: 0 leaves no room between inline-blocks', async () => {
   // the common way to lose the spaces between columns set inline: at no
