@@ -2156,6 +2156,103 @@ test('a @supports test is answered by what is drawn, and what only a browser dra
   );
 });
 
+test('a @supports selector() reads the selectors a pseudo-class takes with none forgiven', () => {
+  // CSS Conditional 4, 3.1: the lists of `:is()` and `:where()` forgive an
+  // entry that is no selector in a rule, and not in `selector()`, which
+  // asks whether each is one. Nothing in a list was read at all, so
+  // `selector(:is(:foo, .a))` held and the red rule under it applied
+  // (at-supports-selector-detecting-invalid-in-logical-combinations.html).
+  // The answers are WPT's
+  // CSS-supports-selector-detecting-invalid-in-logical-combinations.html
+  // and a few more of the same kinds
+  const none = [
+    ':has(:foo)',
+    ':has(.a, :foo)',
+    ':has(:foo, .a)',
+    ':not(:foo)',
+    ':not(.a, :foo)',
+    ':not(:foo, .a)',
+    ':is(:foo)',
+    ':is(.a, :foo)',
+    ':is(:foo, .a)',
+    ':is(:has(:foo, a), .b)',
+    ':where(:foo)',
+    ':where(.a, :foo)',
+    ':where(:foo, .a)',
+    ':where(:is(:foo, a), .b)',
+    ':has(:where(:foo, a), .b)',
+    // a list with nothing in it, or with an entry that is nothing
+    ':is()',
+    ':where()',
+    ':has()',
+    ':not()',
+    ':is(.a,)',
+    ':is(,.a)',
+    // a `:has()` in a `:has()`, at any depth
+    ':has(:has(.a))',
+    ':has(:has(.a), b)',
+    '.a, :has(:has(.b))',
+    ':has(:is(:has(.a)))',
+    ':has(:is(:has(.a), .b))',
+    ':has(:is(.a, :has(.b)))',
+    // only a `:has()`'s selectors are relative, and each has one combinator
+    ':is(> .a)',
+    ':not(> .a)',
+    ':has(> > .a)',
+    ':not(.a > )',
+    // what follows an `of`, and what is one compound
+    ':nth-child(2n of :foo)',
+    ':nth-child(2n of .a, :is(:foo))',
+    ':host(:foo)',
+    ':host(:is(:foo))',
+    ':host(.a .b)',
+    '::slotted(:foo)',
+    '::slotted(.a > .b)',
+  ];
+  const selectors = [
+    ':is(.a)',
+    ':where(.a)',
+    ':has(.a)',
+    ':not(.a)',
+    ':is(.a, .b > c)',
+    ':has(> .a, + .b, ~ c d)',
+    ':not(.a .b, :is(c, d:hover))',
+    ':is(:not(:has(.a)))',
+    ':has(:not(.a))',
+    'a:is(.b):where(.c):not(.d):has(.e)',
+    ':nth-child(2n of .a, :is(b))',
+    ':nth-child(2n)',
+    ':host(:is(.a))',
+    '::slotted(.a:is(b))',
+    // a vendor's own is its own affair, in a list as out of one
+    ':is(:-webkit-foo)',
+  ];
+  for (const selector of none) {
+    assert.strictEqual(
+      supportsCondition(`selector(${selector})`),
+      false,
+      selector,
+    );
+  }
+  for (const selector of selectors) {
+    assert.strictEqual(
+      supportsCondition(`selector(${selector})`),
+      true,
+      selector,
+    );
+  }
+  // and a rule's own lists forgive as they did
+  const sheet = parseStylesheet(
+    '@supports selector(:is(:foo, .a)) { .a { color: red } }' +
+      '@supports not selector(:where(:foo, .a)) { .b { color: green } }' +
+      ':is(:foo, .c) { color: green }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => r.selector),
+    ['.b', ':is(:foo, .c)'],
+  );
+});
+
 test('a @supports condition that is none holds nowhere, and neither does a test nothing knows', () => {
   // CSS Conditional 3, 6: the block was entered wherever the condition was
   // not one it could answer, so `and` beside `or`, a bare declaration and
