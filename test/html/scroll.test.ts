@@ -1112,6 +1112,31 @@ test('the wheel does not scroll an `overflow: hidden` box, and the handle does',
   );
 });
 
+test('overflow: overlay is auto, the legacy name every engine still reads', async () => {
+  // CSS Overflow 3, 3.1: `overlay` is a legacy alias of `auto`. It was no
+  // value here, so the declaration was dropped: the box did not clip, and
+  // was no scroll container (css-overflow/overflow-overlay.html)
+  const tall = '<div style="height:200px"></div>';
+  const { el: node } = await renderScrolled(
+    '<style>body{margin:0}div[id]{width:100px;height:50px}</style>' +
+      `<div id="both" style="overflow:overlay">${tall}</div>` +
+      `<div id="down" style="overflow-y:overlay">${tall}</div>` +
+      `<div id="pair" style="overflow:hidden overlay">${tall}</div>`,
+    300,
+  );
+  for (const id of ['both', 'down', 'pair']) {
+    const state = node.scrollStateOf(el(node, id));
+    assert.deepEqual([state?.height, state?.clientHeight], [200, 50], id);
+    assert.equal(node.computedStyle(el(node, id))?.['overflow-y'], 'auto', id);
+  }
+  assert.equal(node.computedStyle(el(node, 'both'))?.['overflow-x'], 'auto');
+  assert.equal(node.computedStyle(el(node, 'pair'))?.['overflow-x'], 'hidden');
+  assert.deepEqual(node.scrollElementTo(el(node, 'both'), { y: 60 }), {
+    x: 0,
+    y: 60,
+  });
+});
+
 test('a scroll is told once it is drawn, by the element that scrolled', async () => {
   const told: string[] = [];
   await renderX11(

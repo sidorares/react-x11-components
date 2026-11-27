@@ -7207,7 +7207,8 @@ scroll container, so it makes no formatting context and leaves a flex or
 grid item its automatic minimum; beside a value that scrolls, a `visible`
 axis is `auto` and a `clip` one `hidden`, though an anonymous scroll or
 view timeline still takes it for an axis the box does not scroll along.
-`clip` on one axis cuts only that one. `overflow-inline` and
+`clip` on one axis cuts only that one. `overlay`, the legacy name, is
+`auto`. `overflow-inline` and
 `overflow-block` are `overflow-x` and `overflow-y` by the box's writing
 mode. `overflow-clip-margin` moves the edge `clip` and paint containment
 cut at: out from the box it names by its length, or in where the length is

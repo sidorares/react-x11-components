@@ -6134,7 +6134,8 @@ function overflowKeyword(
   ) {
     return s;
   }
-  return null;
+  // the legacy alias of `auto`, which it computes to (CSS Overflow 3, 3.1)
+  return s === 'overlay' ? 'auto' : null;
 }
 
 /** A `container-type` value as the type it computes to, or null where it
