@@ -519,6 +519,62 @@ test('a size-contained box in a vertical writing mode is its contain-intrinsic-s
   assert.deepStrictEqual(size('none'), [0, 0]);
 });
 
+test('inline-size containment holds a vertical box down the page, where its lines run', async () => {
+  // A box's inline size is its height in a vertical writing mode, and
+  // under inline-size containment that is its `contain-intrinsic` size
+  // that way, or nothing (CSS Containment 3, 3.2): what it holds counts
+  // for nothing along its lines. The root of a vertical flow read its
+  // height from what it holds all the same, 74 tall around two 35px
+  // inline blocks where it says 50. Each size is Chromium's, Firefox's and
+  // WebKit's (css-contain/contain-inline-size-intrinsic.html)
+  const held =
+    '<div style="display:inline-block;height:35px;width:30px"></div>';
+  const box = (id: string, style: string, inside = held) =>
+    `<div id="${id}" style="contain:inline-size;${style}">${inside}</div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      box(
+        'fit',
+        'height:fit-content;width:100px;contain-intrinsic-inline-size:50px;' +
+          'writing-mode:vertical-rl',
+        `${held} ${held}`,
+      ) +
+      // with none said, no taller than its edges
+      box('none', 'width:100px;writing-mode:vertical-rl') +
+      // a height of its own is its own, and a least one holds
+      box(
+        'own',
+        'height:80px;width:100px;contain-intrinsic-inline-size:50px;' +
+          'writing-mode:vertical-rl',
+      ) +
+      box(
+        'least',
+        'width:100px;contain-intrinsic-inline-size:50px;min-height:60px;' +
+          'padding:5px 0;writing-mode:vertical-lr',
+      ) +
+      // across the page it is as wide as what it holds, which nothing holds
+      box(
+        'auto',
+        'contain-intrinsic-inline-size:50px;writing-mode:vertical-rl',
+      ) +
+      // and the physical two are read by the writing mode
+      box(
+        'physical',
+        'contain-intrinsic-height:40px;contain-intrinsic-width:70px;' +
+          'writing-mode:vertical-rl',
+      ),
+    800,
+  );
+  const el = view(node);
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.deepStrictEqual(size('fit'), [100, 50]);
+  assert.deepStrictEqual(size('none'), [100, 0]);
+  assert.deepStrictEqual(size('own'), [100, 80]);
+  assert.deepStrictEqual(size('least'), [100, 70]);
+  assert.deepStrictEqual(size('auto'), [30, 50]);
+  assert.deepStrictEqual(size('physical'), [30, 40]);
+});
+
 test('contain: size lays a box out as though it held nothing', async () => {
   // `contain` was dropped whole (CSS Containment 2): a size-contained box
   // is its `contain-intrinsic-size`, or nothing, whatever it holds
