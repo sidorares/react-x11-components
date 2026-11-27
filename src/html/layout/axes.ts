@@ -37,6 +37,7 @@ import type {
   FaceMetrics as FaceRuleMetrics,
   FaceSetting,
   Slant,
+  TextPiece,
 } from '../fonts.js';
 import type { DocumentRun, FaceMetrics, FontsLike } from './inline.js';
 import { withLayout } from './shaping.js';
@@ -52,6 +53,14 @@ export interface FaceSettings {
     italic: boolean | Slant,
     stretch: number,
   ): FaceSetting | null;
+  /** A family list from its first available font on, which is the one a
+   *  face asked for by the list is measured by (`WebFonts.primary`). */
+  primary(list: string): string;
+  /** Whether any family's faces are for a `unicode-range`, and the list a
+   *  text is set in, without the families whose range leaves it out, or
+   *  its pieces where they are set in different ones (`WebFonts.forText`). */
+  readonly ranged: boolean;
+  forText(list: string, text: string): string | TextPiece[];
 }
 
 const NUMERIC: Record<string, number> = { normal: 400, bold: 700 };
@@ -74,50 +83,85 @@ function slantOfRun(
  *  and answering a face's metrics as its rule has them. */
 export function fontAxes(engine: FontsLike, faces: FaceSettings): FontsLike {
   const laid = withLayout(engine, (content, style, options) => {
-    if (!faces.active || !Array.isArray(content)) {
+    const ranged = faces.ranged;
+    if ((!faces.active && !ranged) || !Array.isArray(content)) {
       return engine.layout(content, style, options);
     }
+    const active = faces.active;
     let runs: DocumentRun[] | null = null;
     // the face of overridden lines every run is in, at one size, or null
     let lined: FaceRuleMetrics | null = null;
     let linedSize = NaN;
     for (let i = 0; i < content.length; i += 1) {
       const run = content[i];
-      const family = run.family ?? style.family;
-      const weight = run.weight ?? style.weight ?? 400;
-      const stretch = run.stretch ?? style.stretch ?? 100;
-      const setting =
-        typeof family === 'string'
-          ? faces.setting(
-              family,
-              numeric(weight),
-              slantOfRun(run, style),
-              typeof stretch === 'number' ? stretch : 100,
-            )
-          : null;
-      const metrics = setting?.metrics ?? null;
-      const size = run.size ?? style.size;
-      if (i === 0 && metrics && overrides(metrics)) {
-        lined = metrics;
-        linedSize = typeof size === 'number' ? size * metrics.scale : NaN;
-      } else if (lined && (metrics !== lined || size !== content[0].size)) {
-        lined = null;
+      const asked = run.family ?? style.family;
+      // in no family whose `unicode-range` leaves its characters out: one
+      // list, or a piece of the run for each
+      const fit =
+        ranged && typeof asked === 'string' && typeof run.text === 'string'
+          ? faces.forText(asked, run.text)
+          : asked;
+      const pieces = Array.isArray(fit) ? (fit as TextPiece[]) : null;
+      let from = 0;
+      for (let p = 0; p < (pieces ? pieces.length : 1); p += 1) {
+        let part = run;
+        let family: unknown = fit;
+        if (pieces) {
+          family = pieces[p].family;
+          part = {
+            ...run,
+            text: (run.text as string).slice(from, pieces[p].end),
+            family: pieces[p].family,
+          };
+          from = pieces[p].end;
+        }
+        const weight = run.weight ?? style.weight ?? 400;
+        const stretch = run.stretch ?? style.stretch ?? 100;
+        const setting =
+          active && typeof family === 'string'
+            ? faces.setting(
+                family,
+                numeric(weight),
+                slantOfRun(run, style),
+                typeof stretch === 'number' ? stretch : 100,
+              )
+            : null;
+        const metrics = setting?.metrics ?? null;
+        const size = run.size ?? style.size;
+        if (i === 0 && p === 0 && metrics && overrides(metrics)) {
+          lined = metrics;
+          linedSize = typeof size === 'number' ? size * metrics.scale : NaN;
+        } else if (lined && (metrics !== lined || size !== content[0].size)) {
+          lined = null;
+        }
+        let set: DocumentRun & { variations?: object } = part;
+        if (setting || (!pieces && family !== asked)) {
+          if (!pieces) set = { ...run };
+          if (family !== asked && typeof family === 'string') {
+            set.family = family;
+          }
+          if (setting) {
+            if (setting.family !== family) set.family = setting.family;
+            if (setting.variations) set.variations = setting.variations;
+            const scale = metrics?.scale ?? 1;
+            if (scale !== 1 && typeof size === 'number') {
+              set.size = size * scale;
+            }
+          }
+        }
+        if (runs) runs.push(set);
+        else if (set !== run) (runs = content.slice(0, i)).push(set);
       }
-      if (!setting) continue;
-      const set: DocumentRun & { variations?: object } = { ...run };
-      if (setting.family !== family) set.family = setting.family;
-      if (setting.variations) set.variations = setting.variations;
-      const scale = metrics?.scale ?? 1;
-      if (scale !== 1 && typeof size === 'number') set.size = size * scale;
-      runs ??= content.slice();
-      runs[i] = set;
     }
     if (!lined || !runs || !(linedSize > 0)) {
       return engine.layout(runs ?? content, style, options);
     }
     return linedLayout(engine, runs, style, options, lined, linedSize);
   });
-  const match: FontsLike['match'] = (family, style) => {
+  const match: FontsLike['match'] = (asked, style) => {
+    // a face is asked for to be measured, and a list is measured by its
+    // first available font
+    const family = faces.primary(asked);
     const setting = faces.active
       ? faces.setting(
           family,

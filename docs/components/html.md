@@ -765,6 +765,23 @@ and the rest a slice at a time, nearest first, once nothing is being scrolled
 or typed, so a face never holds up what is under the pointer for text nobody
 can see. A script that reads the layout finds all of it set.
 
+**A family is no face for a character its `unicode-range` leaves out.** A
+text engine knows a file and not its rule, and sets any character the file
+has in the first family of the list that has it. So a run is handed to it in
+pieces where its characters are in different families: `font-family: Swash,
+Body` with `Swash` declared for `U+26` sets the ampersand of "This & That"
+in it and the rest in `Body`, whatever else `Swash`'s file holds. A
+combining mark, a joiner or another format character goes with the
+character before it, and brings no family in by itself. A family is taken
+out only for the characters its file has, so one served as subsets, each
+file holding the characters of its own range, is laid out as it was. And a
+list is measured by its first available font (CSS Fonts 4, 5.1), the first
+family whose range holds the space: an `ex`, a `ch`, the strut and a
+`normal` line height are that family's, and not an icon face's that leads
+the list for a few characters. A `local()` face's range holds in the
+lists its own family is named in: another list that names the system's
+family itself is set in it whole.
+
 A family left out of the list stays out for good where none of its faces
 ever loads: a family the document declares is never looked up on
 the system by the name the document gave it (CSS Fonts 4, 5.2), so

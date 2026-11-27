@@ -254,6 +254,13 @@ function registryOf(app: object): Registry {
   return registry;
 }
 
+/** A piece of a text, up to an offset in it, and the family list it is set
+ *  in (`WebFonts.forText`). */
+export interface TextPiece {
+  end: number;
+  family: string;
+}
+
 /** `0 → a`, `25 → z`, `26 → ba`: a counter as letters. */
 function letters(n: number): string {
   let out = '';
@@ -294,6 +301,21 @@ export class WebFonts implements FontFamilies {
   /** Whether any loaded face has an axis to set, or a family faces of more
    *  than one width; null for not yet asked since the faces changed. */
   private _active: boolean | null = null;
+  /** Whether any loaded group's `unicode-range` leaves out the space, so
+   *  that it cannot be a list's first available font (`primary`); null for
+   *  not yet asked since the faces changed. */
+  private _spaceless: boolean | null = null;
+  /** Lists → the list from its first available font on (`primary`). */
+  private _primaries = new Map<string, string>();
+  /** Whether any loaded group has a `unicode-range` (`forText`); null for
+   *  not yet asked since the faces changed. */
+  private _ranged: boolean | null = null;
+  /** Lists → the families in them that have a `unicode-range`, and what
+   *  `forText` has worked out of each; null for a list with none. */
+  private _rangedIn = new Map<string, RangedList | null>();
+  /** Registered names → whether the file under each has a character
+   *  (`_fileHas`). */
+  private _fileHas = new Map<string, Map<number, boolean>>();
   /** The document's characters, as the last `request` saw them. */
   private _text: string | null = null;
   private _seen = new Set<number>();
@@ -476,8 +498,13 @@ export class WebFonts implements FontFamilies {
             out.push(face.local);
             // and a face that sets the alias at another size or its lines
             // at another height says so by its group's name after it,
-            // which no engine has, and `setting` takes out again
-            if (metricsOf(face.rule) && !out.includes(face.name)) {
+            // which no engine has, and `setting` takes out again; so does
+            // one declared for a range, which is the alias's only under
+            // this rule (`rangedAt`)
+            if (
+              (metricsOf(face.rule) || group.ranges) &&
+              !out.includes(face.name)
+            ) {
               out.push(face.name);
             }
           }
@@ -578,6 +605,9 @@ export class WebFonts implements FontFamilies {
         for (const face of group.faces) {
           if (face.state !== 'ready') continue;
           if (metricsOf(face.rule)) this._active = true;
+          // a `local()` face of a range is marked in its lists, as one of
+          // other metrics is, and the mark is `setting`'s to take out
+          if (face.local !== null && group.ranges) this._active = true;
           if (face.local !== null) continue;
           if (ranged(face) || face.wdth || face.name !== group.name) {
             this._active = true;
@@ -586,6 +616,197 @@ export class WebFonts implements FontFamilies {
       }
     }
     return this._active;
+  }
+
+  /**
+   * A family list — one `map` made — from its first available font on (CSS
+   * Fonts 4, 5.1): the first family whose `unicode-range` does not leave
+   * out U+0020, the space. What a font is measured by is that one's — an
+   * `ex`, a `ch`, the strut and a `normal` line height — and not a face
+   * declared for a few characters, which leads the list only for them:
+   * `font-family: Icons, Body` with `Icons` at `unicode-range: U+E000-F8FF`
+   * is measured in `Body`. The list itself where its first family may be
+   * it, which is every list of a document that declares no such range.
+   */
+  primary(list: string): string {
+    if (this._spaceless === null) {
+      this._spaceless = false;
+      for (const group of this._groups.values()) {
+        if (!holdsSpace(group) && group.faces.some(isReady)) {
+          this._spaceless = true;
+        }
+      }
+    }
+    if (!this._spaceless) return list;
+    let from = this._primaries.get(list);
+    if (from === undefined) {
+      const names = list.split(',').map((n) => n.trim());
+      let first = 0;
+      while (first < names.length) {
+        // a family under its own name, or the system's and the name after
+        // it that marks it as a `local()` face's
+        const own = this._rangedAt(names, first);
+        const marked = own ? null : this._rangedAt(names, first + 1);
+        const group = own?.group ?? (marked?.alias ? marked.group : null);
+        if (!group || holdsSpace(group)) break;
+        first += own ? 1 : 2;
+      }
+      // every family left it out: the list as it is, which the engine
+      // then falls back from
+      from =
+        first > 0 && first < names.length
+          ? names.slice(first).join(', ')
+          : list;
+      this._primaries.set(list, from);
+    }
+    return from;
+  }
+
+  /** Whether any loaded family's faces are for a `unicode-range`: whether
+   *  `forText` has anything to leave out. */
+  get ranged(): boolean {
+    if (this._ranged === null) {
+      this._ranged = false;
+      for (const group of this._groups.values()) {
+        if (group.ranges && group.faces.some(isReady)) this._ranged = true;
+      }
+    }
+    return this._ranged;
+  }
+
+  /**
+   * The family list — one `map` made — a text is set in, or the pieces of
+   * it that are set in different ones: a family is no face for a character
+   * its `unicode-range` leaves out (CSS Fonts 4, 4.5), and an engine knows
+   * a file and not its rule, so it sets any character the file has in the
+   * first family that has it. `font-family: Swash, Body` with `Swash`
+   * declared for U+0026 alone set the whole of "This & That" in its file.
+   *
+   * A family is taken out of the list only for the characters its file has
+   * and its range leaves out, so a document whose ranges are subsets, each
+   * a file of its own characters, as a font service serves them, is set in
+   * the lists it had, in the runs it had. A mark, a joiner or a format
+   * character goes with the character before it, and brings no family in
+   * by itself: an engine shapes a run a font at a time, and a joiner set
+   * in a font of its own joins nothing (WPT's `shaping-join-002`).
+   */
+  forText(list: string, text: string): string | TextPiece[] {
+    if (!this.ranged || !text) return list;
+    let known = this._rangedIn.get(list);
+    if (known === undefined) {
+      const names = list.split(',').map((n) => n.trim());
+      const ranged = names.map((name, i): RangedFamily | null => {
+        const at = this._rangedAt(names, i);
+        if (!at?.group.ranges) return null;
+        return {
+          ranges: inOrder(at.group.ranges),
+          has: this._hasGlyphs(at.alias ? names[i - 1] : name),
+          alias: at.alias,
+        };
+      });
+      known = ranged.some(Boolean)
+        ? { list, names, ranged, left: new Map(), without: new Map() }
+        : null;
+      this._rangedIn.set(list, known);
+    }
+    if (!known) return list;
+    let pieces: TextPiece[] | null = null;
+    // the piece being gathered: where it starts, which families its
+    // characters leave out, and whether a follower is in it
+    let start = 0;
+    let key: string | null = null;
+    let follows = false;
+    let at = 0;
+    while (at < text.length) {
+      const point = text.codePointAt(at)!;
+      const size = point > 0xffff ? 2 : 1;
+      if (isFollower(point)) {
+        follows = true;
+        at += size;
+        continue;
+      }
+      let left = known.left.get(point);
+      if (left === undefined) {
+        left = '';
+        for (let i = 0; i < known.ranged.length; i += 1) {
+          const family = known.ranged[i];
+          if (family && !within(family.ranges, point) && family.has(point)) {
+            left += `${i},`;
+          }
+        }
+        known.left.set(point, left);
+      }
+      if (key !== null && left !== key) {
+        const family = listWithout(known, key, follows, text, start, at);
+        const last = pieces?.[pieces.length - 1];
+        if (last && last.family === family) last.end = at;
+        else (pieces ??= []).push({ end: at, family });
+        start = at;
+        follows = false;
+      }
+      key = left;
+      at += size;
+    }
+    const family = listWithout(known, key ?? '', follows, text, start, at);
+    if (!pieces) return family;
+    const last = pieces[pieces.length - 1];
+    if (last.family === family) last.end = at;
+    else pieces.push({ end: at, family });
+    return pieces.length === 1 ? pieces[0].family : pieces;
+  }
+
+  /**
+   * The group a name of a list — one `map` made — is a family of, and
+   * whether the name only marks the one before it as that family: a face
+   * from a file is registered under the group's name, and one from a
+   * `local()` is the system's family, under the system's name, with the
+   * group's after it (`map`). Null for any other name.
+   */
+  private _rangedAt(
+    names: string[],
+    i: number,
+  ): { group: Group; alias: boolean } | null {
+    const name = names[i];
+    const group = name === undefined ? undefined : this._groups.get(name);
+    if (!group) return null;
+    let alias = false;
+    for (const face of group.faces) {
+      if (face.state !== 'ready') continue;
+      if (face.local === null) {
+        if (face.name === name) return { group, alias: false };
+      } else if (i > 0 && face.local === names[i - 1]) alias = true;
+    }
+    return alias ? { group, alias } : null;
+  }
+
+  /** Whether the file registered under a name has a character, kept: a
+   *  face of the engine's is asked once a character. False where the
+   *  engine cannot say, which leaves the family in every list. */
+  private _hasGlyphs(name: string): (point: number) => boolean {
+    let known = this._fileHas.get(name);
+    if (!known) this._fileHas.set(name, (known = new Map()));
+    const answers = known;
+    let face: { hasGlyph?(point: number): boolean } | null | undefined;
+    return (point) => {
+      let has = answers.get(point);
+      if (has === undefined) {
+        if (face === undefined) {
+          try {
+            const fonts = (this._app as { fonts?: FontLookup }).fonts;
+            face = fonts?.match?.(name, { weight: 400, style: 'normal' });
+          } catch {
+            face = null;
+          }
+        }
+        try {
+          has = face?.hasGlyph?.(point) === true;
+        } catch {
+          has = false;
+        }
+        answers.set(point, has);
+      }
+      return has;
+    };
   }
 
   /**
@@ -673,11 +894,11 @@ export class WebFonts implements FontFamilies {
           stretch,
         );
         const metrics = local && metricsOf(local.rule);
-        if (metrics) {
+        if (metrics || local?.group.ranges) {
           setting = {
             family: names.filter((_, i) => i !== 1).join(', '),
             variations: null,
-            metrics,
+            metrics: metrics || null,
           };
         }
       }
@@ -960,6 +1181,11 @@ export class WebFonts implements FontFamilies {
     this._sources.clear();
     this._settings.clear();
     this._active = null;
+    this._spaceless = null;
+    this._primaries.clear();
+    this._ranged = null;
+    this._rangedIn.clear();
+    this._fileHas.clear();
   }
 
   /**
@@ -1601,7 +1827,11 @@ interface FontLookup {
   match?(
     family: string,
     opts: { weight: number; style: string },
-  ): { familyName?: string; postscriptName?: string } | null;
+  ): {
+    familyName?: string;
+    postscriptName?: string;
+    hasGlyph?(point: number): boolean;
+  } | null;
 }
 
 /**
@@ -1650,6 +1880,145 @@ function localFamily(
     // no fontconfig, or a name it could not read: not found
     return null;
   }
+}
+
+/** A family of a list that has a `unicode-range`: its ranges, in order
+ *  (`inOrder`), and whether its file has a character. */
+interface RangedFamily {
+  ranges: [number, number][];
+  has(point: number): boolean;
+  /** Whether the family is the name before this one, which this one only
+   *  marks (`WebFonts._rangedAt`): the two go together. */
+  alias: boolean;
+}
+
+/** What `forText` knows of a list with such families in it. */
+interface RangedList {
+  list: string;
+  names: string[];
+  /** Each name's family, null where it has no range. */
+  ranged: (RangedFamily | null)[];
+  /** A character → the families that are no faces for it though their
+   *  files have it, as the indexes of `ranged`: `"0,2,"`. */
+  left: Map<number, string>;
+  /** Such a key → the list without them. */
+  without: Map<string, string>;
+}
+
+/** Ranges from the lowest up, with those that meet made one: what `within`
+ *  searches. */
+function inOrder(ranges: [number, number][]): [number, number][] {
+  const sorted = ranges.slice().sort((a, b) => a[0] - b[0]);
+  const out: [number, number][] = [];
+  for (const [lo, hi] of sorted) {
+    const last = out[out.length - 1];
+    if (last && lo <= last[1] + 1) last[1] = Math.max(last[1], hi);
+    else out.push([lo, hi]);
+  }
+  return out;
+}
+
+/** Whether a character is in one of the ranges, which are in order
+ *  (`inOrder`): a subset of a CJK family is some hundred of them. */
+function within(ranges: [number, number][], point: number): boolean {
+  let lo = 0;
+  let hi = ranges.length - 1;
+  if (hi < 0 || point < ranges[0][0] || point > ranges[hi][1]) return false;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (point < ranges[mid][0]) hi = mid - 1;
+    else if (point > ranges[mid][1]) lo = mid + 1;
+    else return true;
+  }
+  return false;
+}
+
+const FOLLOWER = /[\p{M}\p{Cf}]/u;
+
+/** Whether a character goes with the one before it and chooses no font: a
+ *  combining mark, or a format character such as a joiner, a soft hyphen
+ *  or a bidi control. */
+function isFollower(point: number): boolean {
+  return (
+    (point === 0xad || point >= 0x300) &&
+    FOLLOWER.test(String.fromCodePoint(point))
+  );
+}
+
+/**
+ * The list for a piece of a text whose characters leave out the families a
+ * key names. A piece with a follower in it leaves out as well each family
+ * whose range holds none of the piece's other characters and whose file
+ * has one of its followers: the engine would set the follower in it, apart
+ * from what it follows.
+ */
+function listWithout(
+  known: RangedList,
+  key: string,
+  follows: boolean,
+  text: string,
+  start: number,
+  end: number,
+): string {
+  let left = key;
+  if (follows) {
+    const gone = new Set(key.split(','));
+    left = '';
+    for (let i = 0; i < known.ranged.length; i += 1) {
+      const family = known.ranged[i];
+      if (!family) continue;
+      if (gone.has(`${i}`) || setsFollowerAlone(family, text, start, end)) {
+        left += `${i},`;
+      }
+    }
+  }
+  if (!left) return known.list;
+  let out = known.without.get(left);
+  if (out === undefined) {
+    const gone = new Set(left.split(','));
+    // a `local()` face's family goes with the name that marks it
+    known.ranged.forEach((family, i) => {
+      if (family?.alias && gone.has(`${i}`)) gone.add(`${i - 1}`);
+    });
+    const kept = known.names.filter((_, i) => !gone.has(`${i}`));
+    // every family left it out: the list as it is, for the engine to fall
+    // back from
+    out = kept.length ? kept.join(', ') : known.list;
+    known.without.set(left, out);
+  }
+  return out;
+}
+
+/** Whether a family's range holds no character of a piece but followers,
+ *  and its file has one of them. */
+function setsFollowerAlone(
+  family: RangedFamily,
+  text: string,
+  start: number,
+  end: number,
+): boolean {
+  let sets = false;
+  for (let at = start; at < end;) {
+    const point = text.codePointAt(at)!;
+    at += point > 0xffff ? 2 : 1;
+    const held = within(family.ranges, point);
+    if (!isFollower(point)) {
+      if (held) return false;
+    } else if (held || family.has(point)) {
+      sets = true;
+    }
+  }
+  return sets;
+}
+
+const isReady = (face: Face): boolean => face.state === 'ready';
+
+/** Whether a group's faces are for the space among their characters: no
+ *  `unicode-range` at all, or one U+0020 is in. */
+function holdsSpace(group: Group): boolean {
+  return (
+    !group.ranges || group.ranges.some(([lo, hi]) => lo <= 0x20 && hi >= 0x20)
+  );
 }
 
 function rangeKey(ranges: [number, number][] | null): string {
