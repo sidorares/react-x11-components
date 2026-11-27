@@ -9048,11 +9048,15 @@ function sizeReplaced(
   // but the one `contain-intrinsic-size` gives it (`ownIntrinsic`)
   const own = ownIntrinsic(box) ?? NO_INTRINSIC;
   const iw = own.missing & 1 ? null : own.width;
-  const ih = own.missing & 2 ? null : own.height;
   // `aspect-ratio` over its own, unless written `auto` and it has one
   const aspect = style.aspectRatio;
   const pages = aspect !== null && !(aspect.auto && own.ratio > 0);
   const ratio = pages ? aspect.ratio : own.ratio;
+  // and its natural height with it, where it has a natural width: the
+  // height the page's ratio makes of that (CSS Sizing 4, 5.1), and no
+  // longer the one its own ratio did
+  const ih =
+    own.missing & 2 || (pages && iw !== null && ratio > 0) ? null : own.height;
   // A ratio of the page's is of the box `box-sizing` names (CSS Sizing 4,
   // 5.1): one axis's content size to the other's goes through the border
   // box there. Written with `auto`, it is of the content box, as the
