@@ -1321,6 +1321,52 @@ test('declarations after a nested rule come after it, and & is the scope at the 
   );
 });
 
+test("a {} block that is a declaration's whole value is its value, and no nested rule", async () => {
+  // CSS Syntax 3, 5.5.6: a block is a property's value only as all of it,
+  // and with anything beside it what holds it is a rule. Any `{` before a
+  // `;` was read as a rule's, so `color: { [ var(--a) ] }` was a rule with
+  // the selector `color:`, which is none, and the declaration was lost
+  // where it stands until its `var()` is substituted
+  // (variable-reference-18.html)
+  const sheet = parseStylesheet(
+    'p { color: red; color: { [ var(--a) ] }; top: 1px }\n' +
+      'q { color: {x} !important; a:hover { top: 2px } left : { } }\n' +
+      'r { b: {} c; top: 3px; d:e {} --f: { g } h; }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => [
+      r.selector,
+      r.declarations
+        .map((d) => `${d.prop}:${d.value}${d.important ? '!' : ''}`)
+        .join(';'),
+    ]),
+    [
+      ['p', 'color:red;color:{ [ var(--a) ] };top:1px'],
+      ['q', 'color:{x}!'],
+      ['q a:hover', 'top:2px'],
+      ['q', 'left:{ }'],
+      // a block with something after it is a rule's, of a selector that is
+      // none, and what follows it is read again
+      ['r', 'top:3px'],
+      ['r', '--f:{ g } h'],
+    ],
+  );
+
+  // the declaration stands, and with no value at computed-value time it is
+  // as though unset: the parent's green, not the red before it
+  const { node } = await render(
+    '<style>body { color: #00ff00 } p { color: #ff0000; color: { [ var(--a) ] }; }' +
+      ' span { color: #ff0000; color: { red }; }</style>' +
+      '<p id="p">x</p><span id="s">y</span>',
+  );
+  const el = view(node);
+  const color = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)!.color;
+  assert.strictEqual(color('p'), 'rgb(0, 255, 0)');
+  // with no var() it is no colour, and the declaration before it stands
+  assert.strictEqual(color('s'), 'rgb(255, 0, 0)');
+});
+
 test('a nested rule and a media range reach the document', async () => {
   const { node } = await render(
     '<style>body{margin:0}.p { padding-left: 1px; & { padding-top: 2px }' +

@@ -2952,7 +2952,11 @@ function splitNested(body: string): {
     }
     const semi = scanTo(body, i, ';');
     const brace = scanTo(body, i, '{');
-    if (brace < semi && !CUSTOM_DECLARATION.test(body.slice(i, brace))) {
+    if (
+      brace < semi &&
+      !CUSTOM_DECLARATION.test(body.slice(i, brace)) &&
+      !blockValued(body, i, brace, semi)
+    ) {
       const block = readBlock(body, brace);
       nested.push({
         kind: 'rule',
@@ -2982,6 +2986,31 @@ function splitNested(body: string): {
 }
 
 const CUSTOM_DECLARATION = /^\s*--[\w-]*\s*:/;
+
+/**
+ * Whether what starts at `i`, with a `{` at `brace` before its `;` at
+ * `semi`, is a declaration all the same: a name, a colon and the block for
+ * its whole value, the one way a property's value holds one (CSS Syntax 3,
+ * 5.5.6). No selector ends in a colon, so it is no rule's either way, and
+ * with a `var()` in it the declaration stands until it is substituted:
+ * `color: { [ var(--a) ] }`.
+ */
+function blockValued(
+  body: string,
+  i: number,
+  brace: number,
+  semi: number,
+): boolean {
+  if (!startsIdent(body, i)) return false;
+  let at = readIdent(body, i).end;
+  while (at < brace && isSpace(body[at])) at += 1;
+  if (body[at] !== ':') return false;
+  at += 1;
+  while (at < brace && isSpace(body[at])) at += 1;
+  if (at !== brace) return false;
+  const after = body.slice(blockEnd(body, brace), semi);
+  return after.replace(IMPORTANT_RE, '').trim() === '';
+}
 
 /**
  * A nested rule's selectors against its parent's, as written (CSS Nesting
