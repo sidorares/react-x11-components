@@ -5974,7 +5974,10 @@ An outside marker that reaches
 higher above its baseline than the item's first line does makes room as
 Blink does: the line grows where it is the item's own, and where it is in a
 block inside the item — a paragraph, a link set `display: block` — the
-block goes lower by the difference and keeps its height. A `::marker`
+block goes lower by the difference and keeps its height. An item none of
+whose content has a line — an empty one, or one holding only empty blocks
+— has a line of its own for the marker, and the blocks it holds are drawn
+in its flow as in any block's. A `::marker`
 rule sets its colour and its font, and a `content` sets it as that,
 counters and all, its white space kept: `counter(list-item) ".\a0"` is
 where the default marker is. A list item counts with the

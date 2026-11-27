@@ -137,6 +137,7 @@ import {
   fragmentMatrix,
   containsOutOfFlow,
   viewBoxOf,
+  isInlineLevel,
 } from './layout/block.js';
 import { containingParent, REPEATED } from './layout/multicol.js';
 import { gapSegments } from './gap-rules.js';
@@ -11304,6 +11305,12 @@ function fragmentBoxes(box: Box, first = false): Box[] {
 export function onLine(parent: Box, child: Box): boolean {
   if (parent.lines === null && parent.kind !== 'inline') return false;
   if (child.isFloat || child.outOfFlow) return false;
+  // A list item none of whose content has a line has one of its own for
+  // its marker (`layoutBlock`), and the blocks it holds are in its flow as
+  // they were: on no line, so painted by none
+  if (parent.marker && parent.lines !== null && !isInlineLevel(child)) {
+    return false;
+  }
   return (
     child.kind !== 'inline' && child.kind !== 'text' && child.kind !== 'break'
   );

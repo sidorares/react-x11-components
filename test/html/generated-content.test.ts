@@ -857,6 +857,44 @@ metric(
   },
 );
 
+metric(
+  'a list item with a line of its own for its marker still paints the blocks it holds',
+  async () => {
+    // A list item none of whose content has a line gets one for its marker
+    // (`layoutBlock`), so it is a box with a line and blocks in its flow.
+    // The painter took every child of a box with lines for one placed on a
+    // line, which the lines paint, so the blocks were painted by nothing:
+    // a list item holding an empty bordered `<div>` drew its bullet alone
+    // (CSS2/margin-padding-clear/padding-left-applies-to-010.xht)
+    const { node, result } = await render(
+      '<style>body{margin:0 0 0 50px;background:#ffffff}' +
+        '#item{display:list-item;width:200px;height:100px}' +
+        '#held{height:100px;border-left:10px solid #ffa500;' +
+        'background:#008000}</style>' +
+        '<div id="item"><div id="held"></div></div>',
+    );
+    const el = view(node);
+    const held = boxOf(el, 'held');
+    assert.deepStrictEqual(
+      [held.x, held.y, held.width, held.height],
+      [50, 0, 200, 100],
+    );
+    await expectPixel(result.ctx, 55, 50, '#ffa500', {
+      message: 'its border',
+      tolerance: 8,
+    });
+    await expectPixel(result.ctx, 150, 50, '#008000', {
+      message: 'and its background',
+      tolerance: 8,
+    });
+    // and it is what is under the pointer there
+    const at = el.elementAtPoint(150, 50) as {
+      attribs?: { id?: string };
+    } | null;
+    assert.strictEqual(at?.attribs?.id, 'held');
+  },
+);
+
 metric("a list item's marker goes where its item is moved", async () => {
   // a table cell is laid out at the origin and then placed; the marker was
   // left behind, a bullet at the document's corner
