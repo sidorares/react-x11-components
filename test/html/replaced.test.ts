@@ -4172,6 +4172,31 @@ metric("a video's poster and an embedded image are drawn", async () => {
   await expectPixel(ctx, 10, 30, '#ff0000', { message: 'the embed' });
 });
 
+test("a keyword for a limit on a ratio's height is the ratio's height, not the content's", async () => {
+  // CSS Sizing 4, 5.1: only `min-height: auto` is the content's size for a
+  // box with a ratio. `min-content`, `max-content` and `fit-content` down
+  // the block are the size the ratio makes of the width
+  // (w3c/csswg-drafts#5032), so a box 100 wide at 4/1 with 50 of content
+  // and `min-height: min-content` is 25 tall. Read as the content's, the
+  // keyword held it at 50 (aspect-ratio/intrinsic-size-010.html)
+  const held = '<div style="height:50px"></div>';
+  const { node } = await render(
+    '<style>body{margin:0}div[id]{width:100px;aspect-ratio:4}</style>' +
+      `<div id="min" style="min-height:min-content">${held}</div>` +
+      `<div id="fit" style="min-height:fit-content">${held}</div>` +
+      // the automatic minimum is still what it holds
+      `<div id="auto">${held}</div>` +
+      // and with no ratio the keyword is the content's, as it was
+      `<div style="width:100px;height:10px;min-height:min-content" id="none">${held}</div>`,
+  );
+  const el = view(node);
+  const heightOf = (id: string) => boxOf(el, id).height;
+  assert.strictEqual(heightOf('min'), 25);
+  assert.strictEqual(heightOf('fit'), 25);
+  assert.strictEqual(heightOf('auto'), 50);
+  assert.strictEqual(heightOf('none'), 50);
+});
+
 test("aspect-ratio makes a box's width of its height, and crosses its limits over", async () => {
   // A height and a ratio gave a block the width of its container, and
   // `width: min-content` the width of what was in it

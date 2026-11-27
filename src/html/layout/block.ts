@@ -6854,7 +6854,7 @@ function finishHeight(box: Box, contentHeight: number): void {
   const specified = set === null ? null : Math.max(0, set);
   const extra = box.verticalExtra;
   // the height an intrinsic limit is, as a border box
-  const content = contentHeight + extra;
+  let content = contentHeight + extra;
   if (specified !== null && box.kind === 'table') {
     // A table's height is a least one, which `layoutTable` has shared out
     // to its rows: one set shorter than they are leaves them their height
@@ -6878,6 +6878,10 @@ function finishHeight(box: Box, contentHeight: number): void {
         box.style.minHeightKeyword === null &&
         !scrolls(box.style);
       contentHeight = automatic ? Math.max(ratio, contentHeight) : ratio;
+      // and a keyword for a limit is the height the ratio makes of the
+      // width, where only the automatic minimum is the content's (CSS
+      // Sizing 4, 5.1, w3c/csswg-drafts#5032)
+      content = ratio + extra;
     }
   }
   const height = specified ?? contentHeight;
