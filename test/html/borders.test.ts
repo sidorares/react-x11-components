@@ -2005,6 +2005,44 @@ test('a shadow is not drawn under a box that shows what is behind it', async () 
   assert.ok(clip, 'a clip around it');
 });
 
+metric('a box of no size casts the shadow its spread makes', async () => {
+  // CSS Backgrounds 3, 7.1: a shadow is drawn as though the border box were
+  // opaque, moved by its offsets and grown by its spread, so a box of no
+  // width or no height still casts one. Nothing was drawn for an empty
+  // box, its shadows with it (box-shadow-029.html)
+  const { result } = await render(
+    '<style>body{margin:0;background:#ffffff}</style>' +
+      '<div style="width:0;height:0;' +
+      'box-shadow:#008000 50px 50px 0 50px"></div>' +
+      // and a line of no height, a rule drawn with a shadow
+      '<div style="position:absolute;left:10px;top:120px;width:80px;height:0;' +
+      'box-shadow:0 0 0 2px #0000ff"></div>',
+  );
+  const at = (x: number, y: number, color: string, message: string) =>
+    expectPixel(result.ctx, x, y, color, { message, tolerance: 8 });
+  await at(50, 50, '#008000', 'the spread, a square of 100');
+  await at(2, 2, '#008000', 'from its corner');
+  await at(97, 97, '#008000', 'to the other');
+  await at(103, 50, '#ffffff', 'and no further');
+  await at(50, 120, '#0000ff', 'a rule of no height, 4px of spread');
+  await at(50, 124, '#ffffff', 'and none below it');
+  // an inline box's shadows are its fragments', and its own rectangle is
+  // no layout's: nothing is cast from the document's corner for it
+  const { result: inline } = await render(
+    '<style>body{margin:0;background:#ffffff}</style>' +
+      '<p style="margin:40px;font:16px/40px sans-serif">' +
+      '<span style="box-shadow:2px 2px 0 10px #000000">a<br>b</span></p>',
+  );
+  await expectPixel(inline.ctx, 4, 4, '#ffffff', {
+    message: 'none at the corner',
+    tolerance: 8,
+  });
+  await expectPixel(inline.ctx, 34, 60, '#000000', {
+    message: 'and the fragment casts its own',
+    tolerance: 8,
+  });
+});
+
 metric(
   'a hard shadow round a box with no background is drawn beside it and not under it, off the pixel grid too',
   async () => {
