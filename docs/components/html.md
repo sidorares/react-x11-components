@@ -8869,7 +8869,10 @@ layout resolves as it does any percentage; `min(100%, 600px)`, a
 comparison with a percentage in it, is resolved against each width it
 meets. A percentage that cannot resolve makes the whole value `auto` where
 a plain percentage would be, so `calc(40px + 10%)` against a height nothing
-sets is no height. The constants `pi`, `e`, `infinity` and `NaN` are read,
+sets is no height. In a margin or a padding, which are never `auto` for
+it, the percentage alone counts for nothing there and the length stands:
+`padding-left: calc(0% + 50px)` is 50px of a box's intrinsic width. The
+constants `pi`, `e`, `infinity` and `NaN` are read,
 and a calculation that comes to no finite number is what a browser makes
 of it: NaN is nought, and an infinity the largest length there is.
 A value that is one math function is read, as a page's `el.style` keeps

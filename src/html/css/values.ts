@@ -51,7 +51,14 @@ export function isPct(len: Len): len is Pct {
  */
 export function resolve(len: Len, base: number, fallback = 0): number {
   if (typeof len === 'number') return len;
-  if (len === AUTO || !Number.isFinite(base)) return fallback;
+  if (len === AUTO) return fallback;
+  if (!Number.isFinite(base)) {
+    // A percentage of nothing known is nothing, and what a `calc()` adds
+    // to it is still there: `calc(0% + 30px)` of an inline box's margin is
+    // 30px in its block's intrinsic width, where the percentage is of the
+    // width being found (CSS Sizing 3, 5.2.1). All of it came to nothing
+    return fallback === 0 && !len.of ? (len.px ?? 0) : fallback;
+  }
   const px = len.of ? compared(len.of, base) : ofBase(len, base);
   return px > LARGEST ? LARGEST : px < -LARGEST ? -LARGEST : px;
 }
