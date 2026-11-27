@@ -6767,7 +6767,9 @@ in the middle, and only an `unsafe` alignment past the top where the content
 overflows. Neither applies in a vertical writing mode yet, where the block
 fills its line and its content starts at the top as before.
 A block that makes a formatting context of its own — an `overflow` that
-scrolls (any but `visible` and `clip`), a table, `display: flow-root` —
+scrolls (any but `visible` and `clip`), a table, `display: flow-root`, a
+list item written `flow-root list-item` (an inline one, `inline flow-root
+list-item`, is not drawn yet, and is dropped) —
 holds its floats and sits beside
 another block's rather than under them, its margins its containing
 block's: a column with `overflow: hidden` and a 220px margin beside a

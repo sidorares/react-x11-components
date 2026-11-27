@@ -787,7 +787,9 @@ function display(style: ComputedStyle): string {
     const kind = style.gridLanes ? 'grid-lanes' : 'grid';
     return style.display === 'inline-flex' ? `inline-${kind}` : kind;
   }
-  if (style.flowRoot) return 'flow-root';
+  if (style.flowRoot) {
+    return style.display === 'list-item' ? 'flow-root list-item' : 'flow-root';
+  }
   if (style.webkitBox === 'block') return '-webkit-box';
   if (style.webkitBox === 'inline') return '-webkit-inline-box';
   if (style.rubyKind === 'ruby') {
