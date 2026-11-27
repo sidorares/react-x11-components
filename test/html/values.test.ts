@@ -489,6 +489,32 @@ test('display: flow-root list-item is a list item that makes a formatting contex
   assert.deepStrictEqual([beside.x, beside.width], [120, 680]);
 });
 
+test('a calc() of a percentage keeps its length where the percentage is of nothing known', async () => {
+  // CSS Sizing 3, 5.2.1: in an intrinsic size a percentage of the size
+  // being found counts for nothing, and the length a `calc()` adds to it
+  // is still there. The whole of it counted for nothing, so a box sized
+  // by its content was as wide as its text alone, and the text, set in
+  // from its margin and padding at layout, ran out of it by them
+  // (css-sizing/inline-intrinsic-size-calc.html)
+  const { node } = await render(
+    '<style>body{margin:0}div{float:left;clear:left}</style>' +
+      '<div id="plain"><span>ABCD</span></div>' +
+      '<div id="calc"><span style="margin-left:calc(0% + 30px);' +
+      'padding-left:calc(0% + 50px)">ABCD</span></div>' +
+      // a block's edges the same, in a box sized by its content
+      '<div id="block"><p style="margin:0;padding-left:calc(10% + 20px)">' +
+      'ABCD</p></div>' +
+      // and a percentage alone is still nothing there
+      '<div id="percent"><span style="padding-left:50%">ABCD</span></div>',
+  );
+  const el = view(node);
+  const width = (id: string) => boxOf(el, id).width;
+  assert.ok(width('plain') > 20, `${width('plain')}`);
+  assert.strictEqual(width('calc'), width('plain') + 80);
+  assert.strictEqual(width('block'), width('plain') + 20);
+  assert.strictEqual(width('percent'), width('plain'));
+});
+
 test('calc() and its kin come down to pixels and a percentage of what layout knows', () => {
   const ctx = { em: 20, rem: 16, vw: 1000, vh: 500, scale: 1 };
   const len = (v: string) => parseLength(v, ctx);
