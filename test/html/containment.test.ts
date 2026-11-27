@@ -487,6 +487,38 @@ metric(
   },
 );
 
+test('a size-contained box in a vertical writing mode is its contain-intrinsic-size, the logical two by its writing mode', async () => {
+  // `contain-intrinsic-inline-size` and `-block-size` are the width and the
+  // height by the box's writing mode (CSS Sizing 4, 4.1), and were the
+  // width and the height whatever it was. And the root of a vertical flow
+  // is as wide as its block size, which was read from what it holds: under
+  // size containment it holds nothing, and the box was of no width
+  // (contain-intrinsic-size-logical-002.html, and -008)
+  const { node } = await render(
+    '<style>body{margin:0}div{contain:size}' +
+      '.v{writing-mode:vertical-lr}</style>' +
+      '<div id="logical" class="v" style="contain-intrinsic-inline-size:50px;' +
+      'contain-intrinsic-block-size:100px"></div>' +
+      '<div id="physical" class="v" style="contain-intrinsic-size:100px 50px">' +
+      'text it holds, which counts for nothing</div>' +
+      // with its own edges around that
+      '<div id="edged" class="v" style="contain-intrinsic-size:100px 50px;' +
+      'padding:0 5px;border-left:3px solid">x</div>' +
+      // in a horizontal one the logical two are the width and the height
+      '<div id="across" style="float:left;contain-intrinsic-inline-size:70px;' +
+      'contain-intrinsic-block-size:30px"></div>' +
+      // and with none said, nothing
+      '<div id="none" class="v">x</div>',
+  );
+  const el = view(node);
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.deepStrictEqual(size('logical'), [100, 50]);
+  assert.deepStrictEqual(size('physical'), [100, 50]);
+  assert.deepStrictEqual(size('edged'), [113, 50]);
+  assert.deepStrictEqual(size('across'), [70, 30]);
+  assert.deepStrictEqual(size('none'), [0, 0]);
+});
+
 test('contain: size lays a box out as though it held nothing', async () => {
   // `contain` was dropped whole (CSS Containment 2): a size-contained box
   // is its `contain-intrinsic-size`, or nothing, whatever it holds

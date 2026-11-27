@@ -7963,7 +7963,10 @@ number, and until it is 2 the cards after it are painted over its glow.
 (CSS Containment 2). A box with size containment is laid out as though it
 held nothing, as large as `contain-intrinsic-size` says or no larger than
 its padding and border, and an image as though it had no size or ratio of
-its own; `inline-size` does that across alone. A table caption takes every
+its own; `inline-size` does that across alone. `contain-intrinsic-inline-size`
+and `-block-size` are the width and the height by the box's writing mode,
+and a contained box in a vertical one is as wide as its intrinsic width
+says, where its width is its block size. A table caption takes every
 containment, a cell all but size containment, and the rest of a table's
 inner parts none. Layout and paint
 containment make the box a formatting context, a stacking context and the

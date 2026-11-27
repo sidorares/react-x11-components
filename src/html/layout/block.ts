@@ -5035,7 +5035,11 @@ function layoutFramed(box: Box, frame: Box, ctx: LayoutContext): void {
     // as it was laid out, where the root has handed its own height on
     frame.percentHeightBase = NaN;
   }
-  const block = frame.height;
+  // what it holds counts for nothing under size containment, down its
+  // block as along its lines (`finishHeight`)
+  const block = contained(box, CONTAIN_SIZE)
+    ? (box.style.containIntrinsicWidth ?? 0)
+    : frame.height;
   // an orthogonal flow is as wide as its block size, at its least and its
   // most alike (7.3.2): what its parent sizes it from
   box.intrinsicMinContent = block + box.horizontalExtra;
@@ -5190,6 +5194,11 @@ function framedWidth(box: Box, frame: Box, ctx: LayoutContext): number {
   if (box.style.lineClamp === null) {
     SIZED_FROM.set(frame, { serial: frame.layoutSerial, inline });
   } else ctx.positioned.length = queued;
+  // as though it held nothing, under size containment: the width its
+  // `contain-intrinsic-width` gives it, which is its block size here
+  if (contained(box, CONTAIN_SIZE)) {
+    return (box.style.containIntrinsicWidth ?? 0) + box.horizontalExtra;
+  }
   const block = Number.isFinite(frame.height) ? frame.height : 0;
   return block + box.horizontalExtra;
 }
