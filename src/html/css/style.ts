@@ -8671,6 +8671,11 @@ function splitSlash(part: string): string[] {
 
 type VariantKind = 'numeric' | 'caps' | 'ligatures' | 'position';
 
+/** A `::marker`'s `font-variant-numeric` in the user agent's sheet (CSS
+ *  Lists 3, 3.1.1), `tabular-nums`: digits as wide as one another, so the
+ *  numbers down a list end in a line. */
+export const MARKER_NUMERIC = 'tnum=1';
+
 /** Each `font-variant` keyword: the longhand it belongs to and the features
  *  it stands for (CSS Fonts 3, 6). */
 const VARIANTS: Record<string, [VariantKind, string]> = {

@@ -1059,6 +1059,56 @@ test("a marker is written in its ::marker's text-transform, outside its item or 
   }
 });
 
+test("a marker's digits are as wide as one another, unless a ::marker rule says how they are set", async () => {
+  // CSS Lists 3, 3.1.1: the user agent's sheet gives a `::marker`
+  // `font-variant-numeric: tabular-nums`, so the numbers down a list end in
+  // a line in a face whose digits are of several widths. A marker was set
+  // in its item's digits, and an outside one with no features at all
+  // (css-pseudo/marker-font-variant-numeric-default.html)
+  const list = (position: string) =>
+    `<ol style="list-style-position:${position}">` +
+    `<li id="${position}-plain">a</li>` +
+    // a rule that says nothing of its digits leaves them tabular
+    `<li id="${position}-ruled" class="ruled">b</li>` +
+    `<li id="${position}-normal" class="normal">c</li>` +
+    `<li id="${position}-old" class="old">d</li>` +
+    // and an item's own digits are not its marker's
+    `<li id="${position}-item" style="font-variant-numeric:oldstyle-nums">` +
+    'e</li></ol>';
+  const { node } = await render(
+    '<style>.ruled::marker{color:red}' +
+      '.normal::marker{font-variant-numeric:normal}' +
+      '.old::marker{font-variant-numeric:oldstyle-nums}</style>' +
+      list('outside') +
+      list('inside'),
+  );
+  const el = view(node);
+  type Shaped = { span: { features?: Record<string, number> } };
+  type Marked = {
+    marker: { layout: { lines: { runs: Shaped[] }[] } } | null;
+    children: { pseudo?: string; style: { fontVariantNumeric: string } }[];
+  };
+  const item = (id: string) => boxOf(el, id) as unknown as Marked;
+  const outside = (id: string) =>
+    item(`outside-${id}`).marker!.layout.lines[0].runs[0].span.features ?? null;
+  assert.deepStrictEqual(outside('plain'), { tnum: 1 });
+  assert.deepStrictEqual(outside('ruled'), { tnum: 1 });
+  assert.strictEqual(outside('normal'), null, 'a rule takes them back');
+  assert.deepStrictEqual(outside('old'), { onum: 1 });
+  assert.deepStrictEqual(outside('item'), { tnum: 1 }, "not its item's");
+  // an inside marker is a box at the start of its item
+  const inside = (id: string) => {
+    const box = item(`inside-${id}`).children[0];
+    assert.strictEqual(box.pseudo, 'before', `${id} has a marker box`);
+    return box.style.fontVariantNumeric;
+  };
+  assert.strictEqual(inside('plain'), 'tnum=1');
+  assert.strictEqual(inside('ruled'), 'tnum=1');
+  assert.strictEqual(inside('normal'), '');
+  assert.strictEqual(inside('old'), 'onum=1');
+  assert.strictEqual(inside('item'), 'tnum=1');
+});
+
 metric(
   'an inside marker takes its room at the start of the first line',
   async () => {

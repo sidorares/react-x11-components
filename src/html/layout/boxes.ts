@@ -77,6 +77,7 @@ import {
   CONTAIN_SIZE,
   CONTAIN_STYLE,
   FIRST_LINE_INHERITED,
+  MARKER_NUMERIC,
   NO_MASK,
   blockify,
   holdsItems,
@@ -5484,6 +5485,9 @@ class Builder {
     // is its case
     style.unicodeBidi = markerStyle?.unicodeBidi ?? 'isolate';
     style.textTransform = markerStyle?.textTransform ?? 'none';
+    // and its digits, as wide as one another
+    style.fontVariantNumeric =
+      markerStyle?.fontVariantNumeric ?? MARKER_NUMERIC;
     const box = new Box('inline', null, style);
     box.pseudo = 'before';
     into.append(box);

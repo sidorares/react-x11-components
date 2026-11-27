@@ -7941,11 +7941,13 @@ const SMALL_CAPS = new WeakMap<FontsLike, Map<string, boolean>>();
  */
 export function featuresOf(
   style: ComputedStyle,
+  /** Its `font-variant-numeric`, where that is not the style's own: a
+   *  marker's with no rule of its own (`MARKER_NUMERIC`). */
+  numeric: string = style.fontVariantNumeric,
 ): Readonly<Record<string, number>> | null {
   const {
     fontKerning: kerning,
     fontVariantLigatures: ligatures,
-    fontVariantNumeric: numeric,
     fontVariantCaps: caps,
     fontVariantPosition: position,
     fontFeatureSettings: settings,

@@ -74,6 +74,7 @@ import {
   WILL_HOLD_FIXED,
   WILL_HOLD_FIXED_BOX,
   INLINE_BEFORE_ABSOLUTE,
+  MARKER_NUMERIC,
   anchorsImplicitly,
   scrolls,
   scrollsAlong,
@@ -214,6 +215,7 @@ import {
   caretX,
   emptyLinePoint,
   faceExtentOf,
+  featuresOf,
   isButton,
   joinsBefore,
   layoutInline,
@@ -6104,7 +6106,13 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   // line of its own the marker stands where its first would have been
   // in the item's direction, which puts a number's full stop on its left
   // in a right-to-left list, as the bidi algorithm has it
-  const layout = fonts.layout([{ text: marker.text, ...face }], face, {
+  // shaped with its features, its digits as wide as one another where no
+  // rule of its own says how they are set (`MARKER_NUMERIC`)
+  const features = featuresOf(set, marker.style ? undefined : MARKER_NUMERIC);
+  const run = features
+    ? { text: marker.text, ...face, features }
+    : { text: marker.text, ...face };
+  const layout = fonts.layout([run], face, {
     lineHeight: lineHeightMultiplier(fonts, style),
     direction: style.direction,
   });
