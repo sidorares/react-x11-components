@@ -194,6 +194,35 @@ test('column-width, the columns shorthand and the gap say how many columns there
   assert.strictEqual(laid.width, 600, 'all the width');
 });
 
+test('the columns shorthand takes a count and a width and no third value', async () => {
+  // `columns` is `<column-width> || <column-count>` (CSS Multi-column 1,
+  // 3.4): two values at most, each `auto` or one of the two, and a longhand
+  // takes one. An `auto` was passed over wherever it stood and however
+  // many there were, so `columns: 8 auto 6em`, which is no value, was eight
+  // columns of 6em and undid the `column-count` before it
+  // (css-multicol/multicol-columns-invalid-002.xht)
+  const counted = async (declarations: string) => {
+    const { node } = await render(
+      `<div id="m" style="column-count:2;${declarations}">x</div>`,
+    );
+    const el = view(node);
+    const style = el.computedStyle(findById(el.document, 'm')!)!;
+    return `${style['column-count']} ${style['column-width']}`;
+  };
+  // no values of it, and the declaration before stands
+  assert.strictEqual(await counted('columns:8 auto 6em'), '2 auto');
+  assert.strictEqual(await counted('columns:auto auto auto'), '2 auto');
+  assert.strictEqual(await counted('columns:auto 3 auto'), '2 auto');
+  assert.strictEqual(await counted('column-count:auto auto'), '2 auto');
+  assert.strictEqual(await counted('column-width:auto 60px'), '2 auto');
+  // and the values it has
+  assert.strictEqual(await counted('columns:8 auto'), '8 auto');
+  assert.strictEqual(await counted('columns:auto 60px'), 'auto 60px');
+  assert.strictEqual(await counted('columns:auto auto'), 'auto auto');
+  assert.strictEqual(await counted('columns:60px 3'), '3 60px');
+  assert.strictEqual(await counted('columns:auto'), 'auto auto');
+});
+
 metric(
   'a column break falls between the lines of a block, and leaves two at either side',
   async () => {

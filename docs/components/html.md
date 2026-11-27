@@ -6208,7 +6208,9 @@ they meet, fractions of a pixel included, and the paint snaps their edges.
 A multicol container (CSS Multi-column 1) sets its content in columns:
 `column-count`, `column-width`, the `columns` shorthand and `column-gap`,
 whose `normal` is an em there, and the `-webkit-` names Chrome still reads
-for them. There are as many columns as `column-count` says or as
+for them. `columns` is a count and a width at most, either of them `auto`,
+and a third value before any slash makes it no declaration. There are as
+many columns as `column-count` says or as
 `column-width` fits, the fewer of the two, each as wide as leaves the gaps
 between them, and the container is a formatting context of its own. A count
 computes to 65535 at most, and a column is used at a pixel wide at least, as
