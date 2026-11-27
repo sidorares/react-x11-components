@@ -555,9 +555,10 @@ function toSrgb(name: string, space: string, v: Triple): Triple | null {
       const [a, b] =
         name === 'lab' ? [v[1], v[2]] : polar(Math.max(0, v[1]), v[2]);
       // the gamut mapping CSS draws with takes a lightness at either end to
-      // white or black, whatever its chroma (CSS Color 4 13.2)
-      if (l >= 100) return [1, 1, 1];
-      if (l <= 0) return [0, 0, 0];
+      // white or black, whatever its chroma (CSS Color 4 13.2), and one
+      // within a millionth of the range of an end is at it (`AT_AN_END`)
+      if (l >= 100 * (1 - AT_AN_END)) return [1, 1, 1];
+      if (l <= 100 * AT_AN_END) return [0, 0, 0];
       const xyz = labToXyzD50(l, a, b);
       return gamma(multiply(XYZ_TO_LINEAR_SRGB, multiply(D50_TO_D65, xyz)));
     }
@@ -566,8 +567,8 @@ function toSrgb(name: string, space: string, v: Triple): Triple | null {
       const l = v[0];
       const [a, b] =
         name === 'oklab' ? [v[1], v[2]] : polar(Math.max(0, v[1]), v[2]);
-      if (l >= 1) return [1, 1, 1];
-      if (l <= 0) return [0, 0, 0];
+      if (l >= 1 - AT_AN_END) return [1, 1, 1];
+      if (l <= AT_AN_END) return [0, 0, 0];
       return gamma(oklabToLinearSrgb(l, a, b));
     }
     case 'color':
@@ -581,6 +582,18 @@ function toSrgb(name: string, space: string, v: Triple): Triple | null {
 
 /** The space a form of a function's is in, `color()`'s `xyz` as the
  *  `xyz-d65` it is. */
+/**
+ * How near an end of its range a lightness is taken to be at it, as a
+ * fraction of the range. White and black are where a colour's chroma
+ * counts for nothing, and every other lightness is clipped with its chroma
+ * as it stands, so a lightness of 99.9999% and some chroma was a strong
+ * orange beside the white of 100%: a step no browser draws, which takes a
+ * lightness that close for the end (WPT's `oklab-l-almost-1`, written as
+ * 99.9999% and 0.0001%). Half as much again as the tests', for the last
+ * digit of a parsed number.
+ */
+const AT_AN_END = 1.5e-6;
+
 function formSpaceOf(name: string, space: string): string {
   if (name === 'color') return space === 'xyz' ? 'xyz-d65' : space;
   if (name === 'rgba') return 'rgb';

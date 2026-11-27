@@ -9200,7 +9200,11 @@ the system colours, and CSS Color 4's functions: `rgb()` and `hsl()` in
 either the comma or the space form, `hwb()`, `lab()`, `lch()`, `oklab()`,
 `oklch()`, and `color()` in its predefined spaces. They are read here and
 handed to the drawing context as `#rrggbb` or `rgba()`, which both backends
-read alike, and one outside sRGB is clipped into it. `color-mix()` mixes in
+read alike, and one outside sRGB is clipped into it. A `lab()`, `lch()`,
+`oklab()` or `oklch()` at either end of its lightness is white or black
+whatever its chroma, and so is one within a millionth of the range of an
+end, where the clipping would make it a strong colour beside the white or
+the black. `color-mix()` mixes in
 any of the spaces above, premultiplied, so a colour mixed with
 `transparent` keeps its hue: Tailwind 4's `bg-blue-500/50` is written that
 way; with no space named it mixes in `oklab`. A component that is `none`
