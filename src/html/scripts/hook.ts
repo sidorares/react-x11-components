@@ -523,7 +523,10 @@ export function useScripts(
     [],
   );
   const canvasLayer = useCallback(
-    (element: Element) => runner.current?.host.canvasLayer(element) ?? null,
+    (element: Element) =>
+      runner.current?.host.canvasLayer(element) ??
+      frameSurfaces.current.get(element)?.layer ??
+      null,
     [],
   );
   const framed = useCallback(
@@ -577,13 +580,32 @@ export function useScripts(
       );
     }
     unwatch.current =
-      runner.current?.host.onCanvas((canvas, rect) =>
+      runner.current?.host.onCanvas((canvas, rect) => {
+        // a stage's frame on a layer is drawn into it as it arrives, since
+        // nothing repaints the window for it
+        const held = frameSurfaces.current.get(canvas);
+        const pixels = held?.layer ? runner.current?.host.canvas(canvas) : null;
+        if (held && pixels?.framed && pixels.width && pixels.height) {
+          const surface = held.update(
+            pixels.data,
+            pixels.width,
+            pixels.height,
+            pixels.pending,
+          );
+          if (surface) {
+            pixels.pending = undefined;
+            pictures.current.set(canvas, {
+              version: pixels.version,
+              image: surface,
+            });
+          }
+        }
         seams.current.handle.canvasChanged(
           canvas,
           runner.current?.host.canvasAlpha(canvas),
           rect,
-        ),
-      ) ?? null;
+        );
+      }) ?? null;
     ran();
     for (const go of waitingForRunner.current.splice(0)) go();
   }, []);
