@@ -1487,64 +1487,107 @@ function closeOf(text: string, open: number): number {
   return text.length;
 }
 
-/** `:host`, `:host()` or `:host-context()` as a compound reads: the
- *  function's argument, null for `:host`, and whether the host's
- *  ancestors are asked too. */
+/** What one simple selector of a compound asks of its tree's host:
+ *  `:host`, `:host()` or `:host-context()`, with the function's argument,
+ *  null for `:host`, and whether the host's ancestors are asked too; or an
+ *  `:is()`, a `:where()` or a `:not()` with one of those in its list, each
+ *  entry what its compound asks, null for one that can match no host. */
+type HostTerm =
+  | { arg: string | null; context: boolean }
+  | { any: (HostTerm[] | null)[]; negated: boolean };
+
+/** What a compound asks of its tree's host, every term of it, null where
+ *  it can match none; and whether a `:host` stands in the compound itself,
+ *  which then nothing but the host matches, or only in a function's list,
+ *  `:is(:host, aside)`, which an element in the tree may match as well. */
 interface HostCompound {
-  arg: string | null;
-  context: boolean;
+  terms: HostTerm[] | null;
+  own: boolean;
 }
 
 /** `:host` or `:host-context` at the start of a string, and no longer
  *  name. */
 const HOST_AT = /^:host(-context)?(?![\w-])/i;
+/** The functions that match the host where an entry of their list does
+ *  (Selectors 4, 3.6, a featureless element). */
+const HOST_LIST_AT = /^:(is|where|matches|not)\(/i;
 
 /**
  * What a compound says of its tree's host (CSS Scoping 1, 3.2.1): undefined
- * where it names no `:host` outside its functions, null where it names one
- * it can match nothing as, and else the compound, which is `:host`,
- * `:host(<compound>)` or `:host-context(<compound>)` and nothing more. The
- * host is featureless in its own tree, so nothing else in a compound
- * matches it there: `:host.dark` and `div:host` match nothing.
+ * where it names no `:host`, of its own or in the list of an `:is()`, a
+ * `:where()` or a `:not()`. The host is featureless in its own tree, so
+ * only those match it there, each `:not()` where no entry of its list
+ * does and every entry could: `:host:host`, `:is(:host, aside)` and
+ * `:not(:not(:host))` match it, and `:host.dark`, `div:host`,
+ * `:host:not(body)` and `:not(.dark:host)` match nothing.
  */
-function hostCompound(text: string): HostCompound | null | undefined {
-  let depth = 0;
-  let quote = '';
-  let at = -1;
-  for (let i = 0; i < text.length && at < 0; i += 1) {
+function hostCompound(text: string): HostCompound | undefined {
+  if (!/:host/i.test(text)) return undefined;
+  const terms: HostTerm[] = [];
+  let own = false;
+  let listed = false;
+  // anything else in the compound, which no host matches
+  let other = false;
+  let i = 0;
+  while (i < text.length) {
     const c = text[i];
-    if (quote) {
-      if (c === quote && text[i - 1] !== '\\') quote = '';
-    } else if (c === '\\') i = escapeEnd(text, i) - 1;
-    else if (c === '"' || c === "'") quote = c;
-    else if (c === '(' || c === '[') depth += 1;
-    else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
-    else if (c === ':' && depth === 0 && HOST_AT.test(text.slice(i))) at = i;
+    if (c === ':' && text[i + 1] !== ':') {
+      const m = HOST_AT.exec(text.slice(i));
+      if (m) {
+        own = true;
+        let end = i + m[0].length;
+        let arg: string | null = null;
+        if (text[end] === '(') {
+          const close = closeOf(text, end);
+          arg = close < text.length ? text.slice(end + 1, close).trim() : '';
+          if (!arg || compoundsOf(arg).length !== 1) other = true;
+          end = Math.min(text.length, close + 1);
+        }
+        const context = m[1] !== undefined;
+        if (context && arg === null) other = true;
+        terms.push({ arg, context });
+        i = end;
+        continue;
+      }
+      const fn = HOST_LIST_AT.exec(text.slice(i));
+      if (fn) {
+        const open = i + fn[0].length - 1;
+        const close = closeOf(text, open);
+        let found = false;
+        const any = selectorsOf(text.slice(open + 1, close)).map((entry) => {
+          const one = entry.trim();
+          if (!one || compoundsOf(one).length !== 1) return null;
+          const read = hostCompound(one);
+          if (read) found = true;
+          return read?.terms ?? null;
+        });
+        if (found) {
+          listed = true;
+          terms.push({ any, negated: fn[1].toLowerCase() === 'not' });
+        } else other = true;
+        i = close + 1;
+        continue;
+      }
+    }
+    other = true;
+    if (c === '\\') i = escapeEnd(text, i);
+    else if (c === '[') i = bracketEnd(text, i) + 1;
+    else if (c === '(') i = closeOf(text, i) + 1;
+    else i += 1;
   }
-  if (at < 0) return undefined;
-  if (at > 0) return null;
-  const m = HOST_AT.exec(text)!;
-  let i = m[0].length;
-  let arg: string | null = null;
-  if (text[i] === '(') {
-    const close = closeOf(text, i);
-    if (close >= text.length) return null;
-    arg = text.slice(i + 1, close).trim();
-    i = close + 1;
-    if (!arg || compoundsOf(arg).length !== 1) return null;
-  }
-  const context = m[1] !== undefined;
-  if (i !== text.length || (context && arg === null)) return null;
-  return { arg, context };
+  if (!own && !listed) return undefined;
+  return { terms: other ? null : terms, own };
 }
 
 /** A selector written in a shadow tree, as it reads of the host
- *  (`readHost`). */
+ *  (`readHost`). `ordinary` where every `:host` in it is in a function's
+ *  list, so that it is a selector for the tree's elements as well, with
+ *  each `:host` matching none of them: `:is(:host, aside) .x`. */
 type HostReading =
   | { kind: 'none' }
-  | { kind: 'never' }
-  | { kind: 'subject'; host: HostCompound }
-  | { kind: 'anchored'; host: HostCompound; rest: string };
+  | { kind: 'never'; ordinary: boolean }
+  | { kind: 'subject'; host: HostTerm[]; ordinary: boolean }
+  | { kind: 'anchored'; host: HostTerm[]; rest: string; ordinary: boolean };
 
 /**
  * A selector written in a shadow tree, read for its host (CSS Scoping 1,
@@ -1557,24 +1600,30 @@ type HostReading =
  */
 function readHost(selector: string): HostReading {
   const compounds = compoundsOf(selector);
-  let host: HostCompound | undefined;
+  let host: HostTerm[] | undefined;
+  let named = false;
+  let never = false;
+  let ordinary = true;
   for (let i = 0; i < compounds.length; i += 1) {
     const found = hostCompound(compounds[i].text);
     if (found === undefined) continue;
-    if (found === null || i > 0) return { kind: 'never' };
-    host = found;
+    named = true;
+    if (found.own) ordinary = false;
+    if (found.terms === null || i > 0) never = true;
+    else host = found.terms;
   }
-  if (!host) return { kind: 'none' };
-  if (compounds.length === 1) return { kind: 'subject', host };
+  if (!named) return { kind: 'none' };
+  if (never || !host) return { kind: 'never', ordinary };
+  if (compounds.length === 1) return { kind: 'subject', host, ordinary };
   const next = compounds[0].next;
-  if (next !== ' ' && next !== '>') return { kind: 'never' };
+  if (next !== ' ' && next !== '>') return { kind: 'never', ordinary };
   let rest = '';
   for (let i = 1; i < compounds.length; i += 1) {
     const { text, next: after } = compounds[i];
     rest += i === 1 && next === '>' ? `${text}:-rx-top` : text;
     if (after) rest += after === ' ' ? ' ' : ` ${after} `;
   }
-  return { kind: 'anchored', host, rest };
+  return { kind: 'anchored', host, rest, ordinary };
 }
 
 /** Where `::name(` opens outside every function, bracket and string in a
@@ -5517,19 +5566,23 @@ export class Cascade {
         }
         continue;
       }
-      if (SCOPING.test(rule.selector) && this._addScoped(rule, rules)) {
-        if (noted) continue;
-        const split = splitPseudoElement(rule);
-        this._changeRules.noteEdge(
-          (split?.rule ?? rule).selector,
-          !split
-            ? 0
-            : split.which === 'before' || split.which === 'after'
-              ? 1
-              : 2,
-          rule.declarations,
-        );
-        continue;
+      const scoped =
+        SCOPING.test(rule.selector) && this._addScoped(rule, rules);
+      if (scoped) {
+        if (!noted) {
+          const split = splitPseudoElement(rule);
+          this._changeRules.noteEdge(
+            (split?.rule ?? rule).selector,
+            !split
+              ? 0
+              : split.which === 'before' || split.which === 'after'
+                ? 1
+                : 2,
+            rule.declarations,
+          );
+        }
+        // `:is(:host, aside) .x` is a rule of the tree's too
+        if (scoped !== 'also') continue;
       }
       const transition = splitTransitionPart(rule);
       if (transition) {
@@ -7122,9 +7175,10 @@ export class Cascade {
    * it can ever match: one of the document's for a `:host` or a slot,
    * which no element of it is from inside, matches nothing — and false
    * where it says nothing of one after all, a `:host` in an attribute's
-   * value, and is an ordinary rule.
+   * value, and is an ordinary rule. `'also'` where it was taken and is an
+   * ordinary rule as well, every `:host` in it in a function's list.
    */
-  private _addScoped(rule: StyleRule, rules: TreeRules): boolean {
+  private _addScoped(rule: StyleRule, rules: TreeRules): boolean | 'also' {
     const pseudo = splitPseudoElement(rule);
     // a custom highlight's is the document's, by its name, wherever it is,
     // and a scroll button's is filed by its directions, as the document's
@@ -7183,9 +7237,11 @@ export class Cascade {
     }
     const reading = readHost(selector);
     if (reading.kind === 'none') return false;
-    if (!shadow || reading.kind === 'never') return true;
+    // as a host's it matches nothing, and as the tree's own it may
+    if (!shadow || reading.kind === 'never') return !reading.ordinary;
     const test = this._hostTest(reading.host);
-    if (!test) return true;
+    if (!test) return !reading.ordinary;
+    const taken = reading.ordinary ? 'also' : true;
     if (reading.kind === 'subject') {
       this._noteEdge(rule.selector);
       rules.host.push({
@@ -7196,7 +7252,7 @@ export class Cascade {
       });
       this._scopedPseudos.add(which);
       this._outsideIndexes(rule);
-      return true;
+      return taken;
     }
     // `:host(.dark) .x`: the rest, which is in the tree, matched as any
     // rule of the tree's, and then its host asked
@@ -7229,7 +7285,7 @@ export class Cascade {
     this._hoverRules.note(rule.selector);
     this._focusRules.note(rule.selector);
     if (UNSHAREABLE.test(rule.selector)) this._index.ownStyleEverywhere = true;
-    return true;
+    return taken;
   }
 
   /**
@@ -7260,21 +7316,42 @@ export class Cascade {
   ): ((el: Element) => boolean) | null {
     const reading = readHost(selector);
     if (reading.kind === 'none') return this._compile(selector);
-    if (!shadow || reading.kind !== 'anchored') return null;
+    // what it matches with every `:host` in it matching nothing
+    const own = reading.ordinary ? this._compile(selector) : null;
+    if (!shadow || reading.kind !== 'anchored') return own;
     const rest = this._compile(reading.rest);
     const test = this._hostTest(reading.host);
-    if (!rest || !test) return null;
-    return (el) => {
+    if (!rest || !test) return own;
+    const anchored = (el: Element): boolean => {
       if (!rest(el)) return false;
       const root = shadowRootAround(el);
       return root !== null && test(root.host);
     };
+    return own ? (el) => own(el) || anchored(el) : anchored;
   }
 
-  /** What a `:host` compound asks of the host, compiled: nothing, of
-   *  `:host`; its argument, of `:host()`; and of `:host-context()`, its
-   *  argument of the host or of an element around it, outside the tree. */
-  private _hostTest(found: HostCompound): ((host: Element) => boolean) | null {
+  /** What a compound asks of the host, compiled, every term of it
+   *  (`hostCompound`); null where it can match no host. */
+  private _hostTest(
+    terms: readonly HostTerm[],
+  ): ((host: Element) => boolean) | null {
+    const tests: ((host: Element) => boolean)[] = [];
+    for (const term of terms) {
+      const test = 'any' in term ? this._hostList(term) : this._hostOne(term);
+      if (!test) return null;
+      tests.push(test);
+    }
+    if (tests.length === 1) return tests[0];
+    return (host) => tests.every((test) => test(host));
+  }
+
+  /** What a `:host` asks of the host: nothing, of `:host`; its argument,
+   *  of `:host()`; and of `:host-context()`, its argument of the host or
+   *  of an element around it, outside the tree. */
+  private _hostOne(found: {
+    arg: string | null;
+    context: boolean;
+  }): ((host: Element) => boolean) | null {
     if (found.arg === null) return () => true;
     const match = this._compile(found.arg);
     if (!match || !found.context) return match;
@@ -7284,6 +7361,26 @@ export class Cascade {
       }
       return false;
     };
+  }
+
+  /** What an `:is()`, a `:where()` or a `:not()` asks of the host: that
+   *  an entry of its list matches it, or that none does. An entry that can
+   *  match no host is passed over in a list, and makes a `:not()` no
+   *  host's: `:not(.dark:host)` matches nothing, where `:not(:host(.dark))`
+   *  matches a host that is not dark. */
+  private _hostList(term: {
+    any: (HostTerm[] | null)[];
+    negated: boolean;
+  }): ((host: Element) => boolean) | null {
+    const tests: ((host: Element) => boolean)[] = [];
+    for (const entry of term.any) {
+      const test = entry && this._hostTest(entry);
+      if (test) tests.push(test);
+      else if (term.negated) return null;
+    }
+    if (term.negated) return (host) => !tests.some((test) => test(host));
+    if (!tests.length) return null;
+    return (host) => tests.some((test) => test(host));
   }
 
   /**

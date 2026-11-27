@@ -191,6 +191,104 @@ test(':host, :host() and :host-context() style the host from inside', async () =
   assert.strictEqual(await documentText(`<x-card>${shadow}</x-card>`), 'Hx');
 });
 
+test(':host matches its host in a compound of its kind and in the list of an :is(), a :where() or a :not(), and nothing else of a compound does', async () => {
+  // Selectors 4, 3.6: the host is featureless in its tree, so a compound
+  // matches it only where every simple selector of it may: `:host` and its
+  // functions, and a logical pseudo-class with one in its list. Only a
+  // compound that was `:host` or one function and nothing more was read,
+  // so `:host:host` matched nothing (featureless-002.html), and neither
+  // did `:is(:host, aside)` or `:not(:not(:host))` (featureless-004.html).
+  // The answers are featureless-006.html's, less those with a `:has()`,
+  // and a few more of the same kinds
+  const cases: [string, boolean][] = [
+    ['*', false],
+    ['div', false],
+    ['.host', false],
+    [':nth-of-type(1)', false],
+    [':host', true],
+    [':host:host', true],
+    [':host(.host)', true],
+    [':host(.nope)', false],
+    [':host(.host):host(div)', true],
+    [':host(.host):host(.nope)', false],
+    [':not(:host)', false],
+    [':not(:not(:host))', true],
+    [':not(:not(:not(:host)))', false],
+    [':not(:is(:host, div))', false],
+    [':is(:not(:not(:host)))', true],
+    [':is(:host, aside)', true],
+    [':where(:host)', true],
+    [':not(div)', false],
+    [':not(span)', false],
+    [':not(.foo)', false],
+    [':not(:nth-of-type(99))', false],
+    [':not(:hover)', false],
+    [':not(:host.host)', false],
+    [':not(.foo:host)', false],
+    [':not(:host > .foo)', false],
+    [':not(:host(.nope))', true],
+    [':not(:host(.host))', false],
+    [':is(:not(:host(.nope)))', true],
+    [':is(:host.host)', false],
+    [':is(:host:not(body))', false],
+    [':host:not(body)', false],
+    ['div:host', false],
+    ['*:host', false],
+    [':host.host', false],
+    ['[a]:host', false],
+    [':nth-child(1):host', false],
+    [':host:nth-child(1 of :host)', false],
+    ["[a^='']:host", false],
+    [':nth-child(0 of :host)', false],
+  ];
+  const { node } = await render(
+    cases
+      .map(
+        ([selector], i) =>
+          `<div class="host" id="h${i}"><template shadowrootmode="open">` +
+          `<style>${selector} { color: #00ff00 }</style>x</template></div>`,
+      )
+      .join(''),
+  );
+  const el = view(node);
+  cases.forEach(([selector, matches], i) => {
+    assert.strictEqual(
+      styleOf(el, `h${i}`).color === '#00ff00',
+      matches,
+      selector,
+    );
+  });
+
+  // before a combinator the same compounds are the host's, and one whose
+  // every `:host` is in a list is a selector for the tree's own elements
+  // as well, where a `:host` matches none of them
+  const inner = await render(
+    '<div class="host"><template shadowrootmode="open"><style>' +
+      ':host:host .t1, :is(:host, aside) .t2, :not(:not(:host)) > .t3,' +
+      ' :is(:host, aside) > .t4, :not(:host) .t5, :not(.foo:host) .t6' +
+      ' { color: #00ff00 }' +
+      ':not(aside) .u1, :not(.foo:host) .u2, :not(:host > .foo) .u3,' +
+      ' :is(:not(body) > :host) .u4, :is(:host:not(body)) .u5,' +
+      ' :is(:host.host) .u6, :not(:not(:host)) > .u7, .a :is(:host, .b) .u8' +
+      ' { color: #ff0000 }' +
+      '</style>' +
+      '<b id="t1" class="t1">1</b><b id="t2" class="t2">2</b>' +
+      '<b id="t3" class="t3">3</b>' +
+      '<aside><b id="t4" class="t4">4</b></aside>' +
+      '<i><b id="t5" class="t5">5</b><b id="t6" class="t6">6</b></i>' +
+      '<b id="u1" class="u1 u2 u3 u4 u5 u6 u8">u</b>' +
+      '<i><b id="u7" class="u7">7</b></i>' +
+      '</template></div>',
+  );
+  const tree = view(inner.node);
+  for (const id of ['t1', 't2', 't3', 't4', 't5', 't6']) {
+    assert.strictEqual(styleOf(tree, id).color, '#00ff00', id);
+  }
+  for (const id of ['u1', 'u7']) {
+    assert.notStrictEqual(styleOf(tree, id).color, '#ff0000', id);
+  }
+});
+
 test("the page's rules outrank the host's :host rules, and the host's !important ones outrank the page's", async () => {
   // CSS Cascade 5, 6.1: context before specificity, reversed for important
   const { node } = await render(
