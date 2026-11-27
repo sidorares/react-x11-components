@@ -84,6 +84,7 @@ import type {
 import {
   LIGHT_DARK,
   lightDark,
+  rgbaOf,
   systemColorTable,
   usedColorScheme,
 } from './color.js';
@@ -7816,7 +7817,15 @@ export class Cascade {
         const picked = LIGHT_DARK.test(text)
           ? lightDark(text, style.colorScheme)
           : text;
-        return picked === null ? null : parseColor(picked);
+        const parsed = picked === null ? null : parseColor(picked);
+        if (parsed === null) return null;
+        // as the colour it computes to, however it was written: a name
+        // and a hex are kept as they were read, and `white`, `#fff` and
+        // `rgb(255 255 255)` are one colour
+        const rgba = rgbaOf(parsed);
+        return rgba
+          ? rgba.map((c) => Math.round(c * 1e4) / 1e4).join()
+          : parsed;
       },
       // an `inherit` is what the container inherits: its parent's in the
       // flat tree, and at the top the initial values of what is registered

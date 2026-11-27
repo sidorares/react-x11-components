@@ -380,6 +380,45 @@ test('a container of no box is still one, its size features unknown; and a dashe
   assert.strictEqual(color('r'), 'rgb(0, 128, 0)', 'by its dashed name');
 });
 
+test('a style query compares a registered colour by what it computes to, however it was written', async () => {
+  // CSS Conditional 5, 3.3: a registered property's value is its computed
+  // value. A name and a hex were kept as they were read and a function as
+  // the hex it came to, so `white` was no `#fff` and no
+  // `contrast-color(#000)` (contrast-color-style-query.html)
+  const { node } = await render(
+    '<style>@property --c { syntax: "<color>"; initial-value: red; inherits: true }' +
+      '@property --free { syntax: "*"; inherits: true }' +
+      '#a { --c: contrast-color(#000) } #b { --c: #fff } #c { --c: WHITE }' +
+      '#d { --c: rgb(255 255 255 / 50%) } #e { --free: #fff }' +
+      '@container style(--c: white) { .t { color: #008000 } }' +
+      '@container style(--c: rgba(255, 255, 255, 0.5)) { .u { color: #008000 } }' +
+      '@container style(--free: white) { .v { color: #008000 } }' +
+      '@container style(--free: #fff) { .w { color: #008000 } }</style>' +
+      ['a', 'b', 'c', 'd', 'e']
+        .map(
+          (id) =>
+            `<div id="${id}"><p id="${id}t" class="t">t</p>` +
+            `<p id="${id}u" class="u">u</p><p id="${id}v" class="v">v</p>` +
+            `<p id="${id}w" class="w">w</p></div>`,
+        )
+        .join(''),
+  );
+  const el = view(node);
+  const green = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)?.color === 'rgb(0, 128, 0)';
+  // white, whichever way it was said
+  assert.deepStrictEqual(['at', 'bt', 'ct', 'dt'].map(green), [
+    true,
+    true,
+    true,
+    false,
+  ]);
+  // and its alpha is part of it
+  assert.deepStrictEqual(['au', 'du'].map(green), [false, true]);
+  // a property registered as anything is compared as it was written
+  assert.deepStrictEqual(['ev', 'ew'].map(green), [false, true]);
+});
+
 test("a style query's inherit is the value the container has from its parent", async () => {
   // custom-property-style-queries.html's defaulting: `--inherit` is set on
   // the container and its parent alike, `--inherit-no` to another value on

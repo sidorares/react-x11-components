@@ -9473,7 +9473,9 @@ container's units — a zero with no unit is one — angles, times and
 resolutions, so `1px <= 1em` and `3turn > 3deg` hold. A property
 registered as a `<length>` or a `<color>` (`@property`) is compared as
 one, so `--gap: 0.5em` holds of a `10px` gap in a `20px` font, and a
-`light-dark()` colour by the container's scheme; `initial` is a
+colour as the colour it computes to, however it is written — `white`,
+`#fff` and `contrast-color(#000)` are one — a `light-dark()` by the
+container's scheme; `initial` is a
 registered property's initial value, `inherit` the value the container
 takes from its parent, and `unset` `inherit` — or `initial`, for a
 property registered not to inherit. A value's `!important` asks nothing
