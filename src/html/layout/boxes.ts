@@ -4808,7 +4808,24 @@ class Builder {
       } else if (text && style.listStylePosition === 'inside') {
         insideMarker = flush ? text : `${text} `;
       } else if (text) {
-        box.marker = { text, layout: null, x: 0, y: 0, style: markerStyle };
+        // in its own `text-transform`, which the user agent's sheet makes
+        // `none` whatever its item's is: an inside one's is its box's
+        // (`_insideMarker`)
+        const written = markerStyle
+          ? transformText(
+              text,
+              markerStyle.textTransform,
+              false,
+              languageOf(el),
+            )
+          : text;
+        box.marker = {
+          text: written,
+          layout: null,
+          x: 0,
+          y: 0,
+          style: markerStyle,
+        };
         if (flush) box.marker.flush = true;
       }
       this._noteReads(box);
@@ -5457,8 +5474,10 @@ class Builder {
     );
     style.display = 'inline';
     // a marker's direction is its own, whatever the text after it, unless
-    // its rules say otherwise (the HTML style sheet's `::marker`)
+    // its rules say otherwise (the HTML style sheet's `::marker`), and so
+    // is its case
     style.unicodeBidi = markerStyle?.unicodeBidi ?? 'isolate';
+    style.textTransform = markerStyle?.textTransform ?? 'none';
     const box = new Box('inline', null, style);
     box.pseudo = 'before';
     into.append(box);

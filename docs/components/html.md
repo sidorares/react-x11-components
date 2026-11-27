@@ -5980,7 +5980,9 @@ block goes lower by the difference and keeps its height. An item none of
 whose content has a line — an empty one, or one holding only empty blocks
 — has a line of its own for the marker, and the blocks it holds are drawn
 in its flow as in any block's. A `::marker`
-rule sets its colour and its font, and a `content` sets it as that,
+rule sets its colour, its font and its `text-transform` — which is `none`
+unless it says so, as the user agent's sheet has it, so an item set in
+capitals keeps its `i.` — and a `content` sets it as that,
 counters and all, its white space kept: `counter(list-item) ".\a0"` is
 where the default marker is. A list item counts with the
 `list-item` counter, which `<ol>`, `<ul>` and `<menu>` reset, and which
