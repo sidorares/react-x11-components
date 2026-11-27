@@ -6888,7 +6888,7 @@ function finishHeight(box: Box, contentHeight: number): void {
   // a `calc-size()` of that height, its content's or `stretch`'s (CSS
   // Values 5, 9)
   const sized = box.style.height === AUTO ? box.style.heightSize : null;
-  box.height = clampHeight(
+  const clamped = clampHeight(
     box,
     sized
       ? sizedBy(
@@ -6901,6 +6901,11 @@ function finishHeight(box: Box, contentHeight: number): void {
       : borderBox,
     content,
   );
+  // a table is no shorter than its rows, whatever its greatest height
+  // says, as it is no shorter than them for a height of its own (CSS
+  // Tables 3, "computing the table height"): `max-height: 0` ended a
+  // table's box at its padding, over its rows
+  box.height = box.kind === 'table' ? Math.max(clamped, content) : clamped;
 }
 
 /**

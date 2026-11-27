@@ -228,6 +228,35 @@ metric("a corner equal borders meet at is the top-left cell's", async () => {
   assert.strictEqual(over[over.length - 1].style, parseColor('#0000ff'));
 });
 
+test('a table is no shorter than its rows, whatever its greatest height says', async () => {
+  // CSS Tables 3, computing the table height: a table's height is a least
+  // one, and `max-height` takes it under what its rows come to no more
+  // than `height` does (max-height-table.html). A 5px row in 5px of
+  // padding and a 1px border is 17 tall
+  const cell = '<tr><td><div style="width:5px;height:5px"></div></td></tr>';
+  const { node } = await render(
+    '<style>body{margin:0} td{padding:0}' +
+      ' table{border-spacing:0;border:1px solid;padding:5px}</style>' +
+      `<table id="a" style="max-height:0">${cell}</table>` +
+      `<table id="b" style="max-height:8px">${cell}</table>` +
+      `<table id="c" style="height:3px;max-height:1px">${cell}</table>` +
+      // and one with room under its greatest height is as it was
+      `<table id="d" style="max-height:100px">${cell}</table>` +
+      `<table id="e" style="height:40px;max-height:30px">${cell}</table>` +
+      // a block is still as short as its greatest height says
+      '<div id="f" style="max-height:0;padding:5px;border:1px solid">' +
+      '<div style="height:5px"></div></div>' +
+      '<p id="after">x</p>',
+  );
+  const el = view(node);
+  const heights = ['a', 'b', 'c', 'd', 'e', 'f'].map(
+    (id) => boxOf(el, id).height,
+  );
+  assert.deepStrictEqual(heights, [17, 17, 17, 17, 30, 12]);
+  // and what follows the tables starts under them
+  assert.strictEqual(boxOf(el, 'b').y, 17);
+});
+
 test('a rowspan of 0 runs to the end of its row group, and no rowspan runs past it', async () => {
   // HTML 4.9.11: `rowspan="0"` is every row to the end of the cell's row
   // group, where it was read as 1 (zero-rowspan-001.html, -002.html). And a
