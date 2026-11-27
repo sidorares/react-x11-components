@@ -156,7 +156,9 @@ export function customProperties(
     const syntax = registered?.get(name)?.syntax;
     return syntax ? lengthZero(value, syntax) : value;
   };
-  for (const [name, value] of own) {
+  /** Sets `name` as a CSS-wide keyword has it, where `value` is one and
+   *  nothing else. */
+  const wide = (name: string, value: string): boolean => {
     const keyword = value.trim().toLowerCase();
     if (keyword === 'initial') {
       out.own.set(name, registered?.get(name)?.initial ?? null);
@@ -171,8 +173,12 @@ export function customProperties(
       // parent's
       out.own.set(name, unset(name));
     } else {
-      out.own.set(name, computed(name, value));
+      return false;
     }
+    return true;
+  };
+  for (const [name, value] of own) {
+    if (!wide(name, value)) out.own.set(name, computed(name, value));
   }
   const state = new Map<string, boolean>();
   const stack: string[] = [];
@@ -210,15 +216,19 @@ export function customProperties(
         hasInherit(raw) ? inheritingEnv(env, name, parent) : env,
       );
       const made = value !== null && !cyclic.has(name);
-      out.own.set(
-        name,
-        made
-          ? computed(name, value)
-          : registered?.has(name)
-            ? unset(name)
-            : null,
-      );
-      if (made && taints !== before) taint(name);
+      // a keyword a fallback left as the whole value is the property's, as
+      // one written there is: `--c: var(--none, unset)`
+      if (!(made && wide(name, value))) {
+        out.own.set(
+          name,
+          made
+            ? computed(name, value)
+            : registered?.has(name)
+              ? unset(name)
+              : null,
+        );
+        if (made && taints !== before) taint(name);
+      }
     }
     stack.pop();
     state.set(name, true);

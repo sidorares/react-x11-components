@@ -1711,6 +1711,61 @@ test("a tainted custom property is tainted where an element inherits it or a rul
   assert.strictEqual(image('free'), `image-set(url("${u}") 1dppx)`);
 });
 
+test("a CSS-wide keyword a var()'s fallback leaves as a custom property's whole value is the property's keyword", async () => {
+  // wide-keyword-fallback-002.html: `--color: var(--foo, unset)` kept the
+  // word `unset` for its value, so `color: var(--color)` was `color: unset`
+  // and the text its parent's black, where the property is its parent's
+  // green. What each comes to is Chrome's
+  const { customProperties } = await import('../../src/html/css/vars.js');
+  const parent = customProperties(
+    new Map([
+      ['--c', 'green'],
+      ['--r', '1px'],
+      ['--w', 'red'],
+    ]),
+    null,
+  );
+  const registered = new Map([
+    ['--r', { inherits: false, initial: '0px', syntax: '<length>' }],
+  ]);
+  const own = customProperties(
+    new Map([
+      ['--c', 'var(--none, unset)'],
+      ['--i', 'var(--none, inherit)'],
+      ['--n', 'var(--c, x) var(--none, initial)'],
+      ['--c2', 'var(--none,  INHERIT )'],
+      ['--c3', 'var(--none, var(--none, revert-layer))'],
+      ['--r', 'var(--none, unset)'],
+      ['--w', 'var(--none, initial)'],
+      // read after the keyword is the property's
+      ['--read', 'var(--c) var(--w, none)'],
+    ]),
+    parent,
+    null,
+    registered,
+  );
+  assert.strictEqual(own.get('--c'), 'green', 'unset inherits');
+  assert.strictEqual(own.get('--i'), undefined, 'inherit, of none');
+  assert.strictEqual(own.get('--n'), 'green initial', 'a part of a value');
+  assert.strictEqual(parent.get('--c2'), undefined);
+  assert.strictEqual(own.get('--c2'), undefined, 'any case, and spaces');
+  assert.strictEqual(own.get('--c3'), undefined, 'a fallback of a fallback');
+  assert.strictEqual(own.get('--r'), '0px', 'registered, not inherited');
+  assert.strictEqual(own.get('--w'), undefined, 'initial is no value');
+  assert.strictEqual(own.get('--read'), 'green none');
+
+  const { node } = await render(
+    '<style>.outer1 { --color: #00ff00 } .outer2 { --color: var(--foo, unset) }' +
+      ' .inner { color: var(--color) }</style>' +
+      '<div class="outer1"><div class="outer2"><div class="inner" id="i">x</div></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(
+    el.computedStyle(findById(el.document, 'i')!)!.color,
+    'rgb(0, 255, 0)',
+  );
+});
+
 test('an inherited tainted custom property stays tainted, and an untainted one that reads a tainted one is tainted whole', async () => {
   const u = 'https://does-not-exist.test/404.png';
   const { node } = await render(
