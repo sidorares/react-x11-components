@@ -7143,6 +7143,27 @@ test('a resize observer is told a size as its target is observed and again each 
   assert.equal(text, 'box:100:20:5:114,none:0:0:0:0,box:100:40:5:114|function');
 });
 
+test('a resize observer told several targets at once measures each as it would alone (inline, padded, vertical, hidden)', async () => {
+  const doc = await hosted(
+    '<style>#a{width:100px;height:20px;padding:5px;border:2px solid}' +
+      '#b{display:inline}#c{writing-mode:vertical-rl;width:30px;height:60px;padding:3px}' +
+      '#d{display:none}#e{width:50%;height:10px}</style>' +
+      '<div id="a"></div><span id="b">x</span><div id="c"></div><div id="d"></div><div id="e"></div><p id="out"></p><script>' +
+      'var ids = ["a", "b", "c", "d", "e"], together = {}, alone = {};' +
+      'function note(into) { return function (entries) { entries.forEach(function (e) {' +
+      '  into[e.target.id] = [e.contentRect.width, e.contentRect.height, e.borderBoxSize[0].inlineSize, e.borderBoxSize[0].blockSize].join(":"); }); }; }' +
+      'var all = new ResizeObserver(note(together));' +
+      'ids.forEach(function (id) { all.observe(document.getElementById(id)); new ResizeObserver(note(alone)).observe(document.getElementById(id)); });' +
+      'setTimeout(function () { document.getElementById("out").textContent = JSON.stringify([together, alone]); }, 400);' +
+      '</script>',
+  );
+  const [together, alone] = JSON.parse(
+    await settled(doc, 'out', (t) => t !== ''),
+  );
+  assert.deepEqual(Object.keys(together).sort(), ['a', 'b', 'c', 'd', 'e']);
+  assert.deepEqual(together, alone);
+});
+
 test('a resize observer measures an SVG element by its bounding box, and again when an attribute moves it', async () => {
   // Resize Observer 1, 3.1: no CSS box, so its box is its bounding box,
   // all of it content
