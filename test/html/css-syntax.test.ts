@@ -321,6 +321,16 @@ test('a functional colour is read as CSS Color 4 reads it, and handed on as ntk 
     ['lch(100% 110 60)', '#ffffff'],
     ['oklch(0% 1.1 60 / 0.5)', 'rgba(0, 0, 0, 0.5)'],
     ['oklch(100% 0.3 60)', '#ffffff'],
+    // and one a millionth of the range from an end is at it: clipped with
+    // its chroma it was a strong orange, a step from the white beside it
+    ['oklab(99.9999% 0.15 0.15)', '#ffffff'],
+    ['oklch(99.9999% 0.2 45)', '#ffffff'],
+    ['oklab(0.0001% 0.15 0.15)', '#000000'],
+    ['oklch(0.0001% 0.2 45)', '#000000'],
+    ['lab(99.9999% 50 50)', '#ffffff'],
+    ['lch(0.0001% 110 60)', '#000000'],
+    // which a lightness a hundredth from it is not
+    ['oklab(99% 0.15 0.15)', '#ffc776'],
     ['color(srgb 0 0.6 0)', '#009900'],
     ['color(display-p3 0.6 0.6 0.6)', '#999999'],
     ['color(nope 1 1 1)', null],
