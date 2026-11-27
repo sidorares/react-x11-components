@@ -5325,6 +5325,14 @@ function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
   if (box.el && isRootElement(box.el) && box.parent?.parent === null) {
     return available;
   }
+  // What it holds counts for nothing along its lines under inline-size
+  // containment, as under size containment (CSS Containment 3, 3.2): its
+  // `contain-intrinsic` size that way, which is down the page here, is all
+  // its content comes to, at its widest and its narrowest alike
+  if (contained(box, CONTAIN_WIDTH)) {
+    const held = box.style.containIntrinsicHeight ?? 0;
+    return clampHeight(box, held + box.verticalExtra) - box.verticalExtra;
+  }
   if (frame.intrinsicMaxContent < 0) {
     frame.intrinsicMaxContent = measureIntrinsicWidth(frame, ctx, Infinity);
   }
