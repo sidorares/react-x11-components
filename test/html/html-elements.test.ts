@@ -58,6 +58,51 @@ test("a body's margin attributes are two sides each, and rightmargin and bottomm
   assert.strictEqual(edgesOf(boxOf(view(node), 'b')).marginLeft, 2);
 });
 
+test('a fieldset is a block container, whatever display it is given', async () => {
+  // HTML's rendering section, the fieldset and legend elements: an outer
+  // display type of inline behaves as `inline-block`, and anything else as
+  // `flow-root`. Left an inline box, a fieldset's size applied to nothing
+  // (display-inline-on-block-container.html); left a table's cell, it was
+  // wrapped in a table nobody wrote (table-display-on-fieldset.html)
+  const fieldset = (id: string, display: string) =>
+    `<fieldset id="${id}" style="display:${display};width:40px;height:20px;` +
+    'margin:0;padding:0;border:none"></fieldset>';
+  const square = '<i style="display:inline-block;width:20px;height:20px"></i>';
+  const row = (id: string, display: string) =>
+    `<div id="${id}-row" style="width:200px;font-size:0;line-height:0">` +
+    `${square}${fieldset(id, display)}${square}</div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      row('inline', 'inline') +
+      row('itable', 'inline-table') +
+      row('cell', 'table-cell') +
+      row('caption', 'table-caption') +
+      row('trow', 'table-row') +
+      row('item', 'list-item') +
+      row('flex', 'flex'),
+  );
+  const el = view(node);
+  const displayOf = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { display: string } }).style.display;
+  const sizeOf = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  // on the line between the two squares, at its own size
+  for (const id of ['inline', 'itable']) {
+    assert.strictEqual(displayOf(id), 'inline-block', id);
+    assert.deepStrictEqual(sizeOf(id), [40, 20], id);
+    assert.strictEqual(boxOf(el, id).x, 20, id);
+    assert.strictEqual(boxOf(el, `${id}-row`).height, 20, id);
+  }
+  // a block, between the lines of the squares, in no table of its own
+  for (const id of ['cell', 'caption', 'trow', 'item']) {
+    assert.strictEqual(displayOf(id), 'block', id);
+    assert.deepStrictEqual(sizeOf(id), [40, 20], id);
+    assert.strictEqual(boxOf(el, id).x, 0, id);
+    assert.strictEqual(boxOf(el, `${id}-row`).height, 60, id);
+  }
+  // and a flex box is one
+  assert.strictEqual(displayOf('flex'), 'flex');
+});
+
 test('an anchor with no href is drawn as the text around it', async () => {
   const { node } = await render(
     '<p style="color:#123456"><a id="n">name</a> <a id="l" href="#">link</a></p>',

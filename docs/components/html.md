@@ -10424,7 +10424,10 @@ Its `display` is what HTML's button layout makes of the one it was given:
 a flex box or a grid is that, `inline` and `inline-table` are an
 `inline-block` — a button is never an inline box, broken around the blocks
 in it — and `list-item` and `table` are a block, with no marker and no
-cells; a table's part is left what it is. And its `width: auto` is
+cells; a table's part is left what it is. A `<fieldset>` is a block
+container the same way, as HTML's rendering section has it: `inline` and
+`inline-table` are an `inline-block`, and `list-item`, `table` and every
+part of a table a block. And a button's `width: auto` is
 `fit-content`, as the same layout has it: a button set `display: block`,
 `flex` or `grid` is as wide as its content and not as its containing block,
 within its `min-width` and `max-width` and the room its margins leave, and

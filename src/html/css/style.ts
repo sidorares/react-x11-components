@@ -12632,6 +12632,41 @@ export function settleButton(style: ComputedStyle): void {
   }
 }
 
+/**
+ * The `display` a `<fieldset>` is laid out with (HTML's rendering section,
+ * the fieldset and legend elements): its box is a block container whatever
+ * it says. One whose outer display type is inline behaves as
+ * `inline-block`, and anything else as `flow-root`, a part of a table
+ * among them; a flex box or a grid is that. The formatting context is the
+ * layout's to give every fieldset (`establishesBFC`).
+ *
+ * Left an inline box, a fieldset's `width` and `height` applied to nothing
+ * and it drew nothing; left a table's cell, it was wrapped in a table and
+ * a row nobody wrote.
+ */
+export function settleFieldset(style: ComputedStyle): void {
+  switch (style.display) {
+    case 'inline':
+    case 'inline-table':
+      style.display = 'inline-block';
+      return;
+    case 'list-item':
+    case 'table':
+    case 'table-cell':
+    case 'table-row':
+    case 'table-row-group':
+    case 'table-header-group':
+    case 'table-footer-group':
+    case 'table-caption':
+    case 'table-column':
+    case 'table-column-group':
+      style.display = 'block';
+      return;
+    default:
+      return;
+  }
+}
+
 /** The generic font families, which a list ending in one falls back
  *  through already, in the text engine (CSS Fonts 4, 4.2). */
 const GENERIC_FAMILY = new Set([
