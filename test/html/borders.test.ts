@@ -2044,6 +2044,30 @@ metric('a box of no size casts the shadow its spread makes', async () => {
 });
 
 metric(
+  "a shadow is not drawn under a body whose background is the canvas's",
+  async () => {
+    // A box's own opaque background hides what of an outer shadow falls
+    // under it, so that part is drawn and painted over. A `<body>` whose
+    // background went to the canvas paints none in its box (CSS Backgrounds
+    // 3, 2.11.2), and its shadow, a 4px ring, filled the whole of it
+    // (box-shadow-body.html)
+    const { result } = await render(
+      '<!doctype html><style>html{margin:0}body{position:relative;' +
+        'box-shadow:0 0 0 4px #ff0000;width:100px;height:60px;' +
+        'margin:20px;background-color:#ffffff}</style><body></body>',
+    );
+    const at = (x: number, y: number, color: string, message: string) =>
+      expectPixel(result.ctx, x, y, color, { message, tolerance: 8 });
+    // the body is 20 to 120 across and 20 to 80 down
+    await at(70, 50, '#ffffff', 'none under the body');
+    await at(22, 22, '#ffffff', 'up to its corner');
+    await at(18, 50, '#ff0000', 'the ring beside it');
+    await at(70, 82, '#ff0000', 'and below it');
+    await at(10, 50, '#ffffff', 'and the canvas past the ring');
+  },
+);
+
+metric(
   'a hard shadow round a box with no background is drawn beside it and not under it, off the pixel grid too',
   async () => {
     // The part outside the box, as bands beside it: drawn as the shadow's

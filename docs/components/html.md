@@ -8328,7 +8328,9 @@ out by less than itself where the radius is small beside it and the box
 is not already round, as browsers do, so a ring keeps a card's corners
 nearly square and a circle's round. An outer shadow is not
 drawn under its box, which a box's own opaque colour usually sees to, and
-where it does not, a hard one with square corners is drawn as the bands of
+where it does not — a box with no opaque colour, or a `<body>` whose
+background is the canvas's and no paint of its own —
+a hard one with square corners is drawn as the bands of
 it beside the box and any other is cut out of the box — on X11 a mask the
 size of the window, which a page with a shadow under every link paid once a
 link. A blurred shadow is the 2d context's
