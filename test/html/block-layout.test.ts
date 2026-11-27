@@ -4,7 +4,15 @@ import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { cleanup } from 'react-x11/test';
 import type { FontsLike } from '../../src/html/layout/inline.js';
-import { boxOf, metric, render, renderWithBytes, view } from './harness.js';
+import {
+  boxOf,
+  drawnText,
+  findById,
+  metric,
+  render,
+  renderWithBytes,
+  view,
+} from './harness.js';
 import type { LaidBox } from './harness.js';
 
 afterEach(cleanup);
@@ -684,6 +692,54 @@ test("an element of display: contents has no box, and its children are its paren
     box.el?.attribs.id === id || box.children.some((c) => find(c, id));
   assert.ok(!find(tree, 'w'), 'no box for the element');
   assert.ok(!find(tree, 'img'), 'a replaced element is not rendered');
+});
+
+test('display: contents is display: none on an element it has no meaning for, fallback and all', async () => {
+  // CSS Display 3, Appendix B: on a replaced element, a form control, a
+  // `<br>` and a `<wbr>`, `contents` computes to `none`. An `<object>` with
+  // nothing to show is no replaced box here, so it handed its fallback to
+  // its parent, and `<object>FAIL</object>` drew FAIL
+  // (display-contents-unusual-html-elements-none.html)
+  const unusual =
+    '<meter id="meter"></meter><progress id="progress"></progress>' +
+    '<canvas id="canvas">FAIL</canvas><embed id="embed">' +
+    '<object id="object">FAIL</object><audio id="audio" controls>FAIL</audio>' +
+    '<iframe id="iframe"></iframe><img id="img"><video id="video">FAIL</video>' +
+    '<input id="input"><textarea id="textarea"></textarea>' +
+    '<select id="select"><option>FAIL</option></select>';
+  const { node } = await render(
+    '<style>body{margin:0}#u *{display:contents;border:10px solid red;' +
+      'width:200px;height:200px}</style>' +
+      `<div id="u">${unusual}</div>` +
+      '<p id="p">P<br id="br" style="display:contents">A' +
+      '<wbr id="wbr" style="display:contents">SS</p>' +
+      // and on anything else it is `contents`, a button among them
+      '<button id="button" style="display:contents">shown</button>',
+  );
+  const el = view(node);
+  assert.strictEqual(drawnText(el).replace(/\s+/g, ''), 'PASSshown');
+  assert.strictEqual(boxOf(el, 'u').height, 0);
+  const display = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)?.display;
+  for (const id of [
+    'meter',
+    'progress',
+    'canvas',
+    'embed',
+    'object',
+    'audio',
+    'iframe',
+    'img',
+    'video',
+    'input',
+    'textarea',
+    'select',
+    'br',
+    'wbr',
+  ]) {
+    assert.strictEqual(display(id), 'none', id);
+  }
+  assert.strictEqual(display('button'), 'contents');
 });
 
 test('an intrinsic size is read beside an auto length', async () => {

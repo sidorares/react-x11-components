@@ -10392,6 +10392,17 @@ export class Cascade {
     // that says `contents` is a block too (2.5): it has a box, which the
     // canvas takes its background from
     if (own && root && style.display === 'contents') style.display = 'block';
+    // and where it has no meaning it is `none` (Appendix B): what is
+    // replaced, a form control and a break have no contents to hand on,
+    // and an `<object>`'s or an `<audio>`'s fallback is no such thing
+    else if (
+      own &&
+      style.display === 'contents' &&
+      el.name.length <= 8 &&
+      CONTENTS_IS_NONE.has(tagOf(el))
+    ) {
+      style.display = 'none';
+    }
     blockify(style, inFlexContainer || (own && root));
     // no box of its own, so what it holds is the items of the box around it
     // (`holdsItems`), but in a `-webkit-box`, which blockifies nothing in a
@@ -11664,6 +11675,29 @@ function noEdges(style: ComputedStyle): void {
   style.borderBottomStyle = 'none';
   style.borderLeftStyle = 'none';
 }
+
+/** The elements `display: contents` computes to `none` on (CSS Display 3,
+ *  Appendix B, "unusual elements"): HTML's replaced elements, its form
+ *  controls that are no button, and its breaks. A `<button>`, a
+ *  `<details>`, a `<fieldset>` and a `<legend>` are not among them. */
+const CONTENTS_IS_NONE = new Set([
+  'br',
+  'wbr',
+  'meter',
+  'progress',
+  'canvas',
+  'embed',
+  'object',
+  'audio',
+  'iframe',
+  'img',
+  'video',
+  'frame',
+  'frameset',
+  'input',
+  'textarea',
+  'select',
+]);
 
 /** The elements whose look is a control's own until the page styles it
  *  (`stylesControl`): the fields a widget is mounted for, a button and a
