@@ -12613,14 +12613,25 @@ export function holdsItems(style: ComputedStyle): boolean {
  * Left an inline box, a button around a block was broken in two around it,
  * as any inline box is: as wide as the line, its `height` applied to
  * nothing, and its border and padding drawn above and below the line it
- * opened. A table's part is left what it is, where the two disagree: a
- * block to the text, an inline-block in Blink. After `blockify`, since a
- * float, an absolute box and a flex item are blocks first.
+ * opened. A table's part is an `inline-block` too, as in Blink and WebKit:
+ * a layout-internal `display` on a replaced element is handled as `inline`
+ * (CSS Display 3, 2.4), and a button's box is a widget's. Left a cell, two
+ * buttons were the cells of one row of a table nobody wrote, each as tall
+ * as the taller. After `blockify`, since a float, an absolute box and a
+ * flex item are blocks first.
  */
 export function settleButton(style: ComputedStyle): void {
   switch (style.display) {
     case 'inline':
     case 'inline-table':
+    case 'table-cell':
+    case 'table-row':
+    case 'table-row-group':
+    case 'table-header-group':
+    case 'table-footer-group':
+    case 'table-caption':
+    case 'table-column':
+    case 'table-column-group':
       style.display = 'inline-block';
       return;
     case 'list-item':

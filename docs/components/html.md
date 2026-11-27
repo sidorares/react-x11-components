@@ -10433,7 +10433,8 @@ centred down the button's content box where that is the taller — a height
 or a least height of its own, or one a flex box, a grid or a pair of
 offsets stretched it to — and at the top where the content is the taller.
 A button set `display: flex` or `grid` is that instead, its content where
-its own alignment puts it. A
+its own alignment puts it, and one told to be a table's part, `table-cell`
+say, is an inline-block in no table, as in Chrome and Safari. A
 press on it is reported through
 `onControlChange`, with its `value`, as a widget's is, and then does what
 the button does — submits its form, resets it, or nothing for
