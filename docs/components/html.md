@@ -660,14 +660,17 @@ marker draws the `list-style-type`'s marker, as a gradient
 ### Image orientation
 
 A JPEG is drawn turned as its EXIF Orientation says, and is as large as it
-is turned: `image-orientation: from-image`, the initial value. Under
+is turned: `image-orientation: from-image`, the initial value. So is a PNG
+whose `eXIf` chunk comes before its image data; one that comes after is
+ignored, as a browser ignores it. Under
 `image-orientation: none` (CSS Images 3, 5.3), which inherits, an image is
 drawn as its file stores it and is as large as that, on its side for the
 four orientations that turn it a quarter: an `<img>`, generated content, a
-background, a list marker, a border image and a mask image. Not yet: a
-PNG's `eXIf` chunk, which is not read, so a PNG is as its pixels are either
-way; and on a backend whose images hold no pixels this can read, macOS's
-among them, `none` draws the image turned.
+background, a list marker, a border image and a mask image. Not yet: an
+EXIF profile a PNG keeps as text, in a `zTXt` chunk, which is not read, so
+such a PNG is as its pixels are either way; and on a backend whose images
+hold no pixels this can read, macOS's among them, a PNG is not turned and
+`none` draws a JPEG turned.
 
 ### Encodings
 

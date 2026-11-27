@@ -535,15 +535,21 @@ export class ResourceStore {
       this._decoding(url, entry, result.bytes, animation, take, synchronous);
       return;
     }
-    // how its file says it is turned, which the decoder has turned it by
+    // how its file says it is turned: a JPEG's the decoder has turned it
+    // by, and a PNG's, which no decoder reads, it is turned by here
+    let unturned = 1;
     if (result.bytes[0] === 0xff && result.bytes[1] === 0xd8) {
       entry.orientation = exifOrientation?.(result.bytes) ?? 1;
+    } else {
+      unturned = pngOrientation(result.bytes);
+      if (unturned > 1) entry.orientation = unturned;
     }
     const decoded = decodeImage(result.bytes);
     if (isPromise(decoded)) {
       const take = (image: ImageLike): void => {
-        entry.image = image;
-        entry.size = rasterSize(image.width, image.height);
+        const turned = turnedBy(image, unturned);
+        entry.image = turned;
+        entry.size = rasterSize(turned.width, turned.height);
         entry.state = 'ready';
       };
       this._decoding(url, entry, result.bytes, decoded, take, synchronous);
@@ -553,8 +559,9 @@ export class ResourceStore {
       entry.state = 'failed';
       return;
     }
-    entry.image = decoded;
-    entry.size = rasterSize(decoded.width, decoded.height);
+    const turned = turnedBy(decoded, unturned);
+    entry.image = turned;
+    entry.size = rasterSize(turned.width, turned.height);
     entry.state = 'ready';
     if (!synchronous) this._arrived(url, entry);
   }
@@ -1032,41 +1039,44 @@ export const imageDecoder = {
  *  orientation turned it: made once an image. */
 const AS_STORED = new WeakMap<object, unknown>();
 
+/** An image's pixels, where they are ours to read: a native image's are
+ *  not. */
+interface Raster {
+  width: number;
+  height: number;
+  data: Uint8Array | Uint8ClampedArray;
+  constructor: new (rgba: {
+    width: number;
+    height: number;
+    data: Uint8ClampedArray;
+  }) => unknown;
+}
+
+function rasterOf(image: unknown): Raster | null {
+  const raster = image as Partial<Raster> | null;
+  if (!raster || typeof raster !== 'object') return null;
+  const { width, height, data } = raster;
+  if (!width || !height || !data || data.length !== width * height * 4) {
+    return null;
+  }
+  return raster as Raster;
+}
+
 /**
- * A decoded image with the turn its EXIF `orientation` gave it taken back:
- * the pixels as the file stores them, which `image-orientation: none`
- * draws. The image itself where its pixels are not ours to read, as a
- * native one's are not.
+ * Where each pixel of an image `width` by `height` as its file stores it is
+ * in the image as its EXIF `orientation` turns it, by index (EXIF 2.32,
+ * 4.6.4, Orientation). The turned image is on its side for the four turns
+ * by a quarter.
  */
-function asStored(image: unknown, orientation: number): unknown {
-  const raster = image as {
-    width?: number;
-    height?: number;
-    data?: Uint8Array | Uint8ClampedArray;
-    constructor: new (rgba: {
-      width: number;
-      height: number;
-      data: Uint8ClampedArray;
-    }) => unknown;
-  } | null;
-  if (!raster || typeof raster !== 'object') return image;
-  const dw = raster.width ?? 0;
-  const dh = raster.height ?? 0;
-  const from = raster.data;
-  if (!from || from.length !== dw * dh * 4) return image;
-  let out = AS_STORED.get(raster);
-  if (out !== undefined) return out;
-  // the stored image's size: on its side for the four turns by a quarter
-  const side = orientation >= 5;
-  const width = side ? dh : dw;
-  const height = side ? dw : dh;
-  const data = new Uint8ClampedArray(from.length);
-  const pixels = new Uint32Array(data.buffer);
-  const turned = new Uint32Array(from.buffer, from.byteOffset, dw * dh);
+function turnedPlaces(
+  orientation: number,
+  width: number,
+  height: number,
+): Uint32Array {
+  const across = orientation >= 5 ? height : width;
+  const places = new Uint32Array(width * height);
   for (let v = 0; v < height; v += 1) {
     for (let u = 0; u < width; u += 1) {
-      // where the stored pixel (u, v) is in the image as turned (EXIF 2.32,
-      // 4.6.4, Orientation)
       let x = u;
       let y = v;
       switch (orientation) {
@@ -1097,9 +1107,31 @@ function asStored(image: unknown, orientation: number): unknown {
           y = width - 1 - u;
           break;
       }
-      pixels[v * width + u] = turned[y * dw + x];
+      places[v * width + u] = y * across + x;
     }
   }
+  return places;
+}
+
+/**
+ * A decoded image with the turn its EXIF `orientation` gave it taken back:
+ * the pixels as the file stores them, which `image-orientation: none`
+ * draws. The image itself where its pixels are not ours to read.
+ */
+function asStored(image: unknown, orientation: number): unknown {
+  const raster = rasterOf(image);
+  if (!raster) return image;
+  let out = AS_STORED.get(raster);
+  if (out !== undefined) return out;
+  const side = orientation >= 5;
+  const width = side ? raster.height : raster.width;
+  const height = side ? raster.width : raster.height;
+  const from = raster.data;
+  const turned = new Uint32Array(from.buffer, from.byteOffset, width * height);
+  const data = new Uint8ClampedArray(from.length);
+  const pixels = new Uint32Array(data.buffer);
+  const places = turnedPlaces(orientation, width, height);
+  for (let i = 0; i < places.length; i += 1) pixels[i] = turned[places[i]];
   try {
     out = new raster.constructor({ width, height, data });
   } catch {
@@ -1107,6 +1139,65 @@ function asStored(image: unknown, orientation: number): unknown {
   }
   AS_STORED.set(raster, out);
   return out;
+}
+
+/**
+ * A decoded image turned as its EXIF `orientation` says, where the decoder
+ * left it as stored: a PNG's, whose `eXIf` chunk no decoder here reads. The
+ * image as decoded is the one `asStored` then answers with. The image
+ * itself where its pixels are not ours to read.
+ */
+function turnedBy(image: ImageLike, orientation: number): ImageLike {
+  const raster = rasterOf(image);
+  if (!raster || !(orientation > 1)) return image;
+  const { width, height } = raster;
+  const from = raster.data;
+  const stored = new Uint32Array(from.buffer, from.byteOffset, width * height);
+  const data = new Uint8ClampedArray(from.length);
+  const pixels = new Uint32Array(data.buffer);
+  const places = turnedPlaces(orientation, width, height);
+  for (let i = 0; i < places.length; i += 1) pixels[places[i]] = stored[i];
+  const side = orientation >= 5;
+  try {
+    const out = new raster.constructor({
+      width: side ? height : width,
+      height: side ? width : height,
+      data,
+    }) as ImageLike;
+    AS_STORED.set(out as object, image);
+    return out;
+  } catch {
+    return image;
+  }
+}
+
+/**
+ * A PNG's EXIF Orientation, by its `eXIf` chunk where that comes before its
+ * image data; one after it is ignored, as CSS Images 3 has metadata that
+ * follows an image's data ignored and as Chrome, Firefox and Safari do
+ * (WPT's `image-orientation-exif-png-2`). 1 where it says none.
+ */
+function pngOrientation(bytes: Uint8Array): number {
+  if (!exifOrientation || !isPng(bytes)) return 1;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let at = 8; at + 12 <= bytes.length;) {
+    const length = view.getUint32(at);
+    const type = String.fromCharCode(...bytes.subarray(at + 4, at + 8));
+    if (type === 'IDAT' || type === 'IEND') return 1;
+    if (type === 'eXIf') {
+      if (length > 0xfff0 || at + 8 + length > bytes.length) return 1;
+      // as a JPEG carries one, in an APP1 segment, which is what ntk reads
+      const jpeg = new Uint8Array(14 + length);
+      jpeg.set([0xff, 0xd8, 0xff, 0xe1, (length + 8) >> 8, (length + 8) & 255]);
+      jpeg.set([0x45, 0x78, 0x69, 0x66, 0, 0], 6);
+      jpeg.set(bytes.subarray(at + 8, at + 8 + length), 12);
+      jpeg.set([0xff, 0xd9], 12 + length);
+      const orientation = exifOrientation(jpeg);
+      return orientation >= 1 && orientation <= 8 ? orientation : 1;
+    }
+    at += 12 + length;
+  }
+  return 1;
 }
 
 /**
