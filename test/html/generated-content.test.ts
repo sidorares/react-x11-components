@@ -636,6 +636,41 @@ test('::first-letter is not found past a break or an inline-block', async () => 
   );
 });
 
+test("::first-letter is looked for after an item's own marker, an inside one's text too", async () => {
+  // CSS Pseudo 4, 2.3: a list item's marker is no part of what its first
+  // letter is found in. An inside marker is an inline box at the start of
+  // the item, and its text was the first the search met: the bullet, or
+  // the first letter of a marker written as a string
+  // (css-pseudo/first-letter-skip-marker.html)
+  const css =
+    '<style>li::first-letter{color:green}' +
+    'ol,ul{list-style-position:inside}</style>';
+  const letters = async (list: string) =>
+    (await firstLetters(css + list)).map((l) => l.text);
+  assert.deepStrictEqual(await letters('<ul><li>item</li></ul>'), ['i']);
+  assert.deepStrictEqual(
+    await letters('<ol><li style="list-style-type:\'marker \'">item</li></ol>'),
+    ['i'],
+  );
+  assert.deepStrictEqual(
+    await letters(
+      '<style>.m::marker{content:"marker "}</style>' +
+        '<ol><li class="m">item</li></ol>',
+    ),
+    ['i'],
+  );
+  // and a list's own first letter is past its first item's marker
+  assert.deepStrictEqual(
+    (
+      await firstLetters(
+        '<style>ul::first-letter{color:green}' +
+          'ul{list-style-position:inside}</style><ul><li>item</li></ul>',
+      )
+    ).map((l) => l.text),
+    ['i'],
+  );
+});
+
 test('a pseudo-element is a box of its own display', async () => {
   const { node } = await render(
     '<style>.cf:after{content:"";display:block;height:10px}' +

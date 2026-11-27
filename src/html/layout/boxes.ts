@@ -4866,7 +4866,13 @@ class Builder {
         if (style.direction === 'rtl') image.style.marginLeft = gap;
         else image.style.marginRight = gap;
       } else if (insideMarker) {
+        // a marker is no part of what a first letter is found in, its
+        // item's or a list's around it (CSS Pseudo 4, 2.3): the search
+        // goes on after it
+        const search = this._firstLetter;
+        this._firstLetter = null;
         this._insideMarker(insideMarker, style, markerStyle, box, el);
+        this._firstLetter = search;
       }
       this._pseudo(el, 'before', style, box);
       this._children(el, box, style, childInFlex, el, key);
