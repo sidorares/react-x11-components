@@ -10163,7 +10163,11 @@ edges:
   the host from inside, its `::before` and `::after` too, and, first in a
   selector, reach into the tree from it: `:host(.dark) .label`, `:host >
 slot`. The host is featureless in its own tree, so `:host.dark` and `* >
-.top` match nothing, as in a browser.
+.top` match nothing, as in a browser. Several in one compound all hold,
+  `:host:host`, and one in the list of an `:is()`, a `:where()` or a
+  `:not()` matches the host as the list has it: `:is(:host, aside) .label`,
+  which is a selector for the tree's own elements as well, and
+  `:not(:host(.dark))`, a host that is not dark.
 - **`::slotted(<compound>)`** styles what is assigned to a slot, and its
   `::before` and `::after` — not what is inside it, and not a slot's
   fallback.
