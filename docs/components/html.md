@@ -7995,7 +7995,9 @@ well, as HTML maps them.
 `box-sizing` names — Tailwind's `aspect-video` and `aspect-square` — and
 that height is one a percentage inside resolves against. A box grows past
 it to hold its content, as CSS Sizing 4 has it, unless it clips or has a
-`min-height` of its own; a replaced element takes it over its own ratio,
+`min-height` of its own — `min-content` and `fit-content` among them, which
+under a ratio are the height it makes of the width and not the content's;
+a replaced element takes it over its own ratio,
 or, written `auto 16 / 9`, only where it has none — then of its content
 box, as its own ratio is, and of the box `box-sizing` names otherwise. The
 ratio runs the other
