@@ -1853,6 +1853,10 @@ function isSelector(s: string, supports = false): boolean {
           if (!element && !argumentFits(lower, s.slice(i + 1, end - 1))) {
             return false;
           }
+          // and the selectors in it are each one, none of them forgiven
+          if (supports && !listedSelectorsFit(lower, s.slice(i + 1, end - 1))) {
+            return false;
+          }
           // a pseudo-element in a selector list a pseudo-class takes is no
           // selector there (Selectors 4, 3.6.1)
           if (
@@ -1886,6 +1890,59 @@ function isSelector(s: string, supports = false): boolean {
     expectCompound = false;
   }
   return !expectCompound;
+}
+
+/**
+ * Whether the selectors a pseudo-class or a `::slotted()` takes are each
+ * one, as `selector()` asks (CSS Conditional 4, 3.1): a list is read with
+ * nothing forgiven there, so `:is(:foo, .a)` is no selector, and neither
+ * is `:is()`. A `:has()`'s are relative, with no `:has()` in them at any
+ * depth; an `:nth-child()`'s are what follows its `of`; and a `:host()`'s
+ * or a `::slotted()`'s is one compound.
+ */
+function listedSelectorsFit(name: string, argument: string): boolean {
+  let list = argument;
+  let relative = false;
+  let compound = false;
+  switch (name) {
+    case 'is':
+    case 'where':
+    case 'not':
+    case 'matches':
+      break;
+    case 'has':
+      if (/:has\(/i.test(argument)) return false;
+      relative = true;
+      break;
+    case 'nth-child':
+    case 'nth-last-child': {
+      const of = /^[^,]*?\sof\s([^]*)$/i.exec(argument);
+      if (!of) return true;
+      list = of[1];
+      break;
+    }
+    case 'host':
+    case 'host-context':
+    case 'slotted':
+      compound = true;
+      break;
+    default:
+      return true;
+  }
+  return splitTopLevelCommas(list).every((entry) => {
+    let one = entry.trim();
+    if (relative && /^[>+~]/.test(one)) one = one.slice(1).trim();
+    return one !== '' && isSelector(one, true) && !(compound && combines(one));
+  });
+}
+
+/** Whether a selector has a combinator in it: more than one compound. */
+function combines(selector: string): boolean {
+  for (let i = 0; i < selector.length; i = componentEnd(selector, i)) {
+    const c = selector[i];
+    if (isSpace(c) || c === '>' || c === '+' || c === '~') return true;
+  }
+  return false;
 }
 
 /**
