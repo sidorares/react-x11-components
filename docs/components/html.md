@@ -623,8 +623,9 @@ background layer, a list marker, generated content, a border image, a
 mask — and that one alone is asked for through `onResource`:
 
 - **its options:** each a `url()`, a string that is one, or a gradient,
-  with a resolution — `2x`, `2dppx`, `192dpi`, or `1x` where it has none —
-  and a `type()`, in either order;
+  with a resolution — `2x`, `2dppx`, `192dpi`, a calculation of them such
+  as `calc(0.5x * 2)`, or `1x` where it has none — and a `type()`, in
+  either order;
 - **the type:** an option whose `type()` does not decode here is passed
   over, the types a `<source type>` takes — but the string as written, so
   one with a parameter, white space round it, or nothing in it is a type
@@ -642,7 +643,9 @@ the same, as Firefox and WebKit size one, where Chrome leaves an SVG at its
 own size.
 
 An `image-set()` with no option that decodes draws nothing, asks for
-nothing and takes no room, and its declaration stands; one that is no
+nothing and takes no room, and its declaration stands, and so does one
+whose chosen option has no resolution at all, `0x` or a calculation that
+comes to nothing or less; one that is no
 `image-set()` at all — no options, a negative resolution or two of them,
 one nested in another — drops the declaration, and what it would have
 replaced stands, as in every browser. The choice is made as the style is

@@ -4519,7 +4519,7 @@ const RESOLUTION_FEATURES = new Set([
 
 /** A resolution in dots per CSS pixel: `2dppx`, `2x`, `192dpi`, `75.6dpcm`,
  *  or WebKit's device pixel ratio, a number. Null for anything else. */
-function resolutionOf(value: string, ratio: boolean): number | null {
+export function resolutionOf(value: string, ratio: boolean): number | null {
   if (isMathFunction(value)) {
     if (ratio) return mediaNumber(value);
     // a calculation is of resolutions, which `sign()` may have lengths in

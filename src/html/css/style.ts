@@ -47,7 +47,7 @@ import { textIndentParts } from './text-indent.js';
 import { CALC_SIZE, calcSizeOf } from './calc-size.js';
 import { parseMath, parseMathNumberWith } from './calc.js';
 import { crossFadeSyntax, gradientSyntax } from './gradient-syntax.js';
-import { joinFamilies, parseUrl, readFamilies } from './parse.js';
+import { joinFamilies, parseUrl, readFamilies, resolutionOf } from './parse.js';
 import { readString } from './grammars.js';
 import type { FamilyName } from './parse.js';
 import { decodesImageType } from '../image-types.js';
@@ -7752,7 +7752,8 @@ function imageSetOf(
     }
   }
   const chosen = pick(options, ctx.scale);
-  if (!chosen) return null;
+  // an option of no resolution at all, `0x`, is an image that is none
+  if (!chosen || !(chosen.density > 0)) return null;
   const { image, density } = chosen;
   return typeof image === 'string' && density !== 1
     ? { url: image, density }
@@ -7785,6 +7786,13 @@ function imageSetOption(text: string, ctx: UnitContext): ImageSetOption | null {
     if (resolution) {
       if (density !== null) return null;
       density = Number(resolution[1]) * DPPX[resolution[2].toLowerCase()];
+      continue;
+    }
+    if (isMathFunction(word)) {
+      // a calculation of resolutions, which comes to none under 0
+      const dppx = resolutionOf(word, false);
+      if (dppx === null || density !== null) return null;
+      density = dppx;
       continue;
     }
     const named = TYPE.exec(word);
