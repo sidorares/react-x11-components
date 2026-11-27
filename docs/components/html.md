@@ -5897,7 +5897,9 @@ own formatting context), and
 `display: grid` as documents write it (below), and `display: contents`,
 which makes no box and hands its children, its `::before` and its
 `::after` to its parent's, in its style, each an item of a flex box or a
-grid around it — a replaced element set so is not rendered. A `::before` or
+grid around it — a replaced element set so is not rendered, and the root
+element set so is a block (CSS Display 3, 2.5), with the box the canvas
+takes its background from. A `::before` or
 an `::after` that is `display: contents` itself hands on its content the
 same way: what it says of a box, its decorations and its counters do
 nothing, where its font and its line height are its text's and its quotes

@@ -10378,7 +10378,10 @@ export class Cascade {
     }
     // and the root element's is block-level, whatever it says (CSS Display 3,
     // 2.7): an `<html>` has the user agent's sheet to say so, and in an XML
-    // document it is as likely to be a name nothing says anything of
+    // document it is as likely to be a name nothing says anything of. One
+    // that says `contents` is a block too (2.5): it has a box, which the
+    // canvas takes its background from
+    if (own && root && style.display === 'contents') style.display = 'block';
     blockify(style, inFlexContainer || (own && root));
     // no box of its own, so what it holds is the items of the box around it
     // (`holdsItems`), but in a `-webkit-box`, which blockifies nothing in a

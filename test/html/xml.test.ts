@@ -203,6 +203,45 @@ test("an XML document's root element is whatever it says, and takes what a root 
   assert.equal(boxOf(el, 'r').x, 0, 'and nothing implied a margin around it');
 });
 
+test('a root element that says `display: contents` is a block, and has a box', async () => {
+  // CSS Display 3, 2.5: `contents` computes to `block` on the root element.
+  // With no box, a root had no background for the canvas to take, and the
+  // page was white where its `:root` rule painted it
+  // (display-contents-root-background.html)
+  for (const [source, options] of [
+    [
+      '<!doctype html><html id="r" style="display: contents; background-color: #123456"><body><p id="p">x</p></body></html>',
+      {},
+    ],
+    [
+      '<?xml version="1.0"?><root id="r" style="display: contents; background-color: #123456"><item id="p" style="display: block">x</item></root>',
+      { contentType: 'text/xml' },
+    ],
+  ] as const) {
+    const { node } = await render(source, 400, options);
+    const el = view(node);
+    assert.equal(displayOf(el, 'r'), 'block', source);
+    const root = boxOf(el, 'r') as unknown as {
+      style: { backgroundColor: string };
+    };
+    assert.equal(root.style.backgroundColor, '#123456');
+    // and an element under it that says so still has none
+    assert.ok(boxOf(el, 'p').width > 0);
+  }
+  const { node } = await render(
+    '<!doctype html><body><div id="d" style="display: contents"><p id="p">x</p></div></body>',
+  );
+  type Held = { el: { attribs: { id?: string } } | null; children: Held[] };
+  const ids = (box: Held): string[] => [
+    ...(box.el?.attribs.id ? [box.el.attribs.id] : []),
+    ...box.children.flatMap(ids),
+  ];
+  const boxes = ids(
+    (view(node) as unknown as { _tree: { root: Held } })._tree.root,
+  );
+  assert.ok(boxes.includes('p') && !boxes.includes('d'), boxes.join());
+});
+
 test('a drawing at the top is its own document, with no body around it', async () => {
   const { node } = await render(
     `<svg xmlns="${SVG}" id="s" width="100" height="50"><rect width="100" height="50" fill="green"/></svg>`,
