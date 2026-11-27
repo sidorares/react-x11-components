@@ -2643,6 +2643,114 @@ test('what is in a stretched or flexed item takes its percentages of its height'
   assert.strictEqual(box('f').height, 50, 'shrunk to its ratio');
 });
 
+test("an item's automatic minimum is of its content at the height its row gives it", async () => {
+  // CSS Flexbox 9.8: a row of a definite height stretches an item to a
+  // height that is definite before anything is measured, so a canvas
+  // `height: 100%` in it is that tall for the item's flex base size and for
+  // its content at its narrowest alike (4.5). The minimum was read from a
+  // layout at the content's own height, where the canvas is its natural
+  // size, and held the item to that: 200 wide around a canvas drawn 100.
+  // Each width is Chromium's, and WebKit's but for the nested row, which it
+  // has at 200.
+  const canvas = (w: number, style = 'height:100%') =>
+    `<canvas width="${w}" height="${w}" style="${style}"></canvas>`;
+  const row = (
+    id: string,
+    rowStyle: string,
+    itemStyle: string,
+    inside: string,
+  ) =>
+    `<div style="display:flex;${rowStyle}">` +
+    `<div id="${id}" style="${itemStyle}">${inside}</div></div>`;
+  const cases: [string, string, number, number][] = [
+    ['a', row('a', 'height:100px', '', canvas(200)), 100, 100],
+    // shrunk under it, and held to it
+    ['b', row('b', 'height:100px;width:60px', '', canvas(200)), 100, 100],
+    ['c', row('c', 'height:100px', '', canvas(50)), 100, 100],
+    ['h', row('h', 'height:100px;width:60px', '', canvas(50)), 100, 100],
+    // nothing stretches it, or gives its row a height: its natural size
+    [
+      'd',
+      row('d', 'height:100px;align-items:flex-start', '', canvas(200)),
+      200,
+      200,
+    ],
+    ['e', row('e', '', '', canvas(200)), 200, 200],
+    ['k', row('k', 'height:100px;flex-wrap:wrap', '', canvas(200)), 200, 200],
+    ['o', row('o', 'min-height:100px', '', canvas(200)), 200, 200],
+    // through a row inside it, and a block
+    [
+      'f',
+      '<div style="display:flex;height:100px">' +
+        row('f', '', '', canvas(200)) +
+        '</div>',
+      100,
+      100,
+    ],
+    [
+      'p',
+      row(
+        'p',
+        'height:100px',
+        '',
+        `<div style="height:100%">${canvas(200)}</div>`,
+      ),
+      100,
+      100,
+    ],
+    // a least width of its own has the say, and its edges are its own
+    [
+      'g',
+      row('g', 'height:100px;width:60px', 'min-width:0', canvas(200)),
+      60,
+      100,
+    ],
+    [
+      'i',
+      row('i', 'height:100px', 'padding:10px;border:5px solid', canvas(200)),
+      100,
+      70,
+    ],
+    // the lesser of its width and its content
+    [
+      'l',
+      row('l', 'height:100px;width:60px', 'width:150px', canvas(200)),
+      100,
+      100,
+    ],
+    // and a basis of nothing shares the row out down to it
+    [
+      'n',
+      '<div style="display:flex;height:100px;width:150px">' +
+        `<div id="n" style="flex:1 1 0">${canvas(200)}</div>` +
+        '<div style="flex:1 1 0"></div></div>',
+      100,
+      100,
+    ],
+  ];
+  const { node } = await render(
+    '<style>body{margin:0}canvas{vertical-align:top}</style>' +
+      cases.map(([, markup]) => markup).join(''),
+    800,
+  );
+  const el = view(node);
+  // the canvas an item holds, which is its one replaced box
+  type Kinded = { kind: string; width: number; children: Kinded[] };
+  const drawn = (box: Kinded): Kinded | undefined =>
+    box.kind === 'replaced'
+      ? box
+      : box.children.map(drawn).find((found) => found);
+  for (const [id, , item, inside] of cases) {
+    const box = boxOf(el, id);
+    assert.strictEqual(box.width, item, `#${id} is ${item} wide`);
+    assert.strictEqual(
+      drawn(box as unknown as Kinded)!.width,
+      inside,
+      `#${id}'s canvas`,
+    );
+  }
+});
+
 test('a flex item that is a flex or grid container lays its items out in the height it was given', async () => {
   // CSS Flexbox 9.4, step 11: a stretched item's contents are laid out
   // again with its used cross size for a definite one, and 9.8 has an

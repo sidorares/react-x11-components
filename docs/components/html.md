@@ -6146,7 +6146,11 @@ own or of its limits. A percentage height,
 minimum, maximum or flex basis of an item down a column of a definite
 height is of that height; down one of no definite height, a percentage
 height is `auto` and a percentage flex basis is `content`, the content's
-height whatever height the item has of its own. An item with a ratio is as wide, down a column, as the height
+height whatever height the item has of its own. Along a row of a definite
+height, what a stretched item holds takes its percentages of that height
+before anything is measured (9.8), for the item's flex base size and for its
+automatic minimum alike: an item around a canvas `height: 100%` is as wide as
+the canvas comes to at the row's height, shrunk no narrower. An item with a ratio is as wide, down a column, as the height
 it was flexed to makes it, and an image grown along a row is as tall. A
 `flex-basis` holds down a column with no height of its own, where Yoga
 would read the item's height in its place. Down a column that wraps, an

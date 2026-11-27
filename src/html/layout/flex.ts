@@ -64,6 +64,7 @@ import {
   replacedRatio,
   transferredHeight,
   transferredWidth,
+  narrowestAtHeight,
   widestAtHeight,
   heightFromWidth,
   heightThroughRatio,
@@ -2847,6 +2848,27 @@ function autoMinimums(
       changed = true;
       continue;
     }
+    // What a height its row gives it makes of what it holds is that
+    // height's alone (`heightGiven`): its content is measured there, as its
+    // flex base size was (`maxContent`), and not read from a layout at its
+    // content's own height, where an image `height: 100%` in it is its
+    // natural size and held the item to that
+    const given = row ? widestAtHeight(box, ctx) : null;
+    if (given !== null) {
+      if (!ofAuto && transferredWidth(box, given) <= width + 0.01) continue;
+      let least = worked(
+        transferredWidth(box, leastAcross(box, ctx, laid, containingWidth)),
+      );
+      const extra = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
+      if (style.maxWidth !== 'none') {
+        const most = resolveOrNull(style.maxWidth, containingWidth);
+        if (most !== null) least = Math.min(least, most + extra);
+      }
+      if (laid.main >= least - 0.01) continue;
+      holdAt(node, laid, row, least, hold);
+      changed = true;
+      continue;
+    }
     // no narrower than its content at its widest, where Yoga measured that
     // — and than what a ratio makes of its least height, which a content
     // no wider may still be held to
@@ -3824,6 +3846,13 @@ const EXACT = 1024;
 /** An item's min-content width, its border box's, taken the once: its
  *  content's, whatever width it has of its own (`keywordWidth`'s too). */
 function minContentOf(box: Box, ctx: LayoutContext, laid: Laid): number {
+  // what a height its row gives it makes of what it holds is that height's
+  // alone (`heightGiven`), and kept by it
+  const given = narrowestAtHeight(box, ctx);
+  if (given !== null) {
+    laid.width = NaN;
+    return given;
+  }
   if (box.intrinsicMinContent < 0) {
     const exact = ctx.fonts
       ? exactMinContent(box, ctx.fonts, ctx.stopping, true)
