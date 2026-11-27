@@ -6747,7 +6747,7 @@ column: the rows grow to the height, less its captions, and a cell's
 gives it stands in for its own, which the flex layout started from, so a
 table flexed down a column shorter than its `height` is as short as that.
 A table is never shorter than its rows, though, whatever height it is
-given or its line or its area has.
+given or its line or its area has, and whatever its `max-height` says.
 A block in an inline element breaks it (CSS 2.1 9.2.1.1): the pieces of the
 element before and after the block are on lines of their own, without an
 edge where the block cut them, and the block stands between them as a
