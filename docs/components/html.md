@@ -8617,7 +8617,12 @@ font with taller lines than the paragraph's — a `<code>` in Menlo beside
 Helvetica — is a little more than CSS gives it. A line's half-leading is
 floored above its text, as Blink floors it, on every line of a paragraph:
 one whose lines in other fonts would move by different amounts is laid out
-a line at a time rather than keep the text engine's baselines. Underlines an element outside a raised text draws through it stay on
+a line at a time rather than keep the text engine's baselines. Under a
+`line-height` that is no `normal`, a line is as tall as its boxes' fonts and
+line heights make it and no taller for the fonts its glyphs were set in: a
+character the box's font has no glyph for, set in a fallback of a higher
+ascent or a deeper descent, leaves the line and its baseline where they
+were, and overflows it. A `normal` line is as tall as the fonts on it. Underlines an element outside a raised text draws through it stay on
 the line's baseline. White space collapses across element boundaries as CSS
 2.1 16.6.1 has it — none at the start or the end of a line, one between two
 words whatever elements they are in — and text at `font-size: 0` takes no
