@@ -142,6 +142,30 @@ test("a button told to be a table's part is an atomic inline, in no table and no
   );
 });
 
+test("a fieldset's first baseline is its content's, past its legend", async () => {
+  // HTML's rendering section, the fieldset and legend elements: the
+  // rendered legend is no part of the fieldset's content, and the
+  // fieldset's baselines are its anonymous content box's. Aligned by its
+  // first baseline in a flex box, a fieldset stood by its legend's line,
+  // a line above where every engine stands it
+  // (css-flexbox/fieldset-baseline-alignment.html)
+  const { node } = await render(
+    '<style>body{margin:0;font:16px/20px sans-serif}' +
+      'fieldset{margin:0;padding:0;border:0}legend{padding:0}</style>' +
+      '<div style="display:flex;align-items:baseline">' +
+      '<div id="beside">beside</div>' +
+      '<fieldset id="set"><legend id="legend">legend</legend>' +
+      '<div id="content">content</div></fieldset>' +
+      // and one with no legend by its first line, as any block is
+      '<fieldset id="bare"><div id="first">first</div></fieldset></div>',
+  );
+  const el = view(node);
+  const y = (id: string) => boxOf(el, id).y;
+  assert.strictEqual(y('beside'), y('content'), 'level with its content');
+  assert.strictEqual(y('legend'), y('content') - 20, 'the legend a line up');
+  assert.strictEqual(y('first'), y('content'));
+});
+
 test('an anchor with no href is drawn as the text around it', async () => {
   const { node } = await render(
     '<p style="color:#123456"><a id="n">name</a> <a id="l" href="#">link</a></p>',

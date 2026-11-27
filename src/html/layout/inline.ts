@@ -5818,9 +5818,27 @@ export function firstBaselineIn(box: Box): number | null {
   if (box.lines?.length) {
     return heldIn(box, box.lines[0].y + box.lines[0].baseline);
   }
+  // a fieldset's is its content's, past its rendered legend, which is no
+  // part of that (HTML's rendering section, the fieldset and legend
+  // elements): by its legend's line, a fieldset aligned by its first
+  // baseline stood a line above where every engine stands it
+  const legend = renderedLegend(box);
   for (const child of box.children) {
+    if (child === legend) continue;
     const found = childBaseline(child, firstBaselineIn);
     if (found !== null) return heldIn(box, found);
+  }
+  return null;
+}
+
+/** A fieldset's rendered legend: its first child that is a `<legend>` in
+ *  its flow, or null. */
+function renderedLegend(box: Box): Box | null {
+  const el = box.el;
+  if (!el || el.name.length !== 8 || tagOf(el) !== 'fieldset') return null;
+  for (const child of box.children) {
+    if (child.outOfFlow || child.isFloat || !child.el) continue;
+    return tagOf(child.el) === 'legend' ? child : null;
   }
   return null;
 }
