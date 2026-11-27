@@ -308,6 +308,10 @@ export function parseAnchorMath<R extends AnchorRef | AnchorSizeRef>(
     ic: fixed(ctx.ic, 'ic'),
     lh: fixed(ctx.lh, 'lh'),
     rlh: fixed(ctx.rlh, 'rlh'),
+    rex: fixed(ctx.rex, 'rex'),
+    rcap: fixed(ctx.rcap, 'rcap'),
+    rch: fixed(ctx.rch, 'rch'),
+    ric: fixed(ctx.ric, 'ric'),
   };
   if (ctx.cq && /\dcq/i.test(text)) {
     const inline = ctx.cq('inline');

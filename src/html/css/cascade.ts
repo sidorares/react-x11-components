@@ -9301,6 +9301,10 @@ export class Cascade {
       ic: () => this._icIn(style, style),
       lh: () => this._lineHeightOf(style),
       rlh: () => this._lineHeightOf(root) * rootZoom,
+      rex: () => this._exOf(root) * rootZoom,
+      rcap: () => this._capOf(root) * rootZoom,
+      rch: () => this._chIn(root, root) * rootZoom,
+      ric: () => this._icIn(root, root) * rootZoom,
     };
     const len = parseLength(`1${unit}`, ctx);
     this._faceRead = read;
@@ -10161,6 +10165,12 @@ export class Cascade {
         this._rlhRead();
         return this._lineHeightOf(rootStyle) * rootZoom;
       },
+      // the root's face's own, as `rem` is its size: a length in one moves
+      // with the root's font (`remRead`, which the parser tells)
+      rex: () => this._exOf(rootStyle) * rootZoom,
+      rcap: () => this._capOf(rootStyle) * rootZoom,
+      rch: () => this._chIn(rootStyle, rootStyle) * rootZoom,
+      ric: () => this._icIn(rootStyle, rootStyle) * rootZoom,
       focusRing: this.look.focusRing,
       paletteScheme: this.look.colorScheme,
       systemColors: this._systemColors,
