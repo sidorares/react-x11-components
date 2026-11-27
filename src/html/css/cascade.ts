@@ -161,6 +161,7 @@ import {
   holdsItems,
   settleAlign,
   settleButton,
+  settleFieldset,
   settleContainer,
   settleContentVisibility,
   settleDecorationInset,
@@ -10434,6 +10435,10 @@ export class Cascade {
         (style.styledControl && isInputButton(el)))
     ) {
       settleButton(style);
+    }
+    // and so is a fieldset, a block container whatever it says
+    if (own && el.name.length === 8 && tagOf(el) === 'fieldset') {
+      settleFieldset(style);
     }
     // each `@position-try` rule its fallbacks name, cascaded with the
     // element's own declarations at the position fallback origin (CSS
