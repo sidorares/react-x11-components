@@ -683,10 +683,15 @@ function clipEdgeOf(
 
 /** How far content reaches, raw: the furthest right and down, and the
  *  least left and up, of what is in the flow and of what is out of it,
- *  each its own (`reachOf`). */
+ *  each its own (`reachOf`). `right` and `bottom` are of what the end
+ *  padding goes past, the margin boxes of the boxes in the flow and the
+ *  lines beside them; `plainRight` and `plainBottom` of what it does not,
+ *  whatever those boxes hold or draw past their own margins. */
 interface Reach {
   right: number;
   bottom: number;
+  plainRight: number;
+  plainBottom: number;
   outRight: number;
   outBottom: number;
   leftmost: number;
@@ -703,6 +708,14 @@ interface Reach {
  * `escaping` says is positioned against something outside. `holder`'s set
  * aside content, moved by `holderDy`, with it (`ASIDE_REACH`), reaching
  * from `left`.
+ *
+ * Only the children's margin boxes and the lines beside them are what a
+ * scroll container's end padding goes past, a negative end margin taken
+ * off: a child's own border box where that margin draws its edge inside
+ * it, and what a child holds, reach as far as they reach and no padding
+ * further, as Chromium, Firefox and WebKit all have it. Padded with the
+ * rest, a last child a negative margin drew up scrolled by the margin, and
+ * a row with negative side margins across by the padding.
  */
 function reachOf(
   left: number,
@@ -714,6 +727,8 @@ function reachOf(
 ): Reach {
   let right = -Infinity;
   let bottom = -Infinity;
+  let plainRight = -Infinity;
+  let plainBottom = -Infinity;
   let outRight = -Infinity;
   let outBottom = -Infinity;
   // and how far it reaches the other way, past the left and the top, which
@@ -728,6 +743,8 @@ function reachOf(
     x2: number,
     y2: number,
     outOfFlow: boolean,
+    /** In the flow, and nothing the end padding goes past. */
+    plain = false,
   ) => {
     if (outOfFlow) {
       outRight = Math.max(outRight, x2);
@@ -735,8 +752,13 @@ function reachOf(
       outLeftmost = Math.min(outLeftmost, x1);
       outTopmost = Math.min(outTopmost, y1);
     } else {
-      right = Math.max(right, x2);
-      bottom = Math.max(bottom, y2);
+      if (plain) {
+        plainRight = Math.max(plainRight, x2);
+        plainBottom = Math.max(plainBottom, y2);
+      } else {
+        right = Math.max(right, x2);
+        bottom = Math.max(bottom, y2);
+      }
       leftmost = Math.min(leftmost, x1);
       topmost = Math.min(topmost, y1);
     }
@@ -748,6 +770,7 @@ function reachOf(
     outOfFlow: boolean,
     dx: number,
     dy: number,
+    plain = false,
   ) => {
     for (const line of lines ?? []) {
       let x1 = line.x;
@@ -759,7 +782,14 @@ function reachOf(
           x2 = Math.max(x2, text.drawX + natural.x + natural.width);
         }
       }
-      take(x1 + dx, line.y + dy, x2 + dx, line.y + line.height + dy, outOfFlow);
+      take(
+        x1 + dx,
+        line.y + dy,
+        x2 + dx,
+        line.y + line.height + dy,
+        outOfFlow,
+        plain,
+      );
     }
   };
   const walk = (
@@ -795,23 +825,27 @@ function reachOf(
         at.x + at.width + dx,
         at.y + at.height + dy,
         outOfFlow,
+        !margins,
       );
       return;
     }
     if (hasRect(child) && child.width + child.height > 0) {
-      take(
-        child.x + dx - (margins ? Math.max(0, child.marginLeft) : 0),
-        child.y + dy - (margins ? Math.max(0, child.marginTop) : 0),
-        child.x +
-          dx +
-          child.width +
-          (margins ? Math.max(0, child.marginRight) : 0),
-        child.y +
-          dy +
-          child.height +
-          (margins ? Math.max(0, child.marginBottom) : 0),
-        outOfFlow,
-      );
+      const x2 = child.x + dx + child.width;
+      const y2 = child.y + dy + child.height;
+      if (margins) {
+        // its margin box, an end margin as it is: what the padding is past
+        take(
+          child.x + dx - Math.max(0, child.marginLeft),
+          child.y + dy - Math.max(0, child.marginTop),
+          x2 + child.marginRight,
+          y2 + child.marginBottom,
+          false,
+        );
+        // and its border box, where a negative one ends that inside it
+        if (child.marginRight < 0 || child.marginBottom < 0) {
+          take(child.x + dx, child.y + dy, x2, y2, false, true);
+        }
+      } else take(child.x + dx, child.y + dy, x2, y2, outOfFlow, true);
     }
     // what a box clips is its own to scroll; but what one that does not
     // scroll lets show past its padding box, out to its overflow clip edge,
@@ -832,24 +866,35 @@ function reachOf(
           Math.min(inner.leftmost, inner.outLeftmost),
         );
         const y1 = Math.max(edge.y1, Math.min(inner.topmost, inner.outTopmost));
-        const x2 = Math.min(edge.x2, Math.max(inner.right, inner.outRight));
-        const y2 = Math.min(edge.y2, Math.max(inner.bottom, inner.outBottom));
+        const x2 = Math.min(
+          edge.x2,
+          Math.max(inner.right, inner.plainRight, inner.outRight),
+        );
+        const y2 = Math.min(
+          edge.y2,
+          Math.max(inner.bottom, inner.plainBottom, inner.outBottom),
+        );
         if (x2 > x1 && y2 > y1)
-          take(x1 + dx, y1 + dy, x2 + dx, y2 + dy, outOfFlow);
+          take(x1 + dx, y1 + dy, x2 + dx, y2 + dy, outOfFlow, true);
       }
       return;
     }
     // and what overflows a box of layout containment is ink, and no one's to
     // scroll (CSS Containment 2, 3.3)
     if (contained(child, CONTAIN_LAYOUT)) return;
-    linesOf(child.lines, outOfFlow, dx, dy);
+    linesOf(child.lines, outOfFlow, dx, dy, true);
     for (const inner of child.children) walk(inner, outOfFlow, false, dx, dy);
-    aside(child, outOfFlow, dy);
+    aside(child, outOfFlow, dy, true);
   };
   // and what a layout that stopped set aside, which reaches as far below
   // its holder's content as it did: the container's own content is where
   // it is scrolled to, and what is in it moved with it
-  const aside = (holder: Box, outOfFlow: boolean, dy: number) => {
+  const aside = (
+    holder: Box,
+    outOfFlow: boolean,
+    dy: number,
+    plain = false,
+  ) => {
     const reach = ASIDE_REACH.get(holder);
     if (reach !== undefined)
       take(
@@ -858,6 +903,7 @@ function reachOf(
         left,
         holder.contentY + reach + dy,
         outOfFlow,
+        plain,
       );
   };
   linesOf(lines, false, 0, 0);
@@ -866,6 +912,8 @@ function reachOf(
   return {
     right,
     bottom,
+    plainRight,
+    plainBottom,
     outRight,
     outBottom,
     leftmost,
@@ -888,7 +936,7 @@ export function scrollableRect(
   box: Box,
   padding: { x: number; y: number; width: number; height: number },
 ): { x: number; y: number; width: number; height: number } {
-  const { right, bottom, leftmost, topmost } = reachOf(
+  const { right, bottom, plainRight, plainBottom, leftmost, topmost } = reachOf(
     padding.x,
     box.lines,
     box.children,
@@ -907,10 +955,12 @@ export function scrollableRect(
   const x2 = Math.max(
     padding.x + padding.width,
     right === -Infinity ? -Infinity : right + box.padRight,
+    plainRight,
   );
   const y2 = Math.max(
     padding.y + padding.height,
     bottom === -Infinity ? -Infinity : bottom + box.padBottom,
+    plainBottom,
   );
   return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
 }
@@ -941,6 +991,7 @@ export function viewportReach(root: Box): {
   return {
     right: Math.max(
       reach.right === -Infinity ? 0 : reach.right,
+      reach.plainRight === -Infinity ? 0 : reach.plainRight,
       reach.outRight === -Infinity ? 0 : reach.outRight,
     ),
     left: Math.max(
@@ -955,6 +1006,7 @@ export function viewportReach(root: Box): {
     ),
     bottom: Math.max(
       reach.bottom === -Infinity ? 0 : reach.bottom,
+      reach.plainBottom === -Infinity ? 0 : reach.plainBottom,
       reach.outBottom === -Infinity ? 0 : reach.outBottom,
     ),
   };
@@ -965,7 +1017,15 @@ function extentOf(box: Box, at: ScrollOffset | undefined): Extent {
   if (extent) return extent;
   const left = box.x + box.borderLeft;
   const top = box.y + box.borderTop;
-  const { outRight, outBottom, outLeftmost, outTopmost, ...inFlow } = reachOf(
+  const {
+    outRight,
+    outBottom,
+    outLeftmost,
+    outTopmost,
+    plainRight,
+    plainBottom,
+    ...inFlow
+  } = reachOf(
     left,
     box.lines,
     box.children,
@@ -988,10 +1048,12 @@ function extentOf(box: Box, at: ScrollOffset | undefined): Extent {
   // reach as far as they reach
   const width = Math.max(
     right === -Infinity ? 0 : right + shift.x - left + box.padRight,
+    plainRight === -Infinity ? 0 : plainRight + shift.x - left,
     outRight === -Infinity ? 0 : outRight + shift.x - left,
   );
   const height = Math.max(
     bottom === -Infinity ? 0 : bottom + shift.y - top + box.padBottom,
+    plainBottom === -Infinity ? 0 : plainBottom + shift.y - top,
     outBottom === -Infinity ? 0 : outBottom + shift.y - top,
   );
   // past the left and the top, with the start padding there: the end

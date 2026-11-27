@@ -10069,9 +10069,13 @@ document — core's chain, which the element answers (`canScroll`,
 `scrollBy`). A notch is core's, 48px.
 
 **How far one reaches is Chrome's `scrollHeight`**: its in-flow children's
-margin boxes and the boxes and lines in them, with its end padding past
-them, the out-of-flow boxes positioned against it by their border boxes,
-and nothing a box inside it clips. Its scrollport is its padding box: no
+margin boxes and its own lines, with its end padding past them, a negative
+end margin taken off; the boxes and lines in those children as far as
+they reach, with no padding past them; the out-of-flow boxes positioned
+against it by their border boxes; and nothing a box inside it clips. So a
+row with negative side margins in a padded container, Bootstrap's, scrolls
+nowhere across, and a last child a negative margin draws up scrolls
+nothing below it. Its scrollport is its padding box: no
 room is taken for a scroll bar, and none is drawn, as an overlay scroll bar
 is not at rest. An RTL container scrolls as an LTR one does, from its left.
 
