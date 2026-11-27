@@ -14517,6 +14517,14 @@ function offsetInline(box: Box, dx: number, dy: number): void {
     y: (moved?.y ?? 0) + dy,
   });
   for (const line of lines) {
+    // a line the box is on with no text of its own on it, its edges alone:
+    // an empty box with padding or a border is drawn where it went, and
+    // the line says so as one with moved text does (`SHIFTED_LINES`)
+    if (line.edges?.some((edge) => holds(box, edge.box))) {
+      markMovedOff(lines, line);
+      if (holdsMoved(line)) SHIFTED_LINES.add(line);
+      else SHIFTED_LINES.delete(line);
+    }
     for (const text of line.texts) {
       const owner = text.spans.boxAt?.(text.layoutStart);
       if (!owner || !holds(box, owner)) continue;
@@ -14547,7 +14555,27 @@ const HOME_WITHIN = 1e-6;
  *  around it, or raised by `vertical-align`. */
 function holdsMoved(line: LineBox): boolean {
   if (LINE_BOX_RAISES.has(line)) return true;
-  return line.texts.some((t) => TEXT_SHIFTS.has(t) || TEXT_RAISES.has(t));
+  if (line.texts.some((t) => TEXT_SHIFTS.has(t) || TEXT_RAISES.has(t))) {
+    return true;
+  }
+  // or an inline box with nothing but its edges on the line
+  return line.edges?.some((edge) => inlineMoved(edge.box)) ?? false;
+}
+
+/** Whether an inline box, or one around it, is away from where its line
+ *  has it (`INLINE_OFFSETS`). */
+function inlineMoved(box: Box): boolean {
+  for (let at: Box | null = box; at?.kind === 'inline'; at = at.parent) {
+    const offset = INLINE_OFFSETS.get(at);
+    if (!offset) continue;
+    if (
+      Math.abs(offset.x) >= HOME_WITHIN ||
+      Math.abs(offset.y) >= HOME_WITHIN
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Mark the line an inline-block or an image a box moved off was placed
