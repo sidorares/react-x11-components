@@ -103,6 +103,45 @@ test('a fieldset is a block container, whatever display it is given', async () =
   assert.strictEqual(displayOf('flex'), 'flex');
 });
 
+test("a button told to be a table's part is an atomic inline, in no table and no row", async () => {
+  // CSS Display 3, 2.4: a layout-internal `display` on a replaced element
+  // is handled as `inline`, and a button's box is a widget's, as Blink and
+  // WebKit have it. Left a cell, two buttons were the cells of one row of a
+  // table nobody wrote: the second as tall as the first, and each with its
+  // label where `vertical-align` puts a cell's
+  // (display-table-cell-on-button.html)
+  const button = (id: string, display: string, height = '') =>
+    `<button id="${id}" style="display:${display};vertical-align:bottom;` +
+    `width:100px;margin:0;${height}">x</button>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      `<div>${button('tall', 'table-cell', 'height:100px')}` +
+      `${button('short', 'table-cell')}</div>` +
+      `<div>${button('row', 'table-row')}${button('group', 'table-row-group')}` +
+      `${button('caption', 'table-caption')}${button('column', 'table-column')}</div>` +
+      `<div>${button('ref', 'inline-block')}</div>`,
+  );
+  const el = view(node);
+  const displayOf = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { display: string } }).style.display;
+  for (const id of ['tall', 'short', 'row', 'group', 'caption', 'column']) {
+    assert.strictEqual(displayOf(id), 'inline-block', id);
+    assert.strictEqual(boxOf(el, id).width, 100, id);
+  }
+  const ref = boxOf(el, 'ref');
+  const [tall, short] = [boxOf(el, 'tall'), boxOf(el, 'short')];
+  assert.strictEqual(tall.height, 100);
+  // as tall as its own label makes it, beside the tall one, on its line
+  assert.strictEqual(short.height, ref.height);
+  assert.strictEqual(short.x, 100);
+  assert.strictEqual(short.y + short.height, tall.y + tall.height);
+  // and the four others side by side on a line of their own
+  assert.deepStrictEqual(
+    ['row', 'group', 'caption', 'column'].map((id) => boxOf(el, id).x),
+    [0, 100, 200, 300],
+  );
+});
+
 test('an anchor with no href is drawn as the text around it', async () => {
   const { node } = await render(
     '<p style="color:#123456"><a id="n">name</a> <a id="l" href="#">link</a></p>',
