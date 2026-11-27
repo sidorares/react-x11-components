@@ -607,6 +607,166 @@ async function imagesDrawn(el: HtmlViewNode): Promise<number> {
   return ops.filter((op) => op.op === 'image').length;
 }
 
+/** A JPEG as far as its EXIF Orientation, which is as far as the store
+ *  reads one for it: its pixels are whatever the decoder is held to. */
+const exifJpeg = (orientation: number): Uint8Array =>
+  new Uint8Array([
+    // SOI, and an APP1 segment of 34 bytes: "Exif", a big-endian TIFF
+    // header and one entry, Orientation, a SHORT
+    0xff,
+    0xd8,
+    0xff,
+    0xe1,
+    0x00,
+    0x22,
+    0x45,
+    0x78,
+    0x69,
+    0x66,
+    0x00,
+    0x00,
+    0x4d,
+    0x4d,
+    0x00,
+    0x2a,
+    0x00,
+    0x00,
+    0x00,
+    0x08,
+    0x00,
+    0x01,
+    0x01,
+    0x12,
+    0x00,
+    0x03,
+    0x00,
+    0x00,
+    0x00,
+    0x01,
+    0x00,
+    orientation,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0xff,
+    0xd9,
+  ]);
+
+test('image-orientation: none sizes and draws an image as its file stores it, with no turn for its EXIF orientation', async (t) => {
+  // CSS Images 3, 5.3. The decoder turns a JPEG by its EXIF Orientation,
+  // which is `from-image`, and that was all there was: the property was
+  // kept for a script to read and nothing drew by it, so `none` drew the
+  // image turned all the same (image-orientation-none.html and seven more
+  // of WPT's). The image a decode comes to here is the turned one, 2 by 3,
+  // every pixel a colour of its own
+  const colour = (x: number, y: number): [number, number, number] => [
+    50 + x * 100,
+    20 + y * 80,
+    7,
+  ];
+  const turned = pixelsPng(2, 3, colour);
+  t.mock.method(imageDecoder, 'decode', () => ntk.decodeImageBytes(turned));
+  const images: Record<string, Uint8Array> = {};
+  let source = '<img id="from" src="6.jpg">';
+  for (let o = 1; o <= 8; o += 1) {
+    images[`${o}.jpg`] = exifJpeg(o);
+    source += `<img id="o${o}" src="${o}.jpg" style="image-orientation:none">`;
+  }
+  // it inherits, and what an element draws besides its content goes by it
+  source +=
+    '<div style="image-orientation:none"><img id="in" src="6.jpg">' +
+    '<p id="bg" style="background:url(6.jpg);width:9px;height:9px"></p></div>';
+  const doc = await choosing(source, images);
+  const el = doc.el();
+  const { imageFor, backgroundImageFor } = (
+    el as unknown as {
+      _paintOptions(
+        r: null,
+        d: null,
+      ): {
+        imageFor(box: unknown): unknown;
+        backgroundImageFor(url: string, box: unknown): unknown;
+      };
+    }
+  )._paintOptions(null, null);
+  type Pixels = { width: number; height: number; data: Uint8ClampedArray };
+  const shown = (id: string) => imageFor(boxOf(el, id)) as Pixels;
+  const at = (image: Pixels, x: number, y: number) => [
+    ...image.data.slice(
+      (y * image.width + x) * 4,
+      (y * image.width + x) * 4 + 3,
+    ),
+  ];
+  // as the decoder turned it, with no `none`
+  assert.deepStrictEqual(doc.size('from'), [2, 3]);
+  assert.deepStrictEqual(at(shown('from'), 1, 2), colour(1, 2));
+  // where each pixel of the image as stored is in the image as turned
+  // (EXIF 2.32, 4.6.4): `width` and `height` are the stored image's
+  const turnedAt: ((
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+  ) => [number, number])[] = [
+    (x, y) => [x, y],
+    (x, y, w) => [w - 1 - x, y],
+    (x, y, w, h) => [w - 1 - x, h - 1 - y],
+    (x, y, w, h) => [x, h - 1 - y],
+    (x, y) => [y, x],
+    (x, y, w, h) => [h - 1 - y, x],
+    (x, y, w, h) => [h - 1 - y, w - 1 - x],
+    (x, y, w) => [y, w - 1 - x],
+  ];
+  for (let o = 1; o <= 8; o += 1) {
+    // on its side for the four that turn it a quarter
+    const [width, height] = o >= 5 ? [3, 2] : [2, 3];
+    assert.deepStrictEqual(doc.size(`o${o}`), [width, height], `size, ${o}`);
+    const stored = shown(`o${o}`);
+    assert.deepStrictEqual([stored.width, stored.height], [width, height]);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const [tx, ty] = turnedAt[o - 1](x, y, width, height);
+        assert.deepStrictEqual(
+          at(stored, x, y),
+          colour(tx, ty),
+          `orientation ${o} at ${x},${y}`,
+        );
+      }
+    }
+  }
+  // a quarter turn clockwise, said out: the stored top row is the turned
+  // right column, read down it
+  assert.deepStrictEqual(
+    [0, 1, 2].map((x) => at(shown('o6'), x, 0)),
+    [colour(1, 0), colour(1, 1), colour(1, 2)],
+  );
+  // inherited, the same; and a background of the box is drawn so too
+  assert.deepStrictEqual(doc.size('in'), [3, 2]);
+  assert.strictEqual(shown('in'), shown('o6'), 'made once an image');
+  const ground = backgroundImageFor('6.jpg', boxOf(el, 'bg')) as {
+    image: Pixels;
+    width: number;
+    height: number;
+  };
+  assert.deepStrictEqual([ground.width, ground.height], [3, 2]);
+  assert.strictEqual(ground.image, shown('o6'));
+  const upright = backgroundImageFor('6.jpg', boxOf(el, 'from')) as {
+    image: Pixels;
+    width: number;
+  };
+  assert.deepStrictEqual([upright.width, upright.image.width], [2, 2]);
+  // and a script reads the property as it computes
+  const computed = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)!['image-orientation'];
+  assert.deepStrictEqual(
+    [computed('from'), computed('o6'), computed('in')],
+    ['from-image', 'none', 'none'],
+  );
+});
+
 test('an image is laid out at the size its header says before its decode lands, and drawn only once it has', async (t) => {
   // Apple's MacBook Pro page: an `<img>` only its image sizes, answered
   // from the host's cache, was still decoding on a worker 2.5 s later, and

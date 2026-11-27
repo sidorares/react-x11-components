@@ -183,6 +183,10 @@ export const PASSIVE: Record<string, PassiveProperty> = Object.assign(
     // `none` is read as the boxes are built, and takes a soft hyphen's
     // break away (`heldText`); no hyphen is drawn at a break
     hyphens: inherited('manual', keyword('none', 'manual', 'auto')),
+    // read where an image is sized and drawn (`storedAsWritten`): `none`
+    // is the image as its file stores it, with no EXIF turn (CSS Images
+    // 3, 5.3)
+    'image-orientation': inherited('from-image', keyword('from-image', 'none')),
     'offset-anchor': own('auto', (v) =>
       /^auto$/i.test(v.trim()) ? 'auto' : positionOf(v),
     ),
@@ -370,6 +374,14 @@ export function passiveValue(
   name: string,
 ): string {
   return record[name] ?? PASSIVE[name].initial;
+}
+
+/** Whether a style draws its images as their files store them, with no
+ *  turn for their EXIF orientation: `image-orientation: none`. */
+export function storedAsWritten(style: {
+  passiveInherited: Readonly<Record<string, string>>;
+}): boolean {
+  return style.passiveInherited['image-orientation'] === 'none';
 }
 
 /** A box's `margin-trim` as which of its edges trim: block-start (1),

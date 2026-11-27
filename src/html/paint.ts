@@ -104,7 +104,7 @@ import {
   WILL_STACK_Z,
 } from './css/style.js';
 import { LARGEST } from './css/calc.js';
-import { passiveValue } from './css/passive-properties.js';
+import { passiveValue, storedAsWritten } from './css/passive-properties.js';
 import { cornerInset, cornerReach } from './css/corner-shape.js';
 import {
   pathPolygons,
@@ -15021,7 +15021,14 @@ function paintBorderImage(
   const iw = cw / scale;
   const ih = ch / scale;
   if (!(iw > 0 && ih > 0)) return false;
-  const key = url ?? gradientKey(gradient!, box.style.color);
+  // by what is drawn: an image as its file stores it is another picture
+  // than the same image turned (`image-orientation: none`)
+  const key =
+    url === null
+      ? gradientKey(gradient!, box.style.color)
+      : storedAsWritten(box.style)
+        ? `${url}|stored`
+        : url;
   // A drawing or a gradient is drawn once at that size and cut as a raster
   // is, so that each piece stretches its part of the one picture
   let image = loaded?.image;

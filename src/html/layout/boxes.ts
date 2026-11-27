@@ -1536,8 +1536,9 @@ export interface BuildOptions {
   /** Intrinsic size for an image the host has already loaded, in the
    *  image's own pixels — or whose header has said it, while its pixels
    *  decode. `null` when neither: the box takes the attribute size, or a
-   *  placeholder. */
-  imageSize(el: Element): IntrinsicSize | null;
+   *  placeholder. `style` is the element's, as it is being built: an
+   *  image is as its file stores it under `image-orientation: none`. */
+  imageSize(el: Element, style?: ComputedStyle): IntrinsicSize | null;
   /** Whether what an `<object>` or an `<embed>` names is a document, which
    *  it shows as a frame, rather than its fallback content. */
   holdsDocument?(el: Element): boolean;
@@ -1551,8 +1552,9 @@ export interface BuildOptions {
    *  its pixels are: `imageSize` may answer from an image's header while
    *  they decode, and such a box waits for nothing. */
   sizePending?(el: Element): boolean;
-  /** The same for an image named by url — generated content's. */
-  urlSize?(url: string): IntrinsicSize | null;
+  /** The same for an image named by url — generated content's, in the
+   *  style it is drawn in. */
+  urlSize?(url: string, style?: ComputedStyle): IntrinsicSize | null;
   /** How far a style's first face reaches above its baseline, in device
    *  pixels: what a list marker's image with no size of its own is sized
    *  by (`_markerImageSize`). Where it is not known, 0.8em. */
@@ -4754,7 +4756,7 @@ class Builder {
       // item's marker is its `list-style-type`'s. One an `image-set()`
       // chose is its pixels over its density across.
       const url = listImage;
-      const size = this._options.urlSize?.(url) ?? null;
+      const size = this._options.urlSize?.(url, style) ?? null;
       this._contentImages.push({ url, element: el, sized: !!size });
       if (size) {
         const density = densityOf(style.listStyleImage);
@@ -4918,7 +4920,7 @@ class Builder {
       // (CSS Viewport 1, 5).
       const scale = (this._options.scale ?? 1) * style.effectiveZoom;
       this._images.push(box);
-      const loaded = this._options.imageSize(el);
+      const loaded = this._options.imageSize(el, style);
       if (loaded) {
         setIntrinsics(box, loaded, scale);
         if (this._options.sizePending?.(el)) this._awaiting.push(box);
@@ -5779,7 +5781,7 @@ class Builder {
     box.replaced = 'image';
     into.append(box);
     CONTENT_IMAGES.set(box, url);
-    const size = this._options.urlSize?.(url) ?? null;
+    const size = this._options.urlSize?.(url, style) ?? null;
     this._contentImages.push({ url, element: owner, sized: !!size, box });
     if (marker) {
       const { width, height } = marker;
