@@ -224,6 +224,46 @@ metric('<br> breaks the line on the one-layout fast path too', async () => {
   assert.strictEqual(tree.root.children[0].lines?.length, 3);
 });
 
+metric(
+  'a line height that is a length still makes a line that tall at font-size: 0',
+  async () => {
+    // CSS 2.1 10.8.1: a box's line height is its own whatever its font
+    // size, and at no size all of it is leading, half above the baseline and
+    // half below. A strut at no size was none whatever its line height, so a
+    // row of images in a `font-size: 0` block under a line height in pixels
+    // was the images' height, where Chromium, Firefox and WebKit all make it
+    // taller by half that line height: these are the numbers they give
+    const block = (id: string, lineHeight: string, held: string) =>
+      `<div id="${id}" style="font-size:0;line-height:${lineHeight}">${held}</div>`;
+    const atomic = (height: number) =>
+      `<span style="display:inline-block;width:10px;height:${height}px"></span>`;
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        block('short', '20px', atomic(10)) +
+        block('tall', '20px', atomic(30)) +
+        block('image', '20px', '<img style="width:10px;height:10px">') +
+        // a number is of the font size, which is none, and `normal` is the
+        // face's, which has none either
+        block('number', '1.5', atomic(10)) +
+        block('normal', 'normal', atomic(10)) +
+        // and with nothing on the line there is no line
+        block('empty', '20px', ' '),
+    );
+    const el = view(node);
+    const heightOf = (id: string) => boxOf(el, id).height;
+    assert.strictEqual(
+      heightOf('short'),
+      20,
+      '10 above the baseline, 10 below',
+    );
+    assert.strictEqual(heightOf('tall'), 40, '30 above it and 10 below');
+    assert.strictEqual(heightOf('image'), 20);
+    assert.strictEqual(heightOf('number'), 10);
+    assert.strictEqual(heightOf('normal'), 10);
+    assert.strictEqual(heightOf('empty'), 0);
+  },
+);
+
 metric('an authored space before an inline atomic survives', async () => {
   // ntk strips a line's trailing whitespace; a fragment that ends before an
   // atomic is not a line end, so the stripped advance is measured back. The
