@@ -6602,7 +6602,6 @@ function paintBackgroundOf(
   if (style.borderShape && !box.bordersCollapsed) {
     paintShapedBorder(ctx, box, options);
   } else {
-    if (style.boxShadow) paintShadows(ctx, box, options, false);
     // A range, a checkbox or a radio button the page left its look draws
     // neither: Blink's theme paints it in their place, unlike a field's,
     // which gives way to them.
@@ -6611,6 +6610,13 @@ function paintBackgroundOf(
         box.replaced === 'checkbox' ||
         box.replaced === 'radio') &&
       style.appearance !== 'none';
+    // an outer shadow counts on the box's opaque colour to hide what of it
+    // falls under the box, which neither of those paints there: a body
+    // whose background is the canvas's shows the canvas through
+    if (style.boxShadow) {
+      const bare = box === options.canvasSource || themed;
+      paintShadows(ctx, box, options, false, bare);
+    }
     if (box !== options.canvasSource && !themed) {
       paintLayers(ctx, box, options, frameImages(ctx, box, options));
     }
