@@ -411,6 +411,13 @@ class GpuContext implements HtmlGLContext {
       }
       case 'texImage2D':
       case 'texSubImage2D': {
+        if (statsOn()) {
+          const sub = name === 'texSubImage2D';
+          const w = Number(a[sub ? 4 : 3]);
+          const h = Number(a[sub ? 5 : 4]);
+          const data = a[a.length - 1] as { byteLength?: number } | null;
+          noteUpload(name, w, h, data?.byteLength ?? w * h * 4);
+        }
         // a core profile has no ALPHA, LUMINANCE or LUMINANCE_ALPHA, which
         // WebGL does: they are one or two channels, read through a swizzle
         // as the legacy format would be
@@ -753,6 +760,36 @@ const STALE_MS = 5_000;
 declare const performance: { now(): number };
 
 /** The memory the lock is in, to hand to a thread (`useGpuLock`). */
+/** `RX_GLSTATS=1`: what a page uploads as textures, a line a second on
+ *  stderr, for measuring what a stage moves. Read once, here, at no cost
+ *  where it is off. */
+let uploadStats: boolean | undefined;
+const statsOn = (): boolean =>
+  (uploadStats ??= !!(
+    globalThis as { process?: { env?: Record<string, string> } }
+  ).process?.env?.RX_GLSTATS);
+const uploads = { at: 0, n: 0, bytes: 0, max: 0, maxDims: '' };
+function noteUpload(name: string, w: number, h: number, bytes: number): void {
+  uploads.n += 1;
+  uploads.bytes += bytes;
+  if (bytes > uploads.max) {
+    uploads.max = bytes;
+    uploads.maxDims = `${name} ${w}x${h}`;
+  }
+  const now = Date.now();
+  if (!uploads.at) uploads.at = now;
+  if (now - uploads.at < 1000) return;
+  (
+    globalThis as { process?: { stderr?: { write(s: string): void } } }
+  ).process?.stderr?.write(
+    `[glstats] ${uploads.n} uploads, ${(uploads.bytes / 1048576).toFixed(2)} MB, largest ${(uploads.max / 1048576).toFixed(2)} MB (${uploads.maxDims})\n`,
+  );
+  uploads.at = now;
+  uploads.n = 0;
+  uploads.bytes = 0;
+  uploads.max = 0;
+}
+
 export function gpuLockBuffer(): SharedArrayBuffer {
   return gpuWord().buffer as SharedArrayBuffer;
 }
