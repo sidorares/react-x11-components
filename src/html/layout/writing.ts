@@ -315,8 +315,33 @@ function tableRootStyle(
     to[`margin${side}`] = from[`margin${side}`];
     to[side.toLowerCase()] = from[side.toLowerCase()];
   }
+  // and what makes it an item of a flex box or a grid, which the root is
+  // in the table's place: how it flexes, where it is placed and how it is
+  // aligned
+  for (const field of ITEM_FIELDS) to[field] = from[field];
   return out;
 }
+
+/** What makes a box an item of the flex box or the grid it is in, which a
+ *  vertical table's root keeps (`tableRootStyle`). All of them are of the
+ *  container's axes, so none is turned. */
+const ITEM_FIELDS = [
+  'flexGrow',
+  'flexShrink',
+  'flexBasis',
+  'flexBasisSize',
+  'flexBasisKeyword',
+  'flexRead',
+  'order',
+  'alignSelf',
+  'alignSelfText',
+  'justifySelf',
+  'justifySelfText',
+  'gridColumnStart',
+  'gridColumnEnd',
+  'gridRowStart',
+  'gridRowEnd',
+] as const satisfies readonly (keyof ComputedStyle)[];
 
 /** What makes a box a flex container, which a vertical flex box's frame
  *  takes from its root (`makeFrame`): the direction and the wrapping, the
