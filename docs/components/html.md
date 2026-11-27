@@ -5953,7 +5953,7 @@ percentage height in it is of that height, a canvas or an image at
 `height: 100%` takes its ratio's width from it, and the box shrinks to that.
 A relatively positioned inline box moves its text, its
 background and borders and any block inside it, and leaves its lines where
-they were, which is how Tailwind's preflight and normalize.css raise a
+they were, an empty one's padding and borders too, which is how Tailwind's preflight and normalize.css raise a
 `<sup>`; a paragraph with one is laid out a line at a time, as one with an
 inline-block is. A list's marker hangs outside its item, or with
 `list-style-position: inside` is the first thing on its first line and

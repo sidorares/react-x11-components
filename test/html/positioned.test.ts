@@ -2339,6 +2339,32 @@ metric(
   },
 );
 
+test('an empty inline box a relative offset moves is drawn where it went', async () => {
+  // CSS 2.1 9.4.3. A box with no text is on its line by its edges alone,
+  // and its line was told it held something moved only for a text: the
+  // padding of an empty one was drawn where the line had it, its offset
+  // dropped (position-relative-empty-inline.html)
+  const { node } = await render(
+    '<style>body{margin:0;font-size:0}div{width:100px;height:100px}</style>' +
+      '<div><span style="position:relative;left:30px;top:40px;' +
+      'padding:0 0 20px 50px;background:#008000"></span></div>' +
+      // one inside another that moves, each by its own offset
+      '<div><span style="position:relative;left:10px;top:5px">' +
+      '<span style="position:relative;left:30px;top:40px;' +
+      'padding:0 0 20px 50px;background:#800000"></span></span></div>' +
+      // and one with text, which its line knew of already
+      '<div><span style="position:relative;left:30px;top:40px;' +
+      'font:10px/10px sans-serif;background:#000080">x</span></div>',
+  );
+  const fills = await fillsOf(view(node));
+  const at = (colour: string) =>
+    fills.filter((f) => f.style === colour).map((f) => [f.x, f.y, f.w, f.h]);
+  assert.deepStrictEqual(at('#008000'), [[30, 40, 50, 20]]);
+  assert.deepStrictEqual(at('#800000'), [[40, 145, 50, 20]]);
+  const [text] = at('#000080');
+  assert.deepStrictEqual([text[0], text[1] > 230], [30, true]);
+});
+
 metric(
   'an inline box a relative offset moves is moved by it once, at each width it is laid out at',
   async () => {
