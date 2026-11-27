@@ -8901,6 +8901,16 @@ export function installDom(
       node._unloadCounter = 0;
       node._leaveChecked = false;
       node._unloaded = false;
+    }
+    // a node has no own enumerable property in a browser: video.js ingests a
+    // `<video-js>` with `Object.keys(el).forEach(k => tech[k] = el[k])`, and
+    // copied here `_id` made its new `<video>` the same node as the player,
+    // so Brightcove's player threw HierarchyRequestError and the page showed
+    // its error screen (villagecinemas.com.au)
+    for (const key of Object.getOwnPropertyNames(node)) {
+      Object.defineProperty(node, key, { enumerable: false });
+    }
+    if (Kind === Document || Kind === XMLDocument) {
       node = new Proxy(node, DOC_PROXY);
     }
     wrappers.set(id, node);

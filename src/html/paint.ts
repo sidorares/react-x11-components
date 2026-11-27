@@ -13004,6 +13004,53 @@ function gradientTile(
   shadedPart(ctx, gradient, x, y, w, h, currentColor, part, options);
 }
 
+/** Whether a colour is written as no ink at all, which only says yes for
+ *  the spellings that are certain. */
+function clearInk(color: string): boolean {
+  return (
+    color === 'transparent' ||
+    /^#[0-9a-f]{3}0$/i.test(color) ||
+    /^#[0-9a-f]{6}00$/i.test(color) ||
+    /^rgba\([^)]*[,/]\s*0(\.0*)?\s*\)$/i.test(color) ||
+    /^hsla\([^)]*[,/]\s*0(\.0*)?%?\s*\)$/i.test(color)
+  );
+}
+
+/**
+ * The part of `part` a radial gradient that ends in no ink can draw in: the
+ * box its last stop's ellipse sits in, which is all of it that shows. A
+ * sparkle is a `radial-gradient(circle at 8% 18%, #fff 1px, #0000 3px)`
+ * across a box the size of the page, and shaded across all of it
+ * CoreGraphics spent most of a frame of villagecinemas.com.au's resize on
+ * twenty of them. Null where there is nothing of it in `part`; `part` itself
+ * where the gradient is not such a one.
+ */
+function radialReach(
+  gradient: Gradient,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  part: { x: number; y: number; w: number; h: number },
+): { x: number; y: number; w: number; h: number } | null {
+  if (gradient.kind !== 'radial' || gradient.repeating) return part;
+  const stops = gradient.stops;
+  if (!stops.length || !clearInk(stops[stops.length - 1].color)) return part;
+  const { cx, cy, rx, ry } = radialShape(gradient, w, h);
+  if (!(rx > 0 && ry > 0)) return part;
+  const at = stopOffsets(stops, rx);
+  const reach = at[at.length - 1];
+  if (!(reach >= 0) || !Number.isFinite(reach)) return part;
+  const ex = rx * reach + 1;
+  const ey = ry * reach + 1;
+  const left = Math.max(part.x, x + cx - ex);
+  const top = Math.max(part.y, y + cy - ey);
+  const right = Math.min(part.x + part.w, x + cx + ex);
+  const bottom = Math.min(part.y + part.h, y + cy + ey);
+  if (right <= left || bottom <= top) return null;
+  return { x: left, y: top, w: right - left, h: bottom - top };
+}
+
 /** A gradient shaded in `part`: from a strip of it where that pays
  *  (`gradientStrip`), and filled where it does not. */
 function shadedPart(
@@ -13017,6 +13064,9 @@ function shadedPart(
   part: { x: number; y: number; w: number; h: number },
   options: PaintOptions,
 ): void {
+  const inDot = radialReach(gradient, x, y, w, h, part);
+  if (!inDot) return;
+  part = inDot;
   if (gradientStrip(ctx, gradient, x, y, w, h, currentColor, part, options)) {
     return;
   }
@@ -13334,7 +13384,10 @@ function gradientRaster(
   if (!options.cached || !ctx.drawImage) return false;
   if (part.w * part.h < STRIP_AREA) return false;
   const k = smoothScale(gradient, w, h);
-  if (!(k >= 4)) return false;
+  // a third of the size saves most of the shading, and stops 72 raster
+  // pixels apart lose nothing at it: villagecinemas.com.au draws twenty
+  // page-wide orbs whose stops are 1.6 radii apart
+  if (!(k >= 2)) return false;
   const sw = Math.max(1, Math.ceil(w / k));
   const sh = Math.max(1, Math.ceil(h / k));
   const key = `radial ${JSON.stringify(gradient)} ${currentColor} ${w} ${h} ${sw} ${sh}`;
