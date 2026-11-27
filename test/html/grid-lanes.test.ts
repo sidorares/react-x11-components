@@ -587,6 +587,43 @@ test('the last item of a row lane stretched along it is as tall as its lane', as
   assert.deepStrictEqual(items.b, [75, 0, 125, 80]);
 });
 
+test('a row lane its items size is as tall as an orthogonal item is long, at its narrowest and at its widest', async () => {
+  // CSS Grid 1, 6.6 and CSS Writing Modes 4, 7.3: what an item whose lines
+  // run down the rows gives a row is its inline size, its narrowest and
+  // its widest, as a grid's rows take it. A lane took its height as it was
+  // first laid out, all on one line, for both, so a lane that had no room
+  // for that line was as tall as it all the same and ran past its
+  // container (row-explicit-placement-006.tentative.html). Two 10 by 30
+  // boxes down a vertical line are 30 long at the narrowest and 60 at the
+  // widest
+  const piece =
+    '<span style="display:inline-block;width:10px;height:30px"></span>';
+  const vertical = (id: string, style: string) =>
+    `<div id="${id}" style="writing-mode:vertical-rl;font-size:0;` +
+    `line-height:0;${style}">${piece} ${piece}</div>`;
+  const items =
+    vertical('a', 'grid-row:1') + item('c', 'grid-row:2;width:7px;height:20px');
+  // no room for more than the narrowest: the lane is that tall, and the
+  // item wraps to it
+  const tight = await lanes(
+    'display:grid-lanes;grid-template-rows:auto auto;height:50px;width:300px',
+    items,
+  );
+  assert.deepStrictEqual(tight.items, {
+    a: [0, 0, 20, 30],
+    c: [0, 30, 7, 20],
+  });
+  // and room for the widest: one line, the rest shared between the lanes
+  const loose = await lanes(
+    'display:grid-lanes;grid-template-rows:auto auto;height:100px;width:300px',
+    items,
+  );
+  assert.deepStrictEqual(loose.items, {
+    a: [0, 0, 10, 70],
+    c: [0, 70, 7, 20],
+  });
+});
+
 test('an orthogonal item of a row lane wraps to its lane and is as wide along it as that makes it', async () => {
   // CSS Writing Modes 4, 7.3: an orthogonal flow's root is laid out across
   // the height it is given, and is as wide as its lines come to. A row

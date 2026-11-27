@@ -200,7 +200,9 @@ export function layoutGridLanes(
     span: number,
     tracks: SizingTrack[],
   ): TrackItem => {
-    if (rows) return rowItem({ ...item, row: start, rows: span }, tracks, 0);
+    if (rows) {
+      return rowItem({ ...item, row: start, rows: span }, tracks, 0, ctx);
+    }
     const placed = { ...item, col: start, cols: span };
     return {
       start,
