@@ -10173,9 +10173,20 @@ export function strutOf(
   fonts: FontsLike,
   style: ComputedStyle,
 ): InlineDecoration {
-  // text set at no size takes no room, and CoreText reads a size of 0 as
-  // its default twelve points
-  if (!(style.fontSize > 0)) return NO_EXTENT;
+  // Text set at no size takes no room of its own, and CoreText reads a
+  // size of 0 as its default twelve points, so no face is asked. A line
+  // height that is a length is still its box's, all of it leading, half
+  // above the baseline and half below (CSS 2.1 10.8.1): a line in a
+  // `font-size: 0` block under `line-height: 20px` is 20px tall in every
+  // engine, and a number or `normal` comes to none
+  if (!(style.fontSize > 0)) {
+    if (!style.lineHeightIsLength || style.lineHeight === 'normal') {
+      return NO_EXTENT;
+    }
+    const target = style.lineHeight as number;
+    const ascent = ascentOnLine(0, 0, target);
+    return { ascent, descent: target - ascent };
+  }
   const face = faceExtent(fonts, style);
   const target =
     style.lineHeight === 'normal'

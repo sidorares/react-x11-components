@@ -8658,7 +8658,11 @@ percentage of the line height, `text-top`, `text-bottom`, `middle`, and
 `top` and `bottom` against the line box, whose height each raised box adds
 its own line height to. So does an inline box whose own `line-height` is
 more than its paragraph gives its text: a span of 60px lines in a paragraph
-of 20px ones makes a 60px line, with its text in the middle. A paragraph
+of 20px ones makes a 60px line, with its text in the middle. A line height
+that is a length is its box's at `font-size: 0` too, half above the
+baseline and half below, so a row of images in such a block under
+`line-height: 20px` is 10px taller than the images, as in every engine;
+a number or `normal` there comes to none. A paragraph
 holding either is laid out a line at a time. A box whose own line height is
 less keeps the paragraph's multiple of its font's natural one, which in a
 font with taller lines than the paragraph's — a `<code>` in Menlo beside
