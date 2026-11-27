@@ -8901,6 +8901,12 @@ export class Cascade {
       c.declarations.some((d) => d.prop === 'unicode-bidi'),
     );
     if (!set) out.unicodeBidi = 'isolate';
+    // and its case is its own: the same sheet's `text-transform: none`
+    // (CSS Lists 3, 3.1.1), so an item in capitals has no marker in them
+    const cased = candidates.some((c) =>
+      c.declarations.some((d) => d.prop === 'text-transform'),
+    );
+    if (!cased) out.textTransform = 'none';
     return out;
   }
 

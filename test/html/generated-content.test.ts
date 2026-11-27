@@ -988,6 +988,42 @@ test('a ::marker rule styles the marker, and not its item', async () => {
   assert.strictEqual(inside.style.color, '#ff0000');
 });
 
+test("a marker is written in its ::marker's text-transform, outside its item or inside, and in none of its item's", async () => {
+  // CSS Lists 3, 3.1.1: `text-transform` applies to a `::marker`, and the
+  // user agent's sheet gives it `none`, so an item's own is not its
+  // marker's. An inside marker took it from the item's style, a `::marker`
+  // rule's or not, and an outside one was written as its counter style
+  // writes it whatever any rule said
+  // (css-pseudo/marker-text-transform-uppercase.html)
+  const list = (position: string) =>
+    `<ol style="list-style-position:${position}">` +
+    `<li id="${position}-roman" class="up" style="list-style-type:lower-roman">a</li>` +
+    `<li id="${position}-string" class="up" style="list-style-type:'ii. '">b</li>` +
+    `<li id="${position}-content" class="up content">c</li>` +
+    // an item in capitals, whose marker no rule transforms
+    `<li id="${position}-item" style="list-style-type:lower-roman;` +
+    'text-transform:uppercase">d</li></ol>';
+  const { node } = await render(
+    '<style>.up::marker{text-transform:uppercase}' +
+      '.content::marker{content:counter(list-item, lower-roman) ". "}</style>' +
+      list('outside') +
+      list('inside'),
+  );
+  const el = view(node);
+  type Marked = { marker: { text: string } | null };
+  const outside = (id: string) =>
+    (boxOf(el, `outside-${id}`) as unknown as Marked).marker?.text;
+  assert.strictEqual(outside('roman'), 'I.');
+  assert.strictEqual(outside('string'), 'II. ');
+  assert.strictEqual(outside('content'), 'III. ');
+  assert.strictEqual(outside('item'), 'iv.', "not its item's capitals");
+  const drawn = drawnText(el);
+  // an inside marker is in the item's text, before what the item says
+  for (const marker of ['I. a', 'II. b', 'III. c', 'iv. D']) {
+    assert.ok(drawn.includes(marker), `${marker} in ${JSON.stringify(drawn)}`);
+  }
+});
+
 metric(
   'an inside marker takes its room at the start of the first line',
   async () => {
