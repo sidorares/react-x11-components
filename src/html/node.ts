@@ -216,6 +216,7 @@ import type {
   RootLook,
   TimelineRef,
 } from './css/style.js';
+import { storedAsWritten } from './css/passive-properties.js';
 import {
   INLINE_BEFORE_ABSOLUTE,
   COLOR_SOURCE_FIELDS,
@@ -5345,12 +5346,14 @@ export class HtmlViewNode extends Node {
           transition: this._anyLive() ? this._transitionTree : null,
           transitionScopes: this._liveScopes(),
           scale: this._scale,
-          imageSize: (el) => this._videoSizes.get(el) ?? this._imageSize(el),
+          imageSize: (el, style) =>
+            this._videoSizes.get(el) ?? this._imageSize(el, style),
           holdsDocument: (el) =>
             this._resources.holdsDocument(imageUrlOf(el) ?? ''),
           framed: (el) => this._props().framed?.(el) ?? false,
           sizePending: (el) => this._sizePending(el),
-          urlSize: (url) => this._resources.imageSize(url),
+          urlSize: (url, style) =>
+            this._resources.imageSize(url, !!style && storedAsWritten(style)),
           faceAscent: (style) => {
             const fonts = this._fonts();
             return fonts ? faceExtentOf(fonts, style).ascent : undefined;
@@ -6263,12 +6266,20 @@ export class HtmlViewNode extends Node {
    * not arrived. An infinitely dense one, chosen for a `sizes` of 0, is no
    * size at all, as in a browser.
    */
-  private _imageSize(el: Element): IntrinsicSize | null {
+  private _imageSize(
+    el: Element,
+    /** The element's style, where it is being built and the tree has none
+     *  for it yet. */
+    style?: ComputedStyle,
+  ): IntrinsicSize | null {
+    // as its file stores it, under `image-orientation: none`
+    const own = style ?? this._tree?.styles.get(el)?.style;
+    const stored = !!own && storedAsWritten(own);
     if (!choosesSource(el)) {
-      return this._resources.imageSize(imageUrlOf(el) ?? '');
+      return this._resources.imageSize(imageUrlOf(el) ?? '', stored);
     }
     const shown = this._images.shown(el);
-    const size = shown && this._resources.imageSize(shown.url);
+    const size = shown && this._resources.imageSize(shown.url, stored);
     return shown && size ? atDensity(size, shown.density) : null;
   }
 
@@ -19279,15 +19290,17 @@ export class HtmlViewNode extends Node {
         const animation = this._resources.animation(url);
         return animation
           ? this._frameOf(animation, box)
-          : this._resources.image(url);
+          : this._resources.image(url, storedAsWritten(box.style));
       },
       mounted: this._mounted,
       backgroundImageFor: (url, box) => {
         const animation = this._resources.animation(url);
+        // as its file stores it, where the box it is drawn for says so
+        const stored = !!box && storedAsWritten(box.style);
         const image = animation
           ? this._frameOf(animation, box)
-          : this._resources.image(url);
-        const size = image ? this._resources.imageSize(url) : null;
+          : this._resources.image(url, stored);
+        const size = image ? this._resources.imageSize(url, stored) : null;
         return image && size ? { image, ...size } : null;
       },
       surface: (width, height) => this._surface(width, height),

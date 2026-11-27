@@ -657,6 +657,18 @@ One part is not done: a gradient an `image-set()` chooses for a list
 marker draws the `list-style-type`'s marker, as a gradient
 `list-style-image` does, where a browser draws a small square of it.
 
+### Image orientation
+
+A JPEG is drawn turned as its EXIF Orientation says, and is as large as it
+is turned: `image-orientation: from-image`, the initial value. Under
+`image-orientation: none` (CSS Images 3, 5.3), which inherits, an image is
+drawn as its file stores it and is as large as that, on its side for the
+four orientations that turn it a quarter: an `<img>`, generated content, a
+background, a list marker, a border image and a mask image. Not yet: a
+PNG's `eXIf` chunk, which is not read, so a PNG is as its pixels are either
+way; and on a backend whose images hold no pixels this can read, macOS's
+among them, `none` draws the image turned.
+
 ### Encodings
 
 `charset` says what the host decoded `source` from, and everything in a
