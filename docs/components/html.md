@@ -8949,7 +8949,13 @@ columns first, in its own axes, as all three engines have it. The root is a
 bare block around it, an inline-block for an `inline-table`, which keeps
 what places the table in the page's flow and draws nothing, so a table's
 background is painted with its frame, among the layers after the flow,
-where a browser paints it in the flow.
+where a browser paints it in the flow. The root is the item of a flex box
+or a grid in the table's place, with the table's `flex`, its `order`, its
+alignment and its grid lines, and the table fills what the container makes
+of it: as wide as the height it is given and as tall as its width, as a
+horizontal table that is an item is. Not yet: a table flexed down a
+column, and one with a size of its own across the line, which keeps that
+size in a root stretched as though it had none.
 
 A `vertical-lr` flow is laid out as `vertical-rl`'s and put back across;
 a block in it that runs right to left, a `vertical-rl` one, keeps its lines

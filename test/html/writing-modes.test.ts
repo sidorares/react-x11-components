@@ -1703,6 +1703,60 @@ test('a table in a vertical writing mode runs its rows across the page and its c
   assert.deepStrictEqual(at('vertical-lr-c'), [50, 58, 50, 20]);
 });
 
+test('a vertical table that is a flex or grid item is the size its container makes it', async () => {
+  // A vertical table's root is a bare block around its frame, which is the
+  // table (`makeFrame`). The root kept nothing of what makes a box an item,
+  // so `flex: 0 0 100px` was lost, and the frame was laid out as a table in
+  // a block's flow is, as wide as its columns and as tall as its rows: an
+  // empty table a grid stretched over a 60px area was its borders, a dot in
+  // the area's corner (grid-container-baseline-synthesized-001.html, -003),
+  // and one flexed to 100px along a row was nothing at all
+  // (table-as-item-specified-width-vertical.html)
+  const { node } = await render(
+    '<style>body{margin:0}.t{display:table;border:3px solid;' +
+      'border-spacing:0}.c{display:table-cell}</style>' +
+      '<div style="display:grid;grid-template:60px / 60px;width:60px">' +
+      '<div id="g" class="t" style="writing-mode:vertical-rl">' +
+      '<div id="gc" class="c"></div></div></div>' +
+      // with no rows to share the height out among
+      '<div style="display:grid;grid-template:60px / 60px;width:60px">' +
+      '<div id="e" class="t" style="writing-mode:sideways-lr"></div></div>' +
+      // flexed along a row whatever width it has of its own, and stretched
+      // down the line
+      '<div style="display:flex;height:100px"><div id="f" class="t"' +
+      ' style="writing-mode:vertical-lr;width:500px;flex:0 0 100px">' +
+      '<div id="fc" class="c"></div></div></div>' +
+      // and in a block's flow it is as large as what it holds, as before
+      '<div style="width:300px"><div id="b" class="t"' +
+      ' style="writing-mode:vertical-rl"><div id="bc" class="c"' +
+      ' style="inline-size:20px;block-size:30px"></div></div></div>',
+    400,
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const r = rectOf(el, id);
+    return [r.x, r.y, r.width, r.height];
+  };
+  /** The table's own box, its frame's, in the frame's axes. */
+  const frame = (id: string) => {
+    const table = boxOf(el, id).children[0] as unknown as {
+      kind: string;
+      width: number;
+      height: number;
+    };
+    return [table.kind, table.width, table.height];
+  };
+  assert.deepStrictEqual(at('g'), [0, 0, 60, 60]);
+  assert.deepStrictEqual(frame('g'), ['table', 60, 60]);
+  assert.deepStrictEqual(at('gc'), [3, 3, 54, 54], 'inside its borders');
+  assert.deepStrictEqual(frame('e'), ['table', 60, 60]);
+  assert.deepStrictEqual(at('f'), [0, 120, 100, 100]);
+  assert.deepStrictEqual(frame('f'), ['table', 100, 100]);
+  assert.deepStrictEqual(at('fc'), [3, 123, 94, 94]);
+  assert.deepStrictEqual(at('b'), [0, 220, 36, 26]);
+  assert.deepStrictEqual(at('bc'), [3, 223, 30, 20]);
+});
+
 test('a horizontal cell in a vertical table lays its content out across the page', async () => {
   // CSS Writing Modes 4, 7.3: a cell whose writing mode is horizontal in a
   // vertical table is an orthogonal flow, whose frame turns back what the

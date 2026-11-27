@@ -4974,7 +4974,11 @@ function layoutFramed(box: Box, frame: Box, ctx: LayoutContext): void {
   // found from (`framedWidth`), and by nothing since
   const sized = SIZED_FROM.get(frame);
   SIZED_FROM.delete(frame);
-  if (
+  // a table's frame fills a root its flex box or grid sized, as a table
+  // that is an item does (`STRETCHED_ACROSS`, `FLEXED_HEIGHT`)
+  const filled = frame.kind === 'table' && fillsItsRoot(box, frame, across);
+  if (filled) layFilling(box, frame, ctx, inline, across);
+  else if (
     sized === undefined ||
     sized.serial !== frame.layoutSerial ||
     sized.inline !== inline
@@ -5010,6 +5014,56 @@ function layoutFramed(box: Box, frame: Box, ctx: LayoutContext): void {
       containing: containingBlockFor(child) ?? box,
     });
   }
+}
+
+/**
+ * Whether a vertical table's frame is laid out to fill its root: the root
+ * is the item of a flex box or a grid in the table's place (`makeFrame`),
+ * so what the container made of it is the table's size, as it is a
+ * horizontal table's. Not while its root's width is still being found.
+ */
+function fillsItsRoot(box: Box, frame: Box, across: number): boolean {
+  const parent = box.parent;
+  if (!parent || parent.kind !== 'flex' || box.outOfFlow) return false;
+  return Number.isFinite(across) || frameGiven(box) !== null;
+}
+
+/**
+ * `layFrame` for a table that fills its root (`fillsItsRoot`). Across the
+ * frame it is as wide as the height its root was given, where its `auto`
+ * width would shrink to its columns (`STRETCHED_ACROSS`). Down the frame
+ * it is as tall as its root's width, which its rows share: where it has no
+ * height of its own there, and along a row of a flex box, whose items are
+ * the size their line flexed them to whatever their own (CSS Flexbox 1,
+ * 9.7).
+ */
+function layFilling(
+  box: Box,
+  frame: Box,
+  ctx: LayoutContext,
+  inline: number,
+  across: number,
+): void {
+  const parent = box.parent!;
+  const style = frame.style;
+  const alongRow =
+    !parent.style.grid && parent.style.flexDirection.startsWith('row');
+  const tall =
+    Number.isFinite(across) &&
+    (alongRow || (style.height === AUTO && !style.heightKeyword));
+  const wide = frameGiven(box) !== null;
+  resolveEdges(frame, inline);
+  if (wide) STRETCHED_ACROSS.add(frame);
+  if (tall) FLEXED_HEIGHT.set(frame, Math.max(0, across - frame.verticalExtra));
+  try {
+    layFrame(frame, ctx, inline, across);
+  } finally {
+    STRETCHED_ACROSS.delete(frame);
+    FLEXED_HEIGHT.delete(frame);
+  }
+  // with no rows to share it out among, the table's box is that tall
+  // itself, as a flex box or a grid makes the box of one that is its item
+  if (tall && frame.height < across) frame.height = across;
 }
 
 /** Lay a frame out at its corner at an inline size, a percentage height in
@@ -5142,9 +5196,10 @@ function principal(box: Box): boolean {
  *  and the inline size it was at, until `layoutFramed` takes it. */
 const SIZED_FROM = new WeakMap<Box, { serial: number; inline: number }>();
 
-/** How wide a frame is laid out, which is how tall its root's content box
- *  is (`layoutFramed`). */
-function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
+/** The height of a root's content box where it has one before its frame
+ *  is laid out, which the frame is then as wide as: null where it is what
+ *  the frame comes to. */
+function frameGiven(box: Box): number | null {
   const own = percentBaseInside(box);
   if (Number.isFinite(own)) return own;
   // a height a grid's sized rows, or a flex row of a height, stretch it
@@ -5156,6 +5211,14 @@ function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
       return Math.max(0, given - box.verticalExtra);
     }
   }
+  return null;
+}
+
+/** How wide a frame is laid out, which is how tall its root's content box
+ *  is (`layoutFramed`). */
+function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
+  const given = frameGiven(box);
+  if (given !== null) return given;
   // the initial containing block's, which is the viewport's height, read
   // as a percentage height on the root reads it (`readsViewportHeight`)
   let base = box.percentHeightBase;
