@@ -2476,6 +2476,245 @@ withFonts(
   },
 );
 
+// --- unicode-range, and the first available font -------------------------------
+
+/** The faces the range tests load: letters, a face of far taller lines
+ *  that has a brace's pieces and two combining marks and no letters, and
+ *  a second face of letters, of other widths. */
+const LETTERS = woff2('SansSerif-Regular');
+const BRACES = woff2('Size4-Regular');
+const withRanges = FONTS && REGULAR && LETTERS && BRACES ? test : test.skip;
+
+function rangeHost(): Answer {
+  return (r) => {
+    if (r.kind !== 'font') return null;
+    const bytes = r.url.startsWith('braces')
+      ? BRACES!
+      : r.url.startsWith('letters')
+        ? LETTERS!
+        : REGULAR!;
+    return { kind: 'font', bytes };
+  };
+}
+
+withRanges(
+  'a list is measured by its first available font, the first whose range holds the space',
+  async () => {
+    // CSS Fonts 4, 5.1. `Braces` leads the list for one character and is
+    // no font to measure by: its lines are three times as tall
+    const { node } = await mount(
+      '<style>@font-face { font-family: Braces; src: url(braces.woff2);' +
+        '  unicode-range: U+23A7 }' +
+        '@font-face { font-family: Letters; src: url(letters.woff2) }' +
+        'div { font-size: 40px; line-height: normal; white-space: nowrap }' +
+        '.ranged { font-family: Braces, Letters } .plain { font-family: Letters }' +
+        '.ex { width: 10ex } .ch { width: 10ch } .lh { width: 1lh }' +
+        // the brace is what asks for its face
+        '</style><div class="ranged">⎧</div>' +
+        '<div id="ranged" class="ranged">ab</div>' +
+        '<div id="plain" class="plain">ab</div>' +
+        '<div id="ranged-ex" class="ranged ex"></div>' +
+        '<div id="plain-ex" class="plain ex"></div>' +
+        '<div id="ranged-ch" class="ranged ch"></div>' +
+        '<div id="plain-ch" class="plain ch"></div>' +
+        '<div id="ranged-lh" class="ranged lh"></div>' +
+        '<div id="plain-lh" class="plain lh"></div>',
+      rangeHost(),
+      {},
+      true,
+    );
+    await settle(node);
+    const families = boxOf(node, 'ranged').style.fontFamily.split(', ');
+    assert.strictEqual(
+      families.length,
+      3,
+      'both faces loaded, and the default',
+    );
+    // the strut and a `normal` line
+    assert.deepStrictEqual(
+      linesUnder(node, 'ranged'),
+      linesUnder(node, 'plain'),
+    );
+    const widthOf = (id: string) =>
+      (boxOf(node, id) as unknown as { width: number }).width;
+    for (const unit of ['ex', 'ch', 'lh']) {
+      assert.ok(widthOf(`plain-${unit}`) > 0);
+      assert.strictEqual(
+        widthOf(`ranged-${unit}`),
+        widthOf(`plain-${unit}`),
+        `the ${unit} of the first available font`,
+      );
+    }
+  },
+);
+
+withRanges(
+  'a character is set in no family whose range leaves it out, whatever its file has',
+  async () => {
+    // CSS Fonts 4, 4.5. `OnlyA` is a whole face of letters declared for
+    // one, and an engine, which knows the file and not the rule, set the
+    // "b" in it too
+    const { node } = await mount(
+      '<style>@font-face { font-family: OnlyA; src: url(letters.woff2);' +
+        '  unicode-range: U+61 }' +
+        '@font-face { font-family: Letters; src: url(letters-too.woff2) }' +
+        '@font-face { font-family: Other; src: url(r.woff2) }' +
+        '@font-face { font-family: Marks; src: url(braces.woff2);' +
+        '  unicode-range: U+302 }' +
+        // the ampersand of a face the system has, as the property was
+        // first shown off
+        `@font-face { font-family: Amp; src: local("${LOCAL}");` +
+        '  unicode-range: U+26 }' +
+        'div { font-size: 40px; line-height: normal; white-space: nowrap }' +
+        '</style><div id="mixed" style="font-family: OnlyA, Other">ab ba</div>' +
+        '<div id="apart"><span style="font-family: Letters">a</span>' +
+        '<span style="font-family: Other">b b</span>' +
+        '<span style="font-family: Letters">a</span></div>' +
+        '<div id="letters" style="font-family: Letters">ab ba</div>' +
+        // a mark goes with its letter, and brings no family in by itself:
+        // `Marks` has the circumflex and lines three times as tall
+        '<div id="marked" style="font-family: Marks, Letters">â</div>' +
+        '<div id="amp" style="font-family: Amp, Other">a&amp;b</div>' +
+        '<div id="amp-other" style="font-family: Other">a&amp;b</div>',
+      rangeHost(),
+      {},
+      true,
+    );
+    await settle(node);
+    const [mixed] = linesUnder(node, 'mixed');
+    const [apart] = linesUnder(node, 'apart');
+    const [letters] = linesUnder(node, 'letters');
+    assert.ok(
+      Math.abs(mixed.width - letters.width) > 1,
+      `the two faces set a "b" at other widths, or this tests nothing: ${mixed.width}`,
+    );
+    assert.deepStrictEqual(mixed, apart, 'as the same letters in spans');
+    // and each piece is a span of its own, in its own list
+    const spansOf = (id: string) => {
+      const spans = (
+        boxOf(node, id) as unknown as {
+          lines: {
+            texts: {
+              layout: {
+                lines: {
+                  runs: { span?: { text: string; family: string } }[];
+                }[];
+              };
+            }[];
+          }[];
+        }
+      ).lines[0].texts.flatMap((text) =>
+        text.layout.lines[0].runs.map((run) => run.span),
+      );
+      return spans
+        .filter((span, i) => span !== spans[i - 1])
+        .map((span) => [span?.text, span?.family.split(', ').length]);
+    };
+    // the "a"s in the list as written, the rest without its first family
+    assert.deepStrictEqual(spansOf('mixed'), [
+      ['a', 3],
+      ['b b', 2],
+      ['a', 3],
+    ]);
+    // a `local()` face's range too: the system's family leads the list of
+    // the one character and is in no other's, and the name that marks it
+    // (`WebFonts.map`) reaches no engine. Asked of the lists and not of the
+    // glyphs: the harness's font source has the family as its sans-serif
+    // file, and no name to find it by among registered faces
+    const amp = (
+      boxOf(node, 'amp') as unknown as {
+        lines: {
+          texts: {
+            layout: {
+              lines: { runs: { span?: { text: string; family: string } }[] }[];
+            };
+          }[];
+        }[];
+      }
+    ).lines[0].texts.flatMap((text) =>
+      text.layout.lines[0].runs.map((run) => [
+        run.span?.text,
+        run.span?.family,
+      ]),
+    );
+    const other = boxOf(node, 'amp-other').style.fontFamily;
+    assert.deepStrictEqual(amp, [
+      ['a', other],
+      ['&', `${LOCAL}, ${other}`],
+      ['b', other],
+    ]);
+    const [marked] = linesUnder(node, 'marked');
+    assert.ok(
+      marked.height < letters.height * 1.5,
+      `no line of the marks' face: ${marked.height} beside ${letters.height}`,
+    );
+  },
+);
+
+test('a run is handed on in pieces where its characters are set in different lists', () => {
+  const seen: unknown[] = [];
+  const matched: string[] = [];
+  const engine = {
+    layout(content: unknown) {
+      seen.push(content);
+      return 'laid out';
+    },
+    match(family: string) {
+      matched.push(family);
+      return {};
+    },
+  } as unknown as FontsLike;
+  const faces = {
+    active: false,
+    ranged: true,
+    // `swash` is declared for the ampersand alone
+    primary: (list: string) => (list === 'swash, body' ? 'body' : list),
+    forText: (list: string, text: string) =>
+      list !== 'swash, body'
+        ? list
+        : text === 'a&b'
+          ? [
+              { end: 1, family: 'body' },
+              { end: 2, family: list },
+              { end: 3, family: 'body' },
+            ]
+          : 'body',
+    setting: () => null,
+  };
+  const fonts = fontAxes(engine, faces);
+  const runs = [
+    { text: 'a&b', color: 'red' },
+    { text: 'cd' },
+    { text: 'e', family: 'other' },
+  ];
+  assert.strictEqual(
+    fonts.layout(runs, { family: 'swash, body' }, {}),
+    'laid out',
+  );
+  const handed = seen[0] as Array<Record<string, unknown>>;
+  assert.deepStrictEqual(handed, [
+    { text: 'a', color: 'red', family: 'body' },
+    { text: '&', color: 'red', family: 'swash, body' },
+    { text: 'b', color: 'red', family: 'body' },
+    { text: 'cd', family: 'body' },
+    { text: 'e', family: 'other' },
+  ]);
+  assert.strictEqual(
+    handed[4],
+    runs[2],
+    'a run in its own list is handed on as it came',
+  );
+  assert.deepStrictEqual(
+    runs[0],
+    { text: 'a&b', color: 'red' },
+    'and none is changed',
+  );
+  // a face is asked for to be measured, by the first available font
+  fonts.match('swash, body', {});
+  fonts.match('other', {});
+  assert.deepStrictEqual(matched, ['body', 'other']);
+});
+
 // --- the weight and width axes -----------------------------------------------
 
 test('a run is handed on with the family and the axis values it has', () => {
@@ -2493,6 +2732,9 @@ test('a run is handed on with the family and the axis values it has', () => {
   const asked: string[] = [];
   const faces = {
     active: true,
+    ranged: false,
+    primary: (list: string) => list,
+    forText: (list: string) => list,
     setting(list: string, weight: number, italic: Slant, stretch: number) {
       asked.push(`${list}|${weight}|${italic}|${stretch}`);
       if (!list.startsWith('web')) return null;

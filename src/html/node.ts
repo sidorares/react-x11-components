@@ -3915,15 +3915,23 @@ export class HtmlViewNode extends Node {
       }
       this._parsed = this._parsing;
       this._parsing = null;
+      // a font is measured by its list's first available one (CSS Fonts
+      // 4, 5.1), which a family declared for a few characters is not
+      const primary = (face: MetricFace): MetricFace => {
+        const family = this._webFonts.primary(face.family);
+        return family === face.family ? face : { ...face, family };
+      };
       this._cascade = new Cascade(
         sheets,
         look,
         width,
         this._viewportHeight(),
         this._scale,
-        fonts ? (face, of) => xHeightOf(fonts, face, of === 'cap') : null,
-        fonts ? (face, text) => zeroWidthOf(fonts, face, text) : null,
-        fonts ? (face) => normalLineOf(fonts, face) : null,
+        fonts
+          ? (face, of) => xHeightOf(fonts, primary(face), of === 'cap')
+          : null,
+        fonts ? (face, text) => zeroWidthOf(fonts, primary(face), text) : null,
+        fonts ? (face) => normalLineOf(fonts, primary(face)) : null,
         faces.length || this._webFonts.scripted ? this._webFonts : null,
         null,
         this._target,
