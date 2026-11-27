@@ -6810,6 +6810,14 @@ export function widestAtHeight(box: Box, ctx: LayoutContext): number | null {
     : null;
 }
 
+/** The same at its narrowest: what a flex item's automatic minimum is of,
+ *  along a row that gives it a height. */
+export function narrowestAtHeight(box: Box, ctx: LayoutContext): number | null {
+  return handsHeightOn(box) && heightGiven(box) !== null
+    ? narrowestOf(box, ctx)
+    : null;
+}
+
 /**
  * A box measured as though it were `height` tall, its border box: what is in
  * it stretches down that, and takes its percentages of it. Kept by the height,
