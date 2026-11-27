@@ -966,6 +966,59 @@ test("a scroll container reaches as far as Chrome's scrollHeight and scrollWidth
       342,
       130,
     ],
+    // The end padding goes past the margin boxes of the boxes in its flow,
+    // a negative margin taken off and all, and past nothing else: what a
+    // box in it holds, or draws past its own margin, reaches as far as it
+    // reaches (CSS Overflow 3, 2.2). Chromium, Firefox and WebKit agree on
+    // each. A last child drawn up by a negative margin scrolled by the
+    // margin, and a row with negative side margins, Bootstrap's, across by
+    // the padding (css-overflow/overflow-negative-margin.html)
+    ['n1', '<div style="height:100px;margin-bottom:-10px"></div>', 212, 130],
+    ['n2', '<div style="height:300px;margin-bottom:-10px"></div>', 212, 320],
+    ['n3', '<div style="height:300px;margin-bottom:-50px"></div>', 212, 310],
+    [
+      'n4',
+      '<div style="height:50px"><div style="height:300px"></div></div>',
+      212,
+      310,
+    ],
+    [
+      'n5',
+      '<div style="width:300px;height:10px;margin-right:-30px"></div>',
+      305,
+      130,
+    ],
+    [
+      'n6',
+      '<div style="width:300px;height:10px;margin-right:40px"></div>',
+      352,
+      130,
+    ],
+    ['n7', '<div style="margin:0 -7px 0 -5px;height:10px"></div>', 212, 130],
+    [
+      'n9',
+      '<div style="height:50px"><div style="height:300px;margin-bottom:40px"></div></div>',
+      212,
+      310,
+    ],
+    [
+      'n10',
+      '<div style="height:50px;margin-bottom:30px"><div style="height:300px"></div></div>',
+      212,
+      310,
+    ],
+    [
+      'n12',
+      '<div style="width:100px;height:10px;margin-right:60px"><div style="width:300px;height:10px"></div></div>',
+      305,
+      130,
+    ],
+    [
+      'n14',
+      '<div style="height:120px;margin-bottom:-30px"></div><div style="height:10px"></div>',
+      212,
+      130,
+    ],
   ];
   const { el: node } = await renderScrolled(
     '<style>body{margin:0} .s{overflow:auto;height:100px;width:200px;' +
