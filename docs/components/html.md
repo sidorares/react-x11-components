@@ -6006,7 +6006,10 @@ own, as in a browser. All it holds but that summary is in its
 rules style — `display: block`, and while it is shut `content-visibility:
 hidden`, which keeps the box and draws nothing in it, from the UA sheet —
 so an accordion can transition its height open and shut (see
-`interpolate-size` under Transitions). `:open` and `:closed` match a
+`interpolate-size` under Transitions). Given `display: contents` it makes no
+box, and what it holds is in the flow around it, shut as well as open, since
+the `content-visibility` that hides it then has no box to apply to.
+`:open` and `:closed` match a
 `<details>` or a `<dialog>` open and shut, and a drop-down `<select>`
 whose menu is down or up (see [Scripts](#scripts)). A `<dialog>` is not drawn
 until it is `open`, and is then HTML's framed box out of the flow, centred

@@ -325,6 +325,38 @@ test('a details holds all but its summary in its ::details-content, and :open te
   assert.strictEqual(shutDetails.children[0].el, findById(el.document, 's1'));
 });
 
+test('a ::details-content of display: contents makes no box, and what it holds is in the flow around it, open or shut', async () => {
+  // CSS Display 3, 2.5: it is a box of the display it is given, and
+  // `contents` is none, so what it holds goes in the flow around it,
+  // inheriting from it. It was a block whatever it said, a line of its own
+  // between the summary and what followed the details. Shut it shows what
+  // it holds too: the `content-visibility: hidden` that hides it has no box
+  // to apply to, which is what Chromium, Firefox and WebKit draw
+  // (css-display/display-contents-details.html)
+  const { node } = await render(
+    '<style>body{margin:0}details,summary{display:contents}' +
+      'details::details-content{display:contents;color:#ff0000}' +
+      'span{display:inline-block;width:10px;height:10px}</style>' +
+      '<div id="a"><span></span><details open><summary><span></span>' +
+      '</summary><span id="in"></span></details><span></span></div>' +
+      '<div id="b"><details><summary>Q</summary><span id="shut"></span>' +
+      '</details></div>',
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id) as unknown as Box;
+  // one line, the content's beside the summary's
+  const xs = box('a').lines!.length;
+  assert.strictEqual(xs, 1, 'one line');
+  assert.strictEqual(box('in').x, 20);
+  assert.strictEqual(box('in').style.color, parseColor('#ff0000'), 'its style');
+  assert.ok(
+    !box('a').children.some((c) => c.pseudo === 'details-content'),
+    'no box of its own',
+  );
+  // shut, what it holds is drawn all the same
+  assert.strictEqual(box('shut').width, 10);
+});
+
 test("an accordion opens and shuts its ::details-content's height to and from auto", async (t) => {
   const clock = holdClock(t, animationClock);
   let handle: ReturnType<typeof useHtmlHandle> | null = null;
