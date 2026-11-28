@@ -51851,6 +51851,17 @@ export function installDom(
     traverseTo(s, at, undefined, null, true);
     return true;
   });
+  // the focus came to a document's frame or left it (`DomHost.focusCameTo`):
+  // its window hears `focus` or `blur`, the page's own or a frame's of this
+  // realm's, where anything made its window
+  entry('__windowFocus', () => {
+    const [id, focused] = input();
+    const doc = id ? wrap(id) : document;
+    const target = doc === document ? windowTarget : frameTargets.get(doc);
+    if (!target) return false;
+    dispatch(target, trusted(new FocusEvent(focused ? 'focus' : 'blur')));
+    return true;
+  });
   // a frame's document in this realm is going: the host puts another in
   // its place, or its frame left the document
   entry('__unloadDocument', () => {

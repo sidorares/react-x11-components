@@ -2066,8 +2066,12 @@ is kept where every realm of the page reads it: set by a script's `focus()` (a
 frame's element hands it to the frame's document), by a `blur()` of what held
 it, and by a user's `focusin` told through `dispatch`. A document's
 `activeElement` is the frame on the way down to it, however deep, and
-`hasFocus()` holds of it and of what is around it (`_frameToFocus`). **Anything
-new that moves the focus between documents goes through `focusCameTo`.**
+`hasFocus()` holds of it and of what is around it (`_frameToFocus`). As it moves
+to another document, what has the focus in the one it leaves lets it go
+(`_blurOther`), that document's window hears `blur` and the new one's `focus`,
+before the element that takes it hears its own: Chrome's order, in whichever
+realm runs each window (`DomShared.runs`, `__windowFocus`). **Anything new that
+moves the focus between documents goes through `focusCameTo`.**
 
 **A press on what has the focus leaves it there** (`pressLanded`, from
 `defaultMouseDown`). Core's press goes to the nearest node that takes the
