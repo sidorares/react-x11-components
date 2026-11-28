@@ -319,6 +319,41 @@ test('getComputedStyle answers a unitless line-height as the length it comes to,
   assert.deepEqual(out, ['24px', 'normal', '30px', '22px']);
 });
 
+test('setProperty takes its priority in any case and refuses any other, and reads null and undefined as WebIDL converts them', async () => {
+  const out = await inPage(
+    '<div id="e"></div>',
+    `var s = document.getElementById('e').style;
+     var r = [];
+     s.setProperty('color', 'red', 'ImPoRtAnt');
+     r.push(s.getPropertyPriority('color'));
+     s.setProperty('color', 'blue', 'high');
+     r.push(s.color);
+     s.setProperty('color', 'green', undefined);
+     r.push(s.color, s.getPropertyPriority('color'));
+     s.setProperty('color', 'white', null);
+     r.push(s.color);
+     s.setProperty('color', undefined);
+     r.push(s.color);
+     s.color = undefined;
+     r.push(s.color);
+     s.setProperty('color', null);
+     r.push(s.color);
+     try { s.opacity = Symbol('1'); } catch (e) { r.push(e.name); }
+     return r;`,
+  );
+  assert.deepEqual(out, [
+    'important',
+    'red',
+    'green',
+    '',
+    'white',
+    'white',
+    'white',
+    '',
+    'TypeError',
+  ]);
+});
+
 test("a sheet's title is its element's title attribute, and none where that is empty", async () => {
   const out = await inPage(
     '<style id="a" title="Dark"></style><style id="b" title=""></style><style id="c"></style>',
