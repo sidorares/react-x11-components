@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.50.1](https://github.com/sidorares/react-x11-components/compare/v0.50.0...v0.50.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **html:** a &lt;link&gt;'s sheet lists the rules it brought in ([#2066](https://github.com/sidorares/react-x11-components/issues/2066)) ([3af0ea3](https://github.com/sidorares/react-x11-components/commit/3af0ea37ebdea61bc8dd2800071fc0df0c48fc8d))
+* **html:** a control's validity says every flag that holds ([#2063](https://github.com/sidorares/react-x11-components/issues/2063)) ([a85dbc2](https://github.com/sidorares/react-x11-components/commit/a85dbc2ed2c604fcd3d9477d543c8775bde663ae))
+* **html:** a document's activeElement is the frame the focus is in, and hasFocus() asks where it is ([#2064](https://github.com/sidorares/react-x11-components/issues/2064)) ([0ad3974](https://github.com/sidorares/react-x11-components/commit/0ad397499ba2cbd3f5c6dc9ded7fb26b07001835))
+* **html:** a frame the parser has only just put in takes the focus into its first document ([#2081](https://github.com/sidorares/react-x11-components/issues/2081)) ([4c8e0a8](https://github.com/sidorares/react-x11-components/commit/4c8e0a898797b8efbae9055557bf01a6efd94d0b))
+* **html:** a frame's window.focus() hands its document the focus, which keeps what it had focused ([#2073](https://github.com/sidorares/react-x11-components/issues/2073)) ([d7e4b04](https://github.com/sidorares/react-x11-components/commit/d7e4b04c382c096d6f41a33454f7eb4e2b727dc5))
+* **html:** a press takes the focus to the document it is in, out of a frame ([#2082](https://github.com/sidorares/react-x11-components/issues/2082)) ([1fcaec6](https://github.com/sidorares/react-x11-components/commit/1fcaec6b52981250f24cc1527f93e81432cbaf49))
+* **html:** a print-only stylesheet link is asked for and told its load ([#2069](https://github.com/sidorares/react-x11-components/issues/2069)) ([e6b25fd](https://github.com/sidorares/react-x11-components/commit/e6b25fdd1b614bac8e474a5a0b5c03f03d6a8c9e))
+* **html:** a sheet's title is none where its element's title is empty ([#2076](https://github.com/sidorares/react-x11-components/issues/2076)) ([3442fdb](https://github.com/sidorares/react-x11-components/commit/3442fdb772ae25a2ad45bb59023a0565c317eecc))
+* **html:** a sticky box's percentage insets read as lengths of its scroll container's content box ([#2077](https://github.com/sidorares/react-x11-components/issues/2077)) ([53d0587](https://github.com/sidorares/react-x11-components/commit/53d0587fe209dc9cdad7eb82adeac0a056300c57))
+* **html:** a window a page opens takes the focus, and gives it back as it closes ([#2079](https://github.com/sidorares/react-x11-components/issues/2079)) ([3ea8f62](https://github.com/sidorares/react-x11-components/commit/3ea8f621611c83ed2a7431b5eaa5bcec2e5b81bb))
+* **html:** a window hears focus and blur as the focus moves between its frame and another ([#2070](https://github.com/sidorares/react-x11-components/issues/2070)) ([02f0ad9](https://github.com/sidorares/react-x11-components/commit/02f0ad98b2a0260dae30a5d08369e775377a4a5b))
+* **html:** all in a declaration block sets every property it covers ([#2071](https://github.com/sidorares/react-x11-components/issues/2071)) ([53f1189](https://github.com/sidorares/react-x11-components/commit/53f11896e88547c53c1b2a3e129f5db3d6cb841a))
+* **html:** an [@import](https://github.com/import)'s prelude reads as its URL, its layer, its supports() and its media ([#2067](https://github.com/sidorares/react-x11-components/issues/2067)) ([3fd7521](https://github.com/sidorares/react-x11-components/commit/3fd75211555f6fae62a4fff25f0c5c50e42e68c3))
+* **html:** an [@import](https://github.com/import)'s sheet is its rule's, which no page constructed ([#2068](https://github.com/sidorares/react-x11-components/issues/2068)) ([002952a](https://github.com/sidorares/react-x11-components/commit/002952a3d013c4780291cacf01440b9851f513c2))
+* **html:** an empty style element is a sheet, and tells its load ([#2074](https://github.com/sidorares/react-x11-components/issues/2074)) ([9db858e](https://github.com/sidorares/react-x11-components/commit/9db858e442aee8a35481a6f990753d3645ea5c03))
+* **html:** getComputedStyle reads a pseudo-element's content ([#2078](https://github.com/sidorares/react-x11-components/issues/2078)) ([56db60c](https://github.com/sidorares/react-x11-components/commit/56db60c733e3e5e0f489529a66209b23f1064a67))
+* **html:** getComputedStyle reads a pseudo-element's name with its escapes ([#2080](https://github.com/sidorares/react-x11-components/issues/2080)) ([afaca36](https://github.com/sidorares/react-x11-components/commit/afaca36c9d67b378d61c4ef4ca9bab061afdcfa6))
+* **html:** setProperty takes its priority in any case, and its arguments as WebIDL converts them ([#2062](https://github.com/sidorares/react-x11-components/issues/2062)) ([4a50464](https://github.com/sidorares/react-x11-components/commit/4a5046448a7730a7e920bd56831b6ebdaf9e2c9b))
+* **html:** the style attribute is the declaration block serialized, and a change that changes nothing tells no one ([#2065](https://github.com/sidorares/react-x11-components/issues/2065)) ([31497f0](https://github.com/sidorares/react-x11-components/commit/31497f068ac4b2e261a9c5c4a4e8dfe019f120a5))
+
+
+### Performance Improvements
+
+* **browser:** a new tab takes a pane started before it, and keeps what was typed ([#2075](https://github.com/sidorares/react-x11-components/issues/2075)) ([07d6b84](https://github.com/sidorares/react-x11-components/commit/07d6b84d42d17aaac75e48a77c6e2a03e3042d21))
+
 ## [0.50.0](https://github.com/sidorares/react-x11-components/compare/v0.49.0...v0.50.0) (2026-11-28)
 
 
