@@ -318,3 +318,52 @@ test('getComputedStyle answers a unitless line-height as the length it comes to,
   );
   assert.deepEqual(out, ['24px', 'normal', '30px', '22px']);
 });
+
+test("an @import's prelude reads as its URL, its layer, its supports() and its media, a layer inside a condition naming none", async () => {
+  const preludes = [
+    '"a.css" layer screen, print',
+    "url('q\"q') layer(foo.bar) supports(display: grid) screen",
+    'url( b.css ) supports((font-family: layer))',
+    '"c.css" screen and (foo: layer(bar))',
+  ];
+  const out = await inPage(
+    '<style id="s"></style>',
+    `var sheet = document.getElementById('s').sheet;
+     return ${JSON.stringify(preludes)}.map(function (p) {
+       while (sheet.cssRules.length) sheet.deleteRule(0);
+       sheet.insertRule('@import ' + p + ';', 0);
+       var r = sheet.cssRules[0];
+       return [r.href, r.layerName, r.supportsText, r.media.mediaText, r.cssText];
+     });`,
+  );
+  assert.deepEqual(out, [
+    [
+      'a.css',
+      '',
+      null,
+      'screen, print',
+      '@import url("a.css") layer screen, print;',
+    ],
+    [
+      'q"q',
+      'foo.bar',
+      'display: grid',
+      'screen',
+      '@import url("q\\"q") layer(foo.bar) supports(display: grid) screen;',
+    ],
+    [
+      'b.css',
+      null,
+      '(font-family: layer)',
+      '',
+      '@import url("b.css") supports((font-family: layer));',
+    ],
+    [
+      'c.css',
+      null,
+      null,
+      'screen and (foo: layer(bar))',
+      '@import url("c.css") screen and (foo: layer(bar));',
+    ],
+  ]);
+});
