@@ -22781,3 +22781,49 @@ test('a frame the parser has only just put in takes the focus into its first abo
     logs.join('\n'),
   );
 });
+
+test('a press on what takes no focus takes the focus out of a frame, to the document pressed in', async () => {
+  // WPT's focus/activeelement-after-nested-loses-focus: a press on a heading
+  // around a frame's editor, the frame's document blurred first
+  const { text, logs } = await hostedFrames(
+    '<h1 id="h" style="margin:0;height:40px">text</h1><iframe id="own" src="own.html"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      'onload = function () {' +
+      '  var own = document.getElementById("own"); var input = own.contentDocument.querySelector("input");' +
+      '  input.focus();' +
+      '  input.addEventListener("blur", function () { r.push("input:blur:" + document.activeElement.id); });' +
+      '  own.contentWindow.addEventListener("blur", function () { r.push("own:blur"); });' +
+      '  window.addEventListener("focus", function () { r.push("top:focus"); });' +
+      '  document.getElementById("h").addEventListener("click", function () {' +
+      '    r.push(document.activeElement.nodeName, document.hasFocus(), own.contentDocument.hasFocus());' +
+      '    document.getElementById("out").textContent = r.join(",");' +
+      '  });' +
+      '  document.getElementById("out").textContent = "ready";' +
+      '};' +
+      '</script>',
+    { 'own.html': '<!doctype html><input><script>var ready = 1;</script>' },
+  );
+  await until(
+    () => text('page', 'out'),
+    (t) => t === 'ready',
+    6000,
+  );
+  const view = (
+    screen.getByTestName('page') as unknown as { children: DrawnNode[] }
+  ).children[0];
+  const dy = 10 - view.abs.height / 2;
+  await act(async () => {
+    fireEvent.mouseDown(view, { dx: 0, dy });
+    fireEvent.mouseUp(view, { dx: 0, dy });
+  });
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== 'ready',
+      6000,
+    ),
+    'input:blur:own,own:blur,top:focus,BODY,true,false',
+    logs.join('\n'),
+  );
+});

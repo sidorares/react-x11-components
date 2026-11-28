@@ -2081,7 +2081,10 @@ focused document is also which window has the focus: one a page opens takes it
 as its first document comes in (`windowCame`), and one that closes gives it back
 to its opener, where it was there last (`windowGoes`, `DomShared.lastIn`). A
 `window.focus()` takes nothing from another top-level window: it only says where
-its own window's focus will be. **Anything new that moves the focus between
+its own window's focus will be. A press the page lets go on takes the focus to
+the document it is in, whatever it lands on, a microtask after it is told, once
+core's own focus has moved for it (`dispatch`): a press beside a frame's editor
+takes the focus out of the frame. **Anything new that moves the focus between
 documents goes through `focusCameTo`.**
 
 **A press on what has the focus leaves it there** (`pressLanded`, from
