@@ -16327,7 +16327,10 @@ export function installDom(
       // nothing of a frame's is the page's to close (HTML 7.2.2.3), and what
       // it opens the page opens
       close() {},
-      focus() {},
+      // its document takes the focus (HTML 7.2.7)
+      focus() {
+        call('focusDocument', frame._id);
+      },
       blur() {},
       open: (url?: Any, target?: Any, features?: Any) =>
         current._unloadCounter > 0 ? null : G.open(url, target, features),
@@ -16413,7 +16416,10 @@ export function installDom(
     },
     length: 0,
     close() {},
-    focus() {},
+    // its document takes the focus, whichever realm runs it
+    focus() {
+      call('focusDocument', frame._id);
+    },
     blur() {},
     // nothing of another origin's runs here, so nothing hears it
     postMessage() {},
@@ -23361,6 +23367,7 @@ export function installDom(
         return (this._sheet = null);
       }
       const sheet = new CSSStyleSheet();
+      sheet._ownerRule = this;
       sheet._rules = JSON.parse(
         String(call('cssRules', str(text))),
       ) as string[];
@@ -24330,6 +24337,9 @@ export function installDom(
   class CSSStyleSheet extends StyleSheet {
     /** The `<style>` or `<link>` it is the sheet of, or none. */
     _owner: Any = null;
+    /** The `@import` it is the sheet of, or none: no sheet a page
+     *  constructed either. */
+    _ownerRule: Any = null;
     /** Its rules, where they are not the host's: a constructed sheet's, or
      *  a `<link>`'s. */
     _rules: string[] | null = [];
@@ -24347,10 +24357,15 @@ export function installDom(
      *  adopts it (`tellSheet`). */
     _adopted = 0;
     get parentStyleSheet(): Any {
-      return null;
+      return this._ownerRule?.parentStyleSheet ?? null;
     }
     get ownerRule(): Any {
-      return null;
+      return this._ownerRule;
+    }
+    /** Whether a page made it with `new CSSStyleSheet()` (CSSOM 6.1.2's
+     *  constructed flag): neither an element's nor an `@import`'s. */
+    get _constructed(): boolean {
+      return !this._owner && !this._ownerRule;
     }
     get type(): string {
       return 'text/css';
@@ -24369,14 +24384,25 @@ export function installDom(
     }
     set disabled(v: Any) {
       this._disabled = !!v;
-      if (!this._owner) readopt(this);
+      if (this._constructed) readopt(this);
       // an element's, which the host leaves out of the cascade
-      else call('sheetDisabled', this._owner._id, this._disabled);
+      else if (this._owner)
+        call('sheetDisabled', this._owner._id, this._disabled);
     }
     get ownerNode(): Any {
       return this._owner;
     }
     get href(): Any {
+      if (this._ownerRule) {
+        // its `@import`'s URL, resolved against the sheet that imports it
+        const parent = this._ownerRule.parentStyleSheet;
+        try {
+          return new URL(this._ownerRule.href, parent?.href ?? document.baseURI)
+            .href;
+        } catch {
+          return this._ownerRule.href;
+        }
+      }
       return this._owner instanceof HTMLLinkElement
         ? (this._owner as Any).href
         : null;
@@ -24451,7 +24477,7 @@ export function installDom(
         }
         this._rules.splice(at, 0, one);
         this._list = null;
-        if (!this._owner) readopt(this);
+        if (this._constructed) readopt(this);
         return at;
       }
       // a rule the host would keep and CSS drops (`droppedRule`)
@@ -24505,7 +24531,7 @@ export function installDom(
         }
         this._rules.splice(at, 1);
         this._list = null;
-        if (!this._owner) readopt(this);
+        if (this._constructed) readopt(this);
         return;
       }
       const map = this._hostMap();
@@ -24537,7 +24563,7 @@ export function installDom(
       this.deleteRule(index);
     }
     replaceSync(text: Any): void {
-      if (this._owner) {
+      if (!this._constructed) {
         throw new DOMException(
           "Failed to execute 'replaceSync' on 'CSSStyleSheet': Can't call replaceSync on non-constructed CSSStyleSheets.",
           'NotAllowedError',
@@ -24827,7 +24853,7 @@ export function installDom(
 
   /** Whether a page may adopt a sheet: one it constructed. */
   const adoptable = (sheet: Any, on: string): void => {
-    if (!(sheet instanceof CSSStyleSheet) || sheet._owner) {
+    if (!(sheet instanceof CSSStyleSheet) || !sheet._constructed) {
       throw new DOMException(
         `Failed to set the 'adoptedStyleSheets' property on '${on}': Sharing constructed stylesheets in multiple documents is not allowed`,
         'NotAllowedError',
@@ -51878,11 +51904,19 @@ export function installDom(
   // its window hears `focus` or `blur`, the page's own or a frame's of this
   // realm's, where anything made its window
   entry('__windowFocus', () => {
-    const [id, focused] = input();
+    const [id, focused, elementId] = input();
     const doc = id ? wrap(id) : document;
     const target = doc === document ? windowTarget : frameTargets.get(doc);
-    if (!target) return false;
-    dispatch(target, trusted(new FocusEvent(focused ? 'focus' : 'blur')));
+    const element = elementId ? wrap(elementId) : null;
+    if (element && !focused) {
+      dispatch(element, trusted(new FocusEvent('blur')));
+    }
+    if (target) {
+      dispatch(target, trusted(new FocusEvent(focused ? 'focus' : 'blur')));
+    }
+    if (element && focused) {
+      dispatch(element, trusted(new FocusEvent('focus')));
+    }
     return true;
   });
   // a frame's document in this realm is going: the host puts another in

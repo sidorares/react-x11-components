@@ -13920,7 +13920,21 @@ export function resolvedInsets(
         : resolveOrNull(len, i % 2 ? across : box.percentHeightBase),
     );
     if (position === 'sticky') {
-      return set.map((v, i) => (sides[i] === AUTO ? 'auto' : v));
+      // a sticky box's percentages are of its scroll container's content
+      // box (CSS Position 3, 3.4, as WPT's getComputedStyle-insets-sticky
+      // tests have them), and of its containing block where no box around
+      // it scrolls
+      const [portWidth, portHeight] = stickyPercentBase(box) ?? [
+        across,
+        box.percentHeightBase,
+      ];
+      return sides.map((len, i) =>
+        len === AUTO
+          ? 'auto'
+          : written(len)
+            ? null
+            : resolveOrNull(len, i % 2 ? portWidth : portHeight),
+      );
     }
     return set.map((v, i) => {
       if (v !== null) return v;
@@ -13983,6 +13997,24 @@ export function resolvedInsets(
     if (!lengths(axis)) return v;
     return resolveOrNull(sides[i], axis ? width : height) ?? v;
   });
+}
+
+/** The width and the height a sticky box's percentage insets are of, in
+ *  the axes it is laid out in: its nearest scroll container's content box,
+ *  or null where that is the viewport's (`stickyOffset`'s scrollport). */
+function stickyPercentBase(box: Box): [number, number] | null {
+  let port = box.parent;
+  while (port && !scrolls(port.style)) port = port.parent;
+  const el = port?.el;
+  if (!port || !el || tagOf(el) === 'body' || isRootElement(el)) {
+    return null;
+  }
+  // in the axes the box is laid out in, which a frame between the two
+  // turns a quarter
+  const turned = (quarterTurnsOf(box) - quarterTurnsOf(port) + 4) % 2 === 1;
+  return turned
+    ? [port.contentHeight, port.contentWidth]
+    : [port.contentWidth, port.contentHeight];
 }
 
 /** Where an absolute box's margin box is in its containing block, and how

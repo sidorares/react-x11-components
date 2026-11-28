@@ -384,6 +384,16 @@ test("getComputedStyle reads a pseudo-element's content as it computes, a hidden
   ]);
 });
 
+test("a sticky box's percentage insets read as lengths of its scroll container's content box", async () => {
+  const out = await inPage(
+    '<div style="overflow: hidden; height: 200px; width: 100px; padding: 8px">' +
+      '<div style="height: 50px"><div id="in" style="position: sticky; top: 10%; left: calc(10% + 1px)"></div></div></div>',
+    `var cs = function (id) { return getComputedStyle(document.getElementById(id)); };
+     return [cs('in').top, cs('in').left, cs('in').bottom];`,
+  );
+  assert.deepEqual(out, ['20px', '11px', 'auto']);
+});
+
 test("a sheet's title is its element's title attribute, and none where that is empty", async () => {
   const out = await inPage(
     '<style id="a" title="Dark"></style><style id="b" title=""></style><style id="c"></style>',
