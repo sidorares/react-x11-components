@@ -1912,7 +1912,18 @@ const ALIGN_SHORTHANDS: Record<string, readonly string[]> = {
 function serializeDeclarations(
   declarations: readonly { prop: string; value: string; important: boolean }[],
 ): string {
-  return collapseBorders(withAlignShorthands([...declarations], true))
+  const all = lastWhere(declarations, (d) => d.prop === 'all');
+  const said =
+    all < 0
+      ? declarations
+      : declarations.filter(
+          (d, i) =>
+            i <= all ||
+            !coveredByAll(d.prop) ||
+            d.value !== declarations[all].value ||
+            d.important !== declarations[all].important,
+        );
+  return collapseBorders(withAlignShorthands([...said], true))
     .map((d) => `${d.prop}: ${d.value}${d.important ? ' !important' : ''};`)
     .join(' ');
 }
@@ -1956,12 +1967,63 @@ function declarationsIn(block: string | null | undefined) {
   });
   // and of those, only a longhand's last declaration stands, as a block
   // that parses one again keeps it (CSSOM 6.7, "set a CSS declaration")
+  const all = lastWhere(out, (d) => d.prop === 'all');
+  if (all >= 0) {
+    // `all` sets every property it covers (CSS Cascade 4, 3.1), so what
+    // was declared of them before it, an earlier `all` among them, is
+    // gone from the block
+    const kept = out.filter((d, i) => i >= all || !coveredByAll(d.prop));
+    out.length = 0;
+    out.push(...kept);
+  }
   if (!out.some((d) => ALIGN_LONGHAND.has(d.prop))) return out;
   return out.filter(
     (d, i) =>
       !ALIGN_LONGHAND.has(d.prop) ||
       !out.some((e, j) => j > i && e.prop === d.prop),
   );
+}
+
+/** The index of the last declaration that `pick` takes, -1 for none. */
+function lastWhere<T>(list: readonly T[], pick: (d: T) => boolean): number {
+  for (let i = list.length - 1; i >= 0; i -= 1) if (pick(list[i])) return i;
+  return -1;
+}
+
+/** Whether `all` sets a property: every one but `direction`,
+ *  `unicode-bidi` and the custom properties (CSS Cascade 4, 3.1), `all`
+ *  itself standing for what it set. */
+function coveredByAll(prop: string): boolean {
+  return (
+    prop !== 'direction' && prop !== 'unicode-bidi' && !prop.startsWith('--')
+  );
+}
+
+/** A block's declaration of a property as it stands: its own last one, or
+ *  the `all` after it that sets it. For `all` itself, its last one where
+ *  no property it sets is declared after it. */
+function standingDeclaration(
+  decls: readonly { prop: string; value: string; important: boolean }[],
+  name: string,
+): { prop: string; value: string; important: boolean } | undefined {
+  const at = lastWhere(decls, (d) => d.prop === 'all');
+  if (name === 'all') {
+    if (at < 0) return undefined;
+    // one declared after it as `all` declares it still says the same
+    const all = decls[at];
+    return decls
+      .slice(at + 1)
+      .some(
+        (d) =>
+          coveredByAll(d.prop) &&
+          (d.value !== all.value || d.important !== all.important),
+      )
+      ? undefined
+      : all;
+  }
+  const own = lastWhere(decls, (d) => d.prop === name);
+  if (own > at || !coveredByAll(name)) return own >= 0 ? decls[own] : undefined;
+  return at >= 0 && coveredByAll(name) ? decls[at] : undefined;
 }
 
 /** The longhands of the alignment, gap and flex shorthands. */
@@ -2085,12 +2147,12 @@ function declarationValue(
   name: string,
 ): string {
   const decls = declarationsIn(block);
-  const found = decls.filter((d) => d.prop === name).at(-1);
+  const found = standingDeclaration(decls, name);
   if (found) return found.value;
+  if (name === 'all') return '';
   const composed = composeShorthand(
     name,
-    (longhand) =>
-      decls.filter((d) => d.prop === longhand).at(-1)?.value ?? null,
+    (longhand) => standingDeclaration(decls, longhand)?.value ?? null,
   );
   return composed ?? '';
 }
@@ -2101,9 +2163,7 @@ function declarationPriority(
   block: string | null | undefined,
   name: string,
 ): string {
-  const found = declarationsIn(block)
-    .filter((d) => d.prop === name)
-    .at(-1);
+  const found = standingDeclaration(declarationsIn(block), name);
   return found?.important ? 'important' : '';
 }
 
@@ -2174,8 +2234,12 @@ function withDeclaration(
     ...(expandShorthand(name, 'none') ?? []).map(([n]) => n),
   ]);
   const decls = declarationsIn(block);
-  const at = decls.findIndex((x) => names.has(x.prop));
-  const kept = decls.filter((x) => !names.has(x.prop));
+  // `all` set or removed sets or removes every property it covers, and
+  // what it sets goes after what stays (CSSOM 6.7.2)
+  const takes = (prop: string): boolean =>
+    names.has(prop) || (name === 'all' && coveredByAll(prop));
+  const at = name === 'all' ? -1 : decls.findIndex((x) => takes(x.prop));
+  const kept = decls.filter((x) => !takes(x.prop));
   const important = priority === 'important';
   const set = longhands
     ? longhands.map(([prop, v]) => ({ prop, value: v, important }))
