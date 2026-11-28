@@ -39478,8 +39478,14 @@ export function installDom(
    *  declaration. A vendor's name is the element's, as it always was. */
   const computedPseudo = (pseudo: Any): string | null => {
     if (pseudo === undefined || pseudo === null) return '';
-    const s = str(pseudo);
+    let s = str(pseudo);
     if (s[0] !== ':') return '';
+    // a name is an identifier, read with its escapes (CSS Syntax 3, 4.3.11):
+    // `::\000041fter` is `::after`
+    const colons = s[1] === ':' ? 2 : 1;
+    if (s.includes('\\') && CSS_IDENT.test(s.slice(colons))) {
+      s = s.slice(0, colons) + unescapeIdent(s.slice(colons));
+    }
     // CSS 2's spellings of four (CSS Pseudo 4, 8)
     const legacy = /^:(before|after|first-line|first-letter)$/i.exec(s);
     if (legacy) return legacy[1].toLowerCase();
