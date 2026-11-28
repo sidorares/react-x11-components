@@ -10308,6 +10308,14 @@ export function installDom(
    *  name it has, and a page may have put its own hand in the `String`
    *  methods that make them. */
   const camelNames = new Map<string, string>();
+  /** A value as WebIDL converts it to a `CSSOMString`: a Symbol is a
+   *  `TypeError`, as ToString makes it, where `String()` would name it. */
+  const cssomString = (v: Any): string => {
+    if (typeof v === 'symbol') {
+      throw new TypeError('Cannot convert a Symbol value to a string');
+    }
+    return str(v);
+  };
   /** A property's name as a declaration keeps it: a custom property's as
    *  written, since `--Tabs-x` and `--tabs-x` are two (CSS Variables 1,
    *  2), and any other's in lower case. */
@@ -10365,11 +10373,16 @@ export function installDom(
       ) {
         return;
       }
-      block.set(
-        prop,
-        value === null || value === undefined ? '' : str(value),
-        str(priority),
-      );
+      // `[LegacyNullToEmptyString]` on both: null is '', and an undefined
+      // value is the string "undefined", which no property takes, where
+      // an undefined priority is the default ''
+      const given =
+        priority === null || priority === undefined ? '' : str(priority);
+      // 'important' in any case, or nothing: any other priority sets
+      // nothing (CSSOM 6.7.2, steps 6 and 7)
+      const level = given.toLowerCase();
+      if (level !== '' && level !== 'important') return;
+      block.set(prop, value === null ? '' : cssomString(value), level);
     }
     removeProperty(name: Any): string {
       const block = declarationBlockOf(this);
@@ -10468,9 +10481,10 @@ export function installDom(
         ) {
           return Reflect.set(t, key, value);
         }
+        // `[LegacyNullToEmptyString]`: an undefined is "undefined"
         block.set(
           blockProperty(key),
-          value === null || value === undefined ? '' : str(value),
+          value === null ? '' : cssomString(value),
           '',
         );
         return true;
@@ -13558,9 +13572,9 @@ export function installDom(
       call('customValidity', this._id, str(message));
     }
   }
-  /** What the host says is wrong with a control: its `ValidityState`
-   *  member and its words, or nothing where nothing is. The same answer
-   *  `:invalid` has. */
+  /** What the host says is wrong with a control: every `ValidityState`
+   *  member that holds, a space between, and the first one's words, or
+   *  nothing where nothing is. The same answer `:invalid` has. */
   const validityOf = (el: Any): string[] =>
     str(call('validity', el._id) ?? '').split('\u0000');
   const VALIDITY_FLAGS = [
@@ -13590,7 +13604,7 @@ export function installDom(
   for (const name of VALIDITY_FLAGS) {
     Object.defineProperty(ValidityState.prototype, name, {
       get(this: Any): boolean {
-        return validityOf(this._el)[0] === name;
+        return validityOf(this._el)[0].split(' ').includes(name);
       },
       enumerable: true,
       configurable: true,
@@ -24746,7 +24760,8 @@ export function installDom(
     if (!sheet) {
       sheet = new CSSStyleSheet();
       sheet._owner = el;
-      sheet._rules = el instanceof HTMLLinkElement ? [] : null;
+      // the host's, a `<link>`'s from the sheet it brought in
+      sheet._rules = null;
       ownedSheets.set(el, sheet);
     }
     return sheet;
