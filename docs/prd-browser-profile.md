@@ -330,8 +330,10 @@ the entry it shows (the same path a crashed tab takes).
 `BROWSER_PROFILE` picks the directory — the platform's place for an
 application's data by default, `temp` for a throwaway one that is deleted as
 the browser exits (or `--temp-profile`), `none` for memory alone — and the
-browser hands it to each tab's process as `BROWSER_PROFILE_DIR`, with the
-tab's key as `BROWSER_TAB_KEY`.
+browser hands it to each tab's process as `BROWSER_PROFILE_DIR`. The tab's
+key is a prop of its page, which the process tells its profile with
+`HtmlProfile.forTab` before any document runs, so a spare process started
+ahead of the next tab can be any tab's.
 
 ### Not done
 
