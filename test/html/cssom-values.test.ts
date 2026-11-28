@@ -318,3 +318,36 @@ test('getComputedStyle answers a unitless line-height as the length it comes to,
   );
   assert.deepEqual(out, ['24px', 'normal', '30px', '22px']);
 });
+
+test('the style attribute is the declaration block serialized, and a change that changes nothing queues no record', async () => {
+  const out = await inPage(
+    '<div id="e" style="z-index: 40; invalid"></div>',
+    `var e = document.getElementById('e');
+     var s = e.style;
+     var o = new MutationObserver(function () {});
+     o.observe(e, { attributes: true, attributeOldValue: true });
+     var r = [];
+     var take = function () {
+       r.push(o.takeRecords().map(function (m) { return m.oldValue; }));
+     };
+     s.setProperty('z-index', '40');
+     s.removeProperty('position');
+     s.setProperty('margin', '');
+     take();
+     s.removeProperty('z-index');
+     r.push(e.getAttribute('style'));
+     take();
+     s.setProperty('margin', '1px');
+     take();
+     s.cssText = 'z-index: 33; invalid';
+     r.push(e.getAttribute('style'));
+     return r;`,
+  );
+  assert.deepEqual(out, [
+    [],
+    '',
+    ['z-index: 40; invalid'],
+    [''],
+    'z-index: 33;',
+  ]);
+});

@@ -5470,8 +5470,17 @@ export class DomHost {
           d,
         );
         if (written === null) return null;
-        if (written) el.attribs.style = written;
-        else delete el.attribs.style;
+        // a declaration set as it was, or a property removed that was not
+        // there, changes nothing, and no record says it did (CSSOM 6.7.2:
+        // only an update runs "update style attribute")
+        if (
+          written ===
+          serializeDeclarations(declarationsIn(this._inlineStyle(el)))
+        ) {
+          return null;
+        }
+        // the attribute is the block serialized, the empty one included
+        el.attribs.style = written;
         // what CSSOM wrote is no inline content a policy holds back (CSP
         // 3, 4.2.3 is asked of the attribute as markup or `setAttribute`
         // sets it)
