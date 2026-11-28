@@ -23356,6 +23356,95 @@ export function installDom(
   class CSSSupportsRule extends CSSConditionRule {
     override _type = 12;
   }
+  interface ImportPrelude {
+    url: string;
+    layer: string | null;
+    supports: string | null;
+    media: string;
+  }
+  /** Where the bracket opened at `open` closes, past strings and the
+   *  brackets inside it; the text's end where it does not. */
+  const closingParen = (text: string, open: number): number => {
+    let depth = 0;
+    for (let i = open; i < text.length; i += 1) {
+      const c = text[i];
+      if (c === '\\') i += 1;
+      else if (c === '"' || c === "'") {
+        const end = text.indexOf(c, i + 1);
+        i = end < 0 ? text.length : end;
+      } else if (c === '(') depth += 1;
+      else if (c === ')' && --depth === 0) return i;
+    }
+    return text.length;
+  };
+  /**
+   * An `@import`'s prelude in its parts (CSS Cascade 5, 6.4): the URL, then
+   * an optional `layer` or `layer(<name>)`, then an optional `supports()`,
+   * then the media query list, each read only where it stands at the top
+   * level, so a `layer` inside a condition names no layer. A `layer()` that
+   * names no layer makes all that follows it the media list, which no
+   * query reads.
+   */
+  const importPrelude = (prelude: string): ImportPrelude => {
+    let rest = prelude.trim();
+    let url = '';
+    const m = /^url\(\s*(["']?)/i.exec(rest) ?? /^(["'])/.exec(rest);
+    if (m) {
+      const quote = m[1];
+      let i = m[0].length;
+      let out = '';
+      for (; i < rest.length; i += 1) {
+        const c = rest[i];
+        if (c === '\\' && i + 1 < rest.length) {
+          out += rest[(i += 1)];
+          continue;
+        }
+        if (quote ? c === quote : c === ')' || /\s/.test(c)) break;
+        out += c;
+      }
+      url = out;
+      // past the `url()`'s close, or the string's
+      if (/^url\(/i.test(rest)) {
+        const close = rest.indexOf(')', i);
+        i = close < 0 ? rest.length : close + 1;
+      } else i += 1;
+      rest = rest.slice(i).trim();
+    }
+    let layer: string | null = null;
+    const bare = /^layer(?![\w(-])/i.exec(rest);
+    if (bare) {
+      layer = '';
+      rest = rest.slice(bare[0].length).trim();
+    } else if (/^layer\(/i.test(rest)) {
+      const close = closingParen(rest, 'layer'.length);
+      const name = rest.slice('layer('.length, close).trim();
+      if (/^-?[a-z_][\w-]*(?:\.-?[a-z_][\w-]*)*$/i.test(name)) {
+        layer = name;
+        rest = rest.slice(close + 1).trim();
+      } else {
+        return { url, layer: null, supports: null, media: rest };
+      }
+    }
+    let supports: string | null = null;
+    if (/^supports\(/i.test(rest)) {
+      const close = closingParen(rest, 'supports'.length);
+      supports = rest.slice('supports('.length, close).trim();
+      rest = rest.slice(close + 1).trim();
+    }
+    return { url, layer, supports, media: rest };
+  };
+  /** An `@import` as CSSOM serializes it (6.4.3): its URL as a quoted
+   *  `url()`, its layer, its condition and its media. */
+  const importText = (p: ImportPrelude): string => {
+    const quoted = p.url
+      .replace(/["\\]/g, '\\$&')
+      .replace(/[\x00-\x1f\x7f]/g, (c) => `\\${c.charCodeAt(0).toString(16)} `);
+    let out = `@import url("${quoted}")`;
+    if (p.layer !== null) out += p.layer ? ` layer(${p.layer})` : ' layer';
+    if (p.supports !== null) out += ` supports(${p.supports})`;
+    if (p.media) out += ` ${p.media}`;
+    return `${out};`;
+  };
   class CSSImportRule extends CSSRule {
     override _type = 3;
     /** Cached once asked: the sheet it imports, or null where the host
@@ -23377,23 +23466,32 @@ export function installDom(
       return (this._sheet = sheet);
     }
     get href(): string {
-      const m = /^(?:url\(\s*)?(["']?)([^"')]*)\1/i.exec(
-        conditionOf(this._text),
-      );
-      return m ? m[2] : '';
+      return importPrelude(conditionOf(this._text)).url;
     }
+    /** The layer it imports into: '' for a bare `layer`, null for none
+     *  (CSS Cascade 5, 6.4.4). */
+    get layerName(): string | null {
+      return importPrelude(conditionOf(this._text)).layer;
+    }
+    /** Its `supports()` condition, null where it has none. */
+    get supportsText(): string | null {
+      return importPrelude(conditionOf(this._text)).supports;
+    }
+    override get cssText(): string {
+      return importText(importPrelude(conditionOf(this._text)));
+    }
+    override set cssText(_v: Any) {}
     _mediaList: Any = null;
     get media(): Any {
-      const at = (): string =>
-        /^(?:url\([^)]*\)|"[^"]*"|'[^']*')/i.exec(
-          conditionOf(this._text),
-        )?.[0] ?? '';
       // a change is the rule's own text: an `@import` deleted from a sheet
       // and inserted again may be refused where it stood
       return (this._mediaList ??= mediaList(
-        () => conditionOf(this._text).slice(at().length),
+        () => importPrelude(conditionOf(this._text)).media,
         (text) => {
-          this._text = `@import ${at()}${text ? ` ${text}` : ''};`;
+          this._text = importText({
+            ...importPrelude(conditionOf(this._text)),
+            media: text,
+          });
         },
       ));
     }
