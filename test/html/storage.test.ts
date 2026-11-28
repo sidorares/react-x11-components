@@ -187,6 +187,30 @@ withSqlite(
 );
 
 withSqlite(
+  'a profile told its tab after it opened keeps that tab’s sessionStorage',
+  async (t) => {
+    const dir = profileDir(t);
+    const a = (await HtmlProfile.open(dir, { tab: 'kept' }))!;
+    a.storage.session(ORIGIN).set('s', 'kept');
+    a.close();
+    // a process started before it knew which tab it is for: memory until told
+    const spare = (await HtmlProfile.open(dir))!;
+    t.after(() => spare.close());
+    assert.equal(spare.storage.session(ORIGIN).get('s'), null);
+    spare.forTab('kept');
+    assert.equal(spare.storage.session(ORIGIN).get('s'), 'kept');
+    spare.storage.session(ORIGIN).set('t', '2');
+    spare.forTab('other');
+    assert.equal(spare.storage.session(ORIGIN).get('s'), null, 'another tab');
+    spare.forTab(null);
+    assert.equal(spare.storage.session(ORIGIN).get('t'), null, 'memory');
+    const back = (await HtmlProfile.open(dir, { tab: 'kept' }))!;
+    t.after(() => back.close());
+    assert.equal(back.storage.session(ORIGIN).get('t'), '2', 'written to disk');
+  },
+);
+
+withSqlite(
   'a change one connection tells is heard by another’s listeners, and not its own twice',
   async (t) => {
     const dir = profileDir(t);
