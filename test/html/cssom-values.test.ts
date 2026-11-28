@@ -394,6 +394,18 @@ test("a sticky box's percentage insets read as lengths of its scroll container's
   assert.deepEqual(out, ['20px', '11px', 'auto']);
 });
 
+test("a sheet's title is its element's title attribute, and none where that is empty", async () => {
+  const out = await inPage(
+    '<style id="a" title="Dark"></style><style id="b" title=""></style><style id="c"></style>',
+    `var t = function (id) { return document.getElementById(id).sheet.title; };
+     var r = [t('a'), t('b'), t('c')];
+     document.getElementById('a').setAttribute('title', '');
+     r.push(t('a'));
+     return r;`,
+  );
+  assert.deepEqual(out, ['Dark', null, null, null]);
+});
+
 test('all in a declaration block sets every property it covers, and reads as its keyword only while none is declared after it', async () => {
   const out = await inPage(
     '<div id="e"></div>',
