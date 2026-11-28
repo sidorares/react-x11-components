@@ -1045,6 +1045,49 @@ test("a scroll container reaches as far as Chrome's scrollHeight and scrollWidth
   }
 });
 
+test("an outside list marker that hangs past a scroll container's edge is scrollable overflow", async () => {
+  // A marker hangs off its item's border box at its start, and where that
+  // is past the container's end, it scrolls (CSS Overflow 3, 2.2): a
+  // right-to-left item's to its right, and a left-to-right one's to its
+  // left in a container that scrolls from its right. It was left out, and
+  // the reference's scroll bar was missing
+  // (css-lists/list-style-type-string-007.html). Chromium's and Firefox's
+  // scrollWidth, each case; WebKit leaves out a marker of an item whose
+  // first box clips (#d) and has 150 there
+  const marker = "list-style-type:'XXXXXXXXXXXXXXXXX'";
+  const list = (style: string, inner = 'x') =>
+    `<ul style="margin:0;width:100px;${style}"><li style="${marker}">${inner}</li></ul>`;
+  const cases: [string, string, number][] = [
+    ['a', list('direction:rtl;padding:0 20px 0 0'), 202],
+    ['b', list('padding:0 0 0 20px'), 150],
+    ['c" style="direction:rtl', list('padding:0 0 0 20px;direction:ltr'), 202],
+    [
+      'd',
+      list(
+        'direction:rtl;padding:0 20px 0 0',
+        '<div style="overflow:hidden">x</div>',
+      ),
+      202,
+    ],
+  ];
+  const { el: node } = await renderScrolled(
+    '<style>body{margin:0;font:10px/1 monospace}' +
+      '.s{width:150px;overflow:auto;height:50px}</style>' +
+      cases
+        .map(([id, inner]) => `<div class="s" id="${id}">${inner}</div>`)
+        .join(''),
+    400,
+  );
+  for (const [id, , width] of cases) {
+    const key = id.split('"')[0];
+    const state = node.scrollStateOf(el(node, key));
+    assert.ok(
+      Math.abs((state?.width ?? 0) - width) < 0.5,
+      `#${key}: ${state?.width} where ${width}`,
+    );
+  }
+});
+
 test('a scroll container whose scroll origin is at its right or its bottom scrolls what spills past its left or its top, from offsets that go negative, as Chrome has it', async () => {
   // CSS Overflow 3, 2.3: an rtl box starts at its right, a vertical-rl one
   // at its right, a column-reverse flex box at its bottom; what spills the
