@@ -487,3 +487,36 @@ test("an @import's prelude reads as its URL, its layer, its supports() and its m
     ],
   ]);
 });
+
+test('all in a declaration block sets every property it covers, and reads as its keyword only while none is declared after it', async () => {
+  const out = await inPage(
+    '<div id="e"></div>',
+    `var s = document.getElementById('e').style;
+     var r = [];
+     var read = function (text) {
+       s.cssText = text;
+       return [s.getPropertyValue('all'), s.width, s.direction, s.cssText];
+     };
+     r.push(read('width: 50px; direction: rtl; all: revert'));
+     r.push(read('all: revert; width: 50px'));
+     r.push(read('all: revert; width: 50px; all: unset'));
+     r.push(read('all: inherit; height: inherit'));
+     s.cssText = 'width: 50px; color: green; direction: rtl';
+     s.removeProperty('all');
+     r.push([s.width, s.color, s.direction]);
+     s.setProperty('all', 'initial');
+     r.push([s.getPropertyValue('all'), s.color, s.cssText]);
+     s.setProperty('color', 'red');
+     r.push([s.getPropertyValue('all'), s.color, s.width]);
+     return r;`,
+  );
+  assert.deepEqual(out, [
+    ['revert', 'revert', 'rtl', 'direction: rtl; all: revert;'],
+    ['', '50px', '', 'all: revert; width: 50px;'],
+    ['unset', 'unset', '', 'all: unset;'],
+    ['inherit', 'inherit', '', 'all: inherit;'],
+    ['', '', 'rtl'],
+    ['initial', 'initial', 'direction: rtl; all: initial;'],
+    ['', 'red', 'initial'],
+  ]);
+});
