@@ -237,7 +237,7 @@ import {
   setCustomError,
   setIndeterminate,
   validated,
-  constraintError,
+  constraintErrors,
 } from '../form.js';
 import type { Bridge, Primitive } from './dom.js';
 import { PageCrypto, keySecrets } from './subtle.js';
@@ -2428,6 +2428,11 @@ function withShadowTemplates(
 interface SheetState {
   rules: string[];
   version: number;
+  /** For a `<link>`'s: the text the document parsed for it, which the
+   *  rules are read from again when it changes and the page has edited
+   *  none of them. */
+  from?: string;
+  edited?: boolean;
 }
 
 /** Counts the hosts made, each a token its storage changes carry, so
@@ -6331,6 +6336,7 @@ export class DomHost {
         }
         const was = state.version;
         state.rules.splice(index, 0, rules[0]);
+        state.edited = true;
         state.version = this._s.sheetVersion += 1;
         this._sheetsChanged.add(el);
         return `${was}\u0000${state.version}\u0000${rules[0]}`;
@@ -6361,6 +6367,7 @@ export class DomHost {
         }
         const was = state.version;
         state.rules.splice(index, 1);
+        state.edited = true;
         state.version = this._s.sheetVersion += 1;
         this._sheetsChanged.add(el);
         return `${was}\u0000${state.version}`;
@@ -8198,12 +8205,15 @@ export class DomHost {
           typeof b === 'boolean' ? b : text(b),
         );
       }
-      // what is wrong with a control, as `flag NUL message`, or '' for
-      // nothing; whether it is validated at all; and a script's own reason,
-      // from `setCustomValidity()`, '' taking it back
+      // what is wrong with a control, as every flag that holds, a space
+      // between, then NUL and the first one's words, or '' for nothing;
+      // whether it is validated at all; and a script's own reason, from
+      // `setCustomValidity()`, '' taking it back
       case 'validity': {
-        const wrong = constraintError(this._element(a));
-        return wrong ? `${wrong.flag}\u0000${wrong.message}` : '';
+        const wrong = constraintErrors(this._element(a));
+        return wrong.length
+          ? `${wrong.map((w) => w.flag).join(' ')}\u0000${wrong[0].message}`
+          : '';
       }
       case 'willValidate':
         return validated(this._element(a));
@@ -10499,14 +10509,30 @@ export class DomHost {
    *  time they are asked for, and kept as the page edits them. */
   private _sheetOf(el: Element): SheetState {
     let state = this._sheets.get(el);
-    if (!state) {
+    // a `<link>`'s rules are the sheet it brought in, which only the
+    // document has, and which arrives after the element does: read again
+    // where it is new, until the page edits a rule of it
+    const linked = tagOf(el) === 'link' ? this._linkedText(el) : undefined;
+    if (
+      !state ||
+      (linked !== undefined && !state.edited && state.from !== linked)
+    ) {
       state = {
-        rules: cssRulesOf(DomUtils.textContent(el)),
+        rules: cssRulesOf(linked ?? DomUtils.textContent(el)),
         version: (this._s.sheetVersion += 1),
+        from: linked,
       };
       this._sheets.set(el, state);
     }
     return state;
+  }
+
+  /** The text the document parsed for a `<link>`'s sheet, '' where it has
+   *  none (not in yet, refused, or no document draws it). */
+  private _linkedText(el: Element): string {
+    const view = this._drawing(el);
+    const sheet = view?.styleSheets?.().find((s) => s.element === el);
+    return sheet?.text ?? '';
   }
 
   /** A page set a `<style>`'s text: its sheet is that text's now, and the
@@ -10529,7 +10555,9 @@ export class DomHost {
   private _writeSheets(): void {
     for (const el of this._sheetsChanged) {
       const state = this._sheets.get(el);
-      if (!state) continue;
+      // a `<link>`'s sheet is not its text: what a page edits of it is kept
+      // with its rules, and the document is not styled by it
+      if (!state || tagOf(el) === 'link') continue;
       // what the policies said of the sheet as it was, which holds for what
       // CSSOM makes of it (`_styleAllowed`)
       const before = this._policed(el)
