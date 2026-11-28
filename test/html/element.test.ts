@@ -203,6 +203,60 @@ test('a stylesheet handed back by the seam reaches the cascade', async () => {
   void result;
 });
 
+test('a disabled link asks for nothing, and an alternate sheet with a title is asked for and applies nothing', async () => {
+  const colourOf = async (link: string) => {
+    const asked: string[] = [];
+    await renderX11(
+      h(
+        'box',
+        { style: { width: 300, flexDirection: 'column' } },
+        h(Html, {
+          source: `${link}<p>text</p>`,
+          partial: false,
+          onResource: (r: { url: string; kind: string }) => {
+            if (r.kind !== 'stylesheet') return null;
+            asked.push(r.url);
+            return {
+              kind: 'stylesheet' as const,
+              text: 'p { color: #ff0000 }',
+            };
+          },
+          'data-testname': 'doc',
+        }),
+      ),
+      { backend: 'mock' },
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const tree = (
+      el as unknown as {
+        _tree: { root: { children: { style: { color: string } }[] } };
+      }
+    )._tree;
+    return `${tree.root.children[0].style.color} ${asked.join(',')}`;
+  };
+  const red = '#ff0000';
+  assert.notStrictEqual(
+    await colourOf('<link rel="stylesheet" href="a.css" disabled>'),
+    `${red} `,
+  );
+  assert.ok(
+    !(await colourOf('<link rel="stylesheet" href="a.css" disabled>')).includes(
+      'a.css',
+    ),
+  );
+  const alternate = await colourOf(
+    '<link rel="alternate stylesheet" title="x" href="b.css">',
+  );
+  assert.ok(alternate.endsWith(' b.css'), alternate);
+  assert.ok(!alternate.startsWith(red), alternate);
+  // no title, no alternate: it is a sheet like any
+  assert.strictEqual(
+    await colourOf('<link rel="alternate stylesheet" href="c.css">'),
+    `${red} c.css`,
+  );
+});
+
 test('a stylesheet handed over as bytes is decoded as CSS says', () => {
   // CSS 2.1 4.4 and CSS Syntax 3 3.2, in order: a byte order mark, the
   // protocol's charset, an `@charset` at the very start — UTF-16 named in

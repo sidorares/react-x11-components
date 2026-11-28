@@ -127,6 +127,7 @@ import {
   parserError,
   tagOf,
   typeNameOf,
+  enableLink,
   setSheetDisabled,
   setStyleGate,
   sourcePositionOf,
@@ -235,7 +236,7 @@ import {
   setCustomError,
   setIndeterminate,
   validated,
-  validityError,
+  constraintError,
 } from '../form.js';
 import type { Bridge, Primitive } from './dom.js';
 import { PageCrypto, keySecrets } from './subtle.js';
@@ -5403,6 +5404,7 @@ export class DomHost {
           const oldValue = el.attribs[name];
           delete el.attribs[name];
           ATTRIBUTE_SPACES.get(el)?.delete(name);
+          if (name === 'disabled' && el.name === 'link') enableLink(el);
           this._changed(el, 'attributes', name, oldValue);
           // a frame that loses its `srcdoc` goes to its `src`, and one that
           // loses its `src` to `about:blank`
@@ -6640,7 +6642,9 @@ export class DomHost {
               (tagOf(el) === 'link' &&
                 !isForeign(el) &&
                 /(?:^|\s)stylesheet(?:\s|$)/i.test(el.attribs.rel ?? '') &&
-                !/(?:^|\s)alternate(?:\s|$)/i.test(el.attribs.rel ?? '')),
+                // a disabled one has no sheet (HTML 4.6.7), and an
+                // alternate one has one that styles nothing
+                el.attribs.disabled === undefined),
             root.children,
           )
             // what a `<template>` holds is no part of the document
@@ -7951,7 +7955,7 @@ export class DomHost {
       // nothing; whether it is validated at all; and a script's own reason,
       // from `setCustomValidity()`, '' taking it back
       case 'validity': {
-        const wrong = validityError(this._element(a));
+        const wrong = constraintError(this._element(a));
         return wrong ? `${wrong.flag}\u0000${wrong.message}` : '';
       }
       case 'willValidate':
