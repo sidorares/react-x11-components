@@ -10532,8 +10532,11 @@ export function installDom(
       text: () => String(call('styleText', el._id) ?? ''),
       setText: (text) => {
         // CSSOM's, which no policy on inline style holds back
-        call('styleByCssom', el._id, str(text));
-        el.setAttribute('style', text);
+        // and the attribute is what the block came to, serialized
+        // ("update style attribute"), not the text as it was handed in
+        const block = String(call('blockText', str(text)) ?? '');
+        call('styleByCssom', el._id, block);
+        el.setAttribute('style', block);
       },
       rule: null,
     });
