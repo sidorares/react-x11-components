@@ -4409,6 +4409,28 @@ class Builder {
     const cascade = this._options.cascade;
     const style = cascade.detailsContentStyleFor(details, detailsStyle);
     if (style.display === 'none') return;
+    // `display: contents` makes no box of it, and what it holds is in the
+    // flow around it, inheriting from it (CSS Display 3, 2.5): shut as well,
+    // since the `content-visibility: hidden` that hides it has no box to
+    // apply to, which is what Chromium, Firefox and WebKit draw
+    if (style.display === 'contents') {
+      const key = cascade.freshShareKey();
+      const inFlex =
+        detailsStyle.display === 'flex' ||
+        detailsStyle.display === 'inline-flex';
+      for (const child of held) {
+        if (isText(child)) {
+          const start = this._length;
+          this._textNode(child.data, into, style, details);
+          if (this._length > start) {
+            this._textNodes.push({ node: child, start, end: this._length });
+          }
+        } else if (isElement(child)) {
+          this._element(child, into, style, inFlex, key);
+        }
+      }
+      return;
+    }
     if (isRelative(style) || style.translate || style.transform) {
       this._relative = true;
     }
