@@ -16327,7 +16327,10 @@ export function installDom(
       // nothing of a frame's is the page's to close (HTML 7.2.2.3), and what
       // it opens the page opens
       close() {},
-      focus() {},
+      // its document takes the focus (HTML 7.2.7)
+      focus() {
+        call('focusDocument', frame._id);
+      },
       blur() {},
       open: (url?: Any, target?: Any, features?: Any) =>
         current._unloadCounter > 0 ? null : G.open(url, target, features),
@@ -16413,7 +16416,10 @@ export function installDom(
     },
     length: 0,
     close() {},
-    focus() {},
+    // its document takes the focus, whichever realm runs it
+    focus() {
+      call('focusDocument', frame._id);
+    },
     blur() {},
     // nothing of another origin's runs here, so nothing hears it
     postMessage() {},
@@ -51876,11 +51882,19 @@ export function installDom(
   // its window hears `focus` or `blur`, the page's own or a frame's of this
   // realm's, where anything made its window
   entry('__windowFocus', () => {
-    const [id, focused] = input();
+    const [id, focused, elementId] = input();
     const doc = id ? wrap(id) : document;
     const target = doc === document ? windowTarget : frameTargets.get(doc);
-    if (!target) return false;
-    dispatch(target, trusted(new FocusEvent(focused ? 'focus' : 'blur')));
+    const element = elementId ? wrap(elementId) : null;
+    if (element && !focused) {
+      dispatch(element, trusted(new FocusEvent('blur')));
+    }
+    if (target) {
+      dispatch(target, trusted(new FocusEvent(focused ? 'focus' : 'blur')));
+    }
+    if (element && focused) {
+      dispatch(element, trusted(new FocusEvent('focus')));
+    }
     return true;
   });
   // a frame's document in this realm is going: the host puts another in

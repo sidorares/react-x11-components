@@ -22686,3 +22686,55 @@ test('a window hears blur as the focus leaves its frame and focus as it comes, b
     logs.join('\n'),
   );
 });
+
+test('window.focus() of a frame’s window hands its document the focus and keeps what it had focused, which hears blur and focus beside the window', async () => {
+  const { text, logs } = await hostedFrames(
+    '<iframe id="own" src="own.html"></iframe><iframe id="blank" srcdoc="<p>b</p>"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function on(t, name) { t.addEventListener("focus", function () { r.push(name + ":focus"); }); t.addEventListener("blur", function () { r.push(name + ":blur"); }); }' +
+      'onload = function () { try { go(); } catch (e) { r.push("threw " + e); } document.getElementById("out").textContent = r.join(","); };' +
+      'function go() {' +
+      '  var own = document.getElementById("own"), blank = document.getElementById("blank");' +
+      '  var input = own.contentDocument.querySelector("input");' +
+      '  input.focus();' +
+      '  on(window, "top"); on(own.contentWindow, "own"); on(blank.contentWindow, "blank"); on(input, "input");' +
+      '  blank.contentWindow.focus();' +
+      '  r.push(own.contentDocument.activeElement.nodeName, document.activeElement.id, "|");' +
+      '  own.contentWindow.focus();' +
+      '  r.push(own.contentDocument.activeElement.nodeName, document.activeElement.id, "|");' +
+      '  window.focus();' +
+      '  r.push(document.activeElement.nodeName, document.hasFocus(), own.contentDocument.hasFocus());' +
+      '}' +
+      '</script>',
+    { 'own.html': '<!doctype html><input><script>var ready = 1;</script>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    [
+      'input:blur',
+      'own:blur',
+      'blank:focus',
+      'INPUT',
+      'blank',
+      '|',
+      'blank:blur',
+      'own:focus',
+      'input:focus',
+      'INPUT',
+      'own',
+      '|',
+      'input:blur',
+      'own:blur',
+      'top:focus',
+      'BODY',
+      'true',
+      'false',
+    ].join(','),
+    logs.join('\n'),
+  );
+});

@@ -4913,17 +4913,58 @@ export class DomHost {
    * the focus chain, and every engine fires them as the frame the focus is
    * in changes): before the element that takes the focus hears its own.
    */
-  focusCameTo(doc: Document): void {
+  focusCameTo(doc: Document, restore = false): void {
     const was = this._focusedFrom(doc);
     this._s.focused = doc;
     if (was === doc) return;
-    this._windowFocus(was, false);
-    this._windowFocus(doc, true);
+    // what a document the focus goes down from had focused is its frame's
+    // now (the focusing steps of a navigable set each ancestor's focused
+    // area to its navigable container): it lets it go
+    if (restore && this._isAbove(was, doc)) this._viewOfDoc(was)?.blur();
+    // a document that keeps what it had focused tells it `blur` before its
+    // window, and one the focus comes back to tells `focus` after its
+    // window's, as Chrome dispatches them on the window and its focused
+    // element as the frame the focus is in changes
+    this._windowFocus(was, false, this._viewOfDoc(was)?.activeElement ?? null);
+    this._windowFocus(
+      doc,
+      true,
+      restore ? (this._viewOfDoc(doc)?.activeElement ?? null) : null,
+    );
+  }
+
+  /** Whether `above` holds `doc` in one of its frames, however deep. */
+  private _isAbove(above: Document, doc: Document): boolean {
+    for (let at = this._frameParent(doc); at; at = this._frameParent(at)) {
+      if (at === above) return true;
+    }
+    return false;
+  }
+
+  /** The `<Html>` that draws `doc`: a frame's view, or the view of the
+   *  realm it is the document of. */
+  private _viewOfDoc(doc: Document): HtmlHandle | null {
+    return (
+      this._s.drawn.get(doc) ??
+      (this._s.runs.get(doc) as DomHost | undefined)?._seams.handle ??
+      null
+    );
+  }
+
+  /** The window of `doc` takes the focus (`window.focus()`, HTML 7.2.7):
+   *  its document is the focused one, and what it had focused keeps it. */
+  focusWindowOf(doc: Document): void {
+    this.focusCameTo(doc, true);
   }
 
   /** `focus` or `blur` at the window of `doc`, in whichever realm runs it:
-   *  its own, else that of the document its frame is in. */
-  private _windowFocus(doc: Document, focused: boolean): void {
+   *  its own, else that of the document its frame is in. The element of
+   *  `doc` told it with the window, where one is. */
+  private _windowFocus(
+    doc: Document,
+    focused: boolean,
+    element: Element | null,
+  ): void {
     let at: Document = doc;
     for (;;) {
       const host = this._s.runs.get(at);
@@ -4932,6 +4973,7 @@ export class DomHost {
           host.entries?.call('__windowFocus', [
             at === doc ? 0 : host.idOf(doc),
             focused,
+            element && this._ownerOf(element) === doc ? host.idOf(element) : 0,
           ]);
         }
         return;
@@ -4948,9 +4990,7 @@ export class DomHost {
   private _blurOther(doc: Document): void {
     const was = this._focusedFrom(doc);
     if (was === doc) return;
-    const view =
-      this._s.drawn.get(was) ??
-      (this._s.runs.get(was) as DomHost | undefined)?._seams.handle;
+    const view = this._viewOfDoc(was);
     if (view && view.activeElement) view.blur();
   }
 
@@ -8501,7 +8541,15 @@ export class DomHost {
         return null;
       case 'windowFocus':
         this.windows?.focus(Number(a));
+        if (!Number(a)) this.focusWindowOf(this.document);
         return null;
+      // a frame's window's `focus()`, of a frame of this realm's document
+      // that is no window of this realm's own
+      case 'focusDocument': {
+        const doc = this._s.frames.get(this._element(a));
+        if (doc) this.focusWindowOf(doc);
+        return null;
+      }
       case 'windowResizeTo': {
         // a script's `resizeTo` in this window: a popup's host updates the
         // window it shows; a top-level tab has no popup and keeps the size
