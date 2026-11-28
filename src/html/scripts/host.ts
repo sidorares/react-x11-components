@@ -2643,6 +2643,14 @@ export class DomShared {
   /** A node one realm hands another (`handOver`), and that realm's origin:
    *  another origin's takes nothing. */
   handed: { node: AnyNode; host: DomHost } | null = null;
+  /** The document of this tree's frames that has the focus — the focused
+   *  navigable's active document (HTML 6.6.2) — once something was focused
+   *  in one: an ancestor's `activeElement` is the frame on the way down to
+   *  it, and `hasFocus()` holds of it and of the documents around it. Null
+   *  until then, which is each top-level document's own. */
+  focused: Document | null = null;
+  /** The host of each realm, by the document it is the realm of. */
+  readonly runs = new WeakMap<Document, DomHost>();
 
   /** Each `<canvas>`'s pixels, whichever realm's script drew them, and who
    *  is told as they change. */
@@ -2908,6 +2916,7 @@ export class DomHost {
     this._ids.set(document, 1);
     this._nodes.set(1, document);
     this._s = shared;
+    shared.runs.set(document, this);
     this.inert = shared.inert;
     this._forceAsync = shared.forceAsync;
     this._frames = shared.frames;
@@ -3105,6 +3114,10 @@ export class DomHost {
       return true;
     }
     if (event.type.startsWith('mouse')) this._under = event.target;
+    // the user's focus came to something in a document
+    if (event.type === 'focusin' && event.target instanceof Element) {
+      this.focusCameTo(this._ownerOf(event.target));
+    }
     // a user's press or key has used the page (HTML 6.4.1, "activation
     // triggering input event"): what the realm notes of it is the page's to
     // say, so what a gesture lets through asks this
@@ -4834,6 +4847,50 @@ export class DomHost {
       Partial<HandleInternals>;
   }
   private _opView: HtmlHandle | null = null;
+
+  /** The frame element in `doc` that the focused document is in, where it
+   *  is in one of `doc`'s frames, however deep (`DomShared.focused`). */
+  private _frameToFocus(doc: Document): Element | null {
+    for (let at = this._s.focused; at && at !== doc;) {
+      const up = this._frameParent(at);
+      if (up === doc) return this._s.frameOf.get(at) ?? null;
+      at = up;
+    }
+    return null;
+  }
+
+  /** The document `doc`'s frame is in, where it is the document its frame
+   *  shows now and the frame is in a document. */
+  private _frameParent(doc: Document): Document | null {
+    const frame = this._s.frameOf.get(doc);
+    if (!frame || this._s.frames.get(frame) !== doc) return null;
+    // the frame's document, which may be another realm's own: a host knows
+    // its own document and those it made, and the realm's hosts the rest
+    for (
+      let at: AnyNode | null = frame as AnyNode;
+      at;
+      at = at.parent ?? (at instanceof ShadowRoot ? at.host : null)
+    ) {
+      if (this._isDocument(at) || this._s.runs.has(at as Document)) {
+        return at === doc ? null : (at as Document);
+      }
+      const owner = this._owners.get(at);
+      if (owner) return owner === doc ? null : owner;
+    }
+    return null;
+  }
+
+  /** Whether `doc` is the focused document or holds it in a frame. */
+  private _holdsFocus(doc: Document): boolean {
+    const focused = this._s.focused;
+    if (!focused) return doc === this.document && !this._s.frameOf.has(doc);
+    return focused === doc || this._frameToFocus(doc) !== null;
+  }
+
+  /** The focus came to something in `doc`, or to `doc` itself. */
+  focusCameTo(doc: Document): void {
+    this._s.focused = doc;
+  }
 
   /** The view that draws the document of the node an op is about, where it
    *  is another document's than this realm's own and something draws it. */
@@ -8044,6 +8101,12 @@ export class DomHost {
         this.flush();
         const el = this._element(a);
         this.focusedFrame = el.name === 'iframe' ? el : null;
+        // a frame focused hands the focus to its document (HTML 6.6.3, the
+        // focusing steps' "navigable container"), and anything else has it
+        // in its own
+        const inFrame = this._s.frames.get(el);
+        if (inFrame) this.focusCameTo(inFrame);
+        else if (focusableElement(el)) this.focusCameTo(this._ownerOf(el));
         // A control just put in has no widget until the render that the
         // flush asked for, nor a link shown a stop: asked again once it
         // has, and until then the element the page has the focus on, as a
@@ -8085,12 +8148,20 @@ export class DomHost {
         return null;
       }
       // of the element's document's view, where it names one (`_op`)
-      case 'blur':
+      case 'blur': {
         if (!this._opView || this._focusing === this._node(a)) {
           this._focusing = null;
         }
+        // what the focus was in goes back to the element's document, whose
+        // `activeElement` is its body then
+        const of =
+          typeof a === 'number' ? this._ownerOf(this._node(a)) : this.document;
+        if (this._s.focused === of || this._frameToFocus(of)) {
+          this.focusCameTo(of);
+        }
         this._handle.blur();
         return null;
+      }
       // a frame's document with no realm of its own: where its viewport is
       // scrolled, and a scroll of it, from the view that draws it (`_op`)
       case 'viewScroll': {
@@ -8117,6 +8188,11 @@ export class DomHost {
         // that document's
         const doc =
           typeof a === 'number' ? (this._node(a) as Document) : this.document;
+        // the focus in one of its frames, however deep, is that frame's
+        // (HTML 6.6.4, the focused area of the document is its navigable
+        // container where the focus is in the navigable)
+        const frame = this._frameToFocus(doc);
+        if (frame) return this.idOf(frame);
         const waiting = this._focusing;
         const active =
           waiting?.parent && this._ownerOf(waiting) === doc
@@ -8129,6 +8205,12 @@ export class DomHost {
           ? 0
           : this.idOf(active);
       }
+      // `document.hasFocus()` (HTML 6.6.4): the focused document, or one
+      // that holds it in a frame
+      case 'hasFocus':
+        return this._holdsFocus(
+          typeof a === 'number' ? (this._node(a) as Document) : this.document,
+        );
       case 'activate': {
         const node = this._node(a);
         return node instanceof Element && this._handle.activate(node);
