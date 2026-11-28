@@ -89,7 +89,7 @@ import {
   isText,
   loadsLazily,
   madeByParser,
-  heldAlternate,
+  heldSheet,
   isStylePreload,
   NON_RENDERED,
   ShadowRoot,
@@ -3720,7 +3720,9 @@ export class HtmlViewNode extends Node {
               props.charset,
             ]);
       const text = ref.kind === 'inline' ? ref.text : linked?.text;
-      if (!text) continue;
+      // an empty sheet is a sheet all the same, whose `load` is told: only
+      // one not in yet is none
+      if (text === undefined) continue;
       const encoding = linked ? linked.encoding : props.charset;
       const base =
         ref.kind === 'inline'
@@ -4826,12 +4828,17 @@ export class HtmlViewNode extends Node {
     // (HTML 4.6.7.12): React commits a `precedence` sheet only once the
     // sheet's preload has told one or the other
     for (const el of facts.resources) {
-      if (!isStylePreload(el) && !heldAlternate(el)) continue;
+      // and a sheet's that styles nothing (`heldSheet`), told once an
+      // `href` as any sheet is: one a page's `onload` gives the media it
+      // is for is told nothing more as it comes to style the document
+      const held = heldSheet(el);
+      if (!held && !isStylePreload(el)) continue;
       const href = attr(el, 'href')!;
-      if (this._preloadTold.get(el) === href) continue;
+      const toldOf = held ? this._sheetTold : this._preloadTold;
+      if (toldOf.get(el) === href) continue;
       const state = this._resources.state(href);
       if (state !== 'ready' && state !== 'failed') continue;
-      this._preloadTold.set(el, href);
+      toldOf.set(el, href);
       (told ??= []).push([el, state === 'ready' ? 'load' : 'error']);
     }
     if (!told) return;
