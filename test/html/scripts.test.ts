@@ -13578,6 +13578,26 @@ test('an empty <style>, and a <link> to an empty sheet, tell their load as any s
   assert.equal(doc.text('out'), 'empty full link');
 });
 
+test("an @import's sheet is its rule's, which no page constructed", async () => {
+  const doc = await hosted(
+    '<html><head><style id="s">@import "sub/a.css";</style></head>' +
+      '<body><p id="out"></p><script>' +
+      "onload = function () { var r = [], top = document.getElementById('s').sheet; try {" +
+      '  var rule = top.cssRules[0], sheet = rule.styleSheet;' +
+      '  r.push(sheet.ownerRule === rule, sheet.parentStyleSheet === top, sheet.href.slice(-10));' +
+      "  try { sheet.replaceSync('p {}'); r.push('replaced'); } catch (e) { r.push(e.name); }" +
+      "  sheet.replace('p {}').catch(function (e) { r.push(e.name);" +
+      "    document.getElementById('out').textContent = r.join(' ') }) } catch (e) { document.getElementById('out').textContent = 'threw ' + e + ' ' + r } };" +
+      '</script></body></html>',
+    { sheets: { 'a.css': 'p { color: red }' } },
+  );
+  for (let i = 0; i < 20 && !doc.text('out'); i += 1) await settle(20);
+  assert.equal(
+    doc.text('out'),
+    'true true /sub/a.css NotAllowedError NotAllowedError',
+  );
+});
+
 test('a script after a <link> the head is still fetching runs once the sheet is in, and reads the document as it styles it; one before the link runs at once', async () => {
   const held = new HeldSheets();
   const doc = await hosted(
@@ -22683,6 +22703,58 @@ test('a window hears blur as the focus leaves its frame and focus as it comes, b
       6000,
     ),
     'top:blur:IFRAME,own:focus,input:focus,|,own:blur:BODY,blank:focus,|,|,blank:blur:BODY,top:focus,|',
+    logs.join('\n'),
+  );
+});
+
+test('window.focus() of a frame’s window hands its document the focus and keeps what it had focused, which hears blur and focus beside the window', async () => {
+  const { text, logs } = await hostedFrames(
+    '<iframe id="own" src="own.html"></iframe><iframe id="blank" srcdoc="<p>b</p>"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function on(t, name) { t.addEventListener("focus", function () { r.push(name + ":focus"); }); t.addEventListener("blur", function () { r.push(name + ":blur"); }); }' +
+      'onload = function () { try { go(); } catch (e) { r.push("threw " + e); } document.getElementById("out").textContent = r.join(","); };' +
+      'function go() {' +
+      '  var own = document.getElementById("own"), blank = document.getElementById("blank");' +
+      '  var input = own.contentDocument.querySelector("input");' +
+      '  input.focus();' +
+      '  on(window, "top"); on(own.contentWindow, "own"); on(blank.contentWindow, "blank"); on(input, "input");' +
+      '  blank.contentWindow.focus();' +
+      '  r.push(own.contentDocument.activeElement.nodeName, document.activeElement.id, "|");' +
+      '  own.contentWindow.focus();' +
+      '  r.push(own.contentDocument.activeElement.nodeName, document.activeElement.id, "|");' +
+      '  window.focus();' +
+      '  r.push(document.activeElement.nodeName, document.hasFocus(), own.contentDocument.hasFocus());' +
+      '}' +
+      '</script>',
+    { 'own.html': '<!doctype html><input><script>var ready = 1;</script>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    [
+      'input:blur',
+      'own:blur',
+      'blank:focus',
+      'INPUT',
+      'blank',
+      '|',
+      'blank:blur',
+      'own:focus',
+      'input:focus',
+      'INPUT',
+      'own',
+      '|',
+      'input:blur',
+      'own:blur',
+      'top:focus',
+      'BODY',
+      'true',
+      'false',
+    ].join(','),
     logs.join('\n'),
   );
 });
