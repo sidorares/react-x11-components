@@ -3720,7 +3720,9 @@ export class HtmlViewNode extends Node {
               props.charset,
             ]);
       const text = ref.kind === 'inline' ? ref.text : linked?.text;
-      if (!text) continue;
+      // an empty sheet is a sheet all the same, whose `load` is told: only
+      // one not in yet is none
+      if (text === undefined) continue;
       const encoding = linked ? linked.encoding : props.charset;
       const base =
         ref.kind === 'inline'

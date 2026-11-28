@@ -13528,6 +13528,21 @@ test("a theme switcher's page: matchMedia reads the reader's scheme, the root's 
   );
 });
 
+test('an empty <style>, and a <link> to an empty sheet, tell their load as any sheet does', async () => {
+  const doc = await hosted(
+    '<html><head><script>var loads = [];</script>' +
+      '<style onload="loads.push(\'empty\')"></style>' +
+      '<style onload="loads.push(\'full\')">p { color: red }</style>' +
+      '<link rel="stylesheet" href="none.css" onload="loads.push(\'link\')">' +
+      '</head><body><p id="out"></p><script>' +
+      "onload = function () { document.getElementById('out').textContent = loads.sort().join(' ') };" +
+      '</script></body></html>',
+    { sheets: { 'none.css': '' } },
+  );
+  for (let i = 0; i < 20 && !doc.text('out'); i += 1) await settle(20);
+  assert.equal(doc.text('out'), 'empty full link');
+});
+
 test('a script after a <link> the head is still fetching runs once the sheet is in, and reads the document as it styles it; one before the link runs at once', async () => {
   const held = new HeldSheets();
   const doc = await hosted(
