@@ -354,6 +354,17 @@ test('setProperty takes its priority in any case and refuses any other, and read
   ]);
 });
 
+test("getComputedStyle reads a pseudo-element's name with its escapes", async () => {
+  const out = await inPage(
+    '<style>#t::before, #t::after { content: ""; display: block; width: 50px }</style><div id="t"></div>',
+    `var t = document.getElementById('t');
+     return [':bef\\\\oRE', '::\\\\000041fter', '::bef\\\\ore0'].map(function (p) {
+       return getComputedStyle(t, p).width;
+     });`,
+  );
+  assert.deepEqual(out, ['50px', '50px', '']);
+});
+
 test("a sheet's title is its element's title attribute, and none where that is empty", async () => {
   const out = await inPage(
     '<style id="a" title="Dark"></style><style id="b" title=""></style><style id="c"></style>',
