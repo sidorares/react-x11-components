@@ -1176,8 +1176,12 @@ function absoluteUrl(text: string): boolean {
  *  where the runtime has no `v` — and no constraint at all where it does
  *  not compile. */
 function patternOf(source: string): RegExp | null {
+  const flags = V_FLAG ? 'v' : 'u';
   try {
-    return new RegExp(`^(?:${source})$`, V_FLAG ? 'v' : 'u');
+    // the pattern is compiled alone first (HTML 2.3.8's "compile a pattern
+    // attribute"), so `a)(b` cannot close the group it is put in
+    new RegExp(source, flags);
+    return new RegExp(`^(?:${source})$`, flags);
   } catch {
     // one `v` mode refuses is no constraint, even where `u` would take it
     return null;
@@ -1260,23 +1264,37 @@ export function validityError(
  * What `validity` says of a control whether or not it is validated: a
  * disabled field still suffers from a pattern mismatch (HTML 4.10.21.1),
  * which `willValidate` and `checkValidity()` then pass over. Only being
- * missing asks that a text control be mutable.
+ * missing asks that a text control be mutable. The first of
+ * `constraintErrors`, whose words `validationMessage` says.
  */
 export function constraintError(
   el: Element,
   live: (el: Element) => string | undefined = typedText,
 ): ValidityError | null {
+  return constraintErrors(el, live)[0] ?? null;
+}
+
+/**
+ * Every way a control suffers (HTML 4.10.21.1), a script's own words
+ * first: a URL can be no URL and miss its pattern at once, and its
+ * `ValidityState` says both.
+ */
+export function constraintErrors(
+  el: Element,
+  live: (el: Element) => string | undefined = typedText,
+): ValidityError[] {
+  const out: ValidityError[] = [];
   const custom = CUSTOM_ERRORS.get(el);
-  if (custom) return { flag: 'customError', message: custom };
+  if (custom) out.push({ flag: 'customError', message: custom });
   const tag = tagOf(el);
-  if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') return null;
-  const wrong = (flag: ValidityFlag, message: string): ValidityError => ({
-    flag,
-    message,
-  });
+  if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') return out;
+  const wrong = (flag: ValidityFlag, message: string): ValidityError[] => {
+    out.push({ flag, message });
+    return out;
+  };
   const required = attr(el, 'required') !== undefined;
   if (tag === 'select') {
-    if (!required) return null;
+    if (!required) return out;
     const selected = selectedOptions(el);
     const placeholder =
       !isMultiple(el) &&
@@ -1286,27 +1304,27 @@ export function constraintError(
       optionValue(selected[0]) === '';
     return !selected.length || placeholder
       ? wrong('valueMissing', 'Please select an item in the list.')
-      : null;
+      : out;
   }
   const type = tag === 'input' ? inputType(el) : 'textarea';
   if (type === 'checkbox') {
     return required && attr(el, 'checked') === undefined
       ? wrong('valueMissing', 'Please check this box if you want to proceed.')
-      : null;
+      : out;
   }
   if (type === 'radio') {
     const group = [el, ...radioGroup(el)];
-    if (!group.some((r) => attr(r, 'required') !== undefined)) return null;
+    if (!group.some((r) => attr(r, 'required') !== undefined)) return out;
     return group.some((r) => attr(r, 'checked') !== undefined)
-      ? null
+      ? out
       : wrong('valueMissing', 'Please select one of these options.');
   }
   if (type === 'file') {
     return required && !chosenFiles(el).length
       ? wrong('valueMissing', 'Please select a file.')
-      : null;
+      : out;
   }
-  if (type === 'range' || type === 'color' || type === 'submit') return null;
+  if (type === 'range' || type === 'color' || type === 'submit') return out;
 
   const typed = live(el);
   const value = controlValue(el, live);
@@ -1323,7 +1341,7 @@ export function constraintError(
   if (!value) {
     return required && !isDisabled(el) && attr(el, 'readonly') === undefined
       ? wrong('valueMissing', 'Please fill out this field.')
-      : null;
+      : out;
   }
 
   if (
@@ -1333,15 +1351,18 @@ export function constraintError(
   ) {
     const length = value.length;
     const min = Number(attr(el, 'minlength'));
+    const max = attr(el, 'maxlength');
     if (min > 0 && length < min) {
-      return wrong(
+      wrong(
         'tooShort',
         `Please lengthen this text to ${min} characters or more (you are currently using ${length} characters).`,
       );
-    }
-    const max = attr(el, 'maxlength');
-    if (max !== undefined && /^\d+$/.test(max.trim()) && length > Number(max)) {
-      return wrong(
+    } else if (
+      max !== undefined &&
+      /^\d+$/.test(max.trim()) &&
+      length > Number(max)
+    ) {
+      wrong(
         'tooLong',
         `Please shorten this text to ${Number(max)} characters or less (you are currently using ${length} characters).`,
       );
@@ -1353,11 +1374,11 @@ export function constraintError(
         ? value.split(',').map((a) => a.trim())
         : [value];
     if (!addresses.every((a) => EMAIL.test(a))) {
-      return wrong('typeMismatch', 'Please enter an email address.');
+      wrong('typeMismatch', 'Please enter an email address.');
     }
   }
   if (type === 'url' && !absoluteUrl(value)) {
-    return wrong('typeMismatch', 'Please enter a URL.');
+    wrong('typeMismatch', 'Please enter a URL.');
   }
   const pattern = attr(el, 'pattern');
   if (pattern !== undefined && TEXTUAL.has(type)) {
@@ -1368,7 +1389,7 @@ export function constraintError(
         : [value];
     if (re && !values.every((v) => re.test(v))) {
       const title = attr(el, 'title');
-      return wrong(
+      wrong(
         'patternMismatch',
         title
           ? `Please match the requested format:\n${title}`
@@ -1377,21 +1398,20 @@ export function constraintError(
     }
   }
   const stepped = STEPS[type] ? fieldNumber(type, value) : null;
-  if (stepped === null) return null;
+  if (stepped === null) return out;
   const place = rangePlace(el, type, stepped);
   const number = type === 'number';
   if (place === 'under') {
     const min = attr(el, 'min')?.trim();
-    return wrong(
+    wrong(
       'rangeUnderflow',
       number
         ? `Value must be greater than or equal to ${min}.`
         : `Value must be ${min} or later.`,
     );
-  }
-  if (place === 'over') {
+  } else if (place === 'over') {
     const max = attr(el, 'max')?.trim();
-    return wrong(
+    wrong(
       'rangeOverflow',
       number
         ? `Value must be less than or equal to ${max}.`
@@ -1400,7 +1420,7 @@ export function constraintError(
   }
   return offStep(el, type, stepped)
     ? wrong('stepMismatch', 'Please enter a valid value.')
-    : null;
+    : out;
 }
 
 /** `validityError`'s words alone. */

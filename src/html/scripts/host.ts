@@ -237,7 +237,7 @@ import {
   setCustomError,
   setIndeterminate,
   validated,
-  constraintError,
+  constraintErrors,
 } from '../form.js';
 import type { Bridge, Primitive } from './dom.js';
 import { PageCrypto, keySecrets } from './subtle.js';
@@ -7969,12 +7969,15 @@ export class DomHost {
           typeof b === 'boolean' ? b : text(b),
         );
       }
-      // what is wrong with a control, as `flag NUL message`, or '' for
-      // nothing; whether it is validated at all; and a script's own reason,
-      // from `setCustomValidity()`, '' taking it back
+      // what is wrong with a control, as every flag that holds, a space
+      // between, then NUL and the first one's words, or '' for nothing;
+      // whether it is validated at all; and a script's own reason, from
+      // `setCustomValidity()`, '' taking it back
       case 'validity': {
-        const wrong = constraintError(this._element(a));
-        return wrong ? `${wrong.flag}\u0000${wrong.message}` : '';
+        const wrong = constraintErrors(this._element(a));
+        return wrong.length
+          ? `${wrong.map((w) => w.flag).join(' ')}\u0000${wrong[0].message}`
+          : '';
       }
       case 'willValidate':
         return validated(this._element(a));
