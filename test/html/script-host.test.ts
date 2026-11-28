@@ -1009,6 +1009,62 @@ test("a sheet's <link rel=preload> asks for the sheet and is told a load or an e
   assert.deepStrictEqual(loads().slice(2), ['load:t', 'load:u']);
 });
 
+test("a sheet whose media holds nowhere here is asked for and told its load, styling nothing until a page's onload gives it the media it is for", async () => {
+  // `<link rel=stylesheet media=print onload="this.media='all'">` loads a
+  // page's CSS late, as nature.com's does all of its article's footer:
+  // left unasked, it was never told `load`, and the footer was unstyled
+  const answers = new Map<string, (r: ResourceResult | null) => void>();
+  const asked: string[] = [];
+  const onResource = (r: ResourceRequest) => {
+    const name = r.url.slice(r.url.lastIndexOf('/') + 1);
+    asked.push(`${r.kind}:${name}`);
+    return new Promise<ResourceResult | null>((ok) => answers.set(name, ok));
+  };
+  const doc = await hosted(
+    '<html><head><link id="s" rel="stylesheet" href="s.css" media="print">' +
+      '<link id="x" rel="stylesheet" href="x.css" media="print">' +
+      '</head><body><p id="p">x</p></body></html>',
+    { onResource },
+  );
+  const settle = async () => {
+    for (let i = 0; i < 4; i += 1) await act();
+  };
+  assert.deepStrictEqual(asked, ['stylesheet:s.css', 'stylesheet:x.css']);
+  const loads = () => doc.told(['load', 'error']);
+  assert.deepStrictEqual(loads(), [], 'all on their way');
+  await act(async () => {
+    answers.get('s.css')!({
+      kind: 'stylesheet',
+      text: '#p { color: #ff0000 }',
+    });
+    answers.get('x.css')!(null);
+  });
+  await settle();
+  assert.deepStrictEqual(loads(), ['load:s', 'error:x']);
+  const color = () => doc.el.computedStyle(doc.byId('p'))!.color;
+  assert.notStrictEqual(
+    color(),
+    'rgb(255, 0, 0)',
+    'a print sheet styles nothing',
+  );
+
+  // what its `onload` does: the sheet styles the document, and is told
+  // nothing more, nor asked for again
+  doc.byId('s').attribs.media = 'all';
+  doc.el.touchDocument([
+    {
+      type: 'attributes',
+      target: doc.byId('s'),
+      attributeName: 'media',
+      oldValue: 'print',
+    },
+  ]);
+  await settle();
+  assert.strictEqual(color(), 'rgb(255, 0, 0)');
+  assert.deepStrictEqual(loads(), ['load:s', 'error:x']);
+  assert.strictEqual(asked.length, 2);
+});
+
 test('scriptsUnblocked settles once the sheets the parser met before a script are in, after their load; one under a media query that does not hold, and one a script put in, hold nothing', async () => {
   const answers = new Map<string, (r: ResourceResult | null) => void>();
   const onResource = (r: ResourceRequest) =>
