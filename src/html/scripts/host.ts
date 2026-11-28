@@ -3232,6 +3232,24 @@ export class DomHost {
         dropEffect: event.drag.dropEffect,
       },
     });
+    // a press the page let go on takes the focus to the document it is in,
+    // whatever it lands on, as the frame a press is in is focused in every
+    // engine: a frame's editor loses it to a press on the page around it
+    if (
+      event.type === 'mousedown' &&
+      answer !== false &&
+      event.target instanceof Element
+    ) {
+      const doc = this._ownerOf(event.target);
+      const was = this._s.focused;
+      this._blurOther(doc);
+      // once core has moved its own focus for the press, which lets what
+      // had it go: where that is nothing in this document, the focus is
+      // the document's own, and an element that took it says so itself
+      void Promise.resolve().then(() => {
+        if (!this._disposed && this._s.focused === was) this.focusCameTo(doc);
+      });
+    }
     // what a page left in the drag's store, for what the drag does next
     if (event.drag && this._dragOut) {
       Object.assign(event.drag, JSON.parse(this._dragOut));
@@ -5750,8 +5768,17 @@ export class DomHost {
           d,
         );
         if (written === null) return null;
-        if (written) el.attribs.style = written;
-        else delete el.attribs.style;
+        // a declaration set as it was, or a property removed that was not
+        // there, changes nothing, and no record says it did (CSSOM 6.7.2:
+        // only an update runs "update style attribute")
+        if (
+          written ===
+          serializeDeclarations(declarationsIn(this._inlineStyle(el)))
+        ) {
+          return null;
+        }
+        // the attribute is the block serialized, the empty one included
+        el.attribs.style = written;
         // what CSSOM wrote is no inline content a policy holds back (CSP
         // 3, 4.2.3 is asked of the attribute as markup or `setAttribute`
         // sets it)
