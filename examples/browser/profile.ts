@@ -23,8 +23,11 @@
 // `$XDG_DATA_HOME/react-x11-browser` (`~/.local/share/…`) elsewhere.
 //
 // The browser works the directory out as it starts and hands it to each
-// tab's process as `BROWSER_PROFILE_DIR`, with the tab's own key as
-// `BROWSER_TAB_KEY`, which its `sessionStorage` is kept by.
+// tab's process as `BROWSER_PROFILE_DIR`. The tab's own key, which its
+// `sessionStorage` is kept by, is a prop of its page (`PageProps.tabKey`),
+// told to the profile once the process knows it (`HtmlProfile.forTab`):
+// nothing in a pane's environment names its tab, so a spare one started
+// before the tab existed can be any tab's (`spare-pane.ts`).
 import {
   existsSync,
   mkdirSync,
@@ -92,9 +95,7 @@ let warned = false;
  */
 export function openProfile(): Promise<HtmlProfile | null> {
   opened ??= PROFILE_DIR
-    ? HtmlProfile.open(PROFILE_DIR, {
-        tab: process.env.BROWSER_TAB_KEY || undefined,
-      }).then(
+    ? HtmlProfile.open(PROFILE_DIR).then(
         (profile) => {
           if (!profile && !warned && !isFramed()) {
             warned = true;

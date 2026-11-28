@@ -362,6 +362,18 @@ export class HtmlProfile {
     if (workers) (this.storage as ProfileStorage).caches = workers;
   }
 
+  /**
+   * The tab whose `sessionStorage` this process keeps from here on, where
+   * it was not known as the profile was opened: a host that starts a
+   * tab's process before it knows which tab the process is for (a spare,
+   * started ahead of the next new tab) says so as the tab arrives. An area
+   * a document already took stays the one it took, so say it before any
+   * document runs. `null` keeps `sessionStorage` in memory.
+   */
+  forTab(tab: string | null): void {
+    (this.storage as ProfileStorage).forTab(tab);
+  }
+
   /** How many times another connection was found to have committed: a
    *  reader whose last look was at an earlier one reads again. */
   generation(): number {
@@ -1142,6 +1154,24 @@ interface AreaStatements {
   clear: Statement;
 }
 
+/** What a tab's `sessionStorage` reads and writes with. */
+function sessionStatements(db: Database): AreaStatements {
+  return {
+    all: db.prepare(
+      'SELECT key, value FROM session_storage WHERE tab = ? AND origin = ?',
+    ),
+    put: db.prepare(
+      'INSERT OR REPLACE INTO session_storage (tab, origin, key, value) VALUES (?, ?, ?, ?)',
+    ),
+    remove: db.prepare(
+      'DELETE FROM session_storage WHERE tab = ? AND origin = ? AND key = ?',
+    ),
+    clear: db.prepare(
+      'DELETE FROM session_storage WHERE tab = ? AND origin = ?',
+    ),
+  };
+}
+
 class ProfileStorage implements HtmlStorage {
   readonly indexedDB: HtmlIndexedDB;
   /** What a page's `caches` keep, where the profile has its file. */
@@ -1150,6 +1180,7 @@ class ProfileStorage implements HtmlStorage {
   private _session = new Map<string, HtmlStorageArea>();
   private _localStatements: AreaStatements;
   private _sessionStatements: AreaStatements | null;
+  private readonly _db: Database;
   private _listeners = new Set<(change: HtmlStorageChange) => void>();
   private _logEvent: Statement;
   private _prune: Statement;
@@ -1165,9 +1196,10 @@ class ProfileStorage implements HtmlStorage {
   constructor(
     private readonly _profile: HtmlProfile,
     db: Database,
-    private readonly _tab: string | null,
+    private _tab: string | null,
     blobs: ProfileIdbBlobs | null = null,
   ) {
+    this._db = db;
     this._localStatements = {
       all: db.prepare('SELECT key, value FROM local_storage WHERE origin = ?'),
       put: db.prepare(
@@ -1178,22 +1210,7 @@ class ProfileStorage implements HtmlStorage {
       ),
       clear: db.prepare('DELETE FROM local_storage WHERE origin = ?'),
     };
-    this._sessionStatements = _tab
-      ? {
-          all: db.prepare(
-            'SELECT key, value FROM session_storage WHERE tab = ? AND origin = ?',
-          ),
-          put: db.prepare(
-            'INSERT OR REPLACE INTO session_storage (tab, origin, key, value) VALUES (?, ?, ?, ?)',
-          ),
-          remove: db.prepare(
-            'DELETE FROM session_storage WHERE tab = ? AND origin = ? AND key = ?',
-          ),
-          clear: db.prepare(
-            'DELETE FROM session_storage WHERE tab = ? AND origin = ?',
-          ),
-        }
-      : null;
+    this._sessionStatements = _tab ? sessionStatements(db) : null;
     this._logEvent = db.prepare(
       `INSERT INTO storage_events (origin, key, old_value, new_value, url,
          source, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -1212,6 +1229,14 @@ class ProfileStorage implements HtmlStorage {
       this._local.set(origin, area);
     }
     return area;
+  }
+  forTab(tab: string | null): void {
+    if (tab === this._tab) return;
+    this._tab = tab;
+    this._sessionStatements = tab
+      ? (this._sessionStatements ?? sessionStatements(this._db))
+      : null;
+    this._session.clear();
   }
   session(origin: string): HtmlStorageArea {
     let area = this._session.get(origin);
