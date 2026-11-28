@@ -235,7 +235,7 @@ import {
   setCustomError,
   setIndeterminate,
   validated,
-  validityError,
+  constraintError,
 } from '../form.js';
 import type { Bridge, Primitive } from './dom.js';
 import { PageCrypto, keySecrets } from './subtle.js';
@@ -7919,7 +7919,7 @@ export class DomHost {
       // nothing; whether it is validated at all; and a script's own reason,
       // from `setCustomValidity()`, '' taking it back
       case 'validity': {
-        const wrong = validityError(this._element(a));
+        const wrong = constraintError(this._element(a));
         return wrong ? `${wrong.flag}\u0000${wrong.message}` : '';
       }
       case 'willValidate':
