@@ -10308,6 +10308,14 @@ export function installDom(
    *  name it has, and a page may have put its own hand in the `String`
    *  methods that make them. */
   const camelNames = new Map<string, string>();
+  /** A value as WebIDL converts it to a `CSSOMString`: a Symbol is a
+   *  `TypeError`, as ToString makes it, where `String()` would name it. */
+  const cssomString = (v: Any): string => {
+    if (typeof v === 'symbol') {
+      throw new TypeError('Cannot convert a Symbol value to a string');
+    }
+    return str(v);
+  };
   /** A property's name as a declaration keeps it: a custom property's as
    *  written, since `--Tabs-x` and `--tabs-x` are two (CSS Variables 1,
    *  2), and any other's in lower case. */
@@ -10365,11 +10373,16 @@ export function installDom(
       ) {
         return;
       }
-      block.set(
-        prop,
-        value === null || value === undefined ? '' : str(value),
-        str(priority),
-      );
+      // `[LegacyNullToEmptyString]` on both: null is '', and an undefined
+      // value is the string "undefined", which no property takes, where
+      // an undefined priority is the default ''
+      const given =
+        priority === null || priority === undefined ? '' : str(priority);
+      // 'important' in any case, or nothing: any other priority sets
+      // nothing (CSSOM 6.7.2, steps 6 and 7)
+      const level = given.toLowerCase();
+      if (level !== '' && level !== 'important') return;
+      block.set(prop, value === null ? '' : cssomString(value), level);
     }
     removeProperty(name: Any): string {
       const block = declarationBlockOf(this);
@@ -10468,9 +10481,10 @@ export function installDom(
         ) {
           return Reflect.set(t, key, value);
         }
+        // `[LegacyNullToEmptyString]`: an undefined is "undefined"
         block.set(
           blockProperty(key),
-          value === null || value === undefined ? '' : str(value),
+          value === null ? '' : cssomString(value),
           '',
         );
         return true;
