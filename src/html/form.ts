@@ -96,6 +96,19 @@ export interface SubmitContext {
   /** The label of the document's encoding, which a form with no
    *  `accept-charset` is sent in. UTF-8 where absent. */
   encoding?: string;
+  /** The entry list a page's script made, its `formdata` listeners
+   *  having added to it (HTML 4.10.21.4), in place of the controls': a
+   *  file's entry is the controls' file of that name, in turn, and one a
+   *  script made goes with no bytes. */
+  entries?: readonly SubmittedEntry[];
+}
+
+/** An entry of the list a script made: its name, and its value or a
+ *  file's name. */
+export interface SubmittedEntry {
+  name: string;
+  value: string;
+  file: boolean;
 }
 
 // --- which controls, in which form ---------------------------------------------
@@ -706,6 +719,21 @@ interface Entry {
   chosen?: HtmlFile;
 }
 
+/** A script's entry list, each file's bytes those of the control's file
+ *  that has its name, taken in order. */
+function madeByScript(
+  entries: readonly SubmittedEntry[],
+  own: readonly Entry[],
+): Entry[] {
+  const files = own.filter((e) => e.file && e.chosen);
+  return entries.map(({ name, value, file }) => {
+    if (!file) return { name, value, file: false };
+    const at = files.findIndex((e) => e.value === value);
+    const chosen = at < 0 ? undefined : files.splice(at, 1)[0].chosen;
+    return { name, value, file: true, chosen };
+  });
+}
+
 /**
  * The entries a form submits (HTML 4.10.21.4): each enabled control it owns
  * that has a name, with its value — the checked checkboxes and radios, a
@@ -1006,13 +1034,8 @@ export function formSubmission(
   const target = pick('formtarget', 'target') ?? baseTarget(rootOf(form));
 
   const encoding = formEncoding(form, context.encoding);
-  const list = entriesOf(
-    form,
-    submitter,
-    context.live,
-    context.point,
-    encoding,
-  );
+  const own = entriesOf(form, submitter, context.live, context.point, encoding);
+  const list = context.entries ? madeByScript(context.entries, own) : own;
   const entries = list.map(({ name, value }): [string, string] => [
     name,
     value,

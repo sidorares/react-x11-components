@@ -23,6 +23,7 @@ import { diffFrames, takeFrame } from '../frame-store.js';
 import { numericTaken } from '../css/typed-om-numbers.js';
 import { trustworthy } from '../fetch-metadata.js';
 import type { FetchMode } from '../fetch-metadata.js';
+import type { SubmittedEntry } from '../form.js';
 import {
   determineReferrer,
   referrerPolicyOf,
@@ -1459,6 +1460,23 @@ function templateContent(template: Element): Document {
     CONTENT_FRAGMENTS.add(content);
   }
   return content;
+}
+
+/** The entry list a page's realm sent with a submission, as JSON of
+ *  `[name, value, file]` triples: what the page wrote is no reason to
+ *  throw, so anything else sends none. */
+function submittedEntries(json: string): SubmittedEntry[] | undefined {
+  try {
+    const list: unknown = JSON.parse(json);
+    if (!Array.isArray(list)) return undefined;
+    return list.map((e) => ({
+      name: String(e[0]),
+      value: String(e[1]),
+      file: e[2] === 1,
+    }));
+  } catch {
+    return undefined;
+  }
 }
 
 /** Each customized built-in's `is` value, where it is no attribute's:
@@ -8071,7 +8089,13 @@ export class DomHost {
       }
       case 'submit':
         this.flush();
-        this._handle.submitForm(this._element(a), b ? this._element(b) : null);
+        // the entry list the page's `formdata` listeners added to, where
+        // the page made one
+        this._handle.submitForm(
+          this._element(a),
+          b ? this._element(b) : null,
+          typeof c === 'string' ? submittedEntries(c) : undefined,
+        );
         return null;
       case 'validate':
         // a sandbox's form is no form to send, before its `submit` is asked

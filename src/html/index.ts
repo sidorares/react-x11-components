@@ -104,7 +104,11 @@ import type {
 import type { SheetSource as HtmlSheetSource } from './css/parse.js';
 import type { ControlRect } from './controls.js';
 import type { ElementScroll } from './layout/scroll.js';
-import type { FieldSelection, FormSubmission } from './form.js';
+import type {
+  FieldSelection,
+  FormSubmission,
+  SubmittedEntry,
+} from './form.js';
 import type { HtmlFile, HtmlPickFiles } from './files.js';
 import { useForms } from './widgets.js';
 import { useVideos } from './videos.js';
@@ -1140,7 +1144,11 @@ export interface HtmlHandle {
    */
   activate(element: Element): boolean;
   /** Send a form as `form.submit()` does: no validation, no `submit`. */
-  submitForm(form: Element, submitter?: Element | null): void;
+  submitForm(
+    form: Element,
+    submitter?: Element | null,
+    entries?: readonly SubmittedEntry[],
+  ): void;
   /** HTML's interactive validation of a form: true where it may go, and
    *  else false, with the reason shown at its first wrong control. */
   reportValidity(
@@ -2072,8 +2080,11 @@ export function makeHtmlHandle(
     },
     activate: (element: Element) =>
       nodeRef.current?.interactive?.activate(element) ?? false,
-    submitForm: (form: Element, submitter?: Element | null) =>
-      nodeRef.current?.interactive?.submit(form, submitter ?? null),
+    submitForm: (
+      form: Element,
+      submitter?: Element | null,
+      entries?: readonly SubmittedEntry[],
+    ) => nodeRef.current?.interactive?.submit(form, submitter ?? null, entries),
     reportValidity: (
       form: Element,
       submitter?: Element | null,
@@ -2250,7 +2261,8 @@ function documentInteraction(
       }
       return now.forms.activate(el);
     },
-    submit: (form, submitter) => live.current?.forms.submitNow(form, submitter),
+    submit: (form, submitter, entries) =>
+      live.current?.forms.submitNow(form, submitter, entries),
     reportValidity: (form, submitter, attempt) =>
       live.current?.forms.validate(form, submitter, attempt) ?? true,
     reset: (form) => live.current?.forms.resetNow(form),
