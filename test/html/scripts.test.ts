@@ -13563,6 +13563,21 @@ test("a <link>'s sheet lists the rules it brought in, and a rule inserted into i
   assert.equal(doc.text('out'), '2 | p | 0px | 3 | i');
 });
 
+test('an empty <style>, and a <link> to an empty sheet, tell their load as any sheet does', async () => {
+  const doc = await hosted(
+    '<html><head><script>var loads = [];</script>' +
+      '<style onload="loads.push(\'empty\')"></style>' +
+      '<style onload="loads.push(\'full\')">p { color: red }</style>' +
+      '<link rel="stylesheet" href="none.css" onload="loads.push(\'link\')">' +
+      '</head><body><p id="out"></p><script>' +
+      "onload = function () { document.getElementById('out').textContent = loads.sort().join(' ') };" +
+      '</script></body></html>',
+    { sheets: { 'none.css': '' } },
+  );
+  for (let i = 0; i < 20 && !doc.text('out'); i += 1) await settle(20);
+  assert.equal(doc.text('out'), 'empty full link');
+});
+
 test('a script after a <link> the head is still fetching runs once the sheet is in, and reads the document as it styles it; one before the link runs at once', async () => {
   const held = new HeldSheets();
   const doc = await hosted(
@@ -22635,6 +22650,39 @@ test('a document’s activeElement is the frame the focus is in, however deep, a
       'true',
       'false',
     ].join('|'),
+    logs.join('\n'),
+  );
+});
+
+test('a window hears blur as the focus leaves its frame and focus as it comes, before the element that takes it, and the frame it leaves lets its element go first', async () => {
+  const { text, logs } = await hostedFrames(
+    '<input id="top"><iframe id="own" src="own.html"></iframe><iframe id="blank" srcdoc="<p>b</p>"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function on(w, name) { w.addEventListener("focus", function () { r.push(name + ":focus"); }); w.addEventListener("blur", function () { r.push(name + ":blur:" + w.document.activeElement.nodeName); }); }' +
+      'onload = function () { try { go(); } catch (e) { document.getElementById("out").textContent = "threw " + e + " " + r; } };' +
+      'function go() {' +
+      '  var own = document.getElementById("own"), blank = document.getElementById("blank");' +
+      '  on(window, "top"); on(own.contentWindow, "own"); on(blank.contentWindow, "blank");' +
+      '  var input = own.contentDocument.querySelector("input");' +
+      '  input.addEventListener("focus", function () { r.push("input:focus"); });' +
+      '  input.focus(); r.push("|");' +
+      '  blank.focus(); r.push("|");' +
+      '  blank.focus(); r.push("|");' +
+      '  blank.blur(); r.push("|");' +
+      '  document.getElementById("top").focus();' +
+      '  document.getElementById("out").textContent = r.join(",");' +
+      '};' +
+      '</script>',
+    { 'own.html': '<!doctype html><input><script>var ready = 1;</script>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    'top:blur:IFRAME,own:focus,input:focus,|,own:blur:BODY,blank:focus,|,|,blank:blur:BODY,top:focus,|',
     logs.join('\n'),
   );
 });
