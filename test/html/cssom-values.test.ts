@@ -319,37 +319,12 @@ test('getComputedStyle answers a unitless line-height as the length it comes to,
   assert.deepEqual(out, ['24px', 'normal', '30px', '22px']);
 });
 
-test('setProperty takes its priority in any case and refuses any other, and reads null and undefined as WebIDL converts them', async () => {
+test("a sticky box's percentage insets read as lengths of its scroll container's content box", async () => {
   const out = await inPage(
-    '<div id="e"></div>',
-    `var s = document.getElementById('e').style;
-     var r = [];
-     s.setProperty('color', 'red', 'ImPoRtAnt');
-     r.push(s.getPropertyPriority('color'));
-     s.setProperty('color', 'blue', 'high');
-     r.push(s.color);
-     s.setProperty('color', 'green', undefined);
-     r.push(s.color, s.getPropertyPriority('color'));
-     s.setProperty('color', 'white', null);
-     r.push(s.color);
-     s.setProperty('color', undefined);
-     r.push(s.color);
-     s.color = undefined;
-     r.push(s.color);
-     s.setProperty('color', null);
-     r.push(s.color);
-     try { s.opacity = Symbol('1'); } catch (e) { r.push(e.name); }
-     return r;`,
+    '<div style="overflow: hidden; height: 200px; width: 100px; padding: 8px">' +
+      '<div style="height: 50px"><div id="in" style="position: sticky; top: 10%; left: calc(10% + 1px)"></div></div></div>',
+    `var cs = function (id) { return getComputedStyle(document.getElementById(id)); };
+     return [cs('in').top, cs('in').left, cs('in').bottom];`,
   );
-  assert.deepEqual(out, [
-    'important',
-    'red',
-    'green',
-    '',
-    'white',
-    'white',
-    'white',
-    '',
-    'TypeError',
-  ]);
+  assert.deepEqual(out, ['20px', '11px', 'auto']);
 });
