@@ -12745,14 +12745,10 @@ function paintGradient(
     at,
   );
   if (!(w > 0 && h > 0)) return;
-  const x0 =
-    w === at.width
-      ? at.x
-      : at.x + resolve(style.backgroundPositionX, at.width - w);
-  const y0 =
-    h === at.height
-      ? at.y
-      : at.y + resolve(style.backgroundPositionY, at.height - h);
+  // a tile as large as its area is placed by a length all the same: only
+  // a percentage of the room it leaves comes to nothing
+  const x0 = at.x + resolve(style.backgroundPositionX, at.width - w);
+  const y0 = at.y + resolve(style.backgroundPositionY, at.height - h);
   const cell = periodicCell(gradient, w, h, x0, y0, area, repeat);
   if (cell) {
     gradient = cell.gradient;
