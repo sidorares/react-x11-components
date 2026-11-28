@@ -13547,6 +13547,22 @@ test("a theme switcher's page: matchMedia reads the reader's scheme, the root's 
   );
 });
 
+test("a <link>'s sheet lists the rules it brought in, and a rule inserted into it stays", async () => {
+  const doc = await hosted(
+    '<html><head><link id="l" rel="stylesheet" href="a.css"></head>' +
+      '<body><p id="out"></p><script>' +
+      "onload = function () { try { var s = document.getElementById('l').sheet, r = [];" +
+      '  r.push(s.cssRules.length, s.cssRules[0].selectorText, s.cssRules[1].style.margin);' +
+      "  s.insertRule('i { color: green }', 0);" +
+      '  r.push(s.cssRules.length, s.cssRules[0].selectorText);' +
+      "  document.getElementById('out').textContent = r.join(' | ') } catch (e) { document.getElementById('out').textContent = String(e) + ' ' + (r && r.join(',')) } };" +
+      '</script></body></html>',
+    { sheets: { 'a.css': 'p { color: red }\nb { margin: 0 }' } },
+  );
+  for (let i = 0; i < 20 && !doc.text('out'); i += 1) await settle(20);
+  assert.equal(doc.text('out'), '2 | p | 0px | 3 | i');
+});
+
 test('a script after a <link> the head is still fetching runs once the sheet is in, and reads the document as it styles it; one before the link runs at once', async () => {
   const held = new HeldSheets();
   const doc = await hosted(

@@ -24757,7 +24757,8 @@ export function installDom(
     if (!sheet) {
       sheet = new CSSStyleSheet();
       sheet._owner = el;
-      sheet._rules = el instanceof HTMLLinkElement ? [] : null;
+      // the host's, a `<link>`'s from the sheet it brought in
+      sheet._rules = null;
       ownedSheets.set(el, sheet);
     }
     return sheet;
