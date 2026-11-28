@@ -2076,7 +2076,12 @@ keeps what it had focused, which hears `blur` before its window, and the one it
 comes to tells its own focused element `focus` after its window, but for an
 ancestor the focus goes down from, which lets its element go. A frame's window of
 the page's realm, and one of another origin, have a `focus()` of their own
-(`focusDocument`), not the page's. **Anything new that moves the focus between
+(`focusDocument`), not the page's. A popup's windows share the tree, so the
+focused document is also which window has the focus: one a page opens takes it
+as its first document comes in (`windowCame`), and one that closes gives it back
+to its opener, where it was there last (`windowGoes`, `DomShared.lastIn`). A
+`window.focus()` takes nothing from another top-level window: it only says where
+its own window's focus will be. **Anything new that moves the focus between
 documents goes through `focusCameTo`.**
 
 **A press on what has the focus leaves it there** (`pressLanded`, from

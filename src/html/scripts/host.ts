@@ -2644,6 +2644,9 @@ export class DomShared {
    *  it, and `hasFocus()` holds of it and of the documents around it. Null
    *  until then, which is each top-level document's own. */
   focused: Document | null = null;
+  /** The document each top-level document had the focus in last, which a
+   *  window that closes gives it back to (`windowGoes`). */
+  readonly lastIn = new WeakMap<Document, Document>();
   /** The host of each realm, by the document it is the realm of: where a
    *  window's events are dispatched, for a frame's document with no realm
    *  of its own the realm of the document its frame is in. */
@@ -4908,9 +4911,18 @@ export class DomHost {
    * the focus chain, and every engine fires them as the frame the focus is
    * in changes): before the element that takes the focus hears its own.
    */
-  focusCameTo(doc: Document, restore = false): void {
+  focusCameTo(doc: Document, restore = false, steal = false): void {
     const was = this._focusedFrom(doc);
+    // a window's `focus()` moves the focus within its own top-level window
+    // and takes none from another's, as no engine lets a frame bring its
+    // window to the front: where that window has it back, it is there
+    const top = this._topOf(doc);
+    if (restore && !steal && was !== doc && this._topOf(was) !== top) {
+      this._s.lastIn.set(top, doc);
+      return;
+    }
     this._s.focused = doc;
+    this._s.lastIn.set(top, doc);
     if (was === doc) return;
     // what a document the focus goes down from had focused is its frame's
     // now (the focusing steps of a navigable set each ancestor's focused
@@ -4920,12 +4932,40 @@ export class DomHost {
     // window, and one the focus comes back to tells `focus` after its
     // window's, as Chrome dispatches them on the window and its focused
     // element as the frame the focus is in changes
-    this._windowFocus(was, false, this._viewOfDoc(was)?.activeElement ?? null);
-    this._windowFocus(
-      doc,
-      true,
-      restore ? (this._viewOfDoc(doc)?.activeElement ?? null) : null,
-    );
+    this._windowFocus(was, false, this._ownFocusOf(was));
+    this._windowFocus(doc, true, restore ? this._ownFocusOf(doc) : null);
+  }
+
+  /**
+   * This realm's document came to a window. One a page opened takes the
+   * focus as it opens, as a browser focuses the window `window.open()`
+   * makes, and its opener's window and what it had focused hear `blur`
+   * (`opener`); a window's next document takes the focus where its last had
+   * it, and nothing hears of that.
+   */
+  windowCame(last: DomHost | null, opener: DomHost | null): void {
+    const focused = this._s.focused;
+    if (last && focused && this._topOf(focused) === last.document) {
+      this._s.focused = this.document;
+      this._s.lastIn.set(this.document, this.document);
+    } else if (opener) {
+      // where nothing was focused yet, the focus is in the opener's window
+      this._s.focused ??= opener._topOf(opener.document);
+      this.focusCameTo(this.document, true, true);
+    }
+  }
+
+  /** This realm's window goes: where it has the focus, the window that
+   *  opened it has it back, where it is still there, in the document it had
+   *  it in last, which hears `focus` with what it has focused. */
+  windowGoes(to: DomHost | null): void {
+    const focused = this._s.focused;
+    if (!focused || this._topOf(focused) !== this.document) return;
+    if (!to || to._disposed) {
+      this._s.focused = null;
+      return;
+    }
+    to.focusCameTo(this._s.lastIn.get(to.document) ?? to.document, true, true);
   }
 
   /** Whether `above` holds `doc` in one of its frames, however deep. */
@@ -4934,6 +4974,18 @@ export class DomHost {
       if (at === above) return true;
     }
     return false;
+  }
+
+  /** What `doc` has focused itself, the frames the focus is in aside: what
+   *  its view has, or what a host is focusing there while its widget or
+   *  stop is still to come. */
+  private _ownFocusOf(doc: Document): Element | null {
+    const host = this._s.runs.get(doc) as DomHost | undefined;
+    for (const at of host && host !== this ? [this, host] : [this]) {
+      const waiting = at._focusing;
+      if (waiting?.parent && at._ownerOf(waiting) === doc) return waiting;
+    }
+    return this._viewOfDoc(doc)?.activeElement ?? null;
   }
 
   /** The `<Html>` that draws `doc`: a frame's view, or the view of the
@@ -4968,7 +5020,7 @@ export class DomHost {
           host.entries?.call('__windowFocus', [
             at === doc ? 0 : host.idOf(doc),
             focused,
-            element && this._ownerOf(element) === doc ? host.idOf(element) : 0,
+            element && host._ownerOf(element) === doc ? host.idOf(element) : 0,
           ]);
         }
         return;
