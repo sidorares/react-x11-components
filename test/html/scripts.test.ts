@@ -13578,6 +13578,26 @@ test('an empty <style>, and a <link> to an empty sheet, tell their load as any s
   assert.equal(doc.text('out'), 'empty full link');
 });
 
+test("an @import's sheet is its rule's, which no page constructed", async () => {
+  const doc = await hosted(
+    '<html><head><style id="s">@import "sub/a.css";</style></head>' +
+      '<body><p id="out"></p><script>' +
+      "onload = function () { var r = [], top = document.getElementById('s').sheet; try {" +
+      '  var rule = top.cssRules[0], sheet = rule.styleSheet;' +
+      '  r.push(sheet.ownerRule === rule, sheet.parentStyleSheet === top, sheet.href.slice(-10));' +
+      "  try { sheet.replaceSync('p {}'); r.push('replaced'); } catch (e) { r.push(e.name); }" +
+      "  sheet.replace('p {}').catch(function (e) { r.push(e.name);" +
+      "    document.getElementById('out').textContent = r.join(' ') }) } catch (e) { document.getElementById('out').textContent = 'threw ' + e + ' ' + r } };" +
+      '</script></body></html>',
+    { sheets: { 'a.css': 'p { color: red }' } },
+  );
+  for (let i = 0; i < 20 && !doc.text('out'); i += 1) await settle(20);
+  assert.equal(
+    doc.text('out'),
+    'true true /sub/a.css NotAllowedError NotAllowedError',
+  );
+});
+
 test('a script after a <link> the head is still fetching runs once the sheet is in, and reads the document as it styles it; one before the link runs at once', async () => {
   const held = new HeldSheets();
   const doc = await hosted(
