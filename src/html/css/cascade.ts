@@ -909,7 +909,11 @@ type PseudoElement =
   | 'scroll-marker-group'
   | ScrollButton
   | 'details-content'
-  | 'column';
+  | 'column'
+  // a `::marker` of a `::before` or an `::after` that is a list item, by
+  // the element they are of (CSS Pseudo 4, 4.2)
+  | 'before-marker'
+  | 'after-marker';
 
 /** The pseudo-elements a widget is told of, and not a box of the document's
  *  (`Cascade.partStyle`). */
@@ -1192,6 +1196,18 @@ function splitPseudoElement(rule: StyleRule): {
       rule: { ...rule, selector },
       name: ` ${name}`,
     };
+  }
+  // `::before::marker` is the marker of a `::before`, which the element is
+  // matched for as it is for the `::before`
+  if (name === 'marker') {
+    const of = /::?(before|after)$/i.exec(selector);
+    if (of) {
+      const element = selector.slice(0, of.index);
+      return {
+        which: `${of[1].toLowerCase()}-marker` as PseudoElement,
+        rule: { ...rule, selector: element.trim() ? element : '*' },
+      };
+    }
   }
   return {
     which: (VENDOR_PSEUDO_ELEMENTS[name] ?? name) as PseudoElement,
@@ -4647,6 +4663,8 @@ export class Cascade {
     'scroll-button-block-end': new RuleIndex(true),
     'details-content': new RuleIndex(true),
     column: new RuleIndex(true),
+    'before-marker': new RuleIndex(true),
+    'after-marker': new RuleIndex(true),
   };
   /** The rules for each custom highlight's `::highlight()`, by its name
    *  (CSS Highlight API 1, 3): a document with none asks nothing. */
@@ -8897,8 +8915,14 @@ export class Cascade {
    * rule reaches it (CSS Lists 3, 3.1): the colour and the font a bullet or
    * a number is set in, and a `content` it is set as instead.
    */
-  markerStyle(el: Element, style: ComputedStyle): ComputedStyle | null {
-    const index = this._pseudo.marker;
+  markerStyle(
+    el: Element,
+    style: ComputedStyle,
+    /** The `::before` or `::after` whose marker it is, where it is one of
+     *  those: `style` is then that pseudo-element's. */
+    of?: 'before' | 'after',
+  ): ComputedStyle | null {
+    const index = this._pseudo[of ? (`${of}-marker` as const) : 'marker'];
     if (!index.size || !index.reaches(el)) return null;
     const candidates: Candidate[] = [];
     this._matchInto(index, el, candidates);
