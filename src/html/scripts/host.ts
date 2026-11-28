@@ -2644,6 +2644,8 @@ export class DomShared {
    *  it, and `hasFocus()` holds of it and of the documents around it. Null
    *  until then, which is each top-level document's own. */
   focused: Document | null = null;
+  /** The host of each realm, by the document it is the realm of. */
+  readonly runs = new WeakMap<Document, DomHost>();
 
   /** Each `<canvas>`'s pixels, whichever realm's script drew them, and who
    *  is told as they change. */
@@ -2909,6 +2911,7 @@ export class DomHost {
     this._ids.set(document, 1);
     this._nodes.set(1, document);
     this._s = shared;
+    shared.runs.set(document, this);
     this.inert = shared.inert;
     this._forceAsync = shared.forceAsync;
     this._frames = shared.frames;
@@ -4844,11 +4847,30 @@ export class DomHost {
    *  is in one of `doc`'s frames, however deep (`DomShared.focused`). */
   private _frameToFocus(doc: Document): Element | null {
     for (let at = this._s.focused; at && at !== doc;) {
-      const frame = this._s.frameOf.get(at);
-      if (!frame || this._s.frames.get(frame) !== at) return null;
-      const owner = this._ownerOf(frame);
-      if (owner === doc) return frame;
-      at = owner;
+      const up = this._frameParent(at);
+      if (up === doc) return this._s.frameOf.get(at) ?? null;
+      at = up;
+    }
+    return null;
+  }
+
+  /** The document `doc`'s frame is in, where it is the document its frame
+   *  shows now and the frame is in a document. */
+  private _frameParent(doc: Document): Document | null {
+    const frame = this._s.frameOf.get(doc);
+    if (!frame || this._s.frames.get(frame) !== doc) return null;
+    // the frame's document, which may be another realm's own: a host knows
+    // its own document and those it made, and the realm's hosts the rest
+    for (
+      let at: AnyNode | null = frame as AnyNode;
+      at;
+      at = at.parent ?? (at instanceof ShadowRoot ? at.host : null)
+    ) {
+      if (this._isDocument(at) || this._s.runs.has(at as Document)) {
+        return at === doc ? null : (at as Document);
+      }
+      const owner = this._owners.get(at);
+      if (owner) return owner === doc ? null : owner;
     }
     return null;
   }

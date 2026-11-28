@@ -22558,6 +22558,8 @@ test('a document’s activeElement is the frame the focus is in, however deep, a
       '  deep.querySelector("input").focus();' +
       '  r.push(document.activeElement.id, outer.activeElement === inner, deep.activeElement.nodeName);' +
       '  r.push(document.hasFocus(), outer.hasFocus(), deep.hasFocus());' +
+      // a realm of a frame's own finds the page's document above it
+      '  r.push(own.contentWindow.document.activeElement.nodeName);' +
       '  document.getElementById("top").focus();' +
       '  r.push(document.activeElement.id, outer.activeElement === outer.body, outer.hasFocus(), deep.hasFocus());' +
       // a frame of a realm of its own focused hands the focus to its document
@@ -22587,6 +22589,7 @@ test('a document’s activeElement is the frame the focus is in, however deep, a
       'true',
       'true',
       'true',
+      'BODY',
       'top',
       'true',
       'false',
