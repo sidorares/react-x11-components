@@ -11699,7 +11699,6 @@ function settleListBox(
 ): void {
   style.overflowX = 'hidden';
   style.overflowY = 'auto';
-  style.verticalAlign = 'text-bottom';
   style.userSelect = 'none';
   if (style.height !== 'auto' || style.heightKeyword || style.heightSize) {
     return;

@@ -402,6 +402,11 @@ select {
    draws them (\`settleListBox\`); a drop-down box's are its widget's menu.
    What is selected is grey, and the selection's colour while it has the
    focus. */
+/* and it sits on the bottom of the text beside it, as Blink's sheet has it,
+   where a page's own \`vertical-align\` does not say otherwise */
+select[multiple], select[size]:not([size="0"], [size="1"], [size=""]) {
+  vertical-align: text-bottom;
+}
 option { display: block; padding: 0 2px 1px; min-height: 1.2em; white-space: nowrap; }
 optgroup { display: block; font-weight: bolder; }
 optgroup > option { padding-inline-start: 20px; }
