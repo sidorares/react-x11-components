@@ -24505,8 +24505,10 @@ export function installDom(
         ? (this._owner as Any).href
         : null;
     }
+    // an empty title is none (CSSOM 6.1.1, "create a CSS style sheet":
+    // only a non-empty `title` attribute gives a sheet its title)
     get title(): Any {
-      return this._owner?.getAttribute('title') ?? null;
+      return this._owner?.getAttribute('title') || null;
     }
     _mediaList: Any = null;
     get media(): Any {

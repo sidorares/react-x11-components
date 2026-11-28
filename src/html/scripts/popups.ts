@@ -212,6 +212,7 @@ export class WindowSlot {
    *  every other window of the group reaches it. */
   adopt(runner: ScriptRunner): void {
     const was = this.runner;
+    const opened = !this._shown && !!this.opener;
     this.runner = runner;
     runner.slot = this;
     this.name =
@@ -234,6 +235,12 @@ export class WindowSlot {
     this._shown = true;
     this.active = { value: runner.openerPolicy, origin: runner.host.origin };
     for (const other of this.group.slots) this._linkWith(other, false);
+    if (was !== runner) {
+      runner.host.windowCame(
+        was?.host ?? null,
+        opened ? (this.opener?.runner?.host ?? null) : null,
+      );
+    }
     if (this.blank && was && was !== runner) {
       this.blank = false;
       if (this.popup) this.popup.initial = null;
@@ -321,6 +328,8 @@ export class WindowSlot {
     const runner = this.runner;
     this.runner = null;
     this._unlinked();
+    // the focus goes back to the window that opened it, as the window goes
+    runner?.host.windowGoes(this.opener?.runner?.host ?? null);
     runner?.dispose();
     this.group.slots.delete(this);
     for (const slot of this.group.slots) {

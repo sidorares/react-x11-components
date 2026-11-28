@@ -3262,3 +3262,40 @@ test('features read as HTML reads them', () => {
   assert.equal(parseWindowFeatures('noopener=yes').noopener, true);
   assert.equal(parseWindowFeatures('noopener=abc').noopener, false);
 });
+
+test('a window a page opens takes the focus from it, and gives it back as it closes, to what it had focused', async () => {
+  // a browser focuses the window `window.open()` makes: the opener's window
+  // and its focused element hear `blur`, and `hasFocus()` is false there,
+  // until the window goes and both hear `focus` again (WPT's
+  // focus/hasfocus-same-site)
+  const s = await scene(
+    pressed(`setTimeout(() => {
+      const input = document.createElement('input');
+      document.body.append(input);
+      input.focus();
+      const heard = [];
+      for (const [t, name] of [[window, 'window'], [input, 'input']]) {
+        t.addEventListener('focus', () => heard.push(name + ':focus'));
+        t.addEventListener('blur', () => heard.push(name + ':blur'));
+      }
+      console.log('before', document.activeElement === input, document.hasFocus());
+      const w = window.open('${APP}one');
+      addEventListener('message', () => {
+        // and its own focus() takes nothing from the window that has it
+        window.focus();
+        console.log('opened', document.hasFocus(), heard.join(), document.activeElement === input);
+        w.close();
+        setTimeout(() => console.log('closed', document.hasFocus(), document.activeElement === input, heard.join()), 60);
+      });
+    }, 30);`),
+    { [`${APP}one`]: page(`opener.postMessage('here', '*');`) },
+  );
+  await s.press();
+  assert.equal(await s.until('before'), 'true true');
+  // and the input keeps the focus of its document
+  assert.equal(await s.until('opened'), 'false input:blur,window:blur true');
+  assert.equal(
+    await s.until('closed'),
+    'true true input:blur,window:blur,window:focus,input:focus',
+  );
+});
