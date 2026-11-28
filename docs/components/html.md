@@ -323,9 +323,12 @@ nowhere here, `print`, is not asked for. A `<link rel=stylesheet>`'s or a
 media="(max-width: 600px)" href="mobile.css">` is asked for at any width
 and styles the document where it is that narrow, and
 `<style media="not all and (min-width: 640px)">` where it is narrower than
-640px, each restyling as a resize crosses it, and one with a `print` query
-alone is left out and its sheet not asked for. Its queries are read as an
-`@media` block's are, below.
+640px, each restyling as a resize crosses it. A `<style>` with a `print`
+query alone is left out. A `<link>` with one is asked for all the same, as
+Chrome asks for it, and is told its `load` while it styles nothing: pages
+load their CSS late as `media="print"` with an `onload` that sets the media
+it is for, and it styles the document from there. Its queries are read as
+an `@media` block's are, below.
 
 A stylesheet may be handed over as bytes instead, with the charset the
 protocol named if it named one: `{ kind: 'stylesheet', bytes, charset }`.
