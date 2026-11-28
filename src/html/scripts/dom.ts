@@ -415,6 +415,7 @@ export function installDom(
     'willValidate',
     'selection',
     'active',
+    'hasFocus',
     'log',
     'now',
     'timeOrigin',
@@ -26267,7 +26268,9 @@ export function installDom(
     }
     _fontSet: Any;
     hasFocus(): boolean {
-      return true;
+      return (
+        call('hasFocus', this === document ? undefined : this._id) === true
+      );
     }
     /** HTML 6.8.2: the whole document an editing host, its root element
      *  the host. Turned on, the selection goes to the document's start. */

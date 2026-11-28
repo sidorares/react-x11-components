@@ -22545,3 +22545,58 @@ test("a <style>'s disabled is its sheet's, so a page turns the style off through
   assert.equal(at - after, 30, `${at} then ${after}`);
   assert.equal(again, at);
 });
+
+test('a document’s activeElement is the frame the focus is in, however deep, and hasFocus() holds of the focused document and those around it', async () => {
+  const { text, logs } = await hostedFrames(
+    '<input id="top"><iframe id="outer" srcdoc="<iframe srcdoc=\'<input>\'></iframe>"></iframe>' +
+      '<iframe id="own" src="own.html"></iframe><p id="out"></p><script>' +
+      'onload = function () {' +
+      '  var r = []; var outer = document.getElementById("outer").contentDocument;' +
+      '  var inner = outer.querySelector("iframe"); var deep = inner.contentDocument;' +
+      '  var own = document.getElementById("own");' +
+      '  r.push(document.activeElement === document.body, outer.activeElement === outer.body, document.hasFocus(), outer.hasFocus());' +
+      '  deep.querySelector("input").focus();' +
+      '  r.push(document.activeElement.id, outer.activeElement === inner, deep.activeElement.nodeName);' +
+      '  r.push(document.hasFocus(), outer.hasFocus(), deep.hasFocus());' +
+      '  document.getElementById("top").focus();' +
+      '  r.push(document.activeElement.id, outer.activeElement === outer.body, outer.hasFocus(), deep.hasFocus());' +
+      // a frame of a realm of its own focused hands the focus to its document
+      '  own.focus();' +
+      '  r.push(document.activeElement.id, own.contentWindow.document.hasFocus(), document.hasFocus());' +
+      '  own.blur();' +
+      '  r.push(document.activeElement === document.body, own.contentWindow.document.hasFocus());' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '};' +
+      '</script>',
+    { 'own.html': '<!doctype html><input><script>var ready = 1;</script>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    [
+      'true',
+      'true',
+      'true',
+      'false',
+      'outer',
+      'true',
+      'INPUT',
+      'true',
+      'true',
+      'true',
+      'top',
+      'true',
+      'false',
+      'false',
+      'own',
+      'true',
+      'true',
+      'true',
+      'false',
+    ].join('|'),
+    logs.join('\n'),
+  );
+});
