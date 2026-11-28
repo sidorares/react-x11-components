@@ -136,6 +136,7 @@ import {
   tabKey,
 } from './profile.js';
 import type { Preferences, SavedSession } from './profile.js';
+import { sparePanes } from './spare-pane.js';
 
 /** What another application may drop on a page. */
 const TAKES_FROM_OUTSIDE = ['files', 'uris', 'text'];
@@ -824,8 +825,15 @@ function Toolbar({
   const [draft, setDraft] = useState<string | null>(null);
   // a document that arrived replaces what was being typed — but not a page
   // moving to another of its routes, which would take the words from under
-  // someone's fingers
-  useEffect(() => setDraft(null), [entry?.doc]);
+  // someone's fingers, and not the first document of a new tab, which is
+  // no news to someone who started typing in its address bar while its
+  // process started: that wiped the first second or so of what they typed
+  const shownDoc = useRef(entry?.doc);
+  useEffect(() => {
+    const before = shownDoc.current;
+    shownDoc.current = entry?.doc;
+    if (before !== undefined) setDraft(null);
+  }, [entry?.doc]);
 
   useEffect(() => {
     register(tab.id, input.current);
@@ -839,7 +847,7 @@ function Toolbar({
 
   const address =
     draft ??
-    (tab.loading && !entry ? tab.loading.url : displayUrl(entry?.url ?? ''));
+    displayUrl(tab.loading && !entry ? tab.loading.url : (entry?.url ?? ''));
   const go = (text: string) => {
     const url = urlFromInput(text);
     if (!url) return;
@@ -1024,14 +1032,6 @@ function TabPage({
   const id = tab.id;
   const latest = useRef(tab);
   latest.current = tab;
-  // the tab's own key, which its process keeps its `sessionStorage` by. The
-  // User-Agent goes in the props bag, not here: in the env it would respawn
-  // the pane on every change (`<Frame env>`), where as a prop it reaches the
-  // running process, which sets it on its network and reloads in place.
-  const env = useMemo(
-    () => ({ ...PANE_ENV, BROWSER_TAB_KEY: tab.key }),
-    [tab.key],
-  );
 
   const onCommit = useCallback(
     (seq: number, _url: string, title: string | null, posted: boolean) =>
@@ -1147,6 +1147,7 @@ function TabPage({
     stepDelta: tab.step?.delta ?? 0,
     stepUrl: tab.step?.url ?? '',
     history: tab.history,
+    tabKey: tab.key,
     zoom: tab.zoom,
     scripts,
     userAgent,
@@ -1217,7 +1218,7 @@ function TabPage({
         props={props as unknown as FrameProps}
         transport={transport}
         execArgv={PANE_FLAGS}
-        env={env}
+        env={PANE_ENV}
         // A tab aside is still in the window, so its pane would be a stop in
         // the window's order, between the page showing and the tab strip:
         // Tab off the end of a page went on into the next tab's, off screen.
@@ -1454,6 +1455,15 @@ export function Browser({
     for (const key of keys.current) if (!now.has(key)) onTabClosed?.(key);
     keys.current = now;
   }, [state.tabs]);
+  // The next tab's process, started before it is asked for, where the
+  // browser starts its own (`spare-pane.ts`); `BROWSER_SPARE_PANE=0` turns
+  // it off.
+  const [spares] = useState(() =>
+    inline || paneTransport || process.env.BROWSER_SPARE_PANE === '0'
+      ? null
+      : sparePanes({ execArgv: PANE_FLAGS, env: PANE_ENV }),
+  );
+  useEffect(() => () => spares?.dispose(), [spares]);
   const cocoa = useSupports('nativeControls');
   /** The shortcut modifier, as a chord names it. */
   const mod = cocoa ? 'Super' : 'Control';
@@ -1552,6 +1562,8 @@ export function Browser({
   }, [sites]);
   // and the default for the rest, which the Develop menu turns on and off
   const [byDefault, setByDefault] = useState(scripts);
+  // a new tab's first page likely runs its scripts where that is the default
+  useEffect(() => spares?.setScripts(byDefault), [spares, byDefault]);
   const scriptsFor = (url: string): boolean =>
     sites.get(siteOf(url)) ?? byDefault;
   /** The page shown in `tab` loaded again where what its scripts do moved:
@@ -1950,7 +1962,7 @@ export function Browser({
                 dock={dock}
                 onDock={onDock}
                 inline={inline}
-                transport={paneTransport}
+                transport={paneTransport ?? spares?.transport}
                 dispatch={dispatch}
                 open={open}
                 onCommand={onCommand}
