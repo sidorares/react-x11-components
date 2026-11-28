@@ -364,3 +364,22 @@ test("getComputedStyle reads a pseudo-element's name with its escapes", async ()
   );
   assert.deepEqual(out, ['50px', '50px', '']);
 });
+
+test("getComputedStyle reads a pseudo-element's content as it computes, a hidden element's as much as a shown one's", async () => {
+  const out = await inPage(
+    '<style>' +
+      '#a::before { content: "mobile" } #a::after { content: none }' +
+      '#b { display: none } #b::before { content: "Foo" counter(c, upper-roman) open-quote }' +
+      '#c::after { content: counters(c, ".") url(http://localhost/x.png) }' +
+      '</style><div id="a"></div><div id="b"></div><div id="c"></div>',
+    `var cs = function (id, p) { return getComputedStyle(document.getElementById(id), p).content; };
+     return [cs('a', '::before'), cs('a', '::after'), cs('a', null), cs('b', '::before'), cs('c', '::after')];`,
+  );
+  assert.deepEqual(out, [
+    '"mobile"',
+    'none',
+    'normal',
+    '"Foo" counter(c, upper-roman) open-quote',
+    'counters(c, ".") url("http://localhost/x.png")',
+  ]);
+});
