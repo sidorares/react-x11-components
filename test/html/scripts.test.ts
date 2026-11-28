@@ -8739,6 +8739,25 @@ test("a control's validity is a ValidityState, a pattern v mode refuses is none,
   );
 });
 
+test("a control's validity says every flag that holds, its message the first's, and a pattern that is none alone is none", async () => {
+  const doc = await hosted(
+    '<input id="u" type="url" pattern="a" value="b">' +
+      '<input id="c" pattern="a" value="b"><input id="g" pattern="a)(b" value="de">' +
+      '<p id="out"></p><script>' +
+      'var u = document.getElementById("u"), c = document.getElementById("c"),' +
+      '  g = document.getElementById("g");' +
+      'c.setCustomValidity("mine");' +
+      'document.getElementById("out").textContent = [u.validity.typeMismatch,' +
+      '  u.validity.patternMismatch, u.validity.valid, u.validationMessage,' +
+      '  c.validity.customError, c.validity.patternMismatch, c.validationMessage, g.validity.valid].join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|true|false|Please enter a URL.|true|true|mine|true',
+  );
+});
+
 test("a copy of a control holds what the control held, and its markup's default", async () => {
   const doc = await hosted(
     '<div id="w"><input id="t" value="a"><input id="c" type="checkbox">' +
