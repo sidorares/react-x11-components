@@ -13555,9 +13555,9 @@ export function installDom(
       call('customValidity', this._id, str(message));
     }
   }
-  /** What the host says is wrong with a control: its `ValidityState`
-   *  member and its words, or nothing where nothing is. The same answer
-   *  `:invalid` has. */
+  /** What the host says is wrong with a control: every `ValidityState`
+   *  member that holds, a space between, and the first one's words, or
+   *  nothing where nothing is. The same answer `:invalid` has. */
   const validityOf = (el: Any): string[] =>
     str(call('validity', el._id) ?? '').split('\u0000');
   const VALIDITY_FLAGS = [
@@ -13587,7 +13587,7 @@ export function installDom(
   for (const name of VALIDITY_FLAGS) {
     Object.defineProperty(ValidityState.prototype, name, {
       get(this: Any): boolean {
-        return validityOf(this._el)[0] === name;
+        return validityOf(this._el)[0].split(' ').includes(name);
       },
       enumerable: true,
       configurable: true,
