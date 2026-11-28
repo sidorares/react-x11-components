@@ -1922,3 +1922,41 @@ metric(
     assert.strictEqual(linesOf(el, 'joined').length, 1, 'one word');
   },
 );
+
+metric(
+  'a line that wraps at a soft hyphen ends in the hyphen hyphenate-character names',
+  async () => {
+    // CSS Text 4, 6.1: a line wrapped at a soft hyphen shows a hyphen, the
+    // engine's own pick where the sheet names none and the string it names
+    // where it does, which a run hands on (`DocumentRun.hyphen`); an empty
+    // one shows nothing
+    const word = 'Deoxy&shy;ribo&shy;nucleic';
+    const { node } = await render(
+      '<style>body{margin:0}p{font:20px monospace;width:7ch;margin:0}</style>' +
+        `<p id="auto">${word}</p>` +
+        `<p id="named" style="hyphenate-character:'='">${word}</p>` +
+        `<p id="none" style="hyphenate-character:''">${word}</p>`,
+      400,
+    );
+    type Glyphed = { codePoints: number[] };
+    type Run = { hyphen?: boolean; run: { glyphs: Glyphed[] } };
+    type Placed = { layout: { lines: { runs: Run[] }[] }; layoutLine: number };
+    const hyphens = (id: string) =>
+      linesOf(view(node), id).map((line) => {
+        const text = line.texts[0] as unknown as Placed;
+        const run = text.layout.lines[text.layoutLine].runs.find(
+          (r) => r.hyphen,
+        );
+        return run
+          ? run.run.glyphs
+              .map((g) => String.fromCodePoint(...g.codePoints))
+              .join('')
+          : null;
+      });
+    assert.deepStrictEqual(hyphens('auto'), ['‐', '‐', null]);
+    assert.deepStrictEqual(hyphens('named'), ['=', '=', null]);
+    const none = hyphens('none');
+    assert.strictEqual(none.length, 3, 'it still wraps there');
+    for (const hyphen of none) assert.ok(!hyphen, 'and shows nothing');
+  },
+);

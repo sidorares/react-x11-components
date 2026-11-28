@@ -153,6 +153,7 @@ const other: Record<(typeof RUN_FIELDS)[number], TextRun[keyof TextRun]> = {
   stretch: 75,
   slant: 'oblique',
   emphasis: 'o\u0000#000000\u0000\u25cf',
+  hyphen: '=',
 };
 
 test('every field of a run is what it is found by', () => {

@@ -452,3 +452,27 @@ metric(
     }
   },
 );
+
+test('a character of the supplementary planes has the level its bidi class gives it', async () => {
+  // bidi-js reads a code unit at a time and takes a surrogate for a
+  // left-to-right letter, so Cypriot and Adlam were left-to-right text and
+  // an emoji a strong letter. The levels are resolved over stand-ins of
+  // each character's class (`bidiText`), as ntk resolves the ones it
+  // orders a line by, and the two agree letter for letter
+  const { bidiText, embeddingLevelsOf } =
+    await import('../../src/html/direction.js');
+  const levels = (text: string, direction: 'ltr' | 'rtl' = 'ltr') => [
+    ...embeddingLevelsOf(text, direction),
+  ];
+  const cypriot = '\u{10800}\u{10830}';
+  assert.deepStrictEqual(levels(`a ${cypriot} b`), [0, 0, 1, 1, 1, 1, 0, 0]);
+  assert.deepStrictEqual(levels('\u{1E900} 12'), levels('אא 12'));
+  // an emoji is neutral: between Hebrew words it is at their level
+  assert.deepStrictEqual(levels('א \u{1F600} ב', 'rtl'), [1, 1, 1, 1, 1, 1]);
+  // a left-to-right letter of the planes is one still, and a text with
+  // nothing of the planes is handed over as it is
+  assert.deepStrictEqual(levels('א \u{1D400} ב', 'rtl'), [1, 1, 2, 2, 1, 1]);
+  const plain = 'abc א';
+  assert.strictEqual(bidiText(plain), plain);
+  assert.strictEqual(bidiText(`x${cypriot}`).length, 5);
+});

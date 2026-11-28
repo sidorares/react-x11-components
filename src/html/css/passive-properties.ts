@@ -181,8 +181,16 @@ export const PASSIVE: Record<string, PassiveProperty> = Object.assign(
     ),
     'font-synthesis-small-caps': inherited('auto', keyword('auto', 'none')),
     // `none` is read as the boxes are built, and takes a soft hyphen's
-    // break away (`heldText`); no hyphen is drawn at a break
+    // break away (`heldText`)
     hyphens: inherited('manual', keyword('none', 'manual', 'auto')),
+    // what a line shows where it wraps at a soft hyphen: the engine's own
+    // pick, or the string said, which a run hands on (`DocumentRun.hyphen`)
+    'hyphenate-character': inherited('auto', (v) => {
+      const t = v.trim();
+      if (t.toLowerCase() === 'auto') return 'auto';
+      const quoted = /^(["'])(.*)\1$/s.exec(t);
+      return quoted ? JSON.stringify(quoted[2]) : null;
+    }),
     // read where an image is sized and drawn (`storedAsWritten`): `none`
     // is the image as its file stores it, with no EXIF turn (CSS Images
     // 3, 5.3)
