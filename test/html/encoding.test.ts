@@ -552,3 +552,23 @@ scripted(
     assert.ok((await p.until('three|')).startsWith('UTF-8|'));
   },
 );
+
+test("a form sends the entry list a page's script made, its formdata listeners' entries in it", () => {
+  const doc = parseDocument(
+    '<form method=post action="/go"><input name=q value=a></form>',
+  );
+  const form = (doc.children[0] as Element) ?? null;
+  const sent = formSubmission(form, null, {
+    base: 'https://example.test/',
+    entries: [
+      { name: 'q', value: 'a', file: false },
+      { name: 'added', value: 'x\ny', file: false },
+    ],
+  });
+  assert.equal(sent?.body, 'q=a&added=x%0D%0Ay');
+  // with none, the controls as they are
+  assert.equal(
+    formSubmission(form, null, { base: 'https://example.test/' })?.body,
+    'q=a',
+  );
+});

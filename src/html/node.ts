@@ -112,7 +112,7 @@ import {
 } from './scroll-buttons.js';
 import { directionHolder } from './direction.js';
 import { controlsReached, inputType, legendMovedIn } from './form.js';
-import type { FieldSelection } from './form.js';
+import type { FieldSelection, SubmittedEntry } from './form.js';
 import type { HtmlDownloadRequest } from './download.js';
 import type { HtmlDrop } from './drag.js';
 import type { HtmlFile } from './files.js';
@@ -915,7 +915,11 @@ export interface DocumentInteraction {
    *  the application's own, which autofocus does not take. */
   focusOutside(): boolean;
   activate(el: Element): boolean;
-  submit(form: Element, submitter: Element | null): void;
+  submit(
+    form: Element,
+    submitter: Element | null,
+    entries?: readonly SubmittedEntry[],
+  ): void;
   reportValidity(
     form: Element,
     submitter: Element | null,

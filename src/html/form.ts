@@ -96,6 +96,19 @@ export interface SubmitContext {
   /** The label of the document's encoding, which a form with no
    *  `accept-charset` is sent in. UTF-8 where absent. */
   encoding?: string;
+  /** The entry list a page's script made, its `formdata` listeners
+   *  having added to it (HTML 4.10.21.4), in place of the controls': a
+   *  file's entry is the controls' file of that name, in turn, and one a
+   *  script made goes with no bytes. */
+  entries?: readonly SubmittedEntry[];
+}
+
+/** An entry of the list a script made: its name, and its value or a
+ *  file's name. */
+export interface SubmittedEntry {
+  name: string;
+  value: string;
+  file: boolean;
 }
 
 // --- which controls, in which form ---------------------------------------------
@@ -707,6 +720,21 @@ interface Entry {
   chosen?: HtmlFile;
 }
 
+/** A script's entry list, each file's bytes those of the control's file
+ *  that has its name, taken in order. */
+function madeByScript(
+  entries: readonly SubmittedEntry[],
+  own: readonly Entry[],
+): Entry[] {
+  const files = own.filter((e) => e.file && e.chosen);
+  return entries.map(({ name, value, file }) => {
+    if (!file) return { name, value, file: false };
+    const at = files.findIndex((e) => e.value === value);
+    const chosen = at < 0 ? undefined : files.splice(at, 1)[0].chosen;
+    return { name, value, file: true, chosen };
+  });
+}
+
 /**
  * The entries a form submits (HTML 4.10.21.4): each enabled control it owns
  * that has a name, with its value — the checked checkboxes and radios, a
@@ -1007,13 +1035,8 @@ export function formSubmission(
   const target = pick('formtarget', 'target') ?? baseTarget(rootOf(form));
 
   const encoding = formEncoding(form, context.encoding);
-  const list = entriesOf(
-    form,
-    submitter,
-    context.live,
-    context.point,
-    encoding,
-  );
+  const own = entriesOf(form, submitter, context.live, context.point, encoding);
+  const list = context.entries ? madeByScript(context.entries, own) : own;
   const entries = list.map(({ name, value }): [string, string] => [
     name,
     value,
@@ -1153,15 +1176,23 @@ function absoluteUrl(text: string): boolean {
  *  where the runtime has no `v` — and no constraint at all where it does
  *  not compile. */
 function patternOf(source: string): RegExp | null {
-  for (const flags of ['v', 'u']) {
-    try {
-      return new RegExp(`^(?:${source})$`, flags);
-    } catch {
-      // try the next, then give up
-    }
+  try {
+    return new RegExp(`^(?:${source})$`, V_FLAG ? 'v' : 'u');
+  } catch {
+    // one `v` mode refuses is no constraint, even where `u` would take it
+    return null;
   }
-  return null;
 }
+
+/** Whether the runtime has `v` mode at all. */
+const V_FLAG = ((): boolean => {
+  try {
+    new RegExp('', 'v');
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 /** Whether a control's value is checked at all (HTML 4.10.21.2, "barred
  *  from constraint validation"), which `willValidate` reads. As Blink has
@@ -1279,7 +1310,14 @@ export function constraintError(
 
   const typed = live(el);
   const value = controlValue(el, live);
-  if (type === 'number' && typed !== undefined && typed.trim() && !value) {
+  // what a script set is sanitized, and a bad input only the user's
+  if (
+    type === 'number' &&
+    typed !== undefined &&
+    !SET_BY_SCRIPT.has(el) &&
+    typed.trim() &&
+    !value
+  ) {
     return wrong('badInput', 'Please enter a number.');
   }
   if (!value) {
