@@ -415,6 +415,7 @@ export function installDom(
     'willValidate',
     'selection',
     'active',
+    'hasFocus',
     'log',
     'now',
     'timeOrigin',
@@ -26285,7 +26286,9 @@ export function installDom(
     }
     _fontSet: Any;
     hasFocus(): boolean {
-      return true;
+      return (
+        call('hasFocus', this === document ? undefined : this._id) === true
+      );
     }
     /** HTML 6.8.2: the whole document an editing host, its root element
      *  the host. Turned on, the selection goes to the document's start. */
@@ -39478,8 +39481,14 @@ export function installDom(
    *  declaration. A vendor's name is the element's, as it always was. */
   const computedPseudo = (pseudo: Any): string | null => {
     if (pseudo === undefined || pseudo === null) return '';
-    const s = str(pseudo);
+    let s = str(pseudo);
     if (s[0] !== ':') return '';
+    // a name is an identifier, read with its escapes (CSS Syntax 3, 4.3.11):
+    // `::\000041fter` is `::after`
+    const colons = s[1] === ':' ? 2 : 1;
+    if (s.includes('\\') && CSS_IDENT.test(s.slice(colons))) {
+      s = s.slice(0, colons) + unescapeIdent(s.slice(colons));
+    }
     // CSS 2's spellings of four (CSS Pseudo 4, 8)
     const legacy = /^:(before|after|first-line|first-letter)$/i.exec(s);
     if (legacy) return legacy[1].toLowerCase();
@@ -51864,6 +51873,17 @@ export function installDom(
     const at = s.entries.findIndex((e) => e.key === str(key) && !e.other);
     if (at < 0 || at === s.index) return false;
     traverseTo(s, at, undefined, null, true);
+    return true;
+  });
+  // the focus came to a document's frame or left it (`DomHost.focusCameTo`):
+  // its window hears `focus` or `blur`, the page's own or a frame's of this
+  // realm's, where anything made its window
+  entry('__windowFocus', () => {
+    const [id, focused] = input();
+    const doc = id ? wrap(id) : document;
+    const target = doc === document ? windowTarget : frameTargets.get(doc);
+    if (!target) return false;
+    dispatch(target, trusted(new FocusEvent(focused ? 'focus' : 'blur')));
     return true;
   });
   // a frame's document in this realm is going: the host puts another in

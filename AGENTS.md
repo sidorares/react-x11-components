@@ -2060,6 +2060,19 @@ reported reaches React a layout and a render later, and a Tab straight after a
 page's script changed the document found none, and went nowhere. Anything new
 that steps through the stops from a key asks `stopsNow` and not the state.
 
+**Which frame has the focus is the tree's, not a view's** (`DomShared.focused`).
+Each `<Html>` knows only what it focused itself, so the document the focus is in
+is kept where every realm of the page reads it: set by a script's `focus()` (a
+frame's element hands it to the frame's document), by a `blur()` of what held
+it, and by a user's `focusin` told through `dispatch`. A document's
+`activeElement` is the frame on the way down to it, however deep, and
+`hasFocus()` holds of it and of what is around it (`_frameToFocus`). As it moves
+to another document, what has the focus in the one it leaves lets it go
+(`_blurOther`), that document's window hears `blur` and the new one's `focus`,
+before the element that takes it hears its own: Chrome's order, in whichever
+realm runs each window (`DomShared.runs`, `__windowFocus`). **Anything new that
+moves the focus between documents goes through `focusCameTo`.**
+
 **A press on what has the focus leaves it there** (`pressLanded`, from
 `defaultMouseDown`). Core's press goes to the nearest node that takes the
 focus, and all the document draws has the root for that, after the page's
@@ -4433,9 +4446,23 @@ follow. **The browser opens the profile and ends the last session before
 any pane starts** (`endSession`), since a pane reads what is there as it
 makes its first request; and **a jar reads its store at its first use, not
 as it is made**, since an inline page's jar is made as `page.tsx` is
-imported, before the browser has tidied anything. The tab's key, which its
-`sessionStorage` is kept by across a restart, reaches its process as
-`BROWSER_TAB_KEY`, and the directory as `BROWSER_PROFILE_DIR`.
+imported, before the browser has tidied anything. The directory reaches a
+tab's process as `BROWSER_PROFILE_DIR`; the tab's key, which its
+`sessionStorage` is kept by across a restart, is a prop (`PageProps.tabKey`),
+told to the profile with `forTab` before any document runs.
+
+**A new tab takes a process started before it** (`spare-pane.ts`). Some
+0.7 to 1.2 s of a new tab's wait on a Mac, and up to 3 s, was its process
+loading code before it drew anything, none of it the tab's own, so the
+browser keeps one pane forked and loading `page.tsx` (`pane-preload.ts`,
+and the scripts runtime where pages run scripts by default), and hands it to
+the next `<Frame>` that asks for the same flags and environment: click to
+first frame went from 1.3–3.5 s to 0.5–0.6 s. Two things are load-bearing.
+**Nothing in a pane's environment may name its tab**, or no spare fits: a
+per-tab value goes in the props. And **the preload neither awaits nor
+listens for a message**: an `--import` still running holds back core's pane
+entry, and a listener starts reading the IPC channel and takes the hello
+the entry waits for. `BROWSER_SPARE_PANE=0` turns it off.
 
 **`<Html scripts>` runs a page's scripts in a context of their own, and
 what keeps them there is a few rules** (`src/html/scripts/`,
