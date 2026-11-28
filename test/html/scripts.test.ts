@@ -8739,6 +8739,25 @@ test("a control's validity is a ValidityState, a pattern v mode refuses is none,
   );
 });
 
+test("a control's validity says every flag that holds, its message the first's, and a pattern that is none alone is none", async () => {
+  const doc = await hosted(
+    '<input id="u" type="url" pattern="a" value="b">' +
+      '<input id="c" pattern="a" value="b"><input id="g" pattern="a)(b" value="de">' +
+      '<p id="out"></p><script>' +
+      'var u = document.getElementById("u"), c = document.getElementById("c"),' +
+      '  g = document.getElementById("g");' +
+      'c.setCustomValidity("mine");' +
+      'document.getElementById("out").textContent = [u.validity.typeMismatch,' +
+      '  u.validity.patternMismatch, u.validity.valid, u.validationMessage,' +
+      '  c.validity.customError, c.validity.patternMismatch, c.validationMessage, g.validity.valid].join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|true|false|Please enter a URL.|true|true|mine|true',
+  );
+});
+
 test("a copy of a control holds what the control held, and its markup's default", async () => {
   const doc = await hosted(
     '<div id="w"><input id="t" value="a"><input id="c" type="checkbox">' +
@@ -13526,6 +13545,22 @@ test("a theme switcher's page: matchMedia reads the reader's scheme, the root's 
     'b.css | a.css | error gone.css',
     'the first sheet again, already in, is told too',
   );
+});
+
+test("a <link>'s sheet lists the rules it brought in, and a rule inserted into it stays", async () => {
+  const doc = await hosted(
+    '<html><head><link id="l" rel="stylesheet" href="a.css"></head>' +
+      '<body><p id="out"></p><script>' +
+      "onload = function () { try { var s = document.getElementById('l').sheet, r = [];" +
+      '  r.push(s.cssRules.length, s.cssRules[0].selectorText, s.cssRules[1].style.margin);' +
+      "  s.insertRule('i { color: green }', 0);" +
+      '  r.push(s.cssRules.length, s.cssRules[0].selectorText);' +
+      "  document.getElementById('out').textContent = r.join(' | ') } catch (e) { document.getElementById('out').textContent = String(e) + ' ' + (r && r.join(',')) } };" +
+      '</script></body></html>',
+    { sheets: { 'a.css': 'p { color: red }\nb { margin: 0 }' } },
+  );
+  for (let i = 0; i < 20 && !doc.text('out'); i += 1) await settle(20);
+  assert.equal(doc.text('out'), '2 | p | 0px | 3 | i');
 });
 
 test('a script after a <link> the head is still fetching runs once the sheet is in, and reads the document as it styles it; one before the link runs at once', async () => {
@@ -22544,4 +22579,62 @@ test("a <style>'s disabled is its sheet's, so a page turns the style off through
   );
   assert.equal(at - after, 30, `${at} then ${after}`);
   assert.equal(again, at);
+});
+
+test('a document’s activeElement is the frame the focus is in, however deep, and hasFocus() holds of the focused document and those around it', async () => {
+  const { text, logs } = await hostedFrames(
+    '<input id="top"><iframe id="outer" srcdoc="<iframe srcdoc=\'<input>\'></iframe>"></iframe>' +
+      '<iframe id="own" src="own.html"></iframe><p id="out"></p><script>' +
+      'onload = function () {' +
+      '  var r = []; var outer = document.getElementById("outer").contentDocument;' +
+      '  var inner = outer.querySelector("iframe"); var deep = inner.contentDocument;' +
+      '  var own = document.getElementById("own");' +
+      '  r.push(document.activeElement === document.body, outer.activeElement === outer.body, document.hasFocus(), outer.hasFocus());' +
+      '  deep.querySelector("input").focus();' +
+      '  r.push(document.activeElement.id, outer.activeElement === inner, deep.activeElement.nodeName);' +
+      '  r.push(document.hasFocus(), outer.hasFocus(), deep.hasFocus());' +
+      // a realm of a frame's own finds the page's document above it
+      '  r.push(own.contentWindow.document.activeElement.nodeName);' +
+      '  document.getElementById("top").focus();' +
+      '  r.push(document.activeElement.id, outer.activeElement === outer.body, outer.hasFocus(), deep.hasFocus());' +
+      // a frame of a realm of its own focused hands the focus to its document
+      '  own.focus();' +
+      '  r.push(document.activeElement.id, own.contentWindow.document.hasFocus(), document.hasFocus());' +
+      '  own.blur();' +
+      '  r.push(document.activeElement === document.body, own.contentWindow.document.hasFocus());' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '};' +
+      '</script>',
+    { 'own.html': '<!doctype html><input><script>var ready = 1;</script>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    [
+      'true',
+      'true',
+      'true',
+      'false',
+      'outer',
+      'true',
+      'INPUT',
+      'true',
+      'true',
+      'true',
+      'BODY',
+      'top',
+      'true',
+      'false',
+      'false',
+      'own',
+      'true',
+      'true',
+      'true',
+      'false',
+    ].join('|'),
+    logs.join('\n'),
+  );
 });

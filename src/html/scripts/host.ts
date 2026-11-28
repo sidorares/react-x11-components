@@ -237,7 +237,7 @@ import {
   setCustomError,
   setIndeterminate,
   validated,
-  constraintError,
+  constraintErrors,
 } from '../form.js';
 import type { Bridge, Primitive } from './dom.js';
 import { PageCrypto, keySecrets } from './subtle.js';
@@ -2492,6 +2492,11 @@ function withShadowTemplates(
 interface SheetState {
   rules: string[];
   version: number;
+  /** For a `<link>`'s: the text the document parsed for it, which the
+   *  rules are read from again when it changes and the page has edited
+   *  none of them. */
+  from?: string;
+  edited?: boolean;
 }
 
 /** Counts the hosts made, each a token its storage changes carry, so
@@ -2702,6 +2707,14 @@ export class DomShared {
   /** A node one realm hands another (`handOver`), and that realm's origin:
    *  another origin's takes nothing. */
   handed: { node: AnyNode; host: DomHost } | null = null;
+  /** The document of this tree's frames that has the focus — the focused
+   *  navigable's active document (HTML 6.6.2) — once something was focused
+   *  in one: an ancestor's `activeElement` is the frame on the way down to
+   *  it, and `hasFocus()` holds of it and of the documents around it. Null
+   *  until then, which is each top-level document's own. */
+  focused: Document | null = null;
+  /** The host of each realm, by the document it is the realm of. */
+  readonly runs = new WeakMap<Document, DomHost>();
 
   /** Each `<canvas>`'s pixels, whichever realm's script drew them, and who
    *  is told as they change. */
@@ -2967,6 +2980,7 @@ export class DomHost {
     this._ids.set(document, 1);
     this._nodes.set(1, document);
     this._s = shared;
+    shared.runs.set(document, this);
     this.inert = shared.inert;
     this._forceAsync = shared.forceAsync;
     this._frames = shared.frames;
@@ -3164,6 +3178,10 @@ export class DomHost {
       return true;
     }
     if (event.type.startsWith('mouse')) this._under = event.target;
+    // the user's focus came to something in a document
+    if (event.type === 'focusin' && event.target instanceof Element) {
+      this.focusCameTo(this._ownerOf(event.target));
+    }
     // a user's press or key has used the page (HTML 6.4.1, "activation
     // triggering input event"): what the realm notes of it is the page's to
     // say, so what a gesture lets through asks this
@@ -4894,6 +4912,50 @@ export class DomHost {
   }
   private _opView: HtmlHandle | null = null;
 
+  /** The frame element in `doc` that the focused document is in, where it
+   *  is in one of `doc`'s frames, however deep (`DomShared.focused`). */
+  private _frameToFocus(doc: Document): Element | null {
+    for (let at = this._s.focused; at && at !== doc;) {
+      const up = this._frameParent(at);
+      if (up === doc) return this._s.frameOf.get(at) ?? null;
+      at = up;
+    }
+    return null;
+  }
+
+  /** The document `doc`'s frame is in, where it is the document its frame
+   *  shows now and the frame is in a document. */
+  private _frameParent(doc: Document): Document | null {
+    const frame = this._s.frameOf.get(doc);
+    if (!frame || this._s.frames.get(frame) !== doc) return null;
+    // the frame's document, which may be another realm's own: a host knows
+    // its own document and those it made, and the realm's hosts the rest
+    for (
+      let at: AnyNode | null = frame as AnyNode;
+      at;
+      at = at.parent ?? (at instanceof ShadowRoot ? at.host : null)
+    ) {
+      if (this._isDocument(at) || this._s.runs.has(at as Document)) {
+        return at === doc ? null : (at as Document);
+      }
+      const owner = this._owners.get(at);
+      if (owner) return owner === doc ? null : owner;
+    }
+    return null;
+  }
+
+  /** Whether `doc` is the focused document or holds it in a frame. */
+  private _holdsFocus(doc: Document): boolean {
+    const focused = this._s.focused;
+    if (!focused) return doc === this.document && !this._s.frameOf.has(doc);
+    return focused === doc || this._frameToFocus(doc) !== null;
+  }
+
+  /** The focus came to something in `doc`, or to `doc` itself. */
+  focusCameTo(doc: Document): void {
+    this._s.focused = doc;
+  }
+
   /** The view that draws the document of the node an op is about, where it
    *  is another document's than this realm's own and something draws it. */
   private _viewOfNode(op: string, id: Primitive): HtmlHandle | null {
@@ -6166,6 +6228,7 @@ export class DomHost {
         }
         const was = state.version;
         state.rules.splice(index, 0, rules[0]);
+        state.edited = true;
         state.version = this._s.sheetVersion += 1;
         this._sheetsChanged.add(el);
         return `${was}\u0000${state.version}\u0000${rules[0]}`;
@@ -6196,6 +6259,7 @@ export class DomHost {
         }
         const was = state.version;
         state.rules.splice(index, 1);
+        state.edited = true;
         state.version = this._s.sheetVersion += 1;
         this._sheetsChanged.add(el);
         return `${was}\u0000${state.version}`;
@@ -8033,12 +8097,15 @@ export class DomHost {
           typeof b === 'boolean' ? b : text(b),
         );
       }
-      // what is wrong with a control, as `flag NUL message`, or '' for
-      // nothing; whether it is validated at all; and a script's own reason,
-      // from `setCustomValidity()`, '' taking it back
+      // what is wrong with a control, as every flag that holds, a space
+      // between, then NUL and the first one's words, or '' for nothing;
+      // whether it is validated at all; and a script's own reason, from
+      // `setCustomValidity()`, '' taking it back
       case 'validity': {
-        const wrong = constraintError(this._element(a));
-        return wrong ? `${wrong.flag}\u0000${wrong.message}` : '';
+        const wrong = constraintErrors(this._element(a));
+        return wrong.length
+          ? `${wrong.map((w) => w.flag).join(' ')}\u0000${wrong[0].message}`
+          : '';
       }
       case 'willValidate':
         return validated(this._element(a));
@@ -8098,6 +8165,12 @@ export class DomHost {
         this.flush();
         const el = this._element(a);
         this.focusedFrame = el.name === 'iframe' ? el : null;
+        // a frame focused hands the focus to its document (HTML 6.6.3, the
+        // focusing steps' "navigable container"), and anything else has it
+        // in its own
+        const inFrame = this._s.frames.get(el);
+        if (inFrame) this.focusCameTo(inFrame);
+        else if (focusableElement(el)) this.focusCameTo(this._ownerOf(el));
         // A control just put in has no widget until the render that the
         // flush asked for, nor a link shown a stop: asked again once it
         // has, and until then the element the page has the focus on, as a
@@ -8139,12 +8212,20 @@ export class DomHost {
         return null;
       }
       // of the element's document's view, where it names one (`_op`)
-      case 'blur':
+      case 'blur': {
         if (!this._opView || this._focusing === this._node(a)) {
           this._focusing = null;
         }
+        // what the focus was in goes back to the element's document, whose
+        // `activeElement` is its body then
+        const of =
+          typeof a === 'number' ? this._ownerOf(this._node(a)) : this.document;
+        if (this._s.focused === of || this._frameToFocus(of)) {
+          this.focusCameTo(of);
+        }
         this._handle.blur();
         return null;
+      }
       // a frame's document with no realm of its own: where its viewport is
       // scrolled, and a scroll of it, from the view that draws it (`_op`)
       case 'viewScroll': {
@@ -8171,6 +8252,11 @@ export class DomHost {
         // that document's
         const doc =
           typeof a === 'number' ? (this._node(a) as Document) : this.document;
+        // the focus in one of its frames, however deep, is that frame's
+        // (HTML 6.6.4, the focused area of the document is its navigable
+        // container where the focus is in the navigable)
+        const frame = this._frameToFocus(doc);
+        if (frame) return this.idOf(frame);
         const waiting = this._focusing;
         const active =
           waiting?.parent && this._ownerOf(waiting) === doc
@@ -8183,6 +8269,12 @@ export class DomHost {
           ? 0
           : this.idOf(active);
       }
+      // `document.hasFocus()` (HTML 6.6.4): the focused document, or one
+      // that holds it in a frame
+      case 'hasFocus':
+        return this._holdsFocus(
+          typeof a === 'number' ? (this._node(a) as Document) : this.document,
+        );
       case 'activate': {
         const node = this._node(a);
         return node instanceof Element && this._handle.activate(node);
@@ -10288,14 +10380,30 @@ export class DomHost {
    *  time they are asked for, and kept as the page edits them. */
   private _sheetOf(el: Element): SheetState {
     let state = this._sheets.get(el);
-    if (!state) {
+    // a `<link>`'s rules are the sheet it brought in, which only the
+    // document has, and which arrives after the element does: read again
+    // where it is new, until the page edits a rule of it
+    const linked = tagOf(el) === 'link' ? this._linkedText(el) : undefined;
+    if (
+      !state ||
+      (linked !== undefined && !state.edited && state.from !== linked)
+    ) {
       state = {
-        rules: cssRulesOf(DomUtils.textContent(el)),
+        rules: cssRulesOf(linked ?? DomUtils.textContent(el)),
         version: (this._s.sheetVersion += 1),
+        from: linked,
       };
       this._sheets.set(el, state);
     }
     return state;
+  }
+
+  /** The text the document parsed for a `<link>`'s sheet, '' where it has
+   *  none (not in yet, refused, or no document draws it). */
+  private _linkedText(el: Element): string {
+    const view = this._drawing(el);
+    const sheet = view?.styleSheets?.().find((s) => s.element === el);
+    return sheet?.text ?? '';
   }
 
   /** A page set a `<style>`'s text: its sheet is that text's now, and the
@@ -10318,7 +10426,9 @@ export class DomHost {
   private _writeSheets(): void {
     for (const el of this._sheetsChanged) {
       const state = this._sheets.get(el);
-      if (!state) continue;
+      // a `<link>`'s sheet is not its text: what a page edits of it is kept
+      // with its rules, and the document is not styled by it
+      if (!state || tagOf(el) === 'link') continue;
       // what the policies said of the sheet as it was, which holds for what
       // CSSOM makes of it (`_styleAllowed`)
       const before = this._policed(el)
