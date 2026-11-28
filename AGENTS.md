@@ -2070,8 +2070,14 @@ it, and by a user's `focusin` told through `dispatch`. A document's
 to another document, what has the focus in the one it leaves lets it go
 (`_blurOther`), that document's window hears `blur` and the new one's `focus`,
 before the element that takes it hears its own: Chrome's order, in whichever
-realm runs each window (`DomShared.runs`, `__windowFocus`). **Anything new that
-moves the focus between documents goes through `focusCameTo`.**
+realm runs each window (`DomShared.runs`, `__windowFocus`). A window's `focus()`
+is the same move with `restore` (`focusWindowOf`): the document the focus leaves
+keeps what it had focused, which hears `blur` before its window, and the one it
+comes to tells its own focused element `focus` after its window, but for an
+ancestor the focus goes down from, which lets its element go. A frame's window of
+the page's realm, and one of another origin, have a `focus()` of their own
+(`focusDocument`), not the page's. **Anything new that moves the focus between
+documents goes through `focusCameTo`.**
 
 **A press on what has the focus leaves it there** (`pressLanded`, from
 `defaultMouseDown`). Core's press goes to the nearest node that takes the
