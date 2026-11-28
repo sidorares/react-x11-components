@@ -13525,11 +13525,7 @@ export function installDom(
       return validityOf(this)[1] ?? '';
     }
     get validity(): Any {
-      const [flag] = validityOf(this);
-      const out: Any = {};
-      for (const name of VALIDITY_FLAGS) out[name] = name === flag;
-      out.valid = !flag;
-      return out;
+      return validityStateOf(this);
     }
     // HTML 4.10.21.3: a control that is not valid is told so
     checkValidity(): boolean {
@@ -13561,6 +13557,37 @@ export function installDom(
     'badInput',
     'customError',
   ];
+
+  /** A control's `ValidityState` (HTML 4.10.21.3), one an element: each
+   *  member asks the host what is wrong with it now. */
+  class ValidityState {
+    declare _el: Any;
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get valid(): boolean {
+      return !validityOf(this._el)[0];
+    }
+  }
+  for (const name of VALIDITY_FLAGS) {
+    Object.defineProperty(ValidityState.prototype, name, {
+      get(this: Any): boolean {
+        return validityOf(this._el)[0] === name;
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  const validityStates = new WeakMap<object, Any>();
+  const validityStateOf = (el: Any): Any => {
+    let state = validityStates.get(el);
+    if (!state) {
+      state = Object.create(ValidityState.prototype);
+      Object.defineProperty(state, '_el', { value: el });
+      validityStates.set(el, state);
+    }
+    return state;
+  };
 
   /** A control's value, as the widget holds it. */
   const controlValue = (el: Any): Any => call('value', el._id);
@@ -48595,6 +48622,7 @@ export function installDom(
     ...GEOMETRY.classes,
     NodeList,
     RadioNodeList,
+    ValidityState,
     HTMLCollection,
     HTMLOptionsCollection,
     HTMLFormControlsCollection,

@@ -8722,6 +8722,23 @@ test("a control's validity is one answer to a rule, to matches() and to the scri
   );
 });
 
+test("a control's validity is a ValidityState, a pattern v mode refuses is none, and a number a script set is sanitized", async () => {
+  const doc = await hosted(
+    '<input id="p" pattern="[(]" value="x">' +
+      '<input id="n" type="number" required><p id="out"></p><script>' +
+      'var p = document.getElementById("p"), n = document.getElementById("n");' +
+      'n.value = "abc";' +
+      'document.getElementById("out").textContent = [p.validity instanceof ValidityState,' +
+      '  p.validity === p.validity, p.validity.patternMismatch, n.value === "",' +
+      '  n.validity.valueMissing, n.validity.badInput].join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|true|false|true|true|false',
+  );
+});
+
 test("a box's indeterminate is a script's, a click takes it off, and :has() follows it", async () => {
   const doc = await hosted(
     '<style>.w:has(:indeterminate) b{color:#ff0000}</style>' +
