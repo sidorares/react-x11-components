@@ -2596,12 +2596,18 @@ export function linkApplies(
   return 'yes';
 }
 
-/** A `<link rel=stylesheet>` that is asked for and styles nothing: an
- *  alternate one no script enabled, which still tells `load`. */
-export function heldAlternate(el: Element): boolean {
+/** A `<link rel=stylesheet>` that is asked for and styles nothing, and
+ *  still tells `load`: an alternate one no script enabled, and one whose
+ *  `media` holds nowhere here, `print`, as Chrome asks for and tells it. */
+export function heldSheet(el: Element): boolean {
   if (tagOf(el) !== 'link' || isForeign(el) || !attr(el, 'href')) return false;
   const rel = (attr(el, 'rel') ?? '').toLowerCase().split(/\s+/);
-  return rel.includes('stylesheet') && linkApplies(el, rel) === 'fetch';
+  if (!rel.includes('stylesheet')) return false;
+  const applies = linkApplies(el, rel);
+  if (applies === 'no') return false;
+  return (
+    applies === 'fetch' || sheetConditions(attr(el, 'media') ?? '') === false
+  );
 }
 
 /** Disable an element's sheet, or let it be: whether that changed it. */
@@ -2646,16 +2652,17 @@ function scanElements(
       const applies =
         href && rels.includes('stylesheet') && linkApplies(el, rels);
       if (applies && applies !== 'no') {
-        // One left out is not asked for either. One under a width,
-        // `(max-width: 600px)`, is, whatever the width: as a browser
-        // asks for it, and as an `@import` under one is asked for.
+        // One under a width, `(max-width: 600px)`, is asked for whatever
+        // the width: as a browser asks for it, and as an `@import` under
+        // one is asked for. So is one whose `media` holds nowhere here,
+        // `print`, which styles nothing and tells `load` (`heldSheet`):
+        // a page loads its CSS late as `media="print"` and an `onload`
+        // that sets the media it is for, and left unasked, it never was.
         const media = sheetConditions(attr(el, 'media') ?? '');
-        if (media !== false) {
-          if (applies === 'yes' && !DISABLED_SHEETS.has(el)) {
-            sheets.push({ kind: 'link', href, element: el, media });
-          }
-          facts.resources.push(el);
+        if (media !== false && applies === 'yes' && !DISABLED_SHEETS.has(el)) {
+          sheets.push({ kind: 'link', href, element: el, media });
         }
+        facts.resources.push(el);
       } else if (!applies && isStylePreload(el)) facts.resources.push(el);
     } else if (tag === 'script' && isStyleOrScript(el)) {
       facts.scripts.push(el);
