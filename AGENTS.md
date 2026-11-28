@@ -2060,6 +2060,15 @@ reported reaches React a layout and a render later, and a Tab straight after a
 page's script changed the document found none, and went nowhere. Anything new
 that steps through the stops from a key asks `stopsNow` and not the state.
 
+**Which frame has the focus is the tree's, not a view's** (`DomShared.focused`).
+Each `<Html>` knows only what it focused itself, so the document the focus is in
+is kept where every realm of the page reads it: set by a script's `focus()` (a
+frame's element hands it to the frame's document), by a `blur()` of what held
+it, and by a user's `focusin` told through `dispatch`. A document's
+`activeElement` is the frame on the way down to it, however deep, and
+`hasFocus()` holds of it and of what is around it (`_frameToFocus`). **Anything
+new that moves the focus between documents goes through `focusCameTo`.**
+
 **A press on what has the focus leaves it there** (`pressLanded`, from
 `defaultMouseDown`). Core's press goes to the nearest node that takes the
 focus, and all the document draws has the root for that, after the page's
