@@ -10125,7 +10125,9 @@ document — core's chain, which the element answers (`canScroll`,
 margin boxes and its own lines, with its end padding past them, a negative
 end margin taken off; the boxes and lines in those children as far as
 they reach, with no padding past them; the out-of-flow boxes positioned
-against it by their border boxes; and nothing a box inside it clips. So a
+against it by their border boxes; an outside list marker, which hangs off
+its item at its start, a right-to-left item's past the right; and nothing a
+box inside it clips. So a
 row with negative side margins in a padded container, Bootstrap's, scrolls
 nowhere across, and a last child a negative margin draws up scrolls
 nothing below it. Its scrollport is its padding box: no

@@ -847,6 +847,21 @@ function reachOf(
         }
       } else take(child.x + dx, child.y + dy, x2, y2, outOfFlow, true);
     }
+    // an outside marker hangs off its item's border box, at its start, and
+    // is scrollable overflow where it reaches past the container's end: a
+    // right-to-left item's to its right (css-lists/list-style-type-string-007)
+    const marker = child.marker;
+    const mark = marker?.image ?? marker?.layout;
+    if (marker && mark && mark.width > 0) {
+      take(
+        marker.x + dx,
+        marker.y + dy,
+        marker.x + mark.width + dx,
+        marker.y + mark.height + dy,
+        outOfFlow,
+        true,
+      );
+    }
     // what a box clips is its own to scroll; but what one that does not
     // scroll lets show past its padding box, out to its overflow clip edge,
     // reaches the scroll container as what it holds would
