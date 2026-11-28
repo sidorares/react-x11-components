@@ -1624,6 +1624,34 @@ test("a control the palette draws reads the web's border and ground, and the siz
   );
 });
 
+test("a list box sits on the bottom of the text beside it unless the page's vertical-align says otherwise", async () => {
+  // Blink's sheet gives a list box `vertical-align: text-bottom` as a user
+  // agent's rule, which a page's own overrides. It was set over the
+  // cascade, whatever the page said, so a list box under layout
+  // containment, aligned `baseline` by the page, sat on the bottom of the
+  // text and not on its own bottom margin edge
+  // (css-contain/contain-layout-baseline-005.html)
+  const { node } = await render(
+    '<select id="multiple" multiple><option>a</select>' +
+      '<select id="sized" size="3"><option>a</select>' +
+      '<select id="one" size="1"><option>a</select>' +
+      '<select id="page" multiple style="vertical-align:baseline">' +
+      '<option>a</select>',
+  );
+  const el = view(node);
+  const align = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { verticalAlign: unknown } }).style
+      .verticalAlign;
+  assert.strictEqual(align('multiple'), 'text-bottom');
+  assert.strictEqual(align('sized'), 'text-bottom');
+  assert.strictEqual(
+    align('one'),
+    'baseline',
+    'a drop-down box is no list box',
+  );
+  assert.strictEqual(align('page'), 'baseline', "the page's own");
+});
+
 metric(
   'a select with multiple or a size is a list box the document draws, its options selected by a press',
   async () => {
