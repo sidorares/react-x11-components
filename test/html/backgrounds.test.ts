@@ -3328,3 +3328,39 @@ metric(
     ]);
   },
 );
+
+metric(
+  'cover and contain size an image in an area of no height or no width, and cover fills a box of padding alone',
+  async () => {
+    // CSS Backgrounds 3, 3.9: `cover` scales an image to cover its
+    // positioning area, and an area of no height is wider than any ratio,
+    // so a 2:1 image is as wide as the area and half that tall, drawn in
+    // the box's padding below it. The width was divided by the height, and
+    // an area of no height drew nothing; one of no width drew the image
+    // (css-backgrounds/background-size-cover-003.html)
+    const green = solidPng(100, 50, [0, 255, 0]);
+    const box = (size: string, area: string) =>
+      `<div style="${area};background:url(g.png) top left / ${size} ` +
+      'no-repeat;background-origin:content-box"></div>';
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}</style>' +
+        box('cover', 'height:0;width:100px;padding-bottom:100px') +
+        box('cover', 'height:100px;width:0;padding-right:100px') +
+        box('contain', 'height:0;width:100px;padding-bottom:100px') +
+        box('cover', 'height:0;width:0;padding:0 100px 100px 0'),
+      { 'g.png': green },
+    );
+    await act();
+    const at = async (x: number, y: number) =>
+      [...(await pixelAt(result.ctx, x, y))].slice(0, 3).join(',');
+    const lime = '0,255,0';
+    // no height: 100 by 50 from the top of the padding
+    assert.strictEqual(await at(50, 25), lime, 'cover of no height');
+    assert.notStrictEqual(await at(50, 75), lime, 'and no further down');
+    // no width: 200 by 100, cut to the box
+    assert.strictEqual(await at(90, 150), lime, 'cover of no width');
+    // contain in no height, and either in no area at all, are nothing
+    assert.notStrictEqual(await at(50, 225), lime, 'contain of no height');
+    assert.notStrictEqual(await at(50, 325), lime, 'cover of no area');
+  },
+);

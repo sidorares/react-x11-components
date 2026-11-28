@@ -14653,8 +14653,10 @@ function sizedTile(
     return concreteSize(image, area.width, area.height, scale);
   const { ratio } = image;
   if (size === 'cover' || size === 'contain') {
-    if (!(ratio > 0 && area.height > 0)) return [area.width, area.height];
-    const wider = area.width / area.height > ratio;
+    if (!(ratio > 0)) return [area.width, area.height];
+    // an area of no height is wider than any ratio: `cover` takes its
+    // width, and `contain` its no height (CSS Backgrounds 3, 3.9)
+    const wider = area.width > area.height * ratio;
     return (size === 'cover') === wider
       ? [area.width, area.width / ratio]
       : [area.height * ratio, area.height];
