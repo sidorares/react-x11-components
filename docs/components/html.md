@@ -6748,7 +6748,9 @@ any of them, only of the columns it stands for. A percentage
 `min-width` is ignored, and a percentage `max-width` holds a percentage
 `width` and nothing else. A column's or a column group's background is
 painted under the cells that start in it, its image placed in the box those
-cells make, `border-spacing` takes a length for the rows as well as the
+cells make, and a row's or a row group's is placed in the row's own box; a
+gradient is placed so as much as an image is, and is drawn level with the
+page in a table a vertical writing mode turns. `border-spacing` takes a length for the rows as well as the
 columns, and a
 table's `width` includes its borders, as HTML's rendering rules give every
 table `box-sizing: border-box`. Table cells in an inline box are an inline

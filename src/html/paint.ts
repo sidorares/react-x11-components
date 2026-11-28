@@ -2399,6 +2399,9 @@ type Frame = Pick<
      *  its fragments laid end to end as one box, which its images and
      *  gradients are placed in (`box-decoration-break: slice`). */
     strip?: Frame;
+    /** The box whose frames turn what is painted, where the frame is no
+     *  box of its own: a table part painted in a cell's area. */
+    level?: Box;
   };
 
 /** Where a box's background and border go: its border box, which for a
@@ -12477,7 +12480,7 @@ function levelOf(
   box: Frame,
 ): { matrix: [number, number, number, number]; span(r: Span): Span } | null {
   if (!framed.any) return null;
-  const turns = quarterTurnsOf(box as Box);
+  const turns = quarterTurnsOf(box.level ?? (box as Box));
   if (turns === 1) {
     return {
       matrix: [0, -1, 1, 0],
@@ -14103,6 +14106,18 @@ function paintPartBackgrounds(
       const part = layer[indexOf(cell)];
       if (!part || !paintsPart(part) || hidden(cell.box)) continue;
       const box = cell.box;
+      let at = areas.get(part);
+      if (!at) {
+        at = columns
+          ? columnBox(part, layer, grid.rows, cells, options)
+          : paddingBox(part, options);
+        if (!columns && table.style.borderCollapse !== 'collapse') {
+          across ??= columnBox(null, null, grid.rows, grid.cells, options);
+          at = { ...at, x: across.x, width: across.width };
+        }
+        areas.set(part, at);
+      }
+      const placed = at;
       const frame: Frame = {
         x: box.x,
         y: box.y,
@@ -14115,6 +14130,25 @@ function paintPartBackgrounds(
         borderBottom: 0,
         borderLeft: 0,
         style: part.style,
+        // and drawn level with the page where a vertical writing mode
+        // turns the table, as the cell's own is (`levelOf`)
+        level: box,
+        // a gradient is placed in the part's box as an image is, and seen
+        // through the cell (`originBox`): placed in each cell, a row's
+        // `no-repeat` gradient was drawn once a cell
+        strip: {
+          x: placed.x - options.originX,
+          y: placed.y - options.originY,
+          width: placed.width,
+          height: placed.height,
+          captionTop: 0,
+          captionBottom: 0,
+          borderTop: 0,
+          borderRight: 0,
+          borderBottom: 0,
+          borderLeft: 0,
+          style: part.style,
+        },
       };
       paintLayers(ctx, frame, options, (style) => {
         const left = box.x + options.originX;
@@ -14126,20 +14160,7 @@ function paintPartBackgrounds(
           Math.round(left + box.width) - Math.round(left),
           Math.round(top + box.height) - Math.round(top),
         );
-        if (area) {
-          let at = areas.get(part);
-          if (!at) {
-            at = columns
-              ? columnBox(part, layer, grid.rows, cells, options)
-              : paddingBox(part, options);
-            if (!columns && table.style.borderCollapse !== 'collapse') {
-              across ??= columnBox(null, null, grid.rows, grid.cells, options);
-              at = { ...at, x: across.x, width: across.width };
-            }
-            areas.set(part, at);
-          }
-          paintBackgroundImage(ctx, style, area, at, options);
-        }
+        if (area) paintBackgroundImage(ctx, style, area, placed, options);
       });
     }
   }
@@ -14243,6 +14264,7 @@ function paintsPart(box: Box | null): boolean {
   return (
     !isTransparent(box.style.backgroundColor) ||
     !!box.style.backgroundImage ||
+    !!box.style.backgroundGradient ||
     !!box.style.backgroundImages
   );
 }

@@ -4706,6 +4706,30 @@ export function applyDeclaration(
       style.backgroundPositions = pairs.length > 1 ? pairs : null;
       return;
     }
+    // One axis of each layer's position (CSS Backgrounds 4, 2.4), the
+    // other kept as it was: a list of one length is all layers', and one of
+    // more replaces each layer's in turn, repeated as the positions are
+    case 'background-position-x':
+    case 'background-position-y': {
+      const down = name === 'background-position-y';
+      const offsets = layerValues(value, (part) =>
+        axisPosition(splitValue(part), down, ctx),
+      );
+      if (!offsets) return;
+      const was: [Len, Len][] = style.backgroundPositions ?? [
+        [style.backgroundPositionX, style.backgroundPositionY],
+      ];
+      const count = Math.max(was.length, offsets.length);
+      const pairs: [Len, Len][] = [];
+      for (let i = 0; i < count; i += 1) {
+        const [x, y] = was[i % was.length];
+        const offset = offsets[i % offsets.length];
+        pairs.push(down ? [x, offset] : [offset, y]);
+      }
+      [style.backgroundPositionX, style.backgroundPositionY] = pairs[0];
+      style.backgroundPositions = pairs.length > 1 ? pairs : null;
+      return;
+    }
 
     // --- masking --------------------------------------------------------------
     // Each `-webkit-` name is the same property's (Compatibility, 5): every
@@ -6901,6 +6925,35 @@ function positionPair(parts: string[], ctx: UnitContext): [Len, Len] | null {
   const x = keyword(a) ? pct(HORIZONTAL[a]) : positionLength(a, ctx);
   const y = keyword(b) ? pct(VERTICAL[b]) : positionLength(b, ctx);
   return x === null || y === null ? null : [x, y];
+}
+
+/** One axis of a position (`background-position-x` and `-y`): `center`, a
+ *  length or a percentage, or a side of the axis with an offset from it or
+ *  none. The logical sides are the physical ones of a left-to-right,
+ *  horizontal box. */
+function axisPosition(
+  parts: string[],
+  down: boolean,
+  ctx: UnitContext,
+): Len | null {
+  if (parts.length === 0 || parts.length > 2) return null;
+  const words = parts.map((p) => p.toLowerCase());
+  const logical: Record<string, string> = down
+    ? { 'y-start': 'top', 'y-end': 'bottom' }
+    : { 'x-start': 'left', 'x-end': 'right' };
+  const side = logical[words[0]] ?? words[0];
+  const sides = down ? ['top', 'bottom'] : ['left', 'right'];
+  if (parts.length === 1) {
+    if (side === 'center') return { pct: 50 };
+    if (side === sides[0]) return 0;
+    if (side === sides[1]) return { pct: 100 };
+    return positionLength(words[0], ctx);
+  }
+  if (!sides.includes(side)) return null;
+  const pair = down
+    ? positionPair(['left', side, words[1]], ctx)
+    : positionPair([side, words[1], 'top'], ctx);
+  return pair === null ? null : pair[down ? 1 : 0];
 }
 
 /** A position's length or percentage — `auto` is none. */
