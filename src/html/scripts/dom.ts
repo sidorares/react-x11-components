@@ -415,6 +415,7 @@ export function installDom(
     'willValidate',
     'selection',
     'active',
+    'hasFocus',
     'log',
     'now',
     'timeOrigin',
@@ -24757,7 +24758,8 @@ export function installDom(
     if (!sheet) {
       sheet = new CSSStyleSheet();
       sheet._owner = el;
-      sheet._rules = el instanceof HTMLLinkElement ? [] : null;
+      // the host's, a `<link>`'s from the sheet it brought in
+      sheet._rules = null;
       ownedSheets.set(el, sheet);
     }
     return sheet;
@@ -26281,7 +26283,9 @@ export function installDom(
     }
     _fontSet: Any;
     hasFocus(): boolean {
-      return true;
+      return (
+        call('hasFocus', this === document ? undefined : this._id) === true
+      );
     }
     /** HTML 6.8.2: the whole document an editing host, its root element
      *  the host. Turned on, the selection goes to the document's start. */
@@ -39474,8 +39478,14 @@ export function installDom(
    *  declaration. A vendor's name is the element's, as it always was. */
   const computedPseudo = (pseudo: Any): string | null => {
     if (pseudo === undefined || pseudo === null) return '';
-    const s = str(pseudo);
+    let s = str(pseudo);
     if (s[0] !== ':') return '';
+    // a name is an identifier, read with its escapes (CSS Syntax 3, 4.3.11):
+    // `::\000041fter` is `::after`
+    const colons = s[1] === ':' ? 2 : 1;
+    if (s.includes('\\') && CSS_IDENT.test(s.slice(colons))) {
+      s = s.slice(0, colons) + unescapeIdent(s.slice(colons));
+    }
     // CSS 2's spellings of four (CSS Pseudo 4, 8)
     const legacy = /^:(before|after|first-line|first-letter)$/i.exec(s);
     if (legacy) return legacy[1].toLowerCase();

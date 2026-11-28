@@ -354,6 +354,17 @@ test('setProperty takes its priority in any case and refuses any other, and read
   ]);
 });
 
+test("getComputedStyle reads a pseudo-element's name with its escapes", async () => {
+  const out = await inPage(
+    '<style>#t::before, #t::after { content: ""; display: block; width: 50px }</style><div id="t"></div>',
+    `var t = document.getElementById('t');
+     return [':bef\\\\oRE', '::\\\\000041fter', '::bef\\\\ore0'].map(function (p) {
+       return getComputedStyle(t, p).width;
+     });`,
+  );
+  assert.deepEqual(out, ['50px', '50px', '']);
+});
+
 test("getComputedStyle reads a pseudo-element's content as it computes, a hidden element's as much as a shown one's", async () => {
   const out = await inPage(
     '<style>' +
