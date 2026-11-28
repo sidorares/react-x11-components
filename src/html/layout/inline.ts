@@ -46,7 +46,7 @@ import {
 import { inkColor, isTransparent, parseColor, resolve } from '../css/values.js';
 import { passiveValue } from '../css/passive-properties.js';
 import { slantOf } from '../fonts.js';
-import { bidiJs } from '../direction.js';
+import { bidiJs, embeddingLevelsOf } from '../direction.js';
 import { settledLevels, settledText } from './settled.js';
 import type { SettledText } from './settled.js';
 import { isInputButton, tagOf } from '../dom.js';
@@ -134,6 +134,10 @@ export interface DocumentRun extends TextRun {
   /** The emphasis marks drawn over or under each character (CSS Text
    *  Decoration 3, 3): `emphasisOf`'s, which `emphasisMark` reads back. */
   emphasis?: string;
+  /** What a line shows where it wraps at a soft hyphen in this run, where
+   *  `hyphenate-character` says: a string, or none for an empty one. Left
+   *  out, the engine picks a hyphen its font has. */
+  hyphen?: string;
 }
 
 /** A run with `text-autospace` room in its letter spacing, in ems of its
@@ -4759,7 +4763,7 @@ function paragraphBidi(
   if (kept && kept.text === text && kept.base === base) {
     return { ...kept, starts };
   }
-  const { levels } = bidiJs().getEmbeddingLevels(text, rtl ? 'rtl' : 'ltr');
+  const levels = embeddingLevelsOf(text, rtl ? 'rtl' : 'ltr');
   const explicit = EXPLICIT.test(text);
   const bidi = { text, levels, explicit, base, starts };
   PARAGRAPH_BIDI.set(block, bidi);
@@ -4839,7 +4843,7 @@ function aloneLevels(
   let alone = ALONE.get(runs);
   if (!alone) {
     const text = runs.map((run) => run.text).join('');
-    const { levels } = bidiJs().getEmbeddingLevels(text, rtl ? 'rtl' : 'ltr');
+    const levels = embeddingLevelsOf(text, rtl ? 'rtl' : 'ltr');
     alone = { text, levels };
     ALONE.set(runs, alone);
   }
@@ -4947,7 +4951,7 @@ function orderedAlone(
   if (end - para > START_MIN * START_OF) {
     const start = bidi.text.slice(para, para + START_MIN);
     const settled = settledLevels(settledOf(bidi), para, para + START_MIN, end);
-    const { levels } = bidiJs().getEmbeddingLevels(start, rtl ? 'rtl' : 'ltr');
+    const levels = embeddingLevelsOf(start, rtl ? 'rtl' : 'ltr');
     if (!ordered(start, levels, settled)) return false;
   }
   const { text, levels } = aloneLevels(segment.runs, rtl);
@@ -8034,6 +8038,11 @@ export function runFor(
   if (style.passiveInherited['text-emphasis-style']) {
     const emphasis = emphasisOf(style, el);
     if (emphasis) run.emphasis = emphasis;
+  }
+  // and only where a sheet names the hyphen
+  const hyphen = style.passiveInherited['hyphenate-character'];
+  if (hyphen !== undefined && hyphen !== 'auto') {
+    run.hyphen = JSON.parse(hyphen) as string;
   }
   const features = featuresOf(style);
   if (features) run.features = features;

@@ -1625,7 +1625,13 @@ first four when the document widgets go, the closure argument goes with
 them and they become this package's to justify alone. `bidi-js` is the
 UAX #9 ntk's own layout resolves with, which is why it is the one `<Html>`
 resolves a paragraph's levels with where a line is laid out a piece at a
-time: the two have to agree about every letter the engine orders.
+time: the two have to agree about every letter the engine orders. So both
+hand it the same text: bidi-js reads a code unit at a time and takes a
+surrogate for a left-to-right letter, and ntk since 8.30.0 resolves a
+character of the supplementary planes as two stand-ins of its class, which
+`bidiText` (`direction.ts`) copies. **Anything new that asks bidi-js for
+levels asks `embeddingLevelsOf`**, or Adlam is read left to right there and
+right to left on the line.
 `image-in-browser` is on the same footing as the five: a dependency of
 react-x11's, which decodes a still WebP with it, declared here because
 `webp.ts` decodes an animated one's frames with it, and loaded by a dynamic

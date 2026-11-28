@@ -306,6 +306,7 @@ export const RUN_FIELDS = [
   'stretch',
   'slant',
   'emphasis',
+  'hyphen',
 ] as const satisfies readonly (keyof DocumentRun)[];
 
 /** A field of `DocumentRun` missing from `RUN_FIELDS` names itself here. */
@@ -348,7 +349,8 @@ function sameRun(a: DocumentRun, b: DocumentRun): boolean {
     a.inline === b.inline &&
     a.stretch === b.stretch &&
     a.slant === b.slant &&
-    a.emphasis === b.emphasis
+    a.emphasis === b.emphasis &&
+    a.hyphen === b.hyphen
   );
 }
 
@@ -382,7 +384,8 @@ function sameStyle(
     a.inline === b.inline &&
     a.stretch === b.stretch &&
     a.slant === b.slant &&
-    a.emphasis === b.emphasis
+    a.emphasis === b.emphasis &&
+    a.hyphen === b.hyphen
   );
 }
 

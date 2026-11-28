@@ -32,6 +32,54 @@ export function bidiJs(): Bidi {
   return BIDI;
 }
 
+/** A character of the supplementary planes, as its two code units. */
+const ASTRAL = /[\uD800-\uDBFF][\uDC00-\uDFFF]/g;
+const HAS_ASTRAL = /[\uD800-\uDBFF][\uDC00-\uDFFF]/;
+
+/** A character of each bidi class in the Basic Multilingual Plane, to stand
+ *  in for one outside it (`bidiText`): ntk's own, so the two agree. */
+const STAND_INS: Readonly<Record<string, string>> = {
+  R: '\u05D0',
+  AL: '\u0627',
+  AN: '\u0660',
+  EN: '0',
+  NSM: '\u0300',
+  BN: '\u00AD',
+  ET: '%',
+  ES: '+',
+  CS: ',',
+  ON: '!',
+};
+
+/**
+ * `text` for bidi-js to resolve the levels of: each character of the
+ * supplementary planes that is no left-to-right letter as two characters of
+ * its bidi class from the Basic Multilingual Plane, one for each code unit.
+ *
+ * bidi-js reads a string a code unit at a time and takes a surrogate for a
+ * left-to-right letter, so Cypriot, Adlam and their neighbours were
+ * left-to-right text, and an emoji, which is neutral, was strong. ntk hands
+ * bidi-js the same stand-ins (its `embeddingLevels`), and what `<Html>`
+ * resolves a paragraph's levels with has to agree with what the engine
+ * orders, letter for letter. The text is as long as it was.
+ */
+export function bidiText(text: string): string {
+  if (!HAS_ASTRAL.test(text)) return text;
+  const { getBidiCharTypeName } = bidiJs();
+  return text.replace(ASTRAL, (pair) => {
+    const one = STAND_INS[getBidiCharTypeName(pair)];
+    return one ? one + one : pair;
+  });
+}
+
+/** A text's embedding levels, resolved over `bidiText`. */
+export function embeddingLevelsOf(
+  text: string,
+  direction: 'ltr' | 'rtl',
+): Uint8Array {
+  return bidiJs().getEmbeddingLevels(bidiText(text), direction).levels;
+}
+
 type Direction = 'ltr' | 'rtl';
 
 /** What a text's first strong letter makes of a direction, null for none. */

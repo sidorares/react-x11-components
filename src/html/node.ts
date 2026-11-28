@@ -23200,6 +23200,8 @@ const FACE_FIELDS = [
   'slant',
   // marks take room on the line (`finishLine`)
   'emphasis',
+  // and so does the hyphen a line wraps with
+  'hyphen',
 ] as const;
 
 /** Whether two styles differ in ink alone: true where they do, null where

@@ -7,7 +7,7 @@
 // is handed the start of the rest instead (`startOf`), where what it makes of
 // that start's first lines is what it makes of them in the whole. Pure, and
 // asserted against bidi-js (`test/html/settled.test.ts`).
-import { bidiJs } from '../direction.js';
+import { bidiJs, bidiText } from '../direction.js';
 
 /** The paragraph separators, which bidi resolves nothing across. */
 const PARAGRAPH_END = /[\n\r\u001c-\u001e\u0085\u2029]/;
@@ -52,7 +52,9 @@ export function settledText(text: string): SettledText {
       brackets.push({ at: index, char, opens });
     }
   }
-  return { text, explicit: CONTROL.test(text), brackets };
+  // over the stand-ins its levels are resolved with (`bidiText`), so a
+  // right-to-left letter of the planes is one here too
+  return { text: bidiText(text), explicit: CONTROL.test(text), brackets };
 }
 
 /** Whether two brackets pair, the second of them closing (BD16), canonical
