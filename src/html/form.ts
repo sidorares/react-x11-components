@@ -216,6 +216,7 @@ function ownerOf(
 ): Element | null {
   const id = attr(el, 'form');
   if (id !== undefined) {
+    if (!id) return null;
     const named = byId ? (byId.get(id) ?? null) : elementById(root, id);
     return named && tagOf(named) === 'form' ? named : null;
   }
@@ -1229,7 +1230,19 @@ export function validityError(
   el: Element,
   live: (el: Element) => string | undefined = typedText,
 ): ValidityError | null {
-  if (!validated(el)) return null;
+  return validated(el) ? constraintError(el, live) : null;
+}
+
+/**
+ * What `validity` says of a control whether or not it is validated: a
+ * disabled field still suffers from a pattern mismatch (HTML 4.10.21.1),
+ * which `willValidate` and `checkValidity()` then pass over. Only being
+ * missing asks that a text control be mutable.
+ */
+export function constraintError(
+  el: Element,
+  live: (el: Element) => string | undefined = typedText,
+): ValidityError | null {
   const custom = CUSTOM_ERRORS.get(el);
   if (custom) return { flag: 'customError', message: custom };
   const tag = tagOf(el);
@@ -1285,7 +1298,7 @@ export function validityError(
     return wrong('badInput', 'Please enter a number.');
   }
   if (!value) {
-    return required
+    return required && !isDisabled(el) && attr(el, 'readonly') === undefined
       ? wrong('valueMissing', 'Please fill out this field.')
       : null;
   }

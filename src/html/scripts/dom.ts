@@ -12938,9 +12938,24 @@ export function installDom(
   /** The form a control is in: the one its `form` attribute names, or the
    *  one around it, or the one the parser gave it. */
   const formOf = (el: Any): Any => {
+    // HTML 4.10.17.3: the attribute counts only while the control is
+    // connected, names a form or nothing, and is looked up in the
+    // control's own tree; '' names no element at all
     const named = el.getAttribute('form');
-    if (named !== null) return document.getElementById(named);
-    return el.closest('form') ?? wrap(call('parsedForm', el._id));
+    if (named !== null && el.isConnected) {
+      const root = el.getRootNode();
+      const found =
+        named && root.getElementById ? root.getElementById(named) : null;
+      return found?.localName === 'form' &&
+        found.namespaceURI === 'http://www.w3.org/1999/xhtml'
+        ? found
+        : null;
+    }
+    const around = el.closest('form');
+    if (around || named !== null) return around;
+    // the parser's form pointer, while the two share a tree
+    const parsed = wrap(call('parsedForm', el._id));
+    return parsed && parsed.getRootNode() === el.getRootNode() ? parsed : null;
   };
 
   /** Where a URL is: its parts, as `location` and `a.pathname` read them. */
@@ -13522,14 +13537,14 @@ export function installDom(
       return call('willValidate', this._id) === true;
     }
     get validationMessage(): string {
-      return validityOf(this)[1] ?? '';
+      return (this as Any).willValidate ? (validityOf(this)[1] ?? '') : '';
     }
     get validity(): Any {
       return validityStateOf(this);
     }
     // HTML 4.10.21.3: a control that is not valid is told so
     checkValidity(): boolean {
-      if (!validityOf(this)[0]) return true;
+      if (!(this as Any).willValidate || !validityOf(this)[0]) return true;
       dispatch(this, trusted(new Event('invalid', { cancelable: true })));
       return false;
     }
