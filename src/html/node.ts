@@ -89,6 +89,7 @@ import {
   isText,
   loadsLazily,
   madeByParser,
+  heldAlternate,
   isStylePreload,
   NON_RENDERED,
   ShadowRoot,
@@ -4821,7 +4822,7 @@ export class HtmlViewNode extends Node {
     // (HTML 4.6.7.12): React commits a `precedence` sheet only once the
     // sheet's preload has told one or the other
     for (const el of facts.resources) {
-      if (!isStylePreload(el)) continue;
+      if (!isStylePreload(el) && !heldAlternate(el)) continue;
       const href = attr(el, 'href')!;
       if (this._preloadTold.get(el) === href) continue;
       const state = this._resources.state(href);
@@ -22158,7 +22159,11 @@ function changesCascade(
       return (
         (name === 'rel' && !isForeign(el)) ||
         (name === '-rx-sheet-disabled' && isSheetLink(el)) ||
-        ((name === 'href' || name === 'media') && isSheetLink(el))
+        ((name === 'href' ||
+          name === 'media' ||
+          name === 'disabled' ||
+          name === 'title') &&
+          isSheetLink(el))
       );
     case 'meta':
       if (name === 'content') return pragmaMeta(el);

@@ -2568,6 +2568,42 @@ export function styleGateOf(document: Document): StyleGate | null {
   return STYLE_GATES.get(document) ?? null;
 }
 
+/** The `<link>`s whose `disabled` attribute was taken off (HTML 4.6.7,
+ *  "explicitly enabled"), which applies an alternate sheet a title names. */
+const ENABLED_LINKS = new WeakSet<Element>();
+
+/** A `<link>`'s `disabled` attribute taken off: explicitly enabled. */
+export function enableLink(el: Element): void {
+  ENABLED_LINKS.add(el);
+}
+
+/** Whether a `<link rel=stylesheet>`'s sheet styles its document (HTML
+ *  4.2.4, 4.6.7): not while it is `disabled`, which it is not even asked
+ *  for under, and an alternate one with a title only once a script
+ *  enabled it, since no style sheet set is chosen here. */
+export function linkApplies(
+  el: Element,
+  rel: string[],
+): 'no' | 'fetch' | 'yes' {
+  if (attr(el, 'disabled') !== undefined) return 'no';
+  if (
+    rel.includes('alternate') &&
+    (attr(el, 'title') ?? '') !== '' &&
+    !ENABLED_LINKS.has(el)
+  ) {
+    return 'fetch';
+  }
+  return 'yes';
+}
+
+/** A `<link rel=stylesheet>` that is asked for and styles nothing: an
+ *  alternate one no script enabled, which still tells `load`. */
+export function heldAlternate(el: Element): boolean {
+  if (tagOf(el) !== 'link' || isForeign(el) || !attr(el, 'href')) return false;
+  const rel = (attr(el, 'rel') ?? '').toLowerCase().split(/\s+/);
+  return rel.includes('stylesheet') && linkApplies(el, rel) === 'fetch';
+}
+
 /** Disable an element's sheet, or let it be: whether that changed it. */
 export function setSheetDisabled(el: Element, disabled: boolean): boolean {
   if (DISABLED_SHEETS.has(el) === disabled) return false;
@@ -2606,18 +2642,21 @@ function scanElements(
     } else if (tag === 'link' && !isForeign(el)) {
       const rel = (attr(el, 'rel') ?? '').toLowerCase();
       const href = attr(el, 'href');
-      if (href && rel.split(/\s+/).includes('stylesheet')) {
+      const rels = rel.split(/\s+/);
+      const applies =
+        href && rels.includes('stylesheet') && linkApplies(el, rels);
+      if (applies && applies !== 'no') {
         // One left out is not asked for either. One under a width,
         // `(max-width: 600px)`, is, whatever the width: as a browser
         // asks for it, and as an `@import` under one is asked for.
         const media = sheetConditions(attr(el, 'media') ?? '');
         if (media !== false) {
-          if (!DISABLED_SHEETS.has(el)) {
+          if (applies === 'yes' && !DISABLED_SHEETS.has(el)) {
             sheets.push({ kind: 'link', href, element: el, media });
           }
           facts.resources.push(el);
         }
-      } else if (isStylePreload(el)) facts.resources.push(el);
+      } else if (!applies && isStylePreload(el)) facts.resources.push(el);
     } else if (tag === 'script' && isStyleOrScript(el)) {
       facts.scripts.push(el);
     } else if (tag === 'img' && choosesSource(el)) {
