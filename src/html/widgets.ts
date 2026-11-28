@@ -98,11 +98,7 @@ import {
   setIndeterminate,
   setUserValidity,
 } from './form.js';
-import type {
-  FieldSelection,
-  FormSubmission,
-  SubmittedEntry,
-} from './form.js';
+import type { FieldSelection, FormSubmission, SubmittedEntry } from './form.js';
 import { isSummaryOf, tabIndexOf } from './focus.js';
 import { RangeWidget } from './range.js';
 import { isDateFieldType } from './date-fields.js';

@@ -104,11 +104,7 @@ import type {
 import type { SheetSource as HtmlSheetSource } from './css/parse.js';
 import type { ControlRect } from './controls.js';
 import type { ElementScroll } from './layout/scroll.js';
-import type {
-  FieldSelection,
-  FormSubmission,
-  SubmittedEntry,
-} from './form.js';
+import type { FieldSelection, FormSubmission, SubmittedEntry } from './form.js';
 import type { HtmlFile, HtmlPickFiles } from './files.js';
 import { useForms } from './widgets.js';
 import { useVideos } from './videos.js';
