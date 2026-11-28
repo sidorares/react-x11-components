@@ -8722,6 +8722,38 @@ test("a control's validity is one answer to a rule, to matches() and to the scri
   );
 });
 
+test('a disabled field still says what is wrong with it, and passes checkValidity()', async () => {
+  const doc = await hosted(
+    '<input id="a" pattern="[0-9]+" value="x" disabled required>' +
+      '<input id="e" required disabled><p id="out"></p><script>' +
+      'var a = document.getElementById("a"), e = document.getElementById("e");' +
+      'document.getElementById("out").textContent = [a.validity.patternMismatch,' +
+      '  a.validity.valid, a.willValidate, a.checkValidity(), a.validationMessage === "",' +
+      '  e.validity.valueMissing, e.validity.valid].join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|false|false|true|true|false|true',
+  );
+});
+
+test("a control's form attribute names a form in its own tree, only while it is connected", async () => {
+  const doc = await hosted(
+    '<span id="s"></span><form id=""></form><form id="f"></form>' +
+      '<input id="a" form="s"><input id="b" form=""><input id="c" form="f">' +
+      '<p id="out"></p><script>' +
+      'var g = function (id) { return document.getElementById(id) };' +
+      'var outer = document.createElement("form"), lone = document.createElement("input");' +
+      'lone.setAttribute("form", "f"); outer.appendChild(lone);' +
+      'var c = g("c"); c.remove();' +
+      'g("out").textContent = [g("a").form, g("b").form, c.form,' +
+      '  lone.form === outer].join("|");' +
+      '</script>',
+  );
+  assert.equal(await settled(doc, 'out', (t) => t !== ''), '|||true');
+});
+
 test("a box's indeterminate is a script's, a click takes it off, and :has() follows it", async () => {
   const doc = await hosted(
     '<style>.w:has(:indeterminate) b{color:#ff0000}</style>' +
