@@ -8248,6 +8248,16 @@ export class DomHost {
         // a frame focused hands the focus to its document (HTML 6.6.3, the
         // focusing steps' "navigable container"), and anything else has it
         // in its own
+        // one the parser has only just put in has its initial `about:blank`
+        // to hand the focus to, as its `contentDocument` would
+        if (
+          (el.name === 'iframe' || el.name === 'frame') &&
+          !this._s.frames.has(el) &&
+          el.parent &&
+          namespaceOf(el) === XHTML_NS
+        ) {
+          this._frameDocument(el);
+        }
         const inFrame = this._s.frames.get(el);
         const to = inFrame ?? (focusableElement(el) ? this._ownerOf(el) : null);
         if (to) {

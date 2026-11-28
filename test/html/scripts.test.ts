@@ -22688,3 +22688,26 @@ test('window.focus() of a frame’s window hands its document the focus and keep
     logs.join('\n'),
   );
 });
+
+test('a frame the parser has only just put in takes the focus into its first about:blank, and the page’s activeElement is the frame', async () => {
+  // WPT's focus/activeelement-after-immediately-focusing-same-site-iframe:
+  // focused before anything read its document, which it has none of yet
+  const { text, logs } = await hostedFrames(
+    '<iframe id="own" src="own.html"></iframe><p id="out"></p><script>' +
+      'var f = document.getElementById("own"); var r = [];' +
+      'f.focus(); r.push(document.activeElement.nodeName, document.hasFocus());' +
+      'f.blur(); r.push(document.activeElement.nodeName);' +
+      'document.getElementById("out").textContent = r.join(",");' +
+      '</script>',
+    { 'own.html': '<!doctype html><input><script>var ready = 1;</script>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    'IFRAME,true,BODY',
+    logs.join('\n'),
+  );
+});
