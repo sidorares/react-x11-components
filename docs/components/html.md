@@ -4291,7 +4291,9 @@ it forgets the responses used longest ago past `cacheBytes` (an option of
 `open`, 512 MB by default; 0 for none), and `clear()` forgets them all.
 `endSession({ keepTabs, keepSessionCookies })` drops what
 a session that ends takes with it, and `forgetTab(key)` a closed tab's
-`sessionStorage`.
+`sessionStorage`. `forTab(key)` names the tab after the profile was opened,
+for a process started before it knew which tab it is for; say it before a
+document takes its `sessionStorage`.
 
 **IndexedDB in a profile** is still run in the page's realm, as it is in
 memory: a database is read from the profile as it is first opened, each
