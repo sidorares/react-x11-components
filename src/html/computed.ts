@@ -1856,6 +1856,36 @@ function areasText(areas: GridAreas | null): string {
   return cells.map((row) => `"${row.join(' ')}"`).join(' ');
 }
 
+/** A `content` value as it computes: its keyword, or each part as written,
+ *  a string quoted, a URL a quoted `url()` and a counter's style left out
+ *  where it is the default. What a page reads of a `::before` it put a
+ *  breakpoint's name in, or of an icon's. */
+function contentText(content: ComputedStyle['content']): string {
+  if (typeof content === 'string') return content;
+  return content
+    .map((item) => {
+      switch (item.kind) {
+        case 'string':
+          return stringText(item.text);
+        case 'url':
+          return urlText(item.url);
+        case 'attr':
+          return `attr(${item.name})`;
+        case 'counter':
+          return item.style === 'decimal'
+            ? `counter(${item.name})`
+            : `counter(${item.name}, ${item.style})`;
+        case 'counters':
+          return `counters(${item.name}, ${stringText(item.separator)}${
+            item.style === 'decimal' ? '' : `, ${item.style}`
+          })`;
+        default:
+          return item.kind;
+      }
+    })
+    .join(' ');
+}
+
 /** A `counter-reset`, `-increment` or `-set`: each name and its number. */
 function countersText(list: readonly CounterChange[] | null): string {
   if (!list) return 'none';
@@ -2467,6 +2497,7 @@ const SHORTHANDS: Record<string, Composer> = {
   filter: (_, style, scale) => filterText(style.filter, style, scale),
   'backdrop-filter': (_, style, scale) =>
     filterText(style.backdropFilter, style, scale),
+  content: (_, style) => contentText(style.content),
   'counter-reset': (_, style) => countersText(style.counterReset),
   'counter-increment': (_, style) => countersText(style.counterIncrement),
   'counter-set': (_, style) => countersText(style.counterSet),

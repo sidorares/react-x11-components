@@ -90,8 +90,8 @@ test("a sheet's media attribute is the condition it is under, and one that holds
   );
   assert.deepStrictEqual(
     resources.map((el) => el.attribs.href),
-    ['phone.css', 'all.css'],
-    'a link under a width is asked for, and one left out is not',
+    ['phone.css', 'print.css', 'all.css'],
+    'a link under a width is asked for, and so is one left out, as Chrome asks for it: a page waits for its load',
   );
 });
 
@@ -497,8 +497,8 @@ test('a sheet under its media attribute applies where it holds, and a resize acr
   assert.deepStrictEqual(margins(), [0, 0, 0], 'none of them at 800');
   assert.deepStrictEqual(
     [...new Set(asked)].sort(),
-    ['phone.css', 'tiny.css'],
-    'the phone sheet asked for at 800, and what it imports, and the print one not',
+    ['phone.css', 'print.css', 'tiny.css'],
+    'the phone sheet asked for at 800, and what it imports, and the print one, which styles nothing',
   );
   for (const [width, expected] of [
     [620, [0, 0, 30]],
