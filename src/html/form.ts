@@ -1426,6 +1426,22 @@ const INDETERMINATE = new WeakSet<Element>();
  *  validity"): `:user-valid` and `:user-invalid` read it. */
 const USER_VALIDITY = new WeakSet<Element>();
 
+/** A copy's state as its original's (HTML 4.10.5 and 4.10.11, the cloning
+ *  steps): an input's value, its dirty value flag, its checkedness'
+ *  default and its indeterminateness, and a text area's raw value. A
+ *  `<select>`'s options keep theirs in their attributes, which the copy
+ *  has already. */
+export function copyControlState(from: Element, to: Element): void {
+  const typed = TYPED.get(from);
+  if (typed !== undefined) TYPED.set(to, typed);
+  if (SET_BY_SCRIPT.has(from)) SET_BY_SCRIPT.add(to);
+  if (INDETERMINATE.has(from)) INDETERMINATE.add(to);
+  const kept = MARKUP.get(from);
+  if (kept && tagOf(from) !== 'select') {
+    MARKUP.set(to, { attribs: { ...kept.attribs } });
+  }
+}
+
 /** What a text control holds where its markup does not say. */
 export function typedText(el: Element): string | undefined {
   return TYPED.get(el);

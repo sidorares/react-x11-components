@@ -8722,6 +8722,26 @@ test("a control's validity is one answer to a rule, to matches() and to the scri
   );
 });
 
+test("a copy of a control holds what the control held, and its markup's default", async () => {
+  const doc = await hosted(
+    '<div id="w"><input id="t" value="a"><input id="c" type="checkbox">' +
+      '<textarea id="x">q</textarea></div><p id="out"></p><script>' +
+      'var g = function (id) { return document.getElementById(id) };' +
+      'g("t").value = "typed"; g("c").checked = true; g("c").indeterminate = true;' +
+      'g("x").value = "z";' +
+      'var w = g("w").cloneNode(true), t = w.children[0], c = w.children[1], x = w.children[2];' +
+      'var r = [t.value, c.checked, c.indeterminate, x.value];' +
+      't.setAttribute("value", "b"); c.removeAttribute("checked");' +
+      'r.push(t.value, t.defaultValue, c.checked, c.defaultChecked, g("t").cloneNode().value);' +
+      'g("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'typed|true|true|z|typed|b|true|false|typed',
+  );
+});
+
 test("a box's indeterminate is a script's, a click takes it off, and :has() follows it", async () => {
   const doc = await hosted(
     '<style>.w:has(:indeterminate) b{color:#ff0000}</style>' +
