@@ -284,6 +284,36 @@ test('a drag drawn cheaper draws a background whose size moves with it on a step
 });
 
 metric(
+  'a gradient tile as large as its area is placed by a length all the same',
+  async () => {
+    // CSS Backgrounds 3, 3.6: a length moves a tile whatever its size. A
+    // gradient tile as tall as its area, or as wide, was set at the area's
+    // edge on that axis, as a percentage would set it, so a `no-repeat`
+    // gradient `0 20px` filled its box from the top
+    const g = (to: string, position: string) =>
+      `<div style="width:100px;height:50px;background:linear-gradient(${to},` +
+      `#ff0000,#ff0000) ${position} / 100px 50px no-repeat"></div>`;
+    const { result } = await render(
+      '<style>body{margin:0}</style>' +
+        g('to right', '0 20px') +
+        g('to bottom', '20px 0') +
+        g('to right', '0 100%'),
+      300,
+    );
+    const red = async (x: number, y: number) => {
+      const [r, gr, b] = await pixelAt(result.ctx, x, y);
+      return r === 255 && gr === 0 && b === 0;
+    };
+    assert.ok(!(await red(50, 10)), 'nothing above 20px');
+    assert.ok(await red(50, 30), 'the tile from 20px down');
+    assert.ok(!(await red(10, 75)), 'nothing left of 20px');
+    assert.ok(await red(30, 75), 'the tile from 20px across');
+    // a percentage of no room is the area's edge, as it was
+    assert.ok(await red(50, 105), 'a percentage');
+  },
+);
+
+metric(
   "an inline box's background image is drawn, as its colour is",
   async () => {
     // CSS Backgrounds 3: an inline box's background is its images as much
@@ -3326,35 +3356,5 @@ metric(
       false,
       false,
     ]);
-  },
-);
-
-metric(
-  'a gradient tile as large as its area is placed by a length all the same',
-  async () => {
-    // CSS Backgrounds 3, 3.6: a length moves a tile whatever its size. A
-    // gradient tile as tall as its area, or as wide, was set at the area's
-    // edge on that axis, as a percentage would set it, so a `no-repeat`
-    // gradient `0 20px` filled its box from the top
-    const g = (to: string, position: string) =>
-      `<div style="width:100px;height:50px;background:linear-gradient(${to},` +
-      `#ff0000,#ff0000) ${position} / 100px 50px no-repeat"></div>`;
-    const { result } = await render(
-      '<style>body{margin:0}</style>' +
-        g('to right', '0 20px') +
-        g('to bottom', '20px 0') +
-        g('to right', '0 100%'),
-      300,
-    );
-    const red = async (x: number, y: number) => {
-      const [r, gr, b] = await pixelAt(result.ctx, x, y);
-      return r === 255 && gr === 0 && b === 0;
-    };
-    assert.ok(!(await red(50, 10)), 'nothing above 20px');
-    assert.ok(await red(50, 30), 'the tile from 20px down');
-    assert.ok(!(await red(10, 75)), 'nothing left of 20px');
-    assert.ok(await red(30, 75), 'the tile from 20px across');
-    // a percentage of no room is the area's edge, as it was
-    assert.ok(await red(50, 105), 'a percentage');
   },
 );
