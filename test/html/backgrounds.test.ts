@@ -138,6 +138,89 @@ metric(
   },
 );
 
+metric(
+  "a table row's gradient is painted, placed against the row and seen through its cells",
+  async () => {
+    // CSS 2.1 17.5.1: a row's background is painted in its cells' areas and
+    // placed against the row's own box, a gradient as an image is. A
+    // gradient alone was no background (`paintsPart` asked for a colour or
+    // an image), and placed against each cell it would be drawn once a cell
+    // (css-backgrounds/background-image-table-cells-straddling-no-repeat)
+    const table = (left: number, position: string) =>
+      `<table style="border-spacing:0;margin-left:${left}px">` +
+      '<tr style="background-image:linear-gradient(#00ff00,#00ff00);' +
+      `background-position:${position};background-repeat:no-repeat;` +
+      'background-size:100px 100px">' +
+      '<td style="padding:0;height:100px;width:150px"></td>' +
+      '<td style="padding:0;height:100px;width:50px"></td></tr></table>';
+    const { result } = await render(
+      '<style>body{margin:0}</style>' +
+        table(0, '0 0') +
+        table(0, '100px 0') +
+        table(-100, '100px 0'),
+      400,
+    );
+    const across = async (y: number) => {
+      const out: number[] = [];
+      for (const x of [5, 60, 120, 180]) {
+        const [r, g] = await pixelAt(result.ctx, x, y);
+        out.push(r === 0 && g === 255 ? 1 : 0);
+      }
+      return out;
+    };
+    assert.deepStrictEqual(
+      await across(50),
+      [1, 1, 0, 0],
+      'from the row start',
+    );
+    // across the boundary between the cells, once
+    assert.deepStrictEqual(await across(150), [0, 0, 1, 1], 'straddling');
+    assert.deepStrictEqual(await across(250), [1, 1, 0, 0], 'pulled left');
+  },
+);
+
+metric(
+  'background-position-x and -y move one axis of each layer, and leave the other',
+  async () => {
+    // CSS Backgrounds 4, 2.4: each longhand sets one axis of each layer's
+    // position, a side with an offset or not, `center`, or a length. The
+    // cascade had no case for either, and dropped them: a table part's
+    // reference that offsets each cell's image by `background-position-x`
+    // drew all of them at the cell's corner
+    // (css-tables/tentative/paint/background-image-row-ref.html)
+    const g =
+      'background-image:linear-gradient(to right,#ff0000 50%,#0000ff 50%);' +
+      'background-size:200px 50px;background-repeat:no-repeat';
+    const box = (style: string) =>
+      `<div style="width:100px;height:50px;${g};${style}"></div>`;
+    const { result } = await render(
+      '<style>body{margin:0}</style>' +
+        box('background-position-x:-100px') +
+        box('background-position:-100px 0;background-position-x:0') +
+        box('background-position-x:right') +
+        box('background-position-x:x-end 0') +
+        `<div style="width:100px;height:50px;background-image:linear-gradient(#ff0000 50%,#0000ff 50%);background-size:100px 100px;background-repeat:no-repeat;background-position-y:-50px"></div>` +
+        box('background-position:0 0, 0 0;background-position-x:-100px'),
+      300,
+    );
+    const colour = async (x: number, y: number) => {
+      const [r, , b] = await pixelAt(result.ctx, x, y);
+      return r === 255 && b === 0
+        ? 'red'
+        : b === 255 && r === 0
+          ? 'blue'
+          : 'white';
+    };
+    assert.strictEqual(await colour(50, 25), 'blue', 'x alone moves it');
+    assert.strictEqual(await colour(50, 75), 'red', 'set back by x');
+    assert.strictEqual(await colour(50, 125), 'blue', 'right is the far end');
+    assert.strictEqual(await colour(50, 175), 'blue', 'x-end is right');
+    // y alone, x left as it was
+    assert.strictEqual(await colour(50, 225), 'blue', 'y moves it up');
+    assert.strictEqual(await colour(50, 275), 'blue', 'each layer');
+  },
+);
+
 metric("the root's background covers the whole canvas", async () => {
   // CSS 2.1 14.2: <body>'s background, where <html> has none, is the
   // canvas's — the margin round the body included — as an email's
@@ -3326,88 +3409,5 @@ metric(
       false,
       false,
     ]);
-  },
-);
-
-metric(
-  "a table row's gradient is painted, placed against the row and seen through its cells",
-  async () => {
-    // CSS 2.1 17.5.1: a row's background is painted in its cells' areas and
-    // placed against the row's own box, a gradient as an image is. A
-    // gradient alone was no background (`paintsPart` asked for a colour or
-    // an image), and placed against each cell it would be drawn once a cell
-    // (css-backgrounds/background-image-table-cells-straddling-no-repeat)
-    const table = (left: number, position: string) =>
-      `<table style="border-spacing:0;margin-left:${left}px">` +
-      '<tr style="background-image:linear-gradient(#00ff00,#00ff00);' +
-      `background-position:${position};background-repeat:no-repeat;` +
-      'background-size:100px 100px">' +
-      '<td style="padding:0;height:100px;width:150px"></td>' +
-      '<td style="padding:0;height:100px;width:50px"></td></tr></table>';
-    const { result } = await render(
-      '<style>body{margin:0}</style>' +
-        table(0, '0 0') +
-        table(0, '100px 0') +
-        table(-100, '100px 0'),
-      400,
-    );
-    const across = async (y: number) => {
-      const out: number[] = [];
-      for (const x of [5, 60, 120, 180]) {
-        const [r, g] = await pixelAt(result.ctx, x, y);
-        out.push(r === 0 && g === 255 ? 1 : 0);
-      }
-      return out;
-    };
-    assert.deepStrictEqual(
-      await across(50),
-      [1, 1, 0, 0],
-      'from the row start',
-    );
-    // across the boundary between the cells, once
-    assert.deepStrictEqual(await across(150), [0, 0, 1, 1], 'straddling');
-    assert.deepStrictEqual(await across(250), [1, 1, 0, 0], 'pulled left');
-  },
-);
-
-metric(
-  'background-position-x and -y move one axis of each layer, and leave the other',
-  async () => {
-    // CSS Backgrounds 4, 2.4: each longhand sets one axis of each layer's
-    // position, a side with an offset or not, `center`, or a length. The
-    // cascade had no case for either, and dropped them: a table part's
-    // reference that offsets each cell's image by `background-position-x`
-    // drew all of them at the cell's corner
-    // (css-tables/tentative/paint/background-image-row-ref.html)
-    const g =
-      'background-image:linear-gradient(to right,#ff0000 50%,#0000ff 50%);' +
-      'background-size:200px 50px;background-repeat:no-repeat';
-    const box = (style: string) =>
-      `<div style="width:100px;height:50px;${g};${style}"></div>`;
-    const { result } = await render(
-      '<style>body{margin:0}</style>' +
-        box('background-position-x:-100px') +
-        box('background-position:-100px 0;background-position-x:0') +
-        box('background-position-x:right') +
-        box('background-position-x:x-end 0') +
-        `<div style="width:100px;height:50px;background-image:linear-gradient(#ff0000 50%,#0000ff 50%);background-size:100px 100px;background-repeat:no-repeat;background-position-y:-50px"></div>` +
-        box('background-position:0 0, 0 0;background-position-x:-100px'),
-      300,
-    );
-    const colour = async (x: number, y: number) => {
-      const [r, , b] = await pixelAt(result.ctx, x, y);
-      return r === 255 && b === 0
-        ? 'red'
-        : b === 255 && r === 0
-          ? 'blue'
-          : 'white';
-    };
-    assert.strictEqual(await colour(50, 25), 'blue', 'x alone moves it');
-    assert.strictEqual(await colour(50, 75), 'red', 'set back by x');
-    assert.strictEqual(await colour(50, 125), 'blue', 'right is the far end');
-    assert.strictEqual(await colour(50, 175), 'blue', 'x-end is right');
-    // y alone, x left as it was
-    assert.strictEqual(await colour(50, 225), 'blue', 'y moves it up');
-    assert.strictEqual(await colour(50, 275), 'blue', 'each layer');
   },
 );
