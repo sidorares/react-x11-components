@@ -338,7 +338,12 @@ import type { HtmlMediaDevices, StreamShown } from '../media-devices.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlWebSocket } from '../socket.js';
-import { chosenFiles, formEncoding, urlencoded } from '../form.js';
+import {
+  chosenFiles,
+  copyControlState,
+  formEncoding,
+  urlencoded,
+} from '../form.js';
 import type { HtmlSyncNetwork } from '../network.js';
 import { fetchSync } from './sync-fetch.js';
 import { dispositionOf, type HtmlDownloadRequest } from '../download.js';
@@ -4525,6 +4530,7 @@ export class DomHost {
     const clone = node.cloneNode(deep) as ChildNode;
     copyMadeAsHtml(node, clone);
     copyIsValues(node, clone, deep);
+    this._copiedControls(node, clone, deep);
     this._cloneShadows(node, clone, deep);
     this._copiedScripts(node, clone, deep);
     this._copiedNonces(node, clone, deep);
@@ -4538,6 +4544,32 @@ export class DomHost {
       if (type) markXmlDocument(clone as unknown as Document, type);
     }
     return clone;
+  }
+
+  /** A copy's controls, holding what their originals hold (the cloning
+   *  steps): what was typed, and a box's default where its `checked`
+   *  attribute holds its state. The two trees are alike, so their elements
+   *  are found in the same order. */
+  private _copiedControls(node: AnyNode, copy: AnyNode, deep: boolean): void {
+    const stack: [AnyNode, AnyNode][] = [[node, copy]];
+    while (stack.length) {
+      const [a, b] = stack.pop()!;
+      if (a instanceof Element && b instanceof Element) {
+        const tag = a.name.toLowerCase();
+        if (tag === 'input' || tag === 'textarea') {
+          copyControlState(a, b);
+          if (this._checkedDefaults.has(a)) {
+            this._checkedDefaults.set(b, this._checkedDefaults.get(a)!);
+          }
+        }
+      }
+      if (!deep) return;
+      const from = (a as { children?: AnyNode[] }).children ?? [];
+      const to = (b as { children?: AnyNode[] }).children ?? [];
+      for (let i = 0; i < from.length && i < to.length; i += 1) {
+        stack.push([from[i], to[i]]);
+      }
+    }
   }
 
   /** A copy's nonces, which are the elements' slots and no attribute (HTML
