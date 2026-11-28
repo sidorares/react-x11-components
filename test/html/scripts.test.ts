@@ -22638,3 +22638,36 @@ test('a document’s activeElement is the frame the focus is in, however deep, a
     logs.join('\n'),
   );
 });
+
+test('a window hears blur as the focus leaves its frame and focus as it comes, before the element that takes it, and the frame it leaves lets its element go first', async () => {
+  const { text, logs } = await hostedFrames(
+    '<input id="top"><iframe id="own" src="own.html"></iframe><iframe id="blank" srcdoc="<p>b</p>"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function on(w, name) { w.addEventListener("focus", function () { r.push(name + ":focus"); }); w.addEventListener("blur", function () { r.push(name + ":blur:" + w.document.activeElement.nodeName); }); }' +
+      'onload = function () { try { go(); } catch (e) { document.getElementById("out").textContent = "threw " + e + " " + r; } };' +
+      'function go() {' +
+      '  var own = document.getElementById("own"), blank = document.getElementById("blank");' +
+      '  on(window, "top"); on(own.contentWindow, "own"); on(blank.contentWindow, "blank");' +
+      '  var input = own.contentDocument.querySelector("input");' +
+      '  input.addEventListener("focus", function () { r.push("input:focus"); });' +
+      '  input.focus(); r.push("|");' +
+      '  blank.focus(); r.push("|");' +
+      '  blank.focus(); r.push("|");' +
+      '  blank.blur(); r.push("|");' +
+      '  document.getElementById("top").focus();' +
+      '  document.getElementById("out").textContent = r.join(",");' +
+      '};' +
+      '</script>',
+    { 'own.html': '<!doctype html><input><script>var ready = 1;</script>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    'top:blur:IFRAME,own:focus,input:focus,|,own:blur:BODY,blank:focus,|,|,blank:blur:BODY,top:focus,|',
+    logs.join('\n'),
+  );
+});

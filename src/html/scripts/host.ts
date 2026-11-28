@@ -2649,7 +2649,9 @@ export class DomShared {
    *  it, and `hasFocus()` holds of it and of the documents around it. Null
    *  until then, which is each top-level document's own. */
   focused: Document | null = null;
-  /** The host of each realm, by the document it is the realm of. */
+  /** The host of each realm, by the document it is the realm of: where a
+   *  window's events are dispatched, for a frame's document with no realm
+   *  of its own the realm of the document its frame is in. */
   readonly runs = new WeakMap<Document, DomHost>();
 
   /** Each `<canvas>`'s pixels, whichever realm's script drew them, and who
@@ -4887,9 +4889,69 @@ export class DomHost {
     return focused === doc || this._frameToFocus(doc) !== null;
   }
 
-  /** The focus came to something in `doc`, or to `doc` itself. */
+  /** The top-level document `doc` is in, through its frames. */
+  private _topOf(doc: Document): Document {
+    let at = doc;
+    for (;;) {
+      const up = this._frameParent(at);
+      if (!up) return at;
+      at = up;
+    }
+  }
+
+  /** The document the focus is in: the one a script or the user gave it
+   *  to, else the top-level one's own. */
+  private _focusedFrom(doc: Document): Document {
+    return this._s.focused ?? this._topOf(doc);
+  }
+
+  /**
+   * The focus came to something in `doc`, or to `doc` itself. Where it was
+   * in another document, that one's window hears `blur` and this one's
+   * `focus`, as the focused frame changes in a browser (HTML 6.6.3's focus
+   * update steps fire them at a document's global as it leaves and joins
+   * the focus chain, and every engine fires them as the frame the focus is
+   * in changes): before the element that takes the focus hears its own.
+   */
   focusCameTo(doc: Document): void {
+    const was = this._focusedFrom(doc);
     this._s.focused = doc;
+    if (was === doc) return;
+    this._windowFocus(was, false);
+    this._windowFocus(doc, true);
+  }
+
+  /** `focus` or `blur` at the window of `doc`, in whichever realm runs it:
+   *  its own, else that of the document its frame is in. */
+  private _windowFocus(doc: Document, focused: boolean): void {
+    let at: Document = doc;
+    for (;;) {
+      const host = this._s.runs.get(at);
+      if (host) {
+        if (!host._disposed) {
+          host.entries?.call('__windowFocus', [
+            at === doc ? 0 : host.idOf(doc),
+            focused,
+          ]);
+        }
+        return;
+      }
+      const up = this._frameParent(at);
+      if (!up) return;
+      at = up;
+    }
+  }
+
+  /** What has the focus in `doc` lets it go, where the focus goes to
+   *  another document: its view's `blur()`, as an element focused in
+   *  another frame clears the focused element of the one it leaves. */
+  private _blurOther(doc: Document): void {
+    const was = this._focusedFrom(doc);
+    if (was === doc) return;
+    const view =
+      this._s.drawn.get(was) ??
+      (this._s.runs.get(was) as DomHost | undefined)?._seams.handle;
+    if (view && view.activeElement) view.blur();
   }
 
   /** The view that draws the document of the node an op is about, where it
@@ -8105,8 +8167,11 @@ export class DomHost {
         // focusing steps' "navigable container"), and anything else has it
         // in its own
         const inFrame = this._s.frames.get(el);
-        if (inFrame) this.focusCameTo(inFrame);
-        else if (focusableElement(el)) this.focusCameTo(this._ownerOf(el));
+        const to = inFrame ?? (focusableElement(el) ? this._ownerOf(el) : null);
+        if (to) {
+          this._blurOther(to);
+          this.focusCameTo(to);
+        }
         // A control just put in has no widget until the render that the
         // flush asked for, nor a link shown a stop: asked again once it
         // has, and until then the element the page has the focus on, as a
