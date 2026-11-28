@@ -363,6 +363,11 @@ export interface PageProps {
    *  what a page process new to the tab — its last one having ended —
    *  starts from. Read once. */
   history: string;
+  /** The tab's key, which its `sessionStorage` is kept by across a
+   *  restart. A prop rather than the process's environment, so a process
+   *  started before its tab was known — the browser's spare — can be any
+   *  tab's. */
+  tabKey: string;
   zoom: number;
   /** Whether the page's scripts run: the browser's switch, for the site
    *  the page is from. Read as a document is made; the browser reloads the
@@ -777,6 +782,11 @@ if (isFramed()) {
 
 export default function Page(props: PageProps): ReactElement {
   const { loadSeq, zoom } = props;
+  // which tab's `sessionStorage` the profile keeps, before any document of
+  // the tab runs: said again at every render, which changes nothing after
+  // the first. In the browser's own process (`BROWSER_INLINE`) every tab
+  // shares one profile, and its `sessionStorage` stays memory.
+  if (isFramed()) profile?.forTab(props.tabKey || null);
   const cocoa = useSupports('nativeControls');
   // whether a page's `<video>` is handed to the platform's player
   const plays = useSupports('mediaPlayback');

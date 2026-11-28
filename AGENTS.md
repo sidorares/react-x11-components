@@ -4442,9 +4442,23 @@ follow. **The browser opens the profile and ends the last session before
 any pane starts** (`endSession`), since a pane reads what is there as it
 makes its first request; and **a jar reads its store at its first use, not
 as it is made**, since an inline page's jar is made as `page.tsx` is
-imported, before the browser has tidied anything. The tab's key, which its
-`sessionStorage` is kept by across a restart, reaches its process as
-`BROWSER_TAB_KEY`, and the directory as `BROWSER_PROFILE_DIR`.
+imported, before the browser has tidied anything. The directory reaches a
+tab's process as `BROWSER_PROFILE_DIR`; the tab's key, which its
+`sessionStorage` is kept by across a restart, is a prop (`PageProps.tabKey`),
+told to the profile with `forTab` before any document runs.
+
+**A new tab takes a process started before it** (`spare-pane.ts`). Some
+0.7 to 1.2 s of a new tab's wait on a Mac, and up to 3 s, was its process
+loading code before it drew anything, none of it the tab's own, so the
+browser keeps one pane forked and loading `page.tsx` (`pane-preload.ts`,
+and the scripts runtime where pages run scripts by default), and hands it to
+the next `<Frame>` that asks for the same flags and environment: click to
+first frame went from 1.3–3.5 s to 0.5–0.6 s. Two things are load-bearing.
+**Nothing in a pane's environment may name its tab**, or no spare fits: a
+per-tab value goes in the props. And **the preload neither awaits nor
+listens for a message**: an `--import` still running holds back core's pane
+entry, and a listener starts reading the IPC channel and takes the hello
+the entry waits for. `BROWSER_SPARE_PANE=0` turns it off.
 
 **`<Html scripts>` runs a page's scripts in a context of their own, and
 what keeps them there is a few rules** (`src/html/scripts/`,
