@@ -5424,8 +5424,25 @@ class Builder {
           )
         : null;
     let marker = written?.text ?? '';
+    // its own `::marker`, the `::before::marker` rules', where any reach it
+    const markerStyle = marker
+      ? this._options.cascade.markerStyle(el, style, which)
+      : null;
     if (marker && style.listStylePosition !== 'inside') {
-      box.marker = { text: marker, layout: null, x: 0, y: 0, style: null };
+      box.marker = {
+        text: markerStyle
+          ? transformText(
+              marker,
+              markerStyle.textTransform,
+              false,
+              languageOf(el),
+            )
+          : marker,
+        layout: null,
+        x: 0,
+        y: 0,
+        style: markerStyle,
+      };
       if (written?.flush) box.marker.flush = true;
       marker = '';
     }
@@ -5433,7 +5450,6 @@ class Builder {
     if (into.kind === 'inline' && (box.outOfFlow || box.isFloat))
       this._nestedOutOfLine = true;
     const pieces = this._generated(style.content as ContentItem[], style, el);
-    if (marker) pieces.unshift(written?.flush ? marker : `${marker} `);
     this._noteReads(box);
     this._scopes.close();
     const flow = flowOf(style, box);
@@ -5448,6 +5464,16 @@ class Builder {
     const skipped = flow === 'out' || flow === 'atomic';
     if (skipped) this._firstLetter = null;
     else if (flow === 'block' && outerLetter) giveBack(outerLetter);
+    if (marker) {
+      // in a box of its own at the start of its content, as an element's
+      // inside marker is, with what the user agent's sheet gives a marker
+      // (`_insideMarker`), and no part of what a first letter is found in
+      const search = this._firstLetter;
+      this._firstLetter = null;
+      const text = written?.flush ? marker : `${marker} `;
+      this._insideMarker(text, style, markerStyle, box, el);
+      this._firstLetter = search;
+    }
     for (const piece of pieces) {
       if (typeof piece === 'string') this._textNode(piece, box, style, el);
       else {

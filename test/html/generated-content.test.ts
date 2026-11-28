@@ -2418,3 +2418,47 @@ test("a ::scroll-button() has a button's look: the palette's, and the web's wher
   );
   assert.strictEqual(button('b').style.borderTopStyle, 'outset');
 });
+
+test('a ::before that is a list item has a marker, which ::before::marker styles and ::marker does not', async () => {
+  // CSS Pseudo 4, 4.2: a `::before` or an `::after` that is a list item has
+  // a `::marker` of its own, which `::before::marker` selects. Such a rule
+  // was refused as a selector, and an inside marker was text at the start
+  // of the `::before`, with none of a marker's style: not its digits, its
+  // case or its direction (css-pseudo/marker-font-variant-numeric-*)
+  const { node } = await render(
+    '<style>' +
+      'li{display:block}' +
+      'li::before{content:"x";display:list-item}' +
+      '.inside::before{list-style-position:inside}' +
+      '.styled::before::marker{color:rgb(255, 0, 0)}' +
+      // an element's ::marker is no pseudo-element's
+      '::marker{color:rgb(0, 0, 255)}' +
+      '</style><ol>' +
+      '<li id="outside" class="styled">a</li>' +
+      '<li id="inside" class="inside styled">b</li>' +
+      '<li id="plain" class="inside">c</li></ol>',
+  );
+  const el = view(node);
+  type Styled = { fontVariantNumeric: string; color: string };
+  type Laid = {
+    pseudo?: string;
+    style: Styled;
+    marker: { text: string; style: Styled | null } | null;
+    children: Laid[];
+  };
+  const before = (id: string) =>
+    (boxOf(el, id) as unknown as Laid).children.find(
+      (c) => c.pseudo === 'before',
+    )!;
+  const outside = before('outside').marker!;
+  assert.strictEqual(outside.text, '1.');
+  assert.strictEqual(outside.style!.color, '#ff0000');
+  // inside, a box of its own at the start of the ::before
+  const marker = (id: string) => before(id).children[0];
+  assert.strictEqual(marker('inside').pseudo, 'before');
+  assert.strictEqual(marker('inside').style.color, '#ff0000');
+  assert.strictEqual(marker('inside').style.fontVariantNumeric, 'tnum=1');
+  assert.strictEqual(marker('plain').style.fontVariantNumeric, 'tnum=1');
+  assert.notStrictEqual(marker('plain').style.color, '#0000ff');
+  assert.ok(drawnText(el).includes('3. x'), drawnText(el));
+});

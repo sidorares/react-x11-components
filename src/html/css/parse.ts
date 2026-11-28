@@ -1782,7 +1782,10 @@ function isSelector(s: string, supports = false): boolean {
             : (shadowed !== null &&
                 (TREE_ABIDING.test(readIdent(s, i + 2).value) ||
                   (supports && HIGHLIGHTS.test(readIdent(s, i + 2).value)))) ||
-              (supports && followsElement(endedBy, readIdent(s, i + 2).value)))
+              // a `::marker` of a `::before` or an `::after`, which a rule
+              // styles too (`splitPseudoElement`)
+              ((supports || endedBy === 'before' || endedBy === 'after') &&
+                followsElement(endedBy, readIdent(s, i + 2).value)))
         )
       ) {
         return false;
