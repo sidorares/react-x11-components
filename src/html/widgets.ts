@@ -98,7 +98,7 @@ import {
   setIndeterminate,
   setUserValidity,
 } from './form.js';
-import type { FieldSelection, FormSubmission } from './form.js';
+import type { FieldSelection, FormSubmission, SubmittedEntry } from './form.js';
 import { isSummaryOf, tabIndexOf } from './focus.js';
 import { RangeWidget } from './range.js';
 import { isDateFieldType } from './date-fields.js';
@@ -228,7 +228,11 @@ export interface Forms {
     attempt?: boolean,
   ): boolean;
   /** Send a form as `form.submit()` does: no validation, no `submit`. */
-  submitNow(form: Element, submitter: Element | null): void;
+  submitNow(
+    form: Element,
+    submitter: Element | null,
+    entries?: readonly SubmittedEntry[],
+  ): void;
   /** Put a form back as `form.reset()` does, after its `reset` event. */
   resetNow(form: Element): void;
 }
@@ -522,12 +526,17 @@ export function useForms(options: FormsOptions): Forms {
   };
 
   /** The entry list, built as the form is now, and sent. */
-  const send = (form: Element, submitter: Element | null, point?: Point) => {
+  const send = (
+    form: Element,
+    submitter: Element | null,
+    point?: Point,
+    entries?: readonly SubmittedEntry[],
+  ) => {
     if (!onSubmit || sandboxed & SB_FORMS) return;
     // what a form names in `accept-charset` is the first its document asks
     // for, and `<Html>` has loaded nothing for it
     if (formEncoding(form, charset) !== 'UTF-8' && !loadedEncodings()) {
-      void loadEncodings().then(() => send(form, submitter, point));
+      void loadEncodings().then(() => send(form, submitter, point, entries));
       return;
     }
     const node = view.current;
@@ -537,6 +546,7 @@ export function useForms(options: FormsOptions): Forms {
       live,
       point,
       encoding: charset,
+      entries,
     });
     if (submission) onSubmit(submission);
   };
@@ -1055,8 +1065,10 @@ export function useForms(options: FormsOptions): Forms {
       if (attempt) attempted(form);
       return validate(form, submitter);
     },
-    submitNow: (form, submitter) => {
-      if (!topLayer?.submitted(form, submitter)) send(form, submitter);
+    submitNow: (form, submitter, entries) => {
+      if (!topLayer?.submitted(form, submitter)) {
+        send(form, submitter, undefined, entries);
+      }
     },
     resetNow,
     activate: (el) => {

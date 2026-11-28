@@ -43466,8 +43466,21 @@ export function installDom(
   ): void => {
     // nothing while its entry list is being made (HTML 4.10.21.3, step 4)
     if (constructingEntryList.has(form)) return;
-    const submit = () =>
-      call('submit', form._id, submitter ? idOf(submitter) : 0);
+    // with the entry list the page made, where it made one, which its
+    // `formdata` listeners may have added to (HTML 4.10.21.4)
+    const submit = (made?: Any) =>
+      call(
+        'submit',
+        form._id,
+        submitter ? idOf(submitter) : 0,
+        made
+          ? JSON.stringify(
+              made._entries.map(([n, v]: [string, Any]) =>
+                v instanceof File ? [n, v.name, 1] : [n, v, 0],
+              ),
+            )
+          : undefined,
+      );
     const attr = (own: string, form_: string): string | null =>
       submitter?.hasAttribute?.(own)
         ? submitter.getAttribute(own)
@@ -43552,7 +43565,13 @@ export function installDom(
           hostFollows: !framed || post,
           form: { formData: post ? formData : null },
         });
-        if (went === 'other' && (!framed || post)) submit();
+        // an image button's entries are the point it was pressed at,
+        // which only the host has
+        const image =
+          submitter instanceof HTMLInputElement && submitter.type === 'image';
+        if (went === 'other' && (!framed || post)) {
+          submit(image ? undefined : formData);
+        }
       },
       0,
       [],
